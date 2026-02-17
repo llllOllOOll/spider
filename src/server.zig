@@ -5,6 +5,8 @@ const Thread = std.Thread;
 
 const index_html = @embedFile("index.html");
 
+const MAX_BODY_SIZE: u64 = 1 * 1024 * 1024;
+
 const ConnectionContext = struct {
     stream: net.Stream,
     io: Io,
@@ -94,6 +96,14 @@ fn notFoundHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) 
     });
 }
 
+fn payloadTooLargeHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
+    _ = allocator;
+    try req.respond("413 Payload Too Large", .{
+        .status = .payload_too_large,
+        .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
+    });
+}
+
 fn getMimeType(path: []const u8) []const u8 {
     if (std.mem.endsWith(u8, path, ".html")) return "text/html";
     if (std.mem.endsWith(u8, path, ".css")) return "text/css";
@@ -154,7 +164,17 @@ fn handleConnection(ctx: *ConnectionContext) void {
     while (true) {
         _ = arena_allocator.reset(.free_all);
 
-        var request = http_server.receiveHead() catch break;
+        var request = http_server.receiveHead() catch {
+            break;
+        };
+
+        if (request.head.content_length) |len| {
+            if (len > MAX_BODY_SIZE) {
+                payloadTooLargeHandler(&request, arena_allocator.allocator()) catch {};
+                break;
+            }
+        }
+
         const arena = arena_allocator.allocator();
 
         const path = request.head.target;
