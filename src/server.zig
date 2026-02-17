@@ -46,41 +46,50 @@ pub const Server = struct {
 
         var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
 
+        var arena_allocator = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_allocator.deinit();
+
         while (true) {
+            _ = arena_allocator.reset(.free_all);
+
             var request = http_server.receiveHead() catch break;
+            const arena = arena_allocator.allocator();
 
             const path = request.head.target;
 
             if (std.mem.eql(u8, path, "/")) {
-                try self.indexHandler(&request);
+                try self.indexHandler(&request, arena);
             } else if (std.mem.eql(u8, path, "/metric")) {
-                try self.metricHandler(&request);
+                try self.metricHandler(&request, arena);
             } else {
-                try self.notFoundHandler(&request);
+                try self.notFoundHandler(&request, arena);
             }
 
             if (!request.head.keep_alive) break;
         }
     }
 
-    fn indexHandler(self: *Server, req: *std.http.Server.Request) !void {
+    fn indexHandler(self: *Server, req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
         _ = self;
+        _ = allocator;
         try req.respond("<!DOCTYPE html><html><head><title>Welcome</title></head><body><h1>Welcome to Zig!</h1></body></html>", .{
             .status = .ok,
             .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
         });
     }
 
-    fn metricHandler(self: *Server, req: *std.http.Server.Request) !void {
+    fn metricHandler(self: *Server, req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
         _ = self;
+        _ = allocator;
         try req.respond("<div x-data=\"{ count: 0 }\"><button @click=\"count++\">Increment</button><span x-text=\"count\"></span></div>", .{
             .status = .ok,
             .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
         });
     }
 
-    fn notFoundHandler(self: *Server, req: *std.http.Server.Request) !void {
+    fn notFoundHandler(self: *Server, req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
         _ = self;
+        _ = allocator;
         try req.respond("404 Not Found", .{
             .status = .not_found,
             .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
