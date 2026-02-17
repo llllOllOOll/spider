@@ -27,6 +27,94 @@ zig build
 
 ---
 
+## 📦 Adding Spider to a New Project
+
+### Step 1: Create build.zig.zon
+
+```zig
+.{
+    .name = "my-app",
+    .version = "0.0.1",
+    .dependencies = .{
+        .spider = .{
+            .path = "/path/to/simple_server",
+        },
+    },
+}
+```
+
+### Step 2: Configure build.zig
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const exe = b.addExecutable(.{ 
+        .name = "my-app",
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.addModule("spider", b.dependency("spider", .{}).module("spider", null));
+    exe.root_source_file = b.path("src/main.zig");
+
+    b.installArtifact(exe);
+}
+```
+
+### Step 3: Create Your Application
+
+```zig
+// src/main.zig
+const std = @import("std");
+const spider = @import("spider");
+
+const index_html = @embedFile("index.html");
+
+fn helloHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
+    _ = allocator;
+    try req.respond("<h1>Hello from Spider!</h1>", .{
+        .status = .ok,
+        .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
+    });
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+    const io = std.Io.global_threaded.io();
+
+    var server = try spider.Server.init(allocator, io, 8080, "src/static");
+    defer server.deinit();
+
+    // Register routes
+    try server.router.put("/hello", helloHandler);
+
+    std.debug.print("Server listening on port 8080\n", .{});
+    try server.start();
+}
+```
+
+### Step 4: Directory Structure
+
+```
+my-app/
+├── build.zig
+├── build.zig.zon
+└── src/
+    ├── main.zig
+    ├── index.html
+    └── static/
+        └── style.css
+```
+
+---
+
 # Spider Web Server - Technical Specification
 
 ## Project Identity
