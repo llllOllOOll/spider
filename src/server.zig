@@ -2,6 +2,8 @@ const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
 
+const index_html = @embedFile("index.html");
+
 pub const Server = struct {
     io: Io,
     listener: net.Server,
@@ -72,7 +74,7 @@ pub const Server = struct {
     fn indexHandler(self: *Server, req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
         _ = self;
         _ = allocator;
-        try req.respond("<!DOCTYPE html><html><head><title>Welcome</title></head><body><h1>Welcome to Zig!</h1></body></html>", .{
+        try req.respond(index_html, .{
             .status = .ok,
             .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
         });
