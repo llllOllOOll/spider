@@ -10,6 +10,7 @@ const ConnectionContext = struct {
     io: Io,
     allocator: std.mem.Allocator,
     router: *std.StringHashMap(HandlerFn),
+    static_dir: []const u8,
 };
 
 const HandlerFn = *const fn (req: *std.http.Server.Request, allocator: std.mem.Allocator) anyerror!void;
@@ -19,14 +20,16 @@ pub const Server = struct {
     listener: net.Server,
     allocator: std.mem.Allocator,
     router: std.StringHashMap(HandlerFn),
+    static_dir: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator, io: Io, port: u16) !*Server {
+    pub fn init(allocator: std.mem.Allocator, io: Io, port: u16, static_dir: []const u8) !*Server {
         const self = try allocator.create(Server);
         self.* = .{
             .io = io,
             .allocator = allocator,
             .listener = try net.IpAddress.listen(net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) }, io, .{}),
             .router = std.StringHashMap(HandlerFn).init(allocator),
+            .static_dir = static_dir,
         };
 
         try self.router.put("/", indexHandler);
@@ -55,6 +58,7 @@ pub const Server = struct {
                 .io = self.io,
                 .allocator = self.allocator,
                 .router = &self.router,
+                .static_dir = self.static_dir,
             };
 
             _ = Thread.spawn(.{}, handleConnection, .{ctx}) catch |err| {
@@ -90,6 +94,46 @@ fn notFoundHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) 
     });
 }
 
+fn getMimeType(path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, ".html")) return "text/html";
+    if (std.mem.endsWith(u8, path, ".css")) return "text/css";
+    if (std.mem.endsWith(u8, path, ".js")) return "application/javascript";
+    if (std.mem.endsWith(u8, path, ".json")) return "application/json";
+    if (std.mem.endsWith(u8, path, ".png")) return "image/png";
+    if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
+    if (std.mem.endsWith(u8, path, ".gif")) return "image/gif";
+    if (std.mem.endsWith(u8, path, ".svg")) return "image/svg+xml";
+    if (std.mem.endsWith(u8, path, ".ico")) return "image/x-icon";
+    if (std.mem.endsWith(u8, path, ".txt")) return "text/plain";
+    if (std.mem.endsWith(u8, path, ".xml")) return "application/xml";
+    return "application/octet-stream";
+}
+
+fn staticFileHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator, static_dir: []const u8, io: Io) !void {
+    const path = req.head.target;
+
+    if (std.mem.indexOf(u8, path, "..") != null) {
+        try notFoundHandler(req, allocator);
+        return;
+    }
+
+    const full_path = try std.fs.path.join(allocator, &.{ static_dir, path });
+    defer allocator.free(full_path);
+
+    const file_content = std.Io.Dir.cwd().readFileAlloc(io, full_path, allocator, .unlimited) catch {
+        try notFoundHandler(req, allocator);
+        return;
+    };
+    defer allocator.free(file_content);
+
+    const content_type = getMimeType(full_path);
+
+    try req.respond(file_content, .{
+        .status = .ok,
+        .extra_headers = &.{.{ .name = "content-type", .value = content_type }},
+    });
+}
+
 fn handleConnection(ctx: *ConnectionContext) void {
     defer {
         ctx.stream.close(ctx.io);
@@ -115,15 +159,19 @@ fn handleConnection(ctx: *ConnectionContext) void {
 
         const path = request.head.target;
 
-        const handler = ctx.router.get(path) orelse notFoundHandler;
-        handler(&request, arena) catch break;
+        const handler = ctx.router.get(path);
+        if (handler) |h| {
+            h(&request, arena) catch break;
+        } else {
+            staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch break;
+        }
 
         if (!request.head.keep_alive) break;
     }
 }
 
 pub fn start(init: std.process.Init) !void {
-    var server = try Server.init(init.arena.allocator(), init.io, 8080);
+    var server = try Server.init(init.arena.allocator(), init.io, 8080, "src/static");
     defer server.deinit();
     try server.start();
 }
