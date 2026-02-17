@@ -9,12 +9,16 @@ const ConnectionContext = struct {
     stream: net.Stream,
     io: Io,
     allocator: std.mem.Allocator,
+    router: *std.StringHashMap(HandlerFn),
 };
+
+const HandlerFn = *const fn (req: *std.http.Server.Request, allocator: std.mem.Allocator) anyerror!void;
 
 pub const Server = struct {
     io: Io,
     listener: net.Server,
     allocator: std.mem.Allocator,
+    router: std.StringHashMap(HandlerFn),
 
     pub fn init(allocator: std.mem.Allocator, io: Io, port: u16) !*Server {
         const self = try allocator.create(Server);
@@ -22,11 +26,17 @@ pub const Server = struct {
             .io = io,
             .allocator = allocator,
             .listener = try net.IpAddress.listen(net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) }, io, .{}),
+            .router = std.StringHashMap(HandlerFn).init(allocator),
         };
+
+        try self.router.put("/", indexHandler);
+        try self.router.put("/metric", metricHandler);
+
         return self;
     }
 
     pub fn deinit(self: *Server) void {
+        self.router.deinit();
         self.listener.deinit(self.io);
         self.allocator.destroy(self);
     }
@@ -44,6 +54,7 @@ pub const Server = struct {
                 .stream = stream,
                 .io = self.io,
                 .allocator = self.allocator,
+                .router = &self.router,
             };
 
             _ = Thread.spawn(.{}, handleConnection, .{ctx}) catch |err| {
@@ -53,31 +64,31 @@ pub const Server = struct {
             };
         }
     }
-
-    fn indexHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
-        _ = allocator;
-        try req.respond(index_html, .{
-            .status = .ok,
-            .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
-        });
-    }
-
-    fn metricHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
-        _ = allocator;
-        try req.respond("<div x-data=\"{ count: 0 }\"><button @click=\"count++\">Increment</button><span x-text=\"count\"></span></div>", .{
-            .status = .ok,
-            .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
-        });
-    }
-
-    fn notFoundHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
-        _ = allocator;
-        try req.respond("404 Not Found", .{
-            .status = .not_found,
-            .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
-        });
-    }
 };
+
+fn indexHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
+    _ = allocator;
+    try req.respond(index_html, .{
+        .status = .ok,
+        .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
+    });
+}
+
+fn metricHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
+    _ = allocator;
+    try req.respond("<div x-data=\"{ count: 0 }\"><button @click=\"count++\">Increment</button><span x-text=\"count\"></span></div>", .{
+        .status = .ok,
+        .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
+    });
+}
+
+fn notFoundHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
+    _ = allocator;
+    try req.respond("404 Not Found", .{
+        .status = .not_found,
+        .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
+    });
+}
 
 fn handleConnection(ctx: *ConnectionContext) void {
     defer {
@@ -104,13 +115,8 @@ fn handleConnection(ctx: *ConnectionContext) void {
 
         const path = request.head.target;
 
-        if (std.mem.eql(u8, path, "/")) {
-            Server.indexHandler(&request, arena) catch break;
-        } else if (std.mem.eql(u8, path, "/metric")) {
-            Server.metricHandler(&request, arena) catch break;
-        } else {
-            Server.notFoundHandler(&request, arena) catch break;
-        }
+        const handler = ctx.router.get(path) orelse notFoundHandler;
+        handler(&request, arena) catch break;
 
         if (!request.head.keep_alive) break;
     }
