@@ -47,7 +47,7 @@ pub const Server = struct {
     }
 
     pub fn start(self: *Server) !void {
-        std.debug.print("Server listening on port 8080\n", .{});
+        std.debug.print("Server listening on port 8080 (thread-per-connection)\n", .{});
         while (true) {
             const stream = self.listener.accept(self.io) catch |err| {
                 std.debug.print("Accept error: {}\n", .{err});
@@ -71,6 +71,51 @@ pub const Server = struct {
         }
     }
 };
+
+fn handleConnection(ctx: *ConnectionContext) void {
+    defer {
+        ctx.stream.close(ctx.io);
+        ctx.allocator.destroy(ctx);
+    }
+
+    var read_buffer: [4096]u8 = undefined;
+    var write_buffer: [4096]u8 = undefined;
+
+    var stream_reader = net.Stream.Reader.init(ctx.stream, ctx.io, &read_buffer);
+    var stream_writer = net.Stream.Writer.init(ctx.stream, ctx.io, &write_buffer);
+
+    var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
+
+    var arena_allocator = std.heap.ArenaAllocator.init(ctx.allocator);
+    defer arena_allocator.deinit();
+
+    while (true) {
+        _ = arena_allocator.reset(.free_all);
+
+        var request = http_server.receiveHead() catch {
+            break;
+        };
+
+        if (request.head.content_length) |len| {
+            if (len > MAX_BODY_SIZE) {
+                payloadTooLargeHandler(&request, arena_allocator.allocator()) catch {};
+                break;
+            }
+        }
+
+        const arena = arena_allocator.allocator();
+        const path = request.head.target;
+
+        const handler = ctx.router.get(path);
+        if (handler) |h| {
+            h(&request, arena) catch break;
+        } else {
+            staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch break;
+        }
+
+        if (!request.head.keep_alive) break;
+    }
+}
 
 fn indexHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
     _ = allocator;
@@ -142,52 +187,6 @@ fn staticFileHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator
         .status = .ok,
         .extra_headers = &.{.{ .name = "content-type", .value = content_type }},
     });
-}
-
-fn handleConnection(ctx: *ConnectionContext) void {
-    defer {
-        ctx.stream.close(ctx.io);
-        ctx.allocator.destroy(ctx);
-    }
-
-    var read_buffer: [4096]u8 = undefined;
-    var write_buffer: [4096]u8 = undefined;
-
-    var stream_reader = net.Stream.Reader.init(ctx.stream, ctx.io, &read_buffer);
-    var stream_writer = net.Stream.Writer.init(ctx.stream, ctx.io, &write_buffer);
-
-    var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
-
-    var arena_allocator = std.heap.ArenaAllocator.init(ctx.allocator);
-    defer arena_allocator.deinit();
-
-    while (true) {
-        _ = arena_allocator.reset(.free_all);
-
-        var request = http_server.receiveHead() catch {
-            break;
-        };
-
-        if (request.head.content_length) |len| {
-            if (len > MAX_BODY_SIZE) {
-                payloadTooLargeHandler(&request, arena_allocator.allocator()) catch {};
-                break;
-            }
-        }
-
-        const arena = arena_allocator.allocator();
-
-        const path = request.head.target;
-
-        const handler = ctx.router.get(path);
-        if (handler) |h| {
-            h(&request, arena) catch break;
-        } else {
-            staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch break;
-        }
-
-        if (!request.head.keep_alive) break;
-    }
 }
 
 pub fn start(init: std.process.Init) !void {
