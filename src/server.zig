@@ -29,7 +29,7 @@ fn notFoundHandler(req: *std.http.Server.Request) !void {
     });
 }
 
-pub fn main(init: std.process.Init) !void {
+pub fn start(init: std.process.Init) !void {
     const io = init.io;
 
     const port: u16 = 8080;
