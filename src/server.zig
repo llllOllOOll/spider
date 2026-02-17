@@ -1,8 +1,15 @@
 const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
+const Thread = std.Thread;
 
 const index_html = @embedFile("index.html");
+
+const ConnectionContext = struct {
+    stream: net.Stream,
+    io: Io,
+    allocator: std.mem.Allocator,
+};
 
 pub const Server = struct {
     io: Io,
@@ -31,48 +38,23 @@ pub const Server = struct {
                 std.debug.print("Accept error: {}\n", .{err});
                 continue;
             };
-            self.handleConnection(stream) catch |err| {
-                std.debug.print("Request error: {}\n", .{err});
+
+            const ctx = try self.allocator.create(ConnectionContext);
+            ctx.* = .{
+                .stream = stream,
+                .io = self.io,
+                .allocator = self.allocator,
+            };
+
+            _ = Thread.spawn(.{}, handleConnection, .{ctx}) catch |err| {
+                std.debug.print("Thread spawn error: {}\n", .{err});
+                stream.close(self.io);
+                self.allocator.destroy(ctx);
             };
         }
     }
 
-    fn handleConnection(self: *Server, stream: net.Stream) !void {
-        defer stream.close(self.io);
-
-        var read_buffer: [4096]u8 = undefined;
-        var write_buffer: [4096]u8 = undefined;
-
-        var stream_reader = net.Stream.Reader.init(stream, self.io, &read_buffer);
-        var stream_writer = net.Stream.Writer.init(stream, self.io, &write_buffer);
-
-        var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
-
-        var arena_allocator = std.heap.ArenaAllocator.init(self.allocator);
-        defer arena_allocator.deinit();
-
-        while (true) {
-            _ = arena_allocator.reset(.free_all);
-
-            var request = http_server.receiveHead() catch break;
-            const arena = arena_allocator.allocator();
-
-            const path = request.head.target;
-
-            if (std.mem.eql(u8, path, "/")) {
-                try self.indexHandler(&request, arena);
-            } else if (std.mem.eql(u8, path, "/metric")) {
-                try self.metricHandler(&request, arena);
-            } else {
-                try self.notFoundHandler(&request, arena);
-            }
-
-            if (!request.head.keep_alive) break;
-        }
-    }
-
-    fn indexHandler(self: *Server, req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
-        _ = self;
+    fn indexHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
         _ = allocator;
         try req.respond(index_html, .{
             .status = .ok,
@@ -80,8 +62,7 @@ pub const Server = struct {
         });
     }
 
-    fn metricHandler(self: *Server, req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
-        _ = self;
+    fn metricHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
         _ = allocator;
         try req.respond("<div x-data=\"{ count: 0 }\"><button @click=\"count++\">Increment</button><span x-text=\"count\"></span></div>", .{
             .status = .ok,
@@ -89,8 +70,7 @@ pub const Server = struct {
         });
     }
 
-    fn notFoundHandler(self: *Server, req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
-        _ = self;
+    fn notFoundHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
         _ = allocator;
         try req.respond("404 Not Found", .{
             .status = .not_found,
@@ -98,6 +78,43 @@ pub const Server = struct {
         });
     }
 };
+
+fn handleConnection(ctx: *ConnectionContext) void {
+    defer {
+        ctx.stream.close(ctx.io);
+        ctx.allocator.destroy(ctx);
+    }
+
+    var read_buffer: [4096]u8 = undefined;
+    var write_buffer: [4096]u8 = undefined;
+
+    var stream_reader = net.Stream.Reader.init(ctx.stream, ctx.io, &read_buffer);
+    var stream_writer = net.Stream.Writer.init(ctx.stream, ctx.io, &write_buffer);
+
+    var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
+
+    var arena_allocator = std.heap.ArenaAllocator.init(ctx.allocator);
+    defer arena_allocator.deinit();
+
+    while (true) {
+        _ = arena_allocator.reset(.free_all);
+
+        var request = http_server.receiveHead() catch break;
+        const arena = arena_allocator.allocator();
+
+        const path = request.head.target;
+
+        if (std.mem.eql(u8, path, "/")) {
+            Server.indexHandler(&request, arena) catch break;
+        } else if (std.mem.eql(u8, path, "/metric")) {
+            Server.metricHandler(&request, arena) catch break;
+        } else {
+            Server.notFoundHandler(&request, arena) catch break;
+        }
+
+        if (!request.head.keep_alive) break;
+    }
+}
 
 pub fn start(init: std.process.Init) !void {
     var server = try Server.init(init.arena.allocator(), init.io, 8080);
