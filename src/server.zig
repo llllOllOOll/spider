@@ -117,18 +117,25 @@ fn handleConnection(ctx: *ConnectionContext) void {
 
         // Try web.App dispatch first
         if (ctx.app) |app| {
-            var web_req = web.Request.parse(arena, request.head.target) catch {
-                break;
-            };
-            web_req.method = switch (request.head.method) {
-                .GET => .get,
-                .POST => .post,
-                .PUT => .put,
-                .PATCH => .patch,
-                .DELETE => .delete,
-                .OPTIONS => .options,
-                .HEAD => .head,
-                else => .get,
+            // Build web.Request directly from already-parsed std.http data
+            // No re-parsing needed - zero extra allocations
+            const url = request.head.target;
+            var web_req = web.Request{
+                .method = switch (request.head.method) {
+                    .GET => .get,
+                    .POST => .post,
+                    .PUT => .put,
+                    .PATCH => .patch,
+                    .DELETE => .delete,
+                    .OPTIONS => .options,
+                    .HEAD => .head,
+                    else => .get,
+                },
+                .path = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[0..q] else url,
+                .query = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[q + 1 ..] else null,
+                .headers = web.Headers.init(),
+                .body = null,
+                .params = .{},
             };
 
             const web_res = app.dispatch(arena, &web_req) catch {
