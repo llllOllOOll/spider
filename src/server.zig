@@ -32,7 +32,7 @@ pub const Server = struct {
         self.* = .{
             .io = io,
             .allocator = allocator,
-            .listener = try net.IpAddress.listen(net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) }, io, .{}),
+            .listener = try net.IpAddress.listen(net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) }, io, .{ .reuse_address = true }),
             .router = std.StringHashMap(HandlerFn).init(allocator),
             .static_dir = static_dir,
             .app = null,
