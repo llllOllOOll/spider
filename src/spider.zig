@@ -1,5 +1,5 @@
 const std = @import("std");
-const web = @import("web.zig");
+pub const web = @import("web.zig");
 const srv = @import("server.zig");
 
 pub const Spider = struct {
@@ -50,8 +50,8 @@ pub const Spider = struct {
             self.io,
             self.port,
             self.static_dir,
-            self.app_ptr,
         );
+        server.setApp(self.app_ptr);
         defer server.deinit();
         try server.start();
     }

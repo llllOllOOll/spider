@@ -1,0 +1,11 @@
+.{
+    .name = .demo,
+    .version = "0.1.0",
+    .fingerprint = 0xd642dfa0f6889fa8,
+    .dependencies = .{
+        .spider = .{
+            .path = "..",
+        },
+    },
+    .paths = .{"."},
+}

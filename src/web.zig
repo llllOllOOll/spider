@@ -143,7 +143,7 @@ pub const Response = struct {
     pub fn json(allocator: std.mem.Allocator, value: anytype) !Response {
         var res = Response.init();
         try res.headers.set(allocator, "content-type", "application/json");
-        res.body = try std.json.stringifyAlloc(allocator, value, .{});
+        res.body = try std.json.Stringify.valueAlloc(allocator, value, .{});
         return res;
     }
 
