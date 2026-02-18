@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
 const Thread = std.Thread;
+const web = @import("web.zig");
 
 const index_html = @embedFile("index.html");
 
@@ -13,6 +14,7 @@ const ConnectionContext = struct {
     allocator: std.mem.Allocator,
     router: *std.StringHashMap(HandlerFn),
     static_dir: []const u8,
+    app: ?*web.App,
 };
 
 const HandlerFn = *const fn (req: *std.http.Server.Request, allocator: std.mem.Allocator) anyerror!void;
@@ -23,6 +25,7 @@ pub const Server = struct {
     allocator: std.mem.Allocator,
     router: std.StringHashMap(HandlerFn),
     static_dir: []const u8,
+    app: ?*web.App,
 
     pub fn init(allocator: std.mem.Allocator, io: Io, port: u16, static_dir: []const u8) !*Server {
         const self = try allocator.create(Server);
@@ -32,6 +35,7 @@ pub const Server = struct {
             .listener = try net.IpAddress.listen(net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) }, io, .{}),
             .router = std.StringHashMap(HandlerFn).init(allocator),
             .static_dir = static_dir,
+            .app = null,
         };
 
         try self.router.put("/", indexHandler);
@@ -44,6 +48,10 @@ pub const Server = struct {
         self.router.deinit();
         self.listener.deinit(self.io);
         self.allocator.destroy(self);
+    }
+
+    pub fn setApp(self: *Server, app: *web.App) void {
+        self.app = app;
     }
 
     pub fn start(self: *Server) !void {
@@ -61,6 +69,7 @@ pub const Server = struct {
                 .allocator = self.allocator,
                 .router = &self.router,
                 .static_dir = self.static_dir,
+                .app = self.app,
             };
 
             _ = Thread.spawn(.{}, handleConnection, .{ctx}) catch |err| {
@@ -106,11 +115,47 @@ fn handleConnection(ctx: *ConnectionContext) void {
         const arena = arena_allocator.allocator();
         const path = request.head.target;
 
-        const handler = ctx.router.get(path);
-        if (handler) |h| {
-            h(&request, arena) catch break;
+        // Try web.App dispatch first
+        if (ctx.app) |app| {
+            var web_req = web.Request.parse(arena, request.head.target) catch {
+                break;
+            };
+            web_req.method = switch (request.head.method) {
+                .GET => .get,
+                .POST => .post,
+                .PUT => .put,
+                .PATCH => .patch,
+                .DELETE => .delete,
+                .OPTIONS => .options,
+                .HEAD => .head,
+                else => .get,
+            };
+
+            const web_res = app.dispatch(arena, &web_req) catch {
+                break;
+            };
+
+            var extra_headers: [16]std.http.Header = undefined;
+            var header_count: usize = 0;
+            var hit = web_res.headers.map.iterator();
+            while (hit.next()) |entry| {
+                if (header_count < 16) {
+                    extra_headers[header_count] = .{ .name = entry.key_ptr.*, .value = entry.value_ptr.* };
+                    header_count += 1;
+                }
+            }
+
+            request.respond(web_res.body orelse "", .{
+                .status = @enumFromInt(@intFromEnum(web_res.status)),
+                .extra_headers = extra_headers[0..header_count],
+            }) catch break;
         } else {
-            staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch break;
+            const handler = ctx.router.get(path);
+            if (handler) |h| {
+                h(&request, arena) catch break;
+            } else {
+                staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch break;
+            }
         }
 
         if (!request.head.keep_alive) break;
@@ -189,8 +234,8 @@ fn staticFileHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator
     });
 }
 
-pub fn start(init: std.process.Init) !void {
-    var server = try Server.init(init.arena.allocator(), init.io, 8080, "src/static");
+pub fn start(allocator: std.mem.Allocator, io: std.Io) !void {
+    var server = try Server.init(allocator, io, 8080, "src/static");
     defer server.deinit();
     try server.start();
 }
