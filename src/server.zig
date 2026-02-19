@@ -2,6 +2,9 @@ const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
 const web = @import("web.zig");
+const logger = @import("logger.zig");
+
+const log = logger.Logger.init(.info);
 
 const index_html = @embedFile("index.html");
 
@@ -76,12 +79,12 @@ pub const Server = struct {
 
     pub fn start(self: *Server) !void {
         setupSignalHandlers();
-        std.debug.print("Server listening on port 8080 (Io.Group + concurrent)\n", .{});
+        log.info("server_started", .{ .port = 8080, .mode = "Io.Group + concurrent" });
         var group: std.Io.Group = .init;
         while (!shutdown_flag.load(.acquire)) {
             const stream = self.listener.accept(self.io) catch |err| {
                 if (shutdown_flag.load(.acquire)) break;
-                std.debug.print("Accept error: {}\n", .{err});
+                log.warn("accept_error", .{ .err = @errorName(err) });
                 continue;
             };
 
@@ -102,12 +105,12 @@ pub const Server = struct {
             };
 
             group.concurrent(self.io, handleConnection, .{ctx}) catch |err| {
-                std.debug.print("Concurrent error: {}\n", .{err});
+                log.warn("concurrent_error", .{ .err = @errorName(err) });
                 stream.close(self.io);
                 self.allocator.destroy(ctx);
             };
         }
-        std.debug.print("Shutting down, waiting for active connections...\n", .{});
+        log.info("shutting_down", .{});
     }
 };
 
@@ -136,6 +139,9 @@ fn handleConnection(ctx: *ConnectionContext) void {
             break;
         };
 
+        const method = @tagName(request.head.method);
+        const path = request.head.target;
+
         if (request.head.content_length) |len| {
             if (len > MAX_BODY_SIZE) {
                 payloadTooLargeHandler(&request, ctx.req_arena.allocator()) catch {};
@@ -144,7 +150,7 @@ fn handleConnection(ctx: *ConnectionContext) void {
         }
 
         const arena = ctx.req_arena.allocator();
-        const path = request.head.target;
+        const target = request.head.target;
 
         // Try web.App dispatch first
         if (ctx.app) |app| {
@@ -188,13 +194,18 @@ fn handleConnection(ctx: *ConnectionContext) void {
                 .extra_headers = extra_headers[0..header_count],
             }) catch break;
         } else {
-            const handler = ctx.router.get(path);
+            const handler = ctx.router.get(target);
             if (handler) |h| {
                 h(&request, arena) catch break;
             } else {
                 staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch break;
             }
         }
+
+        log.debug("request", .{
+            .method = method,
+            .path = path,
+        });
 
         if (!request.head.keep_alive) break;
     }
