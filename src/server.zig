@@ -59,6 +59,7 @@ pub const Server = struct {
 
         try self.router.put("/", indexHandler);
         try self.router.put("/metric", metricHandler);
+        try self.router.put("/health", healthHandler);
 
         return self;
     }
@@ -212,6 +213,14 @@ fn metricHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !v
     try req.respond("<div x-data=\"{ count: 0 }\"><button @click=\"count++\">Increment</button><span x-text=\"count\"></span></div>", .{
         .status = .ok,
         .extra_headers = &.{.{ .name = "content-type", .value = "text/html" }},
+    });
+}
+
+fn healthHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator) !void {
+    _ = allocator;
+    try req.respond("{\"status\":\"ok\",\"version\":\"0.1.0\"}", .{
+        .status = .ok,
+        .extra_headers = &.{.{ .name = "content-type", .value = "application/json" }},
     });
 }
 
