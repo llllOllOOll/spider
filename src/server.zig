@@ -1,3 +1,7 @@
+// TODO: Native TLS support (v0.3.0)
+// Currently: deploy behind nginx/caddy for HTTPS
+// Reference: BoringSSL or OpenSSL via C bindings
+
 const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
