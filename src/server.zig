@@ -1,7 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
-const Thread = std.Thread;
 const web = @import("web.zig");
 
 const index_html = @embedFile("index.html");
@@ -55,7 +54,8 @@ pub const Server = struct {
     }
 
     pub fn start(self: *Server) !void {
-        std.debug.print("Server listening on port 8080 (thread-per-connection)\n", .{});
+        std.debug.print("Server listening on port 8080 (Io.Group + concurrent)\n", .{});
+        var group: std.Io.Group = .init;
         while (true) {
             const stream = self.listener.accept(self.io) catch |err| {
                 std.debug.print("Accept error: {}\n", .{err});
@@ -72,8 +72,8 @@ pub const Server = struct {
                 .app = self.app,
             };
 
-            _ = Thread.spawn(.{}, handleConnection, .{ctx}) catch |err| {
-                std.debug.print("Thread spawn error: {}\n", .{err});
+            group.concurrent(self.io, handleConnection, .{ctx}) catch |err| {
+                std.debug.print("Concurrent error: {}\n", .{err});
                 stream.close(self.io);
                 self.allocator.destroy(ctx);
             };
