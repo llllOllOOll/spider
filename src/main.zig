@@ -5,7 +5,8 @@ pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    // init.gpa = GeneralPurposeAllocator (threadsafe, leak checking in debug)
-    // init.io  = platform default Io (io_uring on Linux)
-    try server.start(init.gpa, init.io);
+    // Use default Io (Threaded)
+    // Try explicit IoUring - but this has issues
+    // For now use the working default
+    try server.start(gpa.allocator(), init.io);
 }

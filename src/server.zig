@@ -6,6 +6,7 @@ const web = @import("web.zig");
 const index_html = @embedFile("index.html");
 
 const MAX_BODY_SIZE: u64 = 1 * 1024 * 1024;
+const RETAIN_BYTES: usize = 8192;
 
 const ConnectionContext = struct {
     stream: net.Stream,
@@ -14,6 +15,8 @@ const ConnectionContext = struct {
     router: *std.StringHashMap(HandlerFn),
     static_dir: []const u8,
     app: ?*web.App,
+    conn_arena: *std.heap.ArenaAllocator,
+    req_arena: *std.heap.ArenaAllocator,
 };
 
 const HandlerFn = *const fn (req: *std.http.Server.Request, allocator: std.mem.Allocator) anyerror!void;
@@ -63,6 +66,10 @@ pub const Server = struct {
             };
 
             const ctx = try self.allocator.create(ConnectionContext);
+            const conn_arena = try self.allocator.create(std.heap.ArenaAllocator);
+            conn_arena.* = std.heap.ArenaAllocator.init(self.allocator);
+            const req_arena = try self.allocator.create(std.heap.ArenaAllocator);
+            req_arena.* = std.heap.ArenaAllocator.init(self.allocator);
             ctx.* = .{
                 .stream = stream,
                 .io = self.io,
@@ -70,6 +77,8 @@ pub const Server = struct {
                 .router = &self.router,
                 .static_dir = self.static_dir,
                 .app = self.app,
+                .conn_arena = conn_arena,
+                .req_arena = req_arena,
             };
 
             group.concurrent(self.io, handleConnection, .{ctx}) catch |err| {
@@ -83,6 +92,10 @@ pub const Server = struct {
 
 fn handleConnection(ctx: *ConnectionContext) void {
     defer {
+        ctx.req_arena.deinit();
+        ctx.conn_arena.deinit();
+        ctx.allocator.destroy(ctx.req_arena);
+        ctx.allocator.destroy(ctx.conn_arena);
         ctx.stream.close(ctx.io);
         ctx.allocator.destroy(ctx);
     }
@@ -95,11 +108,8 @@ fn handleConnection(ctx: *ConnectionContext) void {
 
     var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
 
-    var arena_allocator = std.heap.ArenaAllocator.init(ctx.allocator);
-    defer arena_allocator.deinit();
-
     while (true) {
-        _ = arena_allocator.reset(.free_all);
+        _ = ctx.req_arena.reset(.{ .retain_with_limit = RETAIN_BYTES });
 
         var request = http_server.receiveHead() catch {
             break;
@@ -107,12 +117,12 @@ fn handleConnection(ctx: *ConnectionContext) void {
 
         if (request.head.content_length) |len| {
             if (len > MAX_BODY_SIZE) {
-                payloadTooLargeHandler(&request, arena_allocator.allocator()) catch {};
+                payloadTooLargeHandler(&request, ctx.req_arena.allocator()) catch {};
                 break;
             }
         }
 
-        const arena = arena_allocator.allocator();
+        const arena = ctx.req_arena.allocator();
         const path = request.head.target;
 
         // Try web.App dispatch first
