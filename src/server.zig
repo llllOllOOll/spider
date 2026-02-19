@@ -8,6 +8,23 @@ const index_html = @embedFile("index.html");
 const MAX_BODY_SIZE: u64 = 1 * 1024 * 1024;
 const RETAIN_BYTES: usize = 8192;
 
+var shutdown_flag = std.atomic.Value(bool).init(false);
+
+fn setupSignalHandlers() void {
+    var act = std.posix.Sigaction{
+        .handler = .{ .handler = &handleSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+    std.posix.sigaction(std.posix.SIG.INT, &act, null);
+}
+
+fn handleSignal(sig: std.posix.SIG) callconv(.c) void {
+    _ = sig;
+    shutdown_flag.store(true, .release);
+}
+
 const ConnectionContext = struct {
     stream: net.Stream,
     io: Io,
@@ -57,10 +74,12 @@ pub const Server = struct {
     }
 
     pub fn start(self: *Server) !void {
+        setupSignalHandlers();
         std.debug.print("Server listening on port 8080 (Io.Group + concurrent)\n", .{});
         var group: std.Io.Group = .init;
-        while (true) {
+        while (!shutdown_flag.load(.acquire)) {
             const stream = self.listener.accept(self.io) catch |err| {
+                if (shutdown_flag.load(.acquire)) break;
                 std.debug.print("Accept error: {}\n", .{err});
                 continue;
             };
@@ -87,6 +106,7 @@ pub const Server = struct {
                 self.allocator.destroy(ctx);
             };
         }
+        std.debug.print("Shutting down, waiting for active connections...\n", .{});
     }
 };
 
