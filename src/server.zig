@@ -2,10 +2,47 @@ const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
 const web = @import("web.zig");
+const buffer_pool = @import("buffer_pool.zig");
 
 const index_html = @embedFile("index.html");
 
 const MAX_BODY_SIZE: u64 = 1 * 1024 * 1024;
+
+const WORKER_COUNT = 8;
+const ARENA_SIZE = 256 * 1024; // 256KB per worker
+
+const ArenaPool = struct {
+    arenas: [WORKER_COUNT]std.heap.ArenaAllocator,
+    available: [WORKER_COUNT]std.atomic.Value(bool),
+
+    pub fn init(allocator: std.mem.Allocator) ArenaPool {
+        var pool: ArenaPool = undefined;
+        for (0..WORKER_COUNT) |i| {
+            pool.arenas[i] = std.heap.ArenaAllocator.init(allocator);
+            pool.available[i] = std.atomic.Value(bool).init(true);
+        }
+        return pool;
+    }
+
+    pub fn acquire(self: *ArenaPool) ?*std.heap.ArenaAllocator {
+        for (0..WORKER_COUNT) |i| {
+            if (self.available[i].cmpxchgWeak(true, false, .acquire, .monotonic) == null) {
+                return &self.arenas[i];
+            }
+        }
+        return null;
+    }
+
+    pub fn release(self: *ArenaPool, arena: *std.heap.ArenaAllocator) void {
+        _ = arena.reset(.retain_capacity);
+        for (0..WORKER_COUNT) |i| {
+            if (&self.arenas[i] == arena) {
+                self.available[i].store(true, .release);
+                return;
+            }
+        }
+    }
+};
 
 const ConnectionContext = struct {
     stream: net.Stream,
@@ -14,6 +51,8 @@ const ConnectionContext = struct {
     router: *std.StringHashMap(HandlerFn),
     static_dir: []const u8,
     app: ?*web.App,
+    buffer_pool: *buffer_pool.BufferPool,
+    arena_pool: *ArenaPool,
 };
 
 const HandlerFn = *const fn (req: *std.http.Server.Request, allocator: std.mem.Allocator) anyerror!void;
@@ -25,6 +64,8 @@ pub const Server = struct {
     router: std.StringHashMap(HandlerFn),
     static_dir: []const u8,
     app: ?*web.App,
+    buffer_pool: buffer_pool.BufferPool,
+    arena_pool: ArenaPool,
 
     pub fn init(allocator: std.mem.Allocator, io: Io, port: u16, static_dir: []const u8) !*Server {
         const self = try allocator.create(Server);
@@ -35,6 +76,8 @@ pub const Server = struct {
             .router = std.StringHashMap(HandlerFn).init(allocator),
             .static_dir = static_dir,
             .app = null,
+            .buffer_pool = try buffer_pool.BufferPool.init(allocator),
+            .arena_pool = ArenaPool.init(allocator),
         };
 
         try self.router.put("/", indexHandler);
@@ -46,6 +89,8 @@ pub const Server = struct {
     pub fn deinit(self: *Server) void {
         self.router.deinit();
         self.listener.deinit(self.io);
+        self.buffer_pool.deinit();
+        for (0..WORKER_COUNT) |i| self.arena_pool.arenas[i].deinit();
         self.allocator.destroy(self);
     }
 
@@ -70,6 +115,8 @@ pub const Server = struct {
                 .router = &self.router,
                 .static_dir = self.static_dir,
                 .app = self.app,
+                .buffer_pool = &self.buffer_pool,
+                .arena_pool = &self.arena_pool,
             };
 
             group.concurrent(self.io, handleConnection, .{ctx}) catch |err| {
@@ -87,19 +134,31 @@ fn handleConnection(ctx: *ConnectionContext) void {
         ctx.allocator.destroy(ctx);
     }
 
-    var read_buffer: [4096]u8 = undefined;
+    const arena = ctx.arena_pool.acquire() orelse {
+        std.debug.print("Arena pool exhausted, falling back\n", .{});
+        var fallback_arena = std.heap.ArenaAllocator.init(ctx.allocator);
+        defer fallback_arena.deinit();
+        return handleConnectionWithArena(ctx, &fallback_arena);
+    };
+    defer ctx.arena_pool.release(arena);
+
+    handleConnectionWithArena(ctx, arena);
+}
+
+fn handleConnectionWithArena(ctx: *ConnectionContext, arena: *std.heap.ArenaAllocator) void {
+    var small_buf: [4096]u8 = undefined;
+    var large_buf: ?[]u8 = null;
+    defer if (large_buf) |buf| ctx.buffer_pool.release(ctx.io, buf);
+
     var write_buffer: [4096]u8 = undefined;
 
-    var stream_reader = net.Stream.Reader.init(ctx.stream, ctx.io, &read_buffer);
+    var stream_reader = net.Stream.Reader.init(ctx.stream, ctx.io, &small_buf);
     var stream_writer = net.Stream.Writer.init(ctx.stream, ctx.io, &write_buffer);
 
     var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
 
-    var arena_allocator = std.heap.ArenaAllocator.init(ctx.allocator);
-    defer arena_allocator.deinit();
-
     while (true) {
-        _ = arena_allocator.reset(.free_all);
+        _ = arena.reset(.retain_capacity);
 
         var request = http_server.receiveHead() catch {
             break;
@@ -107,12 +166,18 @@ fn handleConnection(ctx: *ConnectionContext) void {
 
         if (request.head.content_length) |len| {
             if (len > MAX_BODY_SIZE) {
-                payloadTooLargeHandler(&request, arena_allocator.allocator()) catch {};
+                payloadTooLargeHandler(&request, arena.allocator()) catch {};
                 break;
+            }
+            if (len > small_buf.len and large_buf == null) {
+                large_buf = ctx.buffer_pool.acquire(ctx.io);
+                if (large_buf) |buf| {
+                    stream_reader = net.Stream.Reader.init(ctx.stream, ctx.io, buf);
+                }
             }
         }
 
-        const arena = arena_allocator.allocator();
+        const allocator = arena.allocator();
         const path = request.head.target;
 
         // Try web.App dispatch first
@@ -138,7 +203,7 @@ fn handleConnection(ctx: *ConnectionContext) void {
                 .params = .{},
             };
 
-            const web_res = app.dispatch(arena, &web_req) catch {
+            const web_res = app.dispatch(allocator, &web_req) catch {
                 break;
             };
 
@@ -159,9 +224,9 @@ fn handleConnection(ctx: *ConnectionContext) void {
         } else {
             const handler = ctx.router.get(path);
             if (handler) |h| {
-                h(&request, arena) catch break;
+                h(&request, allocator) catch break;
             } else {
-                staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch break;
+                staticFileHandler(&request, allocator, ctx.static_dir, ctx.io) catch break;
             }
         }
 
