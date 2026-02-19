@@ -1,4 +1,5 @@
 const std = @import("std");
+const router = @import("router.zig");
 
 pub const Method = enum {
     get,
@@ -171,63 +172,52 @@ pub const Handler = *const fn (allocator: std.mem.Allocator, req: *Request) anye
 
 pub const App = struct {
     allocator: std.mem.Allocator,
-    routes: std.StringHashMap(Handler),
+    router: router.Router,
 
     pub fn init(allocator: std.mem.Allocator) !*App {
         const app = try allocator.create(App);
         app.* = .{
             .allocator = allocator,
-            .routes = std.StringHashMap(Handler).init(allocator),
+            .router = try router.Router.init(allocator),
         };
         return app;
     }
 
     pub fn deinit(self: *App) void {
-        var it = self.routes.iterator();
-        while (it.next()) |entry| self.allocator.free(entry.key_ptr.*);
-        self.routes.deinit();
+        self.router.deinit();
         self.allocator.destroy(self);
     }
 
-    fn routeKey(self: *App, method: Method, path: []const u8) ![]u8 {
-        const m = @tagName(method);
-        const key = try self.allocator.alloc(u8, m.len + 1 + path.len);
-        @memcpy(key[0..m.len], m);
-        key[m.len] = '/';
-        @memcpy(key[m.len + 1 ..], path);
-        return key;
-    }
-
     pub fn get(self: *App, path: []const u8, handler: Handler) !void {
-        const key = try self.routeKey(.get, path);
-        try self.routes.put(key, handler);
+        try self.router.add(.get, path, handler);
     }
 
     pub fn post(self: *App, path: []const u8, handler: Handler) !void {
-        const key = try self.routeKey(.post, path);
-        try self.routes.put(key, handler);
+        try self.router.add(.post, path, handler);
     }
 
     pub fn put(self: *App, path: []const u8, handler: Handler) !void {
-        const key = try self.routeKey(.put, path);
-        try self.routes.put(key, handler);
+        try self.router.add(.put, path, handler);
     }
 
     pub fn delete(self: *App, path: []const u8, handler: Handler) !void {
-        const key = try self.routeKey(.delete, path);
-        try self.routes.put(key, handler);
+        try self.router.add(.delete, path, handler);
     }
 
     pub fn dispatch(self: *App, allocator: std.mem.Allocator, request: *Request) !Response {
-        const key = try self.routeKey(request.method, request.path);
-        defer self.allocator.free(key);
+        const match_result = self.router.match(request.method, request.path, allocator) catch |err| {
+            std.debug.print("WEB: router.match error: {}\n", .{err});
+            return err;
+        };
 
-        const handler = self.routes.get(key) orelse {
+        const result = match_result orelse {
             var res = try Response.text(allocator, "Not Found");
             res.status = .not_found;
             return res;
         };
 
-        return try handler(allocator, request);
+        request.params = result.params;
+
+        return try result.handler(allocator, request);
     }
 };

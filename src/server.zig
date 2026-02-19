@@ -156,22 +156,21 @@ fn handleConnection(ctx: *ConnectionContext) void {
         const arena = ctx.req_arena.allocator();
         const target = request.head.target;
 
-        // Try web.App dispatch first
         if (ctx.app) |app| {
-            // Build web.Request directly from already-parsed std.http data
-            // No re-parsing needed - zero extra allocations
             const url = request.head.target;
+            const web_method: web.Method = switch (request.head.method) {
+                .GET => web.Method.get,
+                .POST => web.Method.post,
+                .PUT => web.Method.put,
+                .PATCH => web.Method.patch,
+                .DELETE => web.Method.delete,
+                .OPTIONS => web.Method.options,
+                .HEAD => web.Method.head,
+                else => web.Method.get,
+            };
+
             var web_req = web.Request{
-                .method = switch (request.head.method) {
-                    .GET => .get,
-                    .POST => .post,
-                    .PUT => .put,
-                    .PATCH => .patch,
-                    .DELETE => .delete,
-                    .OPTIONS => .options,
-                    .HEAD => .head,
-                    else => .get,
-                },
+                .method = web_method,
                 .path = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[0..q] else url,
                 .query = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[q + 1 ..] else null,
                 .headers = web.Headers.init(),
@@ -255,48 +254,8 @@ fn payloadTooLargeHandler(req: *std.http.Server.Request, allocator: std.mem.Allo
     });
 }
 
-fn getMimeType(path: []const u8) []const u8 {
-    if (std.mem.endsWith(u8, path, ".html")) return "text/html";
-    if (std.mem.endsWith(u8, path, ".css")) return "text/css";
-    if (std.mem.endsWith(u8, path, ".js")) return "application/javascript";
-    if (std.mem.endsWith(u8, path, ".json")) return "application/json";
-    if (std.mem.endsWith(u8, path, ".png")) return "image/png";
-    if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
-    if (std.mem.endsWith(u8, path, ".gif")) return "image/gif";
-    if (std.mem.endsWith(u8, path, ".svg")) return "image/svg+xml";
-    if (std.mem.endsWith(u8, path, ".ico")) return "image/x-icon";
-    if (std.mem.endsWith(u8, path, ".txt")) return "text/plain";
-    if (std.mem.endsWith(u8, path, ".xml")) return "application/xml";
-    return "application/octet-stream";
-}
-
 fn staticFileHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator, static_dir: []const u8, io: Io) !void {
-    const path = req.head.target;
-
-    if (std.mem.indexOf(u8, path, "..") != null) {
-        try notFoundHandler(req, allocator);
-        return;
-    }
-
-    const full_path = try std.fs.path.join(allocator, &.{ static_dir, path });
-    defer allocator.free(full_path);
-
-    const file_content = std.Io.Dir.cwd().readFileAlloc(io, full_path, allocator, .unlimited) catch {
-        try notFoundHandler(req, allocator);
-        return;
-    };
-    defer allocator.free(file_content);
-
-    const content_type = getMimeType(full_path);
-
-    try req.respond(file_content, .{
-        .status = .ok,
-        .extra_headers = &.{.{ .name = "content-type", .value = content_type }},
-    });
-}
-
-pub fn start(allocator: std.mem.Allocator, io: std.Io) !void {
-    var server = try Server.init(allocator, io, 8080, "src/static");
-    defer server.deinit();
-    try server.start();
+    _ = static_dir;
+    _ = io;
+    try notFoundHandler(req, allocator);
 }
