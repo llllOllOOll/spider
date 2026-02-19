@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "spider", .module = spider_dep.module("spider") },
             },
+            .link_libc = true,
         }),
     });
 

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spider Dashboard</title>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0e1117;
+    color: #a0aec0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    padding: 16px;
+    min-height: 100vh;
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #e53e3e;
+    margin-bottom: 16px;
+    border-bottom: 1px solid #2d3748;
+    padding-bottom: 8px;
+  }
+  .header span { color: #718096; font-size: 11px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  .panel {
+    border: 1px solid #2d3748;
+    background: #141820;
+    padding: 12px;
+  }
+  .panel-title {
+    color: #e53e3e;
+    font-size: 11px;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .metric-value {
+    font-size: 28px;
+    color: #68d391;
+    font-weight: bold;
+  }
+  .metric-label {
+    font-size: 11px;
+    color: #4a5568;
+    margin-top: 4px;
+  }
+  .bar-container {
+    margin-top: 8px;
+  }
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .bar-label { width: 60px; color: #718096; font-size: 11px; }
+  .bar-track {
+    flex: 1;
+    height: 8px;
+    background: #2d3748;
+  }
+  .bar-fill {
+    height: 100%;
+    background: #e53e3e;
+    transition: width 0.3s ease;
+  }
+  .bar-fill.green { background: #68d391; }
+  .bar-fill.yellow { background: #f6e05e; }
+  .bar-pct { width: 40px; text-align: right; font-size: 11px; color: #718096; }
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #68d391;
+    margin-right: 6px;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .uptime { color: #68d391; font-size: 20px; }
+  .requests-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 60px;
+    margin-top: 8px;
+  }
+  .chart-bar {
+    flex: 1;
+    background: #e53e3e;
+    opacity: 0.7;
+    min-height: 2px;
+    transition: height 0.3s ease;
+  }
+  .footer {
+    margin-top: 12px;
+    border-top: 1px solid #2d3748;
+    padding-top: 8px;
+    display: flex;
+    justify-content: space-between;
+    color: #4a5568;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body x-data="dashboard()" x-init="start()">
+
+  <div class="header">
+    <div>🕷 SPIDER <span style="color:#4a5568">v0.1.0</span></div>
+    <div><span x-text="time"></span></div>
+    <div><span class="status-dot"></span><span style="color:#68d391">RUNNING</span></div>
+  </div>
+
+  <div class="grid">
+    <!-- RPS -->
+    <div class="panel">
+      <div class="panel-title">⚡ requests/sec</div>
+      <div class="metric-value" x-text="metrics.rps.toLocaleString()"></div>
+      <div class="metric-label">current throughput</div>
+    </div>
+
+    <!-- Total Requests -->
+    <div class="panel">
+      <div class="panel-title">📊 total requests</div>
+      <div class="metric-value" x-text="metrics.total_requests.toLocaleString()"></div>
+      <div class="metric-label">since start</div>
+    </div>
+
+    <!-- Uptime -->
+    <div class="panel">
+      <div class="panel-title">⏱ uptime</div>
+      <div class="uptime" x-text="formatUptime(metrics.uptime_seconds)"></div>
+      <div class="metric-label">hh:mm:ss</div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- Memory -->
+    <div class="panel">
+      <div class="panel-title">🧠 memory</div>
+      <div class="metric-value" x-text="metrics.memory_mb + ' MB'"></div>
+      <div class="metric-label">resident memory (RSS)</div>
+      <div class="bar-container" style="margin-top:12px">
+        <div class="bar-row">
+          <div class="bar-track" style="flex:1">
+            <div class="bar-fill green" :style="`width: ${Math.min(metrics.memory_mb / 5, 100)}%`"></div>
+          </div>
+          <div class="bar-pct" x-text="metrics.memory_mb + ' MB'"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RPS Chart -->
+    <div class="panel">
+      <div class="panel-title">📈 rps history</div>
+      <div class="requests-chart">
+        <template x-for="v in history">
+          <div class="chart-bar" :style="`height: ${maxHistory > 0 ? (v/maxHistory*100) : 0}%`"></div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Server Info -->
+    <div class="panel">
+      <div class="panel-title">🖥 server info</div>
+      <div class="bar-container">
+        <div class="bar-row">
+          <div class="bar-label">port</div>
+          <div style="color:#68d391" x-text="metrics.port || 8080"></div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">threads</div>
+          <div style="color:#68d391" x-text="metrics.threads || '--'"></div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">avg lat</div>
+          <div style="color:#f6e05e" x-text="metrics.avg_latency_us ? metrics.avg_latency_us + ' μs' : '--'"></div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">errors</div>
+          <div style="color:#fc8181" x-text="metrics.errors || 0"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Spider Framework — Zig 0.16.0-dev</span>
+    <span>refresh: 1s</span>
+    <span x-text="'last update: ' + lastUpdate"></span>
+  </div>
+
+<script>
+function dashboard() {
+  return {
+    metrics: {
+      rps: 0,
+      total_requests: 0,
+      uptime_seconds: 0,
+      port: 8080,
+      threads: 0,
+      avg_latency_us: 0,
+      errors: 0,
+    },
+    history: Array(30).fill(0),
+    maxHistory: 0,
+    time: '',
+    lastUpdate: '--',
+
+    start() {
+      this.tick();
+      setInterval(() => this.tick(), 1000);
+      setInterval(() => {
+        const now = new Date();
+        this.time = now.toTimeString().slice(0, 8);
+      }, 1000);
+    },
+
+    async tick() {
+      try {
+        const res = await fetch('/metrics');
+        const data = await res.json();
+        this.metrics = data;
+        this.history.push(data.rps);
+        if (this.history.length > 30) this.history.shift();
+        this.maxHistory = Math.max(...this.history, 1);
+        this.lastUpdate = new Date().toTimeString().slice(0, 8);
+      } catch(e) {
+        // server unreachable
+      }
+    },
+
+    formatUptime(s) {
+      if (!s) return '00:00:00';
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      return [h,m,sec].map(v => String(v).padStart(2,'0')).join(':');
+    }
+  }
+}
+</script>
+</body>
+</html>
