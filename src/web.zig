@@ -58,6 +58,10 @@ pub const Request = struct {
     body: ?[]const u8,
     params: std.StringHashMapUnmanaged([]const u8),
 
+    _app: ?*App = null,
+    _handler: ?Handler = null,
+    _middleware_index: usize = 0,
+
     pub fn parse(allocator: std.mem.Allocator, raw: []const u8) !Request {
         var req = Request{
             .method = .get,
@@ -170,7 +174,9 @@ pub const Response = struct {
 
 pub const Handler = *const fn (allocator: std.mem.Allocator, req: *Request) anyerror!Response;
 
-pub const MiddlewareFn = *const fn (std.mem.Allocator, *Request, *App, Handler, usize) anyerror!Response;
+pub const NextFn = *const fn (std.mem.Allocator, *Request) anyerror!Response;
+
+pub const MiddlewareFn = *const fn (std.mem.Allocator, *Request, NextFn) anyerror!Response;
 
 const MAX_MIDDLEWARES = 16;
 
@@ -232,15 +238,26 @@ pub const App = struct {
         };
 
         request.params = result.params;
+        request._app = self;
+        request._handler = result.handler;
+        request._middleware_index = 0;
 
-        return try self.runChain(allocator, request, result.handler, 0);
+        return try self.runChain(allocator, request);
     }
 
-    fn runChain(self: *App, allocator: std.mem.Allocator, req: *Request, handler: Handler, index: usize) !Response {
-        if (index >= self.middleware_count) {
-            return try handler(allocator, req);
+    fn runChain(self: *App, allocator: std.mem.Allocator, req: *Request) !Response {
+        if (req._middleware_index >= self.middleware_count) {
+            return try req._handler.?(allocator, req);
         }
-        const middleware = self.middlewares[index];
-        return try middleware(allocator, req, self, handler, index + 1);
+
+        const middleware = self.middlewares[req._middleware_index];
+        req._middleware_index += 1;
+
+        return try middleware(allocator, req, runChainWrapper);
+    }
+
+    fn runChainWrapper(allocator: std.mem.Allocator, req: *Request) !Response {
+        const app = req._app.?;
+        return try app.runChain(allocator, req);
     }
 };
