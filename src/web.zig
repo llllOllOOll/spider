@@ -261,3 +261,21 @@ pub const App = struct {
         return try app.runChain(allocator, req);
     }
 };
+
+pub fn corsMiddleware(allocator: std.mem.Allocator, req: *Request, next: NextFn) !Response {
+    var res = try next(allocator, req);
+    try res.headers.set(allocator, "Access-Control-Allow-Origin", "*");
+    try res.headers.set(allocator, "Access-Control-Allow-Methods", "GET,POST,PUT,DELETE");
+    return res;
+}
+
+pub fn loggerMiddleware(allocator: std.mem.Allocator, req: *Request, next: NextFn) !Response {
+    std.debug.print("[{s}] {s}\n", .{ @tagName(req.method), req.path });
+    return try next(allocator, req);
+}
+
+pub fn authMiddleware(allocator: std.mem.Allocator, req: *Request, next: NextFn) !Response {
+    const key = req.header("x-api-key");
+    _ = key;
+    return try next(allocator, req);
+}
