@@ -2,26 +2,37 @@ const std = @import("std");
 const spider = @import("spider");
 const web = spider.web;
 
-fn getUser(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
-    const id = req.param("id") orelse "unknown";
-    const body = try std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\"}}", .{id});
-    return web.Response.json(allocator, body);
-}
-
-fn getUserPosts(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
-    const id = req.param("id") orelse "unknown";
-    const body = try std.fmt.allocPrint(allocator, "{{\"user_id\":\"{s}\",\"posts\":[]}}", .{id});
-    return web.Response.json(allocator, body);
-}
-
-fn createUser(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
-    _ = req;
-    return web.Response.text(allocator, "created");
-}
+const dashboard_html = @embedFile("dashboard.html");
 
 fn indexHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;
-    return web.Response.text(allocator, "Hello from Spider!");
+    return try web.Response.html(allocator, dashboard_html);
+}
+
+var total_requests = std.atomic.Value(u64).init(0);
+
+fn metricsHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    _ = req;
+    const total = total_requests.fetchAdd(1, .monotonic);
+    return try web.Response.json(allocator, .{
+        .total_requests = total,
+        .port = 8080,
+        .threads = std.Thread.getCpuCount() catch 4,
+        .avg_latency_us = 0,
+        .errors = 0,
+    });
+}
+
+fn helloHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    _ = req;
+    _ = total_requests.fetchAdd(1, .monotonic);
+    return try web.Response.text(allocator, "Hello, World!");
+}
+
+fn jsonHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    _ = req;
+    _ = total_requests.fetchAdd(1, .monotonic);
+    return try web.Response.json(allocator, .{ .message = "ok", .version = "0.1.0" });
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -29,8 +40,8 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit();
 
     app.get("/", indexHandler)
-        .get("/users/:id", getUser)
-        .get("/users/:id/posts", getUserPosts)
-        .post("/users", createUser)
+        .get("/metrics", metricsHandler)
+        .get("/hello", helloHandler)
+        .get("/json", jsonHandler)
         .listen() catch |err| return err;
 }

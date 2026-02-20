@@ -33,7 +33,8 @@ pub const Logger = struct {
             .err => "err",
         };
 
-        std.debug.print("{{\"level\":\"{s}\",\"msg\":\"{s}\",\"data\":{any}}}\n", .{ level_str, msg, data });
+        std.debug.print("{{\"level\":\"{s}\",\"msg\":\"{s}\",\"data\":", .{ level_str, msg });
+        std.debug.print("{any}}}\n", .{data});
     }
 
     pub fn debug(self: Self, msg: []const u8, data: anytype) void {
