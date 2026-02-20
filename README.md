@@ -89,9 +89,9 @@ Spider v0.3.0 (400 connections):
 | v0.1.0 | ✅ | Baseline 616K RPS |
 | v0.2.0 | ✅ | Production ready (shutdown, health, logs, deploy) |
 | v0.3.0 | ✅ | Trie router + dynamic params |
-| v0.4.0 | 🔜 | Middleware |
+| v0.4.0 | ✅ | Middleware (cors, logger, auth) |
 | v0.5.0 | 📋 | PostgreSQL |
-| v0.6.0 | 📋 | TLS native (BoringSSL) |
+| v0.6.0 | 📋 | WebSockets |
 
 ## 🌍 Deploy
 
