@@ -35,6 +35,16 @@ fn isDynamic(path: []const u8) bool {
     return std.mem.indexOfScalar(u8, path, ':') != null;
 }
 
+fn toUppercase(in: []const u8, out: []u8) void {
+    for (in, 0..) |c, i| {
+        if (c >= 'a' and c <= 'z') {
+            out[i] = c - 32;
+        } else {
+            out[i] = c;
+        }
+    }
+}
+
 pub const Router = struct {
     root: *Node,
     allocator: std.mem.Allocator,
@@ -66,10 +76,11 @@ pub const Router = struct {
 
     pub fn add(self: *Router, method: Method, path: []const u8, handler: Handler) !void {
         if (!isDynamic(path)) {
-            const key = try self.allocator.alloc(u8, @tagName(method).len + 1 + path.len);
-            @memcpy(key[0..@tagName(method).len], @tagName(method));
-            key[@tagName(method).len] = '/';
-            @memcpy(key[@tagName(method).len + 1 ..], path);
+            const method_str = @tagName(method);
+            const key = try self.allocator.alloc(u8, method_str.len + 1 + path.len);
+            toUppercase(method_str, key[0..method_str.len]);
+            key[method_str.len] = '/';
+            @memcpy(key[method_str.len + 1 ..], path);
             try self.static_routes.put(key, handler);
             return;
         }
@@ -102,11 +113,12 @@ pub const Router = struct {
 
     pub fn match(self: *Router, method: Method, path: []const u8, allocator: std.mem.Allocator) !?MatchResult {
         var key_buf: [256]u8 = undefined;
-        const key_len = @tagName(method).len + 1 + path.len;
+        const method_str = @tagName(method);
+        const key_len = method_str.len + 1 + path.len;
         if (key_len <= key_buf.len) {
-            @memcpy(key_buf[0..@tagName(method).len], @tagName(method));
-            key_buf[@tagName(method).len] = '/';
-            @memcpy(key_buf[@tagName(method).len + 1 .. key_len], path);
+            toUppercase(method_str, key_buf[0..method_str.len]);
+            key_buf[method_str.len] = '/';
+            @memcpy(key_buf[method_str.len + 1 .. key_len], path);
             const key = key_buf[0..key_len];
 
             if (self.static_routes.get(key)) |handler| {
