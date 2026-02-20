@@ -1,6 +1,8 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
+    // Use x86_64_v2 CPU for compatibility with AWS t3.micro (avoids AVX-512)
+    // Build with: zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v2
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
