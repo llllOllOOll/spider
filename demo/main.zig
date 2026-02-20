@@ -256,6 +256,7 @@ fn usersHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
 }
 
 pub fn main(init: std.process.Init) !void {
+    const host = getEnv("HOST", "127.0.0.1");
     const port = getEnvInt("PORT", 8080);
 
     const db_host = getEnv("DB_HOST", "localhost");
@@ -274,7 +275,7 @@ pub fn main(init: std.process.Init) !void {
     });
     defer pool.deinit();
 
-    var app = try spider.Spider.init(init.gpa, init.io, port);
+    var app = try spider.Spider.init(init.gpa, init.io, host, port);
     defer app.deinit();
 
     app.get("/", indexHandler)

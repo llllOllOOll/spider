@@ -6,15 +6,17 @@ pub const Spider = struct {
     allocator: std.mem.Allocator,
     app_ptr: *web.App,
     io: std.Io,
+    host: []const u8,
     port: u16,
     static_dir: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, port: u16) !Spider {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8, port: u16) !Spider {
         const app_ptr = try web.App.init(allocator);
         return Spider{
             .allocator = allocator,
             .app_ptr = app_ptr,
             .io = io,
+            .host = host,
             .port = port,
             .static_dir = "",
         };
@@ -53,6 +55,7 @@ pub const Spider = struct {
         var server = try srv.Server.init(
             self.allocator,
             self.io,
+            self.host,
             self.port,
             self.static_dir,
         );

@@ -53,12 +53,18 @@ pub const Server = struct {
     static_dir: []const u8,
     app: ?*web.App,
 
-    pub fn init(allocator: std.mem.Allocator, io: Io, port: u16, static_dir: []const u8) !*Server {
+    pub fn init(allocator: std.mem.Allocator, io: Io, host: []const u8, port: u16, static_dir: []const u8) !*Server {
         const self = try allocator.create(Server);
+
+        const address = if (std.mem.eql(u8, host, "0.0.0.0") or std.mem.eql(u8, host, "*"))
+            net.IpAddress{ .ip4 = net.Ip4Address.unspecified(port) }
+        else
+            net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) };
+
         self.* = .{
             .io = io,
             .allocator = allocator,
-            .listener = try net.IpAddress.listen(net.IpAddress{ .ip4 = net.Ip4Address.loopback(port) }, io, .{ .reuse_address = true }),
+            .listener = try net.IpAddress.listen(address, io, .{ .reuse_address = true }),
             .router = std.StringHashMap(HandlerFn).init(allocator),
             .static_dir = static_dir,
             .app = null,
