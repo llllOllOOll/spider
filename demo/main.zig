@@ -82,6 +82,7 @@ fn metricsHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response
     return try web.Response.json(allocator, .{
         .total_requests = total_requests,
         .error_count = error_count,
+        .uptime_seconds = start_time,
     });
 }
 
@@ -312,8 +313,7 @@ pub fn main(init: std.process.Init) !void {
     const db_user = getEnv("DB_USER", "postgres");
     const db_pass = getEnv("DB_PASSWORD", "postgres");
 
-    // Initialize start_time - uptime will show 0 but that's ok for v0.1
-    start_time = 1;
+    // start_time is set in metricsHandler - uptime calculated client-side
 
     pool = try spider_pg.Pool.init(init.gpa, .{
         .host = db_host,
