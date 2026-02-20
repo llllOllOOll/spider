@@ -1,8 +1,29 @@
 const std = @import("std");
+const c = @cImport(@cInclude("stdlib.h"));
 const spider = @import("spider");
 const web = spider.web;
 const spider_pg = @import("spider_pg");
 const auth = @import("auth");
+
+fn getEnv(key: []const u8, default: []const u8) []const u8 {
+    var key_null: [256]u8 = undefined;
+    @memcpy(key_null[0..key.len], key);
+    key_null[key.len] = 0;
+    if (c.getenv(&key_null)) |val| {
+        return std.mem.sliceTo(val, 0);
+    }
+    return default;
+}
+
+fn getEnvInt(key: []const u8, default: u16) u16 {
+    var key_null: [256]u8 = undefined;
+    @memcpy(key_null[0..key.len], key);
+    key_null[key.len] = 0;
+    if (c.getenv(&key_null)) |val| {
+        return std.fmt.parseInt(u16, std.mem.sliceTo(val, 0), 10) catch default;
+    }
+    return default;
+}
 
 var pool: spider_pg.Pool = undefined;
 
@@ -235,16 +256,25 @@ fn usersHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
 }
 
 pub fn main(init: std.process.Init) !void {
+    const port = getEnvInt("PORT", 8080);
+
+    const db_host = getEnv("DB_HOST", "localhost");
+    const db_port = getEnvInt("DB_PORT", 5432);
+    const db_name = getEnv("DB_NAME", "spider_demo");
+    const db_user = getEnv("DB_USER", "postgres");
+    const db_pass = getEnv("DB_PASSWORD", "postgres");
+
     pool = try spider_pg.Pool.init(init.gpa, .{
-        .host = "localhost",
-        .database = "spider_demo",
-        .user = "postgres",
-        .password = "postgres",
+        .host = db_host,
+        .port = db_port,
+        .database = db_name,
+        .user = db_user,
+        .password = db_pass,
         .pool_size = 10,
     });
     defer pool.deinit();
 
-    var app = try spider.Spider.init(init.gpa, init.io, 8080);
+    var app = try spider.Spider.init(init.gpa, init.io, port);
     defer app.deinit();
 
     app.get("/", indexHandler)
