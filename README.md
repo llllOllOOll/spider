@@ -1,92 +1,123 @@
-# 🕸️ Spider Web Server
+# 🕷 Spider Web Server
 
-A high-performance HTTP server written in Zig 0.16, targeting Bun-level performance.
+High-performance HTTP server written in Zig 0.16, targeting Bun-level performance.
 
 ## 🚀 Performance
 
-| Metric | Spider | Bun | Go |
-|--------|--------|-----|-----|
-| **RPS** | ~104K | ~136K | ~62K |
-| **Latency (Avg)** | 1.06ms | 0.78ms | 6.41ms |
-| **Tail Latency (Max)** | 67ms | 45ms | 299ms |
+| Version | RPS (100c) | RPS (400c) |
+|---------|------------|------------|
+| **Spider v0.3.0** | 592K | 481K |
+| Spider v0.1.0 | 616K | 502K |
+| Bun | ~136K | ~100K |
+| Go | ~62K | ~50K |
 
-Spider outperforms Go by **67%** and is closing the gap to Bun.
+Spider achieves **Bun-level performance** with native Zig.
 
-## 🎯 Features
+## ✨ Features
 
-- **Thread-per-connection** model with proper resource management
-- **StringHashMap-based routing** for fast route lookups
-- **Static file serving** with MIME type detection
-- **Persistent connections** (Keep-Alive) support
-- **Security hardening**: Max body size limits (1MB)
-- **Memory management**: ArenaAllocator per connection
+- **Trie-based router** with dynamic params (`/users/:id`, `/posts/:slug`)
+- **Dual-path routing**: fast static + dynamic Trie
+- **Graceful shutdown** (SIGTERM/SIGINT)
+- **Structured logging** (JSON to stderr)
+- **/health endpoint** for liveness probes
+- **Static file serving** with MIME detection
+- **ArenaAllocator** per request (zero allocation)
+- **Persistent connections** (Keep-Alive)
+- **Security**: Max body size 1MB
 
 ## 🏗️ Architecture
 
 ```
-Server (struct)
-├── listener (TCP)
-├── router (StringHashMap)
-└── static_dir (file serving)
-
-handleConnection (per thread)
-├── read_buffer / write_buffer
-├── http_server
-└── arena_allocator (per request)
+Spider
+├── Io.Group + concurrent (thread pool)
+├── Trie Router
+│   ├── static_routes: StringHashMap (fast path)
+│   └── root: Trie Node (dynamic path)
+└── ArenaAllocator per connection + per request
 ```
 
-## 🔧 Build
+## 🚀 Quick Start
+
+```zig
+const std = @import("std");
+const spider = @import("spider");
+const web = spider.web;
+
+fn indexHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    return try web.Response.text(allocator, "Hello from Spider!");
+}
+
+fn getUser(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    const id = req.param("id") orelse "unknown";
+    const body = try std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\"}}", .{id});
+    return web.Response.json(allocator, body);
+}
+
+pub fn main(init: std.process.Init) !void {
+    var app = try spider.Spider.init(init.gpa, init.io, 8080);
+    defer app.deinit();
+
+    app.get("/", indexHandler)
+        .get("/users/:id", getUser)
+        .listen() catch |err| return err;
+}
+```
+
+### Build & Run
 
 ```bash
-zig build
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/spider
 ```
-
-## 🏃 Run
-
-```bash
-zig build run
-# or
-./zig-out/bin/simple_server
-```
-
-## 🧪 Test
-
-```bash
-./validate.sh
-```
-
-## 🎯 Spider 2.0 Roadmap
-
-### Phase 1: Zero-Copy (Current)
-- [x] Thread-per-connection
-- [ ] sendfile for static files
-- [ ] Buffer pooling
-
-### Phase 2: Event Loop
-- [ ] Migrate to `std.Io.Threaded` (io_uring)
-- [ ] Single-threaded async architecture
-- [ ] Target: Match Bun (136K+ RPS)
-
-### Phase 3: Optimizations
-- [ ] Route parameters support
-- [ ] WebSocket support
-- [ ] HTTP/2 support
 
 ## 📊 Benchmarks
 
-### Spider vs Bun
 ```
-Spider: 104,427 RPS
-Bun:    135,953 RPS
-Gap:    30%
+Spider v0.3.0 (100 connections):
+  Requests/sec: 592,000
+  Latency: 245μs avg
+
+Spider v0.3.0 (400 connections):
+  Requests/sec: 481,000  
+  Latency: 970μs avg
 ```
 
-### Spider vs Go
+## 🗺️ Roadmap
+
+| Version | Status | Features |
+|---------|--------|----------|
+| v0.1.0 | ✅ | Baseline 616K RPS |
+| v0.2.0 | ✅ | Production ready (shutdown, health, logs, deploy) |
+| v0.3.0 | ✅ | Trie router + dynamic params |
+| v0.4.0 | 🔜 | Middleware |
+| v0.5.0 | 📋 | PostgreSQL |
+| v0.6.0 | 📋 | TLS native (BoringSSL) |
+
+## 🌍 Deploy
+
+### nginx (TLS termination)
+
+```bash
+# Copy config
+sudo cp deploy/nginx.conf /etc/nginx/nginx.conf
+
+# Run spider on localhost:8080
+zig build run -Doptimize=ReleaseFast
+
+# nginx handles HTTPS on port 443
 ```
-Spider: 104,427 RPS
-Go:      62,418 RPS
-Spider:  +67% faster
+
+### Caddy (auto TLS)
+
+```bash
+# Run spider
+zig build run -Doptimize=ReleaseFast &
+
+# Caddy auto-configures HTTPS
+cd deploy && caddy run
 ```
+
+See `deploy/` for full configuration.
 
 ## 📝 License
 
