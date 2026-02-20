@@ -4,6 +4,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Note: For AWS t3.micro compatibility, use:
+    //   zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-gnu
+    // This ensures no AVX2/AVX-512 instructions are used
+
     const spider_dep = b.dependency("spider", .{
         .target = target,
         .optimize = optimize,
