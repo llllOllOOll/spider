@@ -152,12 +152,10 @@ function dashboard() {
         metrics: { total_requests: 0, error_count: 0, uptime_seconds: 0 },
         logs: [],
         time: '',
-        startTime: Date.now(),
 
         start() {
             setInterval(() => {
                 this.time = new Date().toLocaleTimeString();
-                this.metrics.uptime_seconds = Math.floor((Date.now() - this.startTime) / 1000);
             }, 1000);
             this.tick();
             setInterval(() => this.tick(), 2000);
@@ -169,6 +167,7 @@ function dashboard() {
                 const data = await res.json();
                 this.metrics.total_requests = data.total_requests;
                 this.metrics.error_count = data.error_count;
+                this.metrics.uptime_seconds = data.uptime_seconds || 0;
                 const logsRes = await fetch('/logs');
                 this.logs = await logsRes.json();
                 if(this.logs.length > 10) this.logs = this.logs.slice(-10);
