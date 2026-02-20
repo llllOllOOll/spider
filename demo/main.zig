@@ -5,6 +5,40 @@ const web = spider.web;
 const spider_pg = @import("spider_pg");
 const auth = @import("auth");
 
+const LogEntry = struct { time: []const u8, method: []const u8, path: []const u8 };
+
+var request_logs: [100]LogEntry = undefined;
+var log_index: usize = 0;
+var log_count: usize = 0;
+
+fn addLog(method: []const u8, path: []const u8) void {
+    var timestamp: [8]u8 = undefined;
+    timestamp[0] = '0';
+    timestamp[1] = '0';
+    timestamp[2] = ':';
+    timestamp[3] = '0';
+    timestamp[4] = '0';
+    timestamp[5] = ':';
+    timestamp[6] = '0';
+    timestamp[7] = '0';
+
+    request_logs[log_index] = .{ .time = &timestamp, .method = method, .path = path };
+    log_index = (log_index + 1) % 100;
+    if (log_count < 100) log_count += 1;
+}
+
+fn logsHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    _ = req;
+    var logs_slice = try allocator.alloc(LogEntry, log_count);
+    var i: usize = 0;
+    var idx: usize = if (log_count < 100) 0 else log_index;
+    while (i < log_count) : (i += 1) {
+        logs_slice[i] = request_logs[idx];
+        idx = (idx + 1) % 100;
+    }
+    return try web.Response.json(allocator, logs_slice);
+}
+
 fn getEnv(key: []const u8, default: []const u8) []const u8 {
     var key_null: [256]u8 = undefined;
     @memcpy(key_null[0..key.len], key);
@@ -31,16 +65,19 @@ const dashboard_html = @embedFile("dashboard.html");
 
 fn indexHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;
+    addLog("GET", "/");
     return try web.Response.html(allocator, dashboard_html);
 }
 
 fn healthHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;
+    addLog("GET", "/health");
     return try web.Response.json(allocator, .{ .status = "ok" });
 }
 
 fn jsonHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;
+    addLog("GET", "/json");
     return try web.Response.json(allocator, .{ .message = "ok", .version = "0.1.0" });
 }
 
@@ -281,6 +318,7 @@ pub fn main(init: std.process.Init) !void {
     app.get("/", indexHandler)
         .get("/health", healthHandler)
         .get("/json", jsonHandler)
+        .get("/logs", logsHandler)
         .post("/auth/register", registerHandler)
         .post("/auth/login", loginHandler)
         .get("/users", usersHandler)

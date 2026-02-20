@@ -99,8 +99,7 @@
 <body x-data="dashboard()" x-init="start()">
 
     <div class="header">
-        <div class="logo">🕷 SPIDER</div>
-        <div class="pill">● KAMAL ACTIVE</div>
+        <div class="logo">🕸️ SPIDER</div>
         <div x-text="time"></div>
     </div>
 
@@ -145,7 +144,8 @@
     </div>
 
     <div class="footer">
-        <span>Powered by Zig & Kamal</span>
+        <span>Powered by <a href="https://github.com/llllOllOOll/spider" target="_blank" style="color: var(--accent); text-decoration: none;">Zig & seven</a></span>
+        <span>This site's source is <a href="https://github.com/llllOllOOll/spider" target="_blank" style="color: var(--text-dim); text-decoration: none;">on GitHub</a></span>
         <span x-text="'Uptime: ' + formatUptime(metrics.uptime_seconds)"></span>
     </div>
 
@@ -183,6 +183,10 @@ function dashboard() {
             try {
                 const res = await fetch('/metrics');
                 this.metrics = await res.json();
+                // Fetch real logs
+                const logsRes = await fetch('/logs');
+                this.logs = await logsRes.json();
+                if(this.logs.length > 10) this.logs = this.logs.slice(-10);
             } catch(e) { /* server offline */ }
         },
 
