@@ -6,6 +6,7 @@ const std = @import("std");
 const Io = std.Io;
 const net = std.Io.net;
 const web = @import("web.zig");
+const websocket = @import("websocket.zig");
 const logger = @import("logger.zig");
 
 const log = logger.Logger.init(.info);
@@ -127,7 +128,7 @@ pub const Server = struct {
     }
 };
 
-fn handleConnection(ctx: *ConnectionContext) void {
+fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
     defer {
         ctx.req_arena.deinit();
         ctx.conn_arena.deinit();
@@ -156,20 +157,55 @@ fn handleConnection(ctx: *ConnectionContext) void {
         const arena = ctx.req_arena.allocator();
         const method = @tagName(request.head.method);
         // Copy path to persistent memory since request.head.target may point to buffer that gets overwritten
-        const path = ctx.allocator.dupe(u8, request.head.target) catch break;
+        const path = ctx.allocator.dupe(u8, request.head.target) catch |err| {
+            std.debug.print("ERROR: dupe failed: {}\n", .{err});
+            break;
+        };
         defer ctx.allocator.free(path);
         std.debug.print("SERVER: Received {s} {s}\n", .{ method, path });
 
-        if (request.head.content_length) |len| {
-            if (len > MAX_BODY_SIZE) {
-                payloadTooLargeHandler(&request, arena) catch {};
-                break;
+        const target = path;
+        const is_ws = std.mem.startsWith(u8, target, "/ws");
+        if (is_ws and request.head.method == .GET) {
+            var ws = websocket.Server.init(ctx.stream, ctx.io, ctx.allocator);
+
+            // Parse WebSocket headers from request head_buffer
+            var ws_headers = web.Headers.init();
+            var header_iter = request.iterateHeaders();
+            while (header_iter.next()) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "upgrade")) {
+                    ws_headers.set(ctx.allocator, "upgrade", header.value) catch {};
+                } else if (std.ascii.eqlIgnoreCase(header.name, "sec-websocket-key")) {
+                    ws_headers.set(ctx.allocator, "sec-websocket-key", header.value) catch {};
+                } else if (std.ascii.eqlIgnoreCase(header.name, "sec-websocket-version")) {
+                    ws_headers.set(ctx.allocator, "sec-websocket-version", header.value) catch {};
+                }
             }
+
+            const handshake_ok = ws.handshake(ctx.allocator, &ws_headers) catch false;
+            if (handshake_ok) {
+                // Echo loop
+                while (true) {
+                    const frame = ws.readFrame(arena) catch break;
+                    if (frame == null) break;
+                    switch (frame.?.opcode) {
+                        .text => ws.sendText(frame.?.payload) catch break,
+                        .binary => ws.writeFrame(.binary, frame.?.payload) catch break,
+                        .ping => ws.sendPong(frame.?.payload) catch break,
+                        .close => {
+                            ws.sendClose(1000) catch break;
+                            break;
+                        },
+                        else => {},
+                    }
+                }
+            }
+            break;
         }
 
-        const target = path;
-
+        // Check for WebSocket upgrade - try handshake, if it succeeds handle WS
         if (ctx.app) |app| {
+
             // Use the copied path instead of request.head.target
             const url = target;
             const web_method: web.Method = switch (request.head.method) {
