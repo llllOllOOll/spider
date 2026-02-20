@@ -44,6 +44,11 @@ pub const Spider = struct {
         return self;
     }
 
+    pub fn use(self: Spider, middleware: web.MiddlewareFn) Spider {
+        self.app_ptr.use(middleware) catch return self;
+        return self;
+    }
+
     pub fn listen(self: Spider) !void {
         var server = try srv.Server.init(
             self.allocator,

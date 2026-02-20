@@ -170,15 +170,23 @@ pub const Response = struct {
 
 pub const Handler = *const fn (allocator: std.mem.Allocator, req: *Request) anyerror!Response;
 
+pub const MiddlewareFn = *const fn (std.mem.Allocator, *Request, *App, Handler, usize) anyerror!Response;
+
+const MAX_MIDDLEWARES = 16;
+
 pub const App = struct {
     allocator: std.mem.Allocator,
     router: router.Router,
+    middlewares: [MAX_MIDDLEWARES]MiddlewareFn,
+    middleware_count: usize,
 
     pub fn init(allocator: std.mem.Allocator) !*App {
         const app = try allocator.create(App);
         app.* = .{
             .allocator = allocator,
             .router = try router.Router.init(allocator),
+            .middlewares = undefined,
+            .middleware_count = 0,
         };
         return app;
     }
@@ -186,6 +194,13 @@ pub const App = struct {
     pub fn deinit(self: *App) void {
         self.router.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn use(self: *App, middleware: MiddlewareFn) !void {
+        if (self.middleware_count < MAX_MIDDLEWARES) {
+            self.middlewares[self.middleware_count] = middleware;
+            self.middleware_count += 1;
+        }
     }
 
     pub fn get(self: *App, path: []const u8, handler: Handler) !void {
@@ -218,6 +233,14 @@ pub const App = struct {
 
         request.params = result.params;
 
-        return try result.handler(allocator, request);
+        return try self.runChain(allocator, request, result.handler, 0);
+    }
+
+    fn runChain(self: *App, allocator: std.mem.Allocator, req: *Request, handler: Handler, index: usize) !Response {
+        if (index >= self.middleware_count) {
+            return try handler(allocator, req);
+        }
+        const middleware = self.middlewares[index];
+        return try middleware(allocator, req, self, handler, index + 1);
     }
 };
