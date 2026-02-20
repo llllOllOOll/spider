@@ -1,5 +1,6 @@
 const std = @import("std");
 pub const web = @import("web.zig");
+pub const websocket = @import("websocket.zig");
 const srv = @import("server.zig");
 
 pub const Spider = struct {
