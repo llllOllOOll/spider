@@ -112,3 +112,42 @@ pub fn query(conn: *Conn, sql: [:0]const u8) !Result {
     }
     return .{ .inner = result };
 }
+
+pub fn queryParams(
+    conn: *Conn,
+    sql: [:0]const u8,
+    params: []const []const u8,
+    allocator: std.mem.Allocator,
+) !Result {
+    const pg_conn = conn.inner orelse return error.QueryFailed;
+
+    // Create null-terminated copies of params for PostgreSQL
+    const param_values = try allocator.alloc([*:0]const u8, params.len);
+    defer allocator.free(param_values);
+
+    for (params, 0..) |p, i| {
+        param_values[i] = try allocator.dupeZ(u8, p);
+    }
+    defer {
+        for (param_values) |p| allocator.free(std.mem.span(p));
+    }
+
+    const result = c.PQexecParams(
+        pg_conn,
+        sql,
+        @intCast(params.len),
+        null,
+        @ptrCast(param_values.ptr),
+        null,
+        null,
+        0,
+    );
+    if (result == null) return error.QueryFailed;
+
+    const status = c.PQresultStatus(result);
+    if (status != c.PGRES_TUPLES_OK and status != c.PGRES_COMMAND_OK) {
+        c.PQclear(result);
+        return error.QueryFailed;
+    }
+    return .{ .inner = result };
+}

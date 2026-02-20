@@ -226,16 +226,23 @@ pub const App = struct {
     }
 
     pub fn dispatch(self: *App, allocator: std.mem.Allocator, request: *Request) !Response {
+        std.debug.print("WEB: dispatch method={s} path={s}\n", .{ @tagName(request.method), request.path });
+
+        // Debug: Check if router has any routes
+        std.debug.print("WEB: Router has {} static routes\n", .{self.router.static_routes.count()});
+
         const match_result = self.router.match(request.method, request.path, allocator) catch |err| {
             std.debug.print("WEB: router.match error: {}\n", .{err});
             return err;
         };
 
         const result = match_result orelse {
+            std.debug.print("WEB: No route matched for {s} {s}\n", .{ @tagName(request.method), request.path });
             var res = try Response.text(allocator, "Not Found");
             res.status = .not_found;
             return res;
         };
+        std.debug.print("WEB: Route matched!\n", .{});
 
         request.params = result.params;
         request._app = self;
@@ -247,6 +254,7 @@ pub const App = struct {
 
     fn runChain(self: *App, allocator: std.mem.Allocator, req: *Request) !Response {
         if (req._middleware_index >= self.middleware_count) {
+            std.debug.print("WEB: Calling handler\n", .{});
             return try req._handler.?(allocator, req);
         }
 

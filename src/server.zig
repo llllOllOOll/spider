@@ -139,25 +139,30 @@ fn handleConnection(ctx: *ConnectionContext) void {
     while (true) {
         _ = ctx.req_arena.reset(.{ .retain_with_limit = RETAIN_BYTES });
 
-        var request = http_server.receiveHead() catch {
+        var request = http_server.receiveHead() catch |err| {
+            std.debug.print("SERVER: receiveHead error: {}\n", .{err});
             break;
         };
 
+        const arena = ctx.req_arena.allocator();
         const method = @tagName(request.head.method);
-        const path = request.head.target;
+        // Copy path to persistent memory since request.head.target may point to buffer that gets overwritten
+        const path = ctx.allocator.dupe(u8, request.head.target) catch break;
+        defer ctx.allocator.free(path);
+        std.debug.print("SERVER: Received {s} {s}\n", .{ method, path });
 
         if (request.head.content_length) |len| {
             if (len > MAX_BODY_SIZE) {
-                payloadTooLargeHandler(&request, ctx.req_arena.allocator()) catch {};
+                payloadTooLargeHandler(&request, arena) catch {};
                 break;
             }
         }
 
-        const arena = ctx.req_arena.allocator();
-        const target = request.head.target;
+        const target = path;
 
         if (ctx.app) |app| {
-            const url = request.head.target;
+            // Use the copied path instead of request.head.target
+            const url = target;
             const web_method: web.Method = switch (request.head.method) {
                 .GET => web.Method.get,
                 .POST => web.Method.post,
@@ -169,16 +174,33 @@ fn handleConnection(ctx: *ConnectionContext) void {
                 else => web.Method.get,
             };
 
+            // Read body if present
+            var body: ?[]const u8 = null;
+            if (request.head.content_length) |len| {
+                std.debug.print("SERVER: content_length = {}\n", .{len});
+                if (len > 0 and len <= MAX_BODY_SIZE) {
+                    const body_reader = request.readerExpectNone(&read_buffer);
+                    body = body_reader.readAlloc(arena, @intCast(len)) catch |err| {
+                        std.debug.print("SERVER: Error reading body: {}\n", .{err});
+                        break;
+                    };
+                    std.debug.print("SERVER: Read body: {s}\n", .{body.?});
+                }
+            } else {
+                std.debug.print("SERVER: No content_length header\n", .{});
+            }
+
             var web_req = web.Request{
                 .method = web_method,
                 .path = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[0..q] else url,
                 .query = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[q + 1 ..] else null,
                 .headers = web.Headers.init(),
-                .body = null,
+                .body = body,
                 .params = .{},
             };
 
-            const web_res = app.dispatch(arena, &web_req) catch {
+            const web_res = app.dispatch(arena, &web_req) catch |err| {
+                std.debug.print("SERVER: dispatch error: {}\n", .{err});
                 break;
             };
 

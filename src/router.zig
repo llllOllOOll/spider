@@ -77,11 +77,14 @@ pub const Router = struct {
     pub fn add(self: *Router, method: Method, path: []const u8, handler: Handler) !void {
         if (!isDynamic(path)) {
             const method_str = @tagName(method);
-            const key = try self.allocator.alloc(u8, method_str.len + 1 + path.len);
+            // Skip leading slash in path to avoid double slashes in key
+            const path_stripped = if (path.len > 0 and path[0] == '/') path[1..] else path;
+            const key = try self.allocator.alloc(u8, method_str.len + 1 + path_stripped.len);
             toUppercase(method_str, key[0..method_str.len]);
             key[method_str.len] = '/';
-            @memcpy(key[method_str.len + 1 ..], path);
+            @memcpy(key[method_str.len + 1 ..], path_stripped);
             try self.static_routes.put(key, handler);
+            std.debug.print("ROUTER: Added static route: {s}\n", .{key});
             return;
         }
 
@@ -114,11 +117,13 @@ pub const Router = struct {
     pub fn match(self: *Router, method: Method, path: []const u8, allocator: std.mem.Allocator) !?MatchResult {
         var key_buf: [256]u8 = undefined;
         const method_str = @tagName(method);
-        const key_len = method_str.len + 1 + path.len;
+        // Skip leading slash in path to avoid double slashes in key
+        const path_stripped = if (path.len > 0 and path[0] == '/') path[1..] else path;
+        const key_len = method_str.len + 1 + path_stripped.len;
         if (key_len <= key_buf.len) {
             toUppercase(method_str, key_buf[0..method_str.len]);
             key_buf[method_str.len] = '/';
-            @memcpy(key_buf[method_str.len + 1 .. key_len], path);
+            @memcpy(key_buf[method_str.len + 1 .. key_len], path_stripped);
             const key = key_buf[0..key_len];
 
             if (self.static_routes.get(key)) |handler| {
