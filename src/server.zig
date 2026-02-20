@@ -91,7 +91,10 @@ pub const Server = struct {
         setupSignalHandlers();
         log.info("server_started", .{ .port = 8080, .mode = "Io.Group + concurrent" });
         var group: std.Io.Group = .init;
-        while (!shutdown_flag.load(.acquire)) {
+        while (true) {
+            if (shutdown_flag.load(.acquire)) {
+                break;
+            }
             const stream = self.listener.accept(self.io) catch |err| {
                 if (shutdown_flag.load(.acquire)) break;
                 log.warn("accept_error", .{ .err = @errorName(err) });
