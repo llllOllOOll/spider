@@ -199,10 +199,11 @@ fn handleConnection(ctx: *ConnectionContext) void {
                 .params = .{},
             };
 
-            const web_res = app.dispatch(arena, &web_req) catch |err| {
+            var web_res = app.dispatch(arena, &web_req) catch |err| {
                 std.debug.print("SERVER: dispatch error: {}\n", .{err});
                 break;
             };
+            defer web_res.deinit();
 
             var extra_headers: [16]std.http.Header = undefined;
             var header_count: usize = 0;

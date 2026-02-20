@@ -136,24 +136,39 @@ pub const Response = struct {
     status: Status,
     headers: Headers,
     body: ?[]const u8,
+    allocator: ?std.mem.Allocator = null,
+    body_allocated: bool = false,
 
     pub fn init() Response {
         return .{
             .status = .ok,
             .headers = Headers.init(),
             .body = null,
+            .allocator = null,
+            .body_allocated = false,
         };
+    }
+
+    pub fn deinit(self: *Response) void {
+        const alloc = self.allocator orelse return;
+        self.headers.map.deinit(alloc);
+        if (self.body_allocated) {
+            if (self.body) |b| alloc.free(b);
+        }
     }
 
     pub fn json(allocator: std.mem.Allocator, value: anytype) !Response {
         var res = Response.init();
+        res.allocator = allocator;
         try res.headers.set(allocator, "content-type", "application/json");
         res.body = try std.json.Stringify.valueAlloc(allocator, value, .{});
+        res.body_allocated = true;
         return res;
     }
 
     pub fn html(allocator: std.mem.Allocator, content: []const u8) !Response {
         var res = Response.init();
+        res.allocator = allocator;
         try res.headers.set(allocator, "content-type", "text/html");
         res.body = content;
         return res;
@@ -161,6 +176,7 @@ pub const Response = struct {
 
     pub fn text(allocator: std.mem.Allocator, content: []const u8) !Response {
         var res = Response.init();
+        res.allocator = allocator;
         try res.headers.set(allocator, "content-type", "text/plain");
         res.body = content;
         return res;

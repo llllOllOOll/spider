@@ -86,7 +86,8 @@ test "static route match" {
         .params = .{},
     };
 
-    const res = try app.dispatch(allocator, &req);
+    var res = try app.dispatch(allocator, &req);
+    defer res.deinit();
     try std.testing.expectEqual(res.status, .ok);
 }
 
@@ -114,7 +115,11 @@ test "dynamic route match with params" {
         .params = .{},
     };
 
-    const res = try app.dispatch(allocator, &req);
+    var res = try app.dispatch(allocator, &req);
+    defer {
+        res.deinit();
+        req.params.deinit(allocator);
+    }
     try std.testing.expectEqual(res.status, .ok);
     try std.testing.expectEqualStrings(res.body.?, "123");
 }
@@ -134,7 +139,8 @@ test "route not found returns 404" {
         .params = .{},
     };
 
-    const res = try app.dispatch(allocator, &req);
+    var res = try app.dispatch(allocator, &req);
+    defer res.deinit();
     try std.testing.expectEqual(res.status, .not_found);
 }
 
@@ -162,7 +168,11 @@ test "method mismatch returns 404" {
         .params = .{},
     };
 
-    const res = try app.dispatch(allocator, &req);
+    var res = try app.dispatch(allocator, &req);
+    defer {
+        res.deinit();
+        req.params.deinit(allocator);
+    }
     try std.testing.expectEqual(res.status, .not_found);
 }
 
@@ -249,7 +259,8 @@ test "Request param extraction" {
 test "Response JSON creation" {
     const allocator = std.testing.allocator;
 
-    const res = try web.Response.json(allocator, .{ .id = 1, .name = "test" });
+    var res = try web.Response.json(allocator, .{ .id = 1, .name = "test" });
+    defer res.deinit();
 
     try std.testing.expectEqual(res.status, .ok);
     try std.testing.expect(std.mem.indexOf(u8, res.body.?, "\"id\":1") != null);
@@ -259,7 +270,8 @@ test "Response JSON creation" {
 test "Response text creation" {
     const allocator = std.testing.allocator;
 
-    const res = try web.Response.text(allocator, "Hello");
+    var res = try web.Response.text(allocator, "Hello");
+    defer res.deinit();
 
     try std.testing.expectEqual(res.status, .ok);
     try std.testing.expectEqualStrings(res.body.?, "Hello");

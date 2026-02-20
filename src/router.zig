@@ -59,8 +59,12 @@ pub const Router = struct {
     }
 
     pub fn deinit(self: *Router) void {
-        self.deinitNode(self.root);
+        var it = self.static_routes.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
         self.static_routes.deinit();
+        self.deinitNode(self.root);
     }
 
     fn deinitNode(self: *Router, node: *Node) void {
@@ -149,7 +153,10 @@ pub const Router = struct {
             }
         }
         const handler = node.handlers.get(method);
-        if (handler == null) return null;
+        if (handler == null) {
+            params.deinit(allocator);
+            return null;
+        }
         return .{ .handler = handler.?, .params = params };
     }
 };
