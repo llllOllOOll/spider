@@ -1,6 +1,7 @@
 const std = @import("std");
 const spider = @import("spider");
 const web = spider.web;
+const Db = @import("db.zig").Db;
 
 // const c = @cImport({
 //     @cInclude("time.h");
@@ -64,6 +65,15 @@ fn jsonHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     return try web.Response.json(allocator, .{ .message = "ok", .version = "0.1.0" });
 }
 
+fn usersHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    _ = req;
+    var db = try Db.connect("host=localhost port=5432 dbname=spider_demo user=postgres password=postgres");
+    defer db.disconnect();
+
+    const users = try db.queryUsers(allocator);
+    return web.Response.json(allocator, users);
+}
+
 pub fn main(init: std.process.Init) !void {
     // start_time = c.time(null);
 
@@ -74,5 +84,6 @@ pub fn main(init: std.process.Init) !void {
         .get("/metrics", metricsHandler)
         .get("/hello", helloHandler)
         .get("/json", jsonHandler)
+        .get("/users", usersHandler)
         .listen() catch |err| return err;
 }
