@@ -12,17 +12,9 @@ var log_index: usize = 0;
 var log_count: usize = 0;
 
 fn addLog(method: []const u8, path: []const u8) void {
-    var timestamp: [8]u8 = undefined;
-    timestamp[0] = '0';
-    timestamp[1] = '0';
-    timestamp[2] = ':';
-    timestamp[3] = '0';
-    timestamp[4] = '0';
-    timestamp[5] = ':';
-    timestamp[6] = '0';
-    timestamp[7] = '0';
+    const timestamp = "00:00:00";
 
-    request_logs[log_index] = .{ .time = &timestamp, .method = method, .path = path };
+    request_logs[log_index] = .{ .time = timestamp, .method = method, .path = path };
     log_index = (log_index + 1) % 100;
     if (log_count < 100) log_count += 1;
 }
