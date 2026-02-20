@@ -9,6 +9,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const spider_pg_mod = b.createModule(.{
+        .root_source_file = b.path("../spider_pg/src/pool.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    spider_pg_mod.linkSystemLibrary("pq", .{});
+
     const exe = b.addExecutable(.{
         .name = "demo",
         .root_module = b.createModule(.{
@@ -17,12 +25,11 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "spider", .module = spider_dep.module("spider") },
+                .{ .name = "spider_pg", .module = spider_pg_mod },
             },
             .link_libc = true,
         }),
     });
-
-    exe.root_module.linkSystemLibrary("pq", .{});
 
     b.installArtifact(exe);
 
