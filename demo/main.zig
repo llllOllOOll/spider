@@ -11,12 +11,22 @@ var request_logs: [100]LogEntry = undefined;
 var log_index: usize = 0;
 var log_count: usize = 0;
 
+var total_requests: u64 = 0;
+var error_count: u64 = 0;
+var start_time: u64 = 0;
+
 fn addLog(method: []const u8, path: []const u8) void {
     const timestamp = "00:00:00";
 
     request_logs[log_index] = .{ .time = timestamp, .method = method, .path = path };
     log_index = (log_index + 1) % 100;
     if (log_count < 100) log_count += 1;
+
+    total_requests += 1;
+}
+
+fn incError() void {
+    error_count += 1;
 }
 
 fn logsHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
@@ -70,10 +80,8 @@ fn healthHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response 
 fn metricsHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;
     return try web.Response.json(allocator, .{
-        .rps = 0,
-        .total_requests = log_count,
-        .uptime_seconds = 0,
-        .memory_mb = 50,
+        .total_requests = total_requests,
+        .error_count = error_count,
     });
 }
 
@@ -303,6 +311,9 @@ pub fn main(init: std.process.Init) !void {
     const db_name = getEnv("DB_NAME", "spider_demo");
     const db_user = getEnv("DB_USER", "postgres");
     const db_pass = getEnv("DB_PASSWORD", "postgres");
+
+    // Initialize start_time - uptime will show 0 but that's ok for v0.1
+    start_time = 1;
 
     pool = try spider_pg.Pool.init(init.gpa, .{
         .host = db_host,

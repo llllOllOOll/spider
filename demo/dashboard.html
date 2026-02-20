@@ -105,26 +105,23 @@
 
     <div class="grid-top">
         <div class="panel">
-            <div class="panel-header"><span>System Health</span> <span style="color: var(--accent)">CPU 15%</span></div>
+            <div class="panel-header"><span>Uptime</span></div>
             <div class="stats-row">
                 <div>
-                    <div class="big-value" x-text="metrics.memory_mb">0</div>
-                    <div class="unit">MB / 1 GB RAM</div>
-                </div>
-                <div style="width: 100px; height: 40px; border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); position: relative;">
-                    <div :style="`position: absolute; bottom: 0; width: 100%; height: ${Math.min(metrics.memory_mb/10, 100)}%; background: var(--accent); opacity: 0.2;`"></div>
+                    <div class="big-value" x-text="formatUptime(metrics.uptime_seconds || 0)">00:00:00</div>
+                    <div class="unit">server uptime</div>
                 </div>
             </div>
         </div>
 
         <div class="panel">
-            <div class="panel-header"><span>Web Traffic</span> <span>Avg Latency: 35ms</span></div>
+            <div class="panel-header"><span>Requests</span></div>
             <div class="stats-row">
                 <div>
-                    <div class="big-value" x-text="metrics.rps">0</div>
-                    <div class="unit">Requests / Sec</div>
+                    <div class="big-value" x-text="metrics.total_requests || 0">0</div>
+                    <div class="unit">total requests</div>
                 </div>
-                <div class="pill">Total: <span x-text="metrics.total_requests"></span></div>
+                <div class="pill" :style="metrics.error_count > 0 ? 'background: #ff4444; color: white;' : ''">Errors: <span x-text="metrics.error_count || 0">0</span></div>
             </div>
         </div>
     </div>
@@ -152,38 +149,22 @@
 <script>
 function dashboard() {
     return {
-        metrics: { rps: 0, total_requests: 0, uptime_seconds: 0, memory_mb: 580 },
+        metrics: { total_requests: 0, error_count: 0, uptime_seconds: 0 },
         logs: [],
         time: '',
 
         start() {
             setInterval(() => {
                 this.time = new Date().toLocaleTimeString();
-                if(Math.random() > 0.7) this.addLog();
             }, 1000);
             this.tick();
             setInterval(() => this.tick(), 2000);
-        },
-
-        addLog() {
-            const paths = ['/health', '/auth/login', '/users', '/json'];
-            this.logs.push({
-                time: new Date().toLocaleTimeString().slice(3),
-                method: 'GET',
-                path: paths[Math.floor(Math.random() * paths.length)]
-            });
-            if(this.logs.length > 10) this.logs.shift();
-            setTimeout(() => {
-                const box = document.getElementById('logBox');
-                box.scrollTop = box.scrollHeight;
-            }, 50);
         },
 
         async tick() {
             try {
                 const res = await fetch('/metrics');
                 this.metrics = await res.json();
-                // Fetch real logs
                 const logsRes = await fetch('/logs');
                 this.logs = await logsRes.json();
                 if(this.logs.length > 10) this.logs = this.logs.slice(-10);
@@ -191,9 +172,11 @@ function dashboard() {
         },
 
         formatUptime(s) {
+            if (!s) return '00:00:00';
             const h = Math.floor(s / 3600);
             const m = Math.floor((s % 3600) / 60);
-            return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+            const sec = s % 60;
+            return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
         }
     }
 }
