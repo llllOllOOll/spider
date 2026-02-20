@@ -67,6 +67,16 @@ fn healthHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response 
     return try web.Response.json(allocator, .{ .status = "ok" });
 }
 
+fn metricsHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    _ = req;
+    return try web.Response.json(allocator, .{
+        .rps = 0,
+        .total_requests = log_count,
+        .uptime_seconds = 0,
+        .memory_mb = 50,
+    });
+}
+
 fn jsonHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;
     addLog("GET", "/json");
@@ -309,6 +319,7 @@ pub fn main(init: std.process.Init) !void {
 
     app.get("/", indexHandler)
         .get("/health", healthHandler)
+        .get("/metrics", metricsHandler)
         .get("/json", jsonHandler)
         .get("/logs", logsHandler)
         .post("/auth/register", registerHandler)
