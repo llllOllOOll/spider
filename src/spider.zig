@@ -4,6 +4,11 @@ pub const websocket = @import("websocket.zig");
 pub const ws_hub = @import("ws_hub.zig");
 const srv = @import("server.zig");
 
+pub const Request = web.Request;
+pub const Response = web.Response;
+pub const Method = web.Method;
+pub const Group = web.Group;
+
 var global_ws_hub: ?*ws_hub.Hub = null;
 
 pub fn getWsHub() *ws_hub.Hub {
