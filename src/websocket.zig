@@ -42,8 +42,7 @@ pub const Server = struct {
         const key = headers.get("sec-websocket-key") orelse return false;
 
         var accept_buf: [32]u8 = undefined;
-        _ = generateAccept(key, &accept_buf);
-        const accept = accept_buf[0..];
+        const accept = generateAccept(key, &accept_buf);
 
         const response = try std.fmt.allocPrint(
             allocator,
