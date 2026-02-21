@@ -98,7 +98,11 @@
 
         button:hover { opacity: 0.9; }
 
-        .task-list { list-style: none; }
+        .task-list { 
+            list-style: none; 
+            max-height: 400px;
+            overflow-y: auto;
+        }
 
         .task-item {
             display: flex;
@@ -223,7 +227,7 @@
         <div class="panel-header"><span>Add Task</span></div>
         <div class="input-row">
             <input type="text" x-model="newTaskTitle" @keydown.enter="addTask()" placeholder="Enter task title..." />
-            <button @click="addTask()" :disabled="!newTaskTitle.trim()">Add Task</button>
+            <button @click="addTask()" :disabled="!newTaskTitle.trim() || isAdding" x-text="isAdding ? 'Adding...' : 'Add Task'">Add Task</button>
         </div>
     </div>
 
@@ -265,6 +269,7 @@ function tasksApp() {
     return {
         tasks: [],
         newTaskTitle: '',
+        isAdding: false,
         wsConnected: false,
         clientCount: 0,
         ws: null,
@@ -319,6 +324,7 @@ function tasksApp() {
             const title = this.newTaskTitle.trim();
             if (!title) return;
 
+            this.isAdding = true;
             try {
                 const res = await fetch('/tasks', {
                     method: 'POST',
@@ -330,6 +336,8 @@ function tasksApp() {
                 }
             } catch(e) {
                 console.error('Failed to add task:', e);
+            } finally {
+                this.isAdding = false;
             }
         },
 
