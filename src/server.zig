@@ -284,6 +284,8 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 .status = @enumFromInt(@intFromEnum(web_res.status)),
                 .extra_headers = extra_headers[0..header_count],
             }) catch break;
+
+            log.request(@intFromEnum(web_res.status), 0, method, path);
         } else {
             const handler = ctx.router.get(target);
             if (handler) |h| {
@@ -292,11 +294,6 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch break;
             }
         }
-
-        log.debug("request", .{
-            .method = method,
-            .path = path,
-        });
 
         if (!request.head.keep_alive) break;
     }
