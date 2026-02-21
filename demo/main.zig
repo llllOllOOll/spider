@@ -315,10 +315,18 @@ const Task = struct {
 
 fn tasksHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;
-    const conn = try pool.acquire();
+    const conn = pool.acquire() catch {
+        var res = try web.Response.text(allocator, "Database unavailable");
+        res.status = .service_unavailable;
+        return res;
+    };
     defer pool.release(conn);
 
-    var result = try spider_pg.query(conn, "SELECT id, title, status, created_at FROM tasks ORDER BY id DESC");
+    var result = spider_pg.query(conn, "SELECT id, title, status, created_at FROM tasks ORDER BY id DESC") catch {
+        var res = try web.Response.text(allocator, "Query failed");
+        res.status = .internal_server_error;
+        return res;
+    };
     defer result.deinit();
 
     const nrows = result.rows();
@@ -357,16 +365,24 @@ fn createTaskHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Respo
     };
     const title = title_val.string;
 
-    const conn = try pool.acquire();
+    const conn = pool.acquire() catch {
+        var res = try web.Response.text(allocator, "Database unavailable");
+        res.status = .service_unavailable;
+        return res;
+    };
     defer pool.release(conn);
 
     const params = &[_][]const u8{ title, "pending" };
-    var result = try spider_pg.queryParams(
+    var result = spider_pg.queryParams(
         conn,
         "INSERT INTO tasks (title, status) VALUES ($1, $2) RETURNING id, title, status, created_at",
         params,
         allocator,
-    );
+    ) catch {
+        var res = try web.Response.text(allocator, "Insert failed");
+        res.status = .internal_server_error;
+        return res;
+    };
     defer result.deinit();
 
     const new_task = Task{
@@ -411,6 +427,22 @@ pub fn main(init: std.process.Init) !void {
         .pool_size = 10,
     });
     defer pool.deinit();
+
+    // Auto-migration: create tasks table if not exists
+    {
+        var migration_err: ?anyerror = null;
+        if (pool.acquire()) |db| {
+            defer pool.release(db);
+            _ = spider_pg.query(db, "CREATE TABLE IF NOT EXISTS tasks (id SERIAL PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMP DEFAULT NOW())") catch |err| {
+                migration_err = err;
+            };
+        } else |err| {
+            migration_err = err;
+        }
+        if (migration_err) |err| {
+            std.debug.print("Migration warning: {}\n", .{err});
+        }
+    }
 
     var app = try spider.Spider.init(init.gpa, init.io, host, port);
     defer app.deinit();

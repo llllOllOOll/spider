@@ -36,12 +36,19 @@
 
         .logo { color: var(--accent); font-weight: 800; letter-spacing: 2px; }
 
+        .grid-top {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
         .panel {
             background: var(--panel);
             border: 1px solid var(--border);
             border-radius: 4px;
             padding: 15px;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
         }
 
         .panel-header {
@@ -53,6 +60,10 @@
             display: flex;
             justify-content: space-between;
         }
+
+        .stats-row { display: flex; justify-content: space-between; align-items: flex-end; }
+        .big-value { font-size: 28px; color: var(--text-main); font-weight: 300; }
+        .unit { color: var(--text-dim); font-size: 11px; }
 
         .input-row {
             display: flex;
@@ -131,12 +142,37 @@
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: var(--error);
+            background: #ff4444;
         }
 
         .ws-dot.connected { background: var(--success); }
 
         .clients-count { color: var(--accent); }
+
+        .pill {
+            background: var(--border);
+            padding: 4px 10px;
+            border-radius: 2px;
+            font-size: 10px;
+            color: var(--accent);
+        }
+
+        .pill.error { background: #ff4444; color: white; }
+
+        .log-container {
+            background: #000;
+            border-radius: 4px;
+            padding: 15px;
+            height: 200px;
+            overflow-y: auto;
+            font-size: 11px;
+            line-height: 1.6;
+            border: 1px solid #222;
+        }
+        .log-line { margin-bottom: 4px; border-left: 2px solid var(--accent); padding-left: 8px; }
+        .log-ts { color: var(--text-dim); margin-right: 8px; }
+        .log-msg { color: #88ff88; }
+        .log-path { color: var(--accent); }
     </style>
 </head>
 <body x-data="tasksApp()" x-init="init()">
@@ -148,6 +184,38 @@
             <span x-text="wsConnected ? 'Connected' : 'Disconnected'"></span>
             <span>•</span>
             <span><span class="clients-count" x-text="clientCount"></span> clients</span>
+        </div>
+    </div>
+
+    <div class="grid-top">
+        <div class="panel">
+            <div class="panel-header"><span>Uptime</span></div>
+            <div class="stats-row">
+                <div>
+                    <div class="big-value" x-text="formatUptime(metrics.uptime_seconds || 0)">00:00:00</div>
+                    <div class="unit">server uptime</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header"><span>Requests</span></div>
+            <div class="stats-row">
+                <div>
+                    <div class="big-value" x-text="metrics.total_requests || 0">0</div>
+                    <div class="unit">total requests</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header"><span>Errors</span></div>
+            <div class="stats-row">
+                <div>
+                    <div class="big-value" :class="{ 'error': metrics.error_count > 0 }" x-text="metrics.error_count || 0">0</div>
+                    <div class="unit">error count</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -178,6 +246,20 @@
         </div>
     </div>
 
+    <div class="panel">
+        <div class="panel-header">Realtime Logs</div>
+        <div class="log-container" id="logBox">
+            <template x-for="log in logs">
+                <div class="log-line">
+                    <span class="log-ts" x-text="log.time"></span>
+                    <span class="log-msg" x-text="log.method"></span>
+                    <span class="log-path" x-text="log.path"></span>
+                </div>
+            </template>
+            <div class="empty-state" x-show="logs.length === 0">No logs yet...</div>
+        </div>
+    </div>
+
 <script>
 function tasksApp() {
     return {
@@ -186,18 +268,50 @@ function tasksApp() {
         wsConnected: false,
         clientCount: 0,
         ws: null,
+        metrics: { total_requests: 0, error_count: 0, uptime_seconds: 0 },
+        logs: [],
 
         init() {
             this.loadTasks();
             this.connectWs();
+            this.loadMetrics();
+            this.loadLogs();
+            setInterval(() => this.loadMetrics(), 3000);
+            setInterval(() => this.loadLogs(), 2000);
+        },
+
+        async loadLogs() {
+            try {
+                const res = await fetch('/logs');
+                if (res.ok) {
+                    this.logs = await res.json();
+                    if (this.logs.length > 20) this.logs = this.logs.slice(-20);
+                }
+            } catch(e) {}
         },
 
         async loadTasks() {
             try {
                 const res = await fetch('/tasks');
-                this.tasks = await res.json();
+                if (res.ok) {
+                    this.tasks = await res.json();
+                }
             } catch(e) {
                 console.error('Failed to load tasks:', e);
+            }
+        },
+
+        async loadMetrics() {
+            try {
+                const res = await fetch('/metrics');
+                if (res.ok) {
+                    const data = await res.json();
+                    this.metrics.total_requests = data.total_requests || 0;
+                    this.metrics.error_count = data.error_count || 0;
+                    this.metrics.uptime_seconds = data.uptime_seconds || 0;
+                }
+            } catch(e) {
+                console.error('Failed to load metrics:', e);
             }
         },
 
@@ -213,7 +327,6 @@ function tasksApp() {
                 });
                 if (res.ok) {
                     this.newTaskTitle = '';
-                    // Task will be added via WebSocket
                 }
             } catch(e) {
                 console.error('Failed to add task:', e);
@@ -222,13 +335,17 @@ function tasksApp() {
 
         connectWs() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            this.ws = new WebSocket(`${protocol}//${location.host}/ws`);
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            console.log('Connecting to WebSocket:', wsUrl);
+            this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {
+                console.log('WebSocket connected');
                 this.wsConnected = true;
             };
 
             this.ws.onmessage = (event) => {
+                console.log('WS message:', event.data);
                 try {
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'task_added') {
@@ -237,15 +354,27 @@ function tasksApp() {
                         this.clientCount = msg.count;
                     }
                 } catch(e) {
-                    // Non-JSON message (e.g., from echo test)
-                    console.log('WS:', event.data);
+                    console.log('Non-JSON WS:', event.data);
                 }
             };
 
+            this.ws.onerror = (e) => {
+                console.error('WebSocket error:', e);
+            };
+
             this.ws.onclose = () => {
+                console.log('WebSocket closed, reconnecting...');
                 this.wsConnected = false;
                 setTimeout(() => this.connectWs(), 2000);
             };
+        },
+
+        formatUptime(s) {
+            if (!s) return '00:00:00';
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
         }
     }
 }
