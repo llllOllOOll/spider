@@ -42,6 +42,12 @@ pub const Hub = struct {
         }
     }
 
+    pub fn count(self: *Hub) usize {
+        self.mutex.lock(self.io) catch return 0;
+        defer self.mutex.unlock(self.io);
+        return self.connections.items.len;
+    }
+
     pub fn broadcast(self: *Hub, message: []const u8) void {
         self.mutex.lock(self.io) catch return;
         defer self.mutex.unlock(self.io);

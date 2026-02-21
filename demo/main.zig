@@ -306,6 +306,89 @@ fn usersHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     return web.Response.json(allocator, users);
 }
 
+const Task = struct {
+    id: i32,
+    title: []u8,
+    status: []u8,
+    created_at: []u8,
+};
+
+fn tasksHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    _ = req;
+    const conn = try pool.acquire();
+    defer pool.release(conn);
+
+    var result = try spider_pg.query(conn, "SELECT id, title, status, created_at FROM tasks ORDER BY id DESC");
+    defer result.deinit();
+
+    const nrows = result.rows();
+    const tasks = try allocator.alloc(Task, nrows);
+
+    for (0..nrows) |i| {
+        const id_str = result.getValue(i, 0);
+        const title_str = result.getValue(i, 1);
+        const status_str = result.getValue(i, 2);
+        const created_at_str = result.getValue(i, 3);
+        tasks[i] = .{
+            .id = try std.fmt.parseInt(i32, id_str, 10),
+            .title = try allocator.dupe(u8, title_str),
+            .status = try allocator.dupe(u8, status_str),
+            .created_at = try allocator.dupe(u8, created_at_str),
+        };
+    }
+
+    return web.Response.json(allocator, tasks);
+}
+
+fn createTaskHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
+    const body = req.body orelse {
+        var res = try web.Response.text(allocator, "Missing body");
+        res.status = .bad_request;
+        return res;
+    };
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const title_val = parsed.value.object.get("title") orelse {
+        var res = try web.Response.text(allocator, "Missing title");
+        res.status = .bad_request;
+        return res;
+    };
+    const title = title_val.string;
+
+    const conn = try pool.acquire();
+    defer pool.release(conn);
+
+    const params = &[_][]const u8{ title, "pending" };
+    var result = try spider_pg.queryParams(
+        conn,
+        "INSERT INTO tasks (title, status) VALUES ($1, $2) RETURNING id, title, status, created_at",
+        params,
+        allocator,
+    );
+    defer result.deinit();
+
+    const new_task = Task{
+        .id = try std.fmt.parseInt(i32, result.getValue(0, 0), 10),
+        .title = try allocator.dupe(u8, result.getValue(0, 1)),
+        .status = try allocator.dupe(u8, result.getValue(0, 2)),
+        .created_at = try allocator.dupe(u8, result.getValue(0, 3)),
+    };
+
+    const hub = spider.getWsHub();
+    const broadcast_msg = try std.fmt.allocPrint(allocator, "{{\"type\":\"task_added\",\"task\":{{\"id\":{},\"title\":\"{s}\",\"status\":\"{s}\",\"created_at\":\"{s}\"}}}}", .{
+        new_task.id,
+        new_task.title,
+        new_task.status,
+        new_task.created_at,
+    });
+    hub.broadcast(broadcast_msg);
+    allocator.free(broadcast_msg);
+
+    return web.Response.json(allocator, new_task);
+}
+
 pub fn main(init: std.process.Init) !void {
     const host = getEnv("HOST", "0.0.0.0");
     const port = getEnvInt("PORT", 8080);
@@ -340,6 +423,8 @@ pub fn main(init: std.process.Init) !void {
         .get("/metrics", metricsHandler)
         .get("/json", jsonHandler)
         .get("/logs", logsHandler)
+        .get("/tasks", tasksHandler)
+        .post("/tasks", createTaskHandler)
         .post("/auth/register", registerHandler)
         .post("/auth/login", loginHandler)
         .get("/users", usersHandler)

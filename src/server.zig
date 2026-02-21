@@ -190,10 +190,10 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 const hub = spider.getWsHub();
                 hub.add(.{ .id = conn_id, .stream = ctx.stream }) catch {};
 
-                // Broadcast new connection
-                var msg_buf: [64]u8 = undefined;
-                const msg = std.fmt.bufPrint(&msg_buf, "User {} joined", .{conn_id}) catch "New user joined";
-                hub.broadcast(msg);
+                // Broadcast client count
+                var count_buf: [64]u8 = undefined;
+                const count_msg = std.fmt.bufPrint(&count_buf, "{{\"type\":\"client_count\",\"count\":{}}}", .{hub.count()}) catch "{\"type\":\"client_count\",\"count\":0}";
+                hub.broadcast(count_msg);
 
                 // Echo loop
                 while (true) {
@@ -216,7 +216,8 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
 
                 // Remove from hub on disconnect
                 hub.remove(conn_id);
-                const leave_msg = std.fmt.bufPrint(&msg_buf, "User {} left", .{conn_id}) catch "User left";
+                var leave_buf: [64]u8 = undefined;
+                const leave_msg = std.fmt.bufPrint(&leave_buf, "{{\"type\":\"client_count\",\"count\":{}}}", .{hub.count()}) catch "{\"type\":\"client_count\",\"count\":0}";
                 hub.broadcast(leave_msg);
             }
             break;
