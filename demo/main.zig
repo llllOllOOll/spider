@@ -307,7 +307,7 @@ fn usersHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const host = getEnv("HOST", "127.0.0.1");
+    const host = getEnv("HOST", "0.0.0.0");
     const port = getEnvInt("PORT", 8080);
 
     const db_host = getEnv("DB_HOST", "localhost");
