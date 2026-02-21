@@ -418,7 +418,7 @@ pub fn main(init: std.process.Init) !void {
         .database = db_name,
         .user = db_user,
         .password = db_pass,
-        .pool_size = 10,
+        .pool_size = 50,
     });
     defer pool.deinit();
 
