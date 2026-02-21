@@ -461,5 +461,7 @@ pub fn main(init: std.process.Init) !void {
         .post("/auth/login", loginHandler)
         .get("/users", usersHandler)
         .get("/users/:id", getUserHandler)
+        .groupGet("/api/v1", "/users", usersHandler)
+        .groupGet("/api/v1", "/tasks", tasksHandler)
         .listen() catch |err| return err;
 }

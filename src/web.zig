@@ -1,6 +1,8 @@
 const std = @import("std");
-const router = @import("router.zig");
+const router_mod = @import("router.zig");
+const Route = router_mod;
 
+pub const Group = Route.Group;
 pub const Method = enum {
     get,
     post,
@@ -198,7 +200,7 @@ const MAX_MIDDLEWARES = 16;
 
 pub const App = struct {
     allocator: std.mem.Allocator,
-    router: router.Router,
+    router: Route.Router,
     middlewares: [MAX_MIDDLEWARES]MiddlewareFn,
     middleware_count: usize,
 
@@ -206,7 +208,7 @@ pub const App = struct {
         const app = try allocator.create(App);
         app.* = .{
             .allocator = allocator,
-            .router = try router.Router.init(allocator),
+            .router = try Route.Router.init(allocator),
             .middlewares = undefined,
             .middleware_count = 0,
         };
@@ -239,6 +241,10 @@ pub const App = struct {
 
     pub fn delete(self: *App, path: []const u8, handler: Handler) !void {
         try self.router.add(.delete, path, handler);
+    }
+
+    pub fn group(self: *App, prefix: []const u8) Route.Group {
+        return self.router.group(prefix);
     }
 
     pub fn dispatch(self: *App, allocator: std.mem.Allocator, request: *Request) !Response {

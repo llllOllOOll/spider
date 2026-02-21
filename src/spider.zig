@@ -67,6 +67,22 @@ pub const Spider = struct {
         return self;
     }
 
+    pub fn group(self: Spider, prefix: []const u8) web.Group {
+        return self.app_ptr.group(prefix);
+    }
+
+    pub fn groupGet(self: Spider, prefix: []const u8, path: []const u8, handler: web.Handler) Spider {
+        const full_path = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, path }) catch return self;
+        self.app_ptr.get(full_path, handler) catch {};
+        return self;
+    }
+
+    pub fn groupPost(self: Spider, prefix: []const u8, path: []const u8, handler: web.Handler) Spider {
+        const full_path = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, path }) catch return self;
+        self.app_ptr.post(full_path, handler) catch {};
+        return self;
+    }
+
     pub fn use(self: Spider, middleware: web.MiddlewareFn) Spider {
         self.app_ptr.use(middleware) catch return self;
         return self;
