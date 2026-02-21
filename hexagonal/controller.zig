@@ -9,17 +9,17 @@ const CreateProductInput = product_service.CreateProductInput;
 const ProductService = product_service.ProductService;
 const ProductRepository = product_service.ProductRepository;
 
-var repo: ProductRepository = undefined;
 var service: ProductService = undefined;
 
-pub fn initService(allocator: std.mem.Allocator) void {
-    repo = ProductRepository.initWithData(allocator);
+pub fn initService(allocator: std.mem.Allocator, repo: ProductRepository) void {
+    _ = allocator;
     service = ProductService.init(repo);
 }
 
 pub fn list(allocator: std.mem.Allocator, req: *Request) !Response {
     _ = req;
-    return try Response.json(allocator, service.list());
+    const products = try service.list();
+    return try Response.json(allocator, products);
 }
 
 pub fn getById(allocator: std.mem.Allocator, req: *Request) !Response {
@@ -35,7 +35,7 @@ pub fn getById(allocator: std.mem.Allocator, req: *Request) !Response {
         return res;
     };
 
-    const product = service.getById(id);
+    const product = try service.getById(id);
     if (product) |p| {
         return try Response.json(allocator, p);
     }
@@ -85,11 +85,14 @@ pub fn update(allocator: std.mem.Allocator, req: *Request) !Response {
     };
 
     const result = service.update(id, input) catch |err| {
-        var res = try Response.text(allocator, switch (err) {
-            error.InvalidName => "Name cannot be empty",
-            error.InvalidPrice => "Price must be greater than 0",
-            error.NotFound => "Product not found",
-        });
+        var err_msg: []const u8 = "Error";
+        switch (err) {
+            error.InvalidName => err_msg = "Name cannot be empty",
+            error.InvalidPrice => err_msg = "Price must be greater than 0",
+            error.NotFound => err_msg = "Product not found",
+            else => err_msg = "Error updating product",
+        }
+        var res = try Response.text(allocator, err_msg);
         res.status = .bad_request;
         return res;
     };

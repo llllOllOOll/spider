@@ -12,11 +12,11 @@ pub const ProductService = struct {
         return .{ .repo = repo };
     }
 
-    pub fn list(self: *ProductService) []Product {
+    pub fn list(self: *ProductService) ![]Product {
         return self.repo.list();
     }
 
-    pub fn getById(self: *ProductService, id: u64) ?Product {
+    pub fn getById(self: *ProductService, id: u64) !?Product {
         return self.repo.getById(id);
     }
 

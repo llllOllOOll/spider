@@ -94,6 +94,13 @@ pub const Result = struct {
         return @intCast(c.PQntuples(r));
     }
 
+    pub fn affectedRows(self: *Result) usize {
+        const r = self.inner orelse return 0;
+        const cmd_tuples = c.PQcmdTuples(r);
+        if (cmd_tuples[0] == 0) return 0;
+        return std.fmt.parseInt(usize, std.mem.span(cmd_tuples), 10) catch 0;
+    }
+
     pub fn getValue(self: *Result, row: usize, col: usize) []const u8 {
         const r = self.inner orelse return "";
         const val = c.PQgetvalue(r, @intCast(row), @intCast(col));
