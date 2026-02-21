@@ -3,6 +3,7 @@ const c = @cImport(@cInclude("stdlib.h"));
 const spider = @import("spider");
 const spider_pg = @import("spider_pg");
 const repository = @import("repository.zig");
+const product_router = @import("router.zig");
 
 const Spider = spider.Spider;
 const Response = spider.Response;
@@ -118,11 +119,9 @@ pub fn main(init: std.process.Init) !void {
     var app = try Spider.init(init.gpa, init.io, host, port);
     defer app.deinit();
 
-    app.get("/ping", pingHandler)
-        .get("/products", product.list)
-        .get("/products/:id", product.getById)
-        .post("/products", product.create)
-        .put("/products/:id", product.update)
-        .delete("/products/:id", product.delete)
-        .listen() catch |err| return err;
+    _ = app.get("/ping", pingHandler);
+
+    try product_router.Router.init(&app);
+
+    app.listen() catch |err| return err;
 }
