@@ -28,8 +28,10 @@ pub const Pool = struct {
         const conninfo_slice = try std.fmt.allocPrint(allocator, "host={s} port={d} dbname={s} user={s} password={s}", .{ config.host, config.port, config.database, config.user, config.password });
         const conninfo = try allocator.dupeZ(u8, conninfo_slice);
         defer allocator.free(conninfo_slice);
+        errdefer allocator.free(conninfo);
 
         const conns = try allocator.alloc(Conn, config.pool_size);
+        errdefer allocator.free(conns);
 
         for (conns) |*conn| {
             const pg_conn = c.PQconnectdb(conninfo);
