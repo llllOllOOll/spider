@@ -332,6 +332,9 @@ pub fn main(init: std.process.Init) !void {
     var app = try spider.Spider.init(init.gpa, init.io, host, port);
     defer app.deinit();
 
+    try spider.initWsHub(init.gpa, init.io);
+    defer spider.deinitWsHub(init.gpa);
+
     app.get("/", indexHandler)
         .get("/health", healthHandler)
         .get("/metrics", metricsHandler)

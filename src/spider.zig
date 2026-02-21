@@ -1,7 +1,27 @@
 const std = @import("std");
 pub const web = @import("web.zig");
 pub const websocket = @import("websocket.zig");
+pub const ws_hub = @import("ws_hub.zig");
 const srv = @import("server.zig");
+
+var global_ws_hub: ?*ws_hub.Hub = null;
+
+pub fn getWsHub() *ws_hub.Hub {
+    return global_ws_hub.?;
+}
+
+pub fn initWsHub(allocator: std.mem.Allocator, io: std.Io) !void {
+    global_ws_hub = try allocator.create(ws_hub.Hub);
+    global_ws_hub.?.* = ws_hub.Hub.init(allocator, io);
+}
+
+pub fn deinitWsHub(allocator: std.mem.Allocator) void {
+    if (global_ws_hub) |hub| {
+        hub.deinit();
+        allocator.destroy(hub);
+        global_ws_hub = null;
+    }
+}
 
 pub const Spider = struct {
     allocator: std.mem.Allocator,

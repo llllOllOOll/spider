@@ -7,6 +7,7 @@ const Io = std.Io;
 const net = std.Io.net;
 const web = @import("web.zig");
 const websocket = @import("websocket.zig");
+const spider = @import("spider.zig");
 const logger = @import("logger.zig");
 
 const log = logger.Logger.init(.info);
@@ -17,6 +18,7 @@ const MAX_BODY_SIZE: u64 = 1 * 1024 * 1024;
 const RETAIN_BYTES: usize = 8192;
 
 var shutdown_flag = std.atomic.Value(bool).init(false);
+var ws_counter = std.atomic.Value(u64).init(0);
 
 fn setupSignalHandlers() void {
     var act = std.posix.Sigaction{
@@ -184,12 +186,24 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
 
             const handshake_ok = ws.handshake(ctx.allocator, &ws_headers) catch false;
             if (handshake_ok) {
+                const conn_id = ws_counter.fetchAdd(1, .monotonic);
+                const hub = spider.getWsHub();
+                hub.add(.{ .id = conn_id, .stream = ctx.stream }) catch {};
+
+                // Broadcast new connection
+                var msg_buf: [64]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "User {} joined", .{conn_id}) catch "New user joined";
+                hub.broadcast(msg);
+
                 // Echo loop
                 while (true) {
                     const frame = ws.readFrame(arena) catch break;
                     if (frame == null) break;
                     switch (frame.?.opcode) {
-                        .text => ws.sendText(frame.?.payload) catch break,
+                        .text => {
+                            // Broadcast to all
+                            hub.broadcast(frame.?.payload);
+                        },
                         .binary => ws.writeFrame(.binary, frame.?.payload) catch break,
                         .ping => ws.sendPong(frame.?.payload) catch break,
                         .close => {
@@ -199,6 +213,11 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                         else => {},
                     }
                 }
+
+                // Remove from hub on disconnect
+                hub.remove(conn_id);
+                const leave_msg = std.fmt.bufPrint(&msg_buf, "User {} left", .{conn_id}) catch "User left";
+                hub.broadcast(leave_msg);
             }
             break;
         }
