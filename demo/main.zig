@@ -313,6 +313,10 @@ const Task = struct {
     created_at: []u8,
 };
 
+const CreateTask = struct {
+    title: []const u8,
+};
+
 fn tasksHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;
     const conn = pool.acquire() catch {
@@ -349,21 +353,11 @@ fn tasksHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
 }
 
 fn createTaskHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
-    const body = req.body orelse {
-        var res = try web.Response.text(allocator, "Missing body");
+    const input = req.bindJson(allocator, CreateTask) catch {
+        var res = try web.Response.text(allocator, "Invalid JSON");
         res.status = .bad_request;
         return res;
     };
-
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
-    defer parsed.deinit();
-
-    const title_val = parsed.value.object.get("title") orelse {
-        var res = try web.Response.text(allocator, "Missing title");
-        res.status = .bad_request;
-        return res;
-    };
-    const title = title_val.string;
 
     const conn = pool.acquire() catch {
         var res = try web.Response.text(allocator, "Database unavailable");
@@ -372,7 +366,7 @@ fn createTaskHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Respo
     };
     defer pool.release(conn);
 
-    const params = &[_][]const u8{ title, "pending" };
+    const params = &[_][]const u8{ input.title, "pending" };
     var result = spider_pg.queryParams(
         conn,
         "INSERT INTO tasks (title, status) VALUES ($1, $2) RETURNING id, title, status, created_at",
@@ -463,5 +457,6 @@ pub fn main(init: std.process.Init) !void {
         .get("/users/:id", getUserHandler)
         .groupGet("/api/v1", "/users", usersHandler)
         .groupGet("/api/v1", "/tasks", tasksHandler)
+        .groupPost("/api/v1", "/tasks", createTaskHandler)
         .listen() catch |err| return err;
 }

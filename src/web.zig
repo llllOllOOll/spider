@@ -129,6 +129,14 @@ pub const Request = struct {
         return self.headers.get(name);
     }
 
+    pub fn bindJson(self: *const Request, allocator: std.mem.Allocator, comptime T: type) !T {
+        const body = self.body orelse return error.BodyEmpty;
+        const parsed = try std.json.parseFromSlice(T, allocator, body, .{
+            .ignore_unknown_fields = true,
+        });
+        return parsed.value;
+    }
+
     pub fn param(self: *const Request, name: []const u8) ?[]const u8 {
         return self.params.get(name);
     }
