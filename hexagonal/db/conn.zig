@@ -82,7 +82,8 @@ fn parseDbUrl(allocator: std.mem.Allocator, db_url: []const u8) !spider_pg.Confi
 }
 
 pub fn connect(allocator: std.mem.Allocator) !Pool {
-    const db_url = env.getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/spider_demo?sslmode=disable");
+    // const db_url = env.getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5433/spider");
+    const db_url = env.getEnv("DATABASE_URL", "postgres://spider:spider@localhost:5433/spider");
     const config = parseDbUrl(allocator, db_url) catch |err| {
         std.log.err("Failed to parse database URL: {}", .{err});
         return err;

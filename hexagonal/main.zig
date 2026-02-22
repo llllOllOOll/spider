@@ -8,6 +8,7 @@ const db = @import("db/conn.zig");
 const Spider = spider.Spider;
 
 const product = @import("controller.zig");
+const htmx = @import("htmx.zig");
 
 pub fn main(init: std.process.Init) !void {
     var pool = try db.connect(init.gpa);
@@ -17,6 +18,7 @@ pub fn main(init: std.process.Init) !void {
     try repo.createTable();
 
     product.initService(init.gpa, repo);
+    htmx.initService(init.gpa, repo);
 
     const server_config = env.getServerConfig();
 
