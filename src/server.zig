@@ -55,6 +55,7 @@ pub const Server = struct {
     router: std.StringHashMap(HandlerFn),
     static_dir: []const u8,
     app: ?*web.App,
+    port: u16,
 
     pub fn init(allocator: std.mem.Allocator, io: Io, host: []const u8, port: u16, static_dir: []const u8) !*Server {
         const self = try allocator.create(Server);
@@ -71,6 +72,7 @@ pub const Server = struct {
             .router = std.StringHashMap(HandlerFn).init(allocator),
             .static_dir = static_dir,
             .app = null,
+            .port = port,
         };
 
         try self.router.put("/", indexHandler);
@@ -92,7 +94,7 @@ pub const Server = struct {
 
     pub fn start(self: *Server) !void {
         setupSignalHandlers();
-        log.info("server_started", .{ .port = 8080, .mode = "Io.Group + concurrent" });
+        log.info("server_started", .{ .port = self.port, .mode = "Io.Group + concurrent" });
         var group: std.Io.Group = .init;
         while (true) {
             if (shutdown_flag.load(.acquire)) {

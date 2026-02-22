@@ -1,0 +1,14 @@
+<html>
+<head>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <h1>Product Manager</h1>
+    <form hx-post="/products" hx-target="#products" hx-swap="beforeend">
+        <input name="name" placeholder="Name" required>
+        <input name="price" type="number" step="0.01" placeholder="Price" required>
+        <button>Add</button>
+    </form>
+    <ul id="products" hx-get="/products/list" hx-trigger="load"></ul>
+</body>
+</html>

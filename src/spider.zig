@@ -2,12 +2,15 @@ const std = @import("std");
 pub const web = @import("web.zig");
 pub const websocket = @import("websocket.zig");
 pub const ws_hub = @import("ws_hub.zig");
+pub const template = @import("template.zig");
 const srv = @import("server.zig");
 
 pub const Request = web.Request;
 pub const Response = web.Response;
 pub const Method = web.Method;
 pub const Group = web.Group;
+pub const Context = template.Context;
+pub const Value = template.Value;
 
 var global_ws_hub: ?*ws_hub.Hub = null;
 

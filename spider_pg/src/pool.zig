@@ -27,8 +27,7 @@ pub const Pool = struct {
     pub fn init(allocator: std.mem.Allocator, config: Config) !Pool {
         const conninfo_slice = try std.fmt.allocPrint(allocator, "host={s} port={d} dbname={s} user={s} password={s}", .{ config.host, config.port, config.database, config.user, config.password });
         const conninfo = try allocator.dupeZ(u8, conninfo_slice);
-        defer allocator.free(conninfo_slice);
-        errdefer allocator.free(conninfo);
+        allocator.free(conninfo_slice);
 
         const conns = try allocator.alloc(Conn, config.pool_size);
         errdefer allocator.free(conns);

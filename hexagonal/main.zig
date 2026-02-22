@@ -27,5 +27,9 @@ pub fn main(init: std.process.Init) !void {
 
     try product_router.Router.init(&app);
 
-    app.listen() catch |err| return err;
+    std.debug.print("MAIN: Starting server on {s}:{d}\n", .{ server_config.host, server_config.port });
+    app.listen() catch |err| {
+        std.debug.print("MAIN: listen error: {}\n", .{err});
+        return err;
+    };
 }

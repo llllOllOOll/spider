@@ -2,6 +2,7 @@ const std = @import("std");
 const spider = @import("spider");
 const Response = spider.Response;
 const Request = spider.Request;
+const Context = spider.Context;
 
 const product_service = @import("usecase/product.zig");
 const ProductRepository = product_service.ProductRepository;
@@ -14,10 +15,19 @@ pub fn initService(allocator: std.mem.Allocator, repo: ProductRepository) void {
     service = product_service.ProductService.init(repo);
 }
 
+const Templates = struct {
+    home_html: []const u8 = @embedFile("templates/home.html"),
+    product_item: []const u8 = @embedFile("templates/product_item.html"),
+};
+
 pub fn home(allocator: std.mem.Allocator, req: *Request) !Response {
     _ = req;
-    const html = "<html><head><script src=\"https://unpkg.com/htmx.org@1.9.10\"></script></head><body><h1>Product Manager</h1><form hx-post=\"/products\" hx-target=\"#products\" hx-swap=\"beforeend\"><input name=\"name\" placeholder=\"Name\" required><input name=\"price\" type=\"number\" step=\"0.01\" placeholder=\"Price\" required><button>Add</button></form><ul id=\"products\" hx-get=\"/products/list\" hx-trigger=\"load\"></ul></body></html>";
-    return try Response.html(allocator, html);
+    var context = Context.init();
+    defer context.deinit(allocator);
+
+    const tmpl = Templates{};
+    const result = try spider.template.renderWith(tmpl.home_html, &context, allocator, tmpl);
+    return try Response.html(allocator, result);
 }
 
 pub fn productList(allocator: std.mem.Allocator, req: *Request) !Response {
@@ -27,18 +37,28 @@ pub fn productList(allocator: std.mem.Allocator, req: *Request) !Response {
         for (products) |p| allocator.free(p.name);
         allocator.free(products);
     }
-    var html_list = std.ArrayList(u8).empty;
-    defer html_list.deinit(allocator);
+
+    var items = std.ArrayList(*Context).empty;
+    defer items.deinit(allocator);
+
     for (products) |p| {
-        try html_list.appendSlice(allocator, "<li>");
-        try html_list.appendSlice(allocator, p.name);
-        try html_list.appendSlice(allocator, " - $");
+        var item = try allocator.create(Context);
+        item.* = Context.init();
+        const name_copy = try allocator.dupe(u8, p.name);
+        errdefer allocator.free(name_copy);
+        try item.set(allocator, "name", name_copy);
         const price_str = try std.fmt.allocPrint(allocator, "{d:.2}", .{p.price});
-        defer allocator.free(price_str);
-        try html_list.appendSlice(allocator, price_str);
-        try html_list.appendSlice(allocator, "</li>");
+        errdefer allocator.free(price_str);
+        try item.set(allocator, "price", price_str);
+        try items.append(allocator, item);
     }
-    const result = try allocator.dupe(u8, html_list.items);
+
+    var context = Context.init();
+    defer context.deinit(allocator);
+    try context.setList(allocator, "items", items);
+
+    const tmpl = Templates{};
+    const result = try spider.template.renderWith("{% for item in items %}{% include \"product_item\" %}{% endfor %}", &context, allocator, tmpl);
     return try Response.html(allocator, result);
 }
 
@@ -89,6 +109,19 @@ pub fn createProduct(allocator: std.mem.Allocator, req: *Request) !Response {
     const price = std.fmt.parseFloat(f64, price_str) catch return try Response.text(allocator, "Invalid price");
     const input = CreateProductInput{ .name = name, .price = price, .quantity = 0 };
     const result = service.create(input) catch return try Response.text(allocator, "Error creating product");
-    const li = try std.fmt.allocPrint(allocator, "<li>{s} - ${d:.2}</li>", .{ result.name, result.price });
-    return try Response.html(allocator, li);
+
+    var item = try allocator.create(Context);
+    item.* = Context.init();
+    try item.set(allocator, "name", result.name);
+    const price_str2 = try std.fmt.allocPrint(allocator, "{d:.2}", .{result.price});
+    defer allocator.free(price_str2);
+    try item.set(allocator, "price", price_str2);
+
+    var context = Context.init();
+    defer context.deinit(allocator);
+    try context.setObject(allocator, "item", item);
+
+    const tmpl = Templates{};
+    const html = try spider.template.renderWith("{% include \"product_item\" %}", &context, allocator, tmpl);
+    return try Response.html(allocator, html);
 }

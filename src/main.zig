@@ -13,7 +13,7 @@ fn helloHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var app = try spider.Spider.init(init.gpa, init.io, 8080);
+    var app = try spider.Spider.init(init.gpa, init.io, "0.0.0.0", 8080);
     defer app.deinit();
 
     app.use(web.corsMiddleware)
