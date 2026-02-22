@@ -19,6 +19,10 @@ pub fn initService(allocator: std.mem.Allocator, repo: ProductRepository) void {
 pub fn list(allocator: std.mem.Allocator, req: *Request) !Response {
     _ = req;
     const products = try service.list();
+    defer {
+        for (products) |p| allocator.free(p.name);
+        allocator.free(products);
+    }
     return try Response.json(allocator, products);
 }
 
