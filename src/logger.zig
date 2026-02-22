@@ -79,7 +79,32 @@ pub const Logger = struct {
         };
 
         std.debug.print("{{\"level\":\"{s}\",\"msg\":\"{s}\",\"data\":", .{ level_str, msg });
-        std.debug.print("{any}}}\n", .{data});
+
+        const T = @TypeOf(data);
+        if (T == @TypeOf(.{})) {
+            std.debug.print("{{}}", .{});
+        } else {
+            std.debug.print(".", .{});
+            const fields = std.meta.fields(T);
+            var first = true;
+            inline for (fields) |field| {
+                const value = @field(data, field.name);
+                const comma = if (first) "" else ",";
+                first = false;
+                const V = @TypeOf(value);
+                const type_info = @typeInfo(V);
+                if (V == []const u8 or V == [:0]const u8) {
+                    std.debug.print("{s}.{s} = \"{s}\"", .{ comma, field.name, value });
+                } else if (V == u16) {
+                    std.debug.print("{s}.{s} = {d}", .{ comma, field.name, value });
+                } else if (type_info == .pointer) {
+                    std.debug.print("{s}.{s} = \"{s}\"", .{ comma, field.name, value });
+                } else {
+                    std.debug.print("{s}.{s} = {any}", .{ comma, field.name, value });
+                }
+            }
+        }
+        std.debug.print("}}\n", .{});
     }
 
     pub fn debug(self: Self, msg: []const u8, data: anytype) void {

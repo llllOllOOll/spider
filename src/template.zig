@@ -309,7 +309,6 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                         }
                         if (list_val) |lv| {
                             if (lv == .list) {
-                                std.debug.print("DEBUG: is list, items.len={d}\n", .{lv.list.items.len});
                                 const body_start = tag_end + 2;
                                 if (findEndFor(template, body_start)) |end_for| {
                                     const body = template[body_start..end_for];
@@ -398,7 +397,7 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
 
 const EmptyTemplates = struct {};
 
-pub fn render(template: []const u8, context: *Context, allocator: std.mem.Allocator) ![]u8 {
+pub fn renderContext(template: []const u8, context: *Context, allocator: std.mem.Allocator) ![]u8 {
     return renderTemplate(template, context, allocator, EmptyTemplates{});
 }
 
@@ -411,7 +410,85 @@ pub fn renderWith(template: []const u8, context: *Context, allocator: std.mem.Al
 }
 
 pub fn renderStr(template: []const u8, context: *Context) ![]u8 {
-    return render(template, context, std.heap.page_allocator);
+    return renderContext(template, context, std.heap.page_allocator);
+}
+
+fn fieldToString(value: anytype) []const u8 {
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .int, .float => {
+            return std.fmt.allocPrint(std.heap.page_allocator, "{}", .{value}) catch @panic("alloc fail");
+        },
+        .bool => {
+            return if (value) "true" else "false";
+        },
+        .pointer => {
+            return value;
+        },
+        .optional => {
+            if (value) |v| {
+                return fieldToString(v);
+            }
+            return "";
+        },
+        else => {
+            @compileError("Unsupported type: " ++ @typeName(T));
+        },
+    }
+}
+
+fn structToContext(comptime T: type, value: T, allocator: std.mem.Allocator) !*Context {
+    const info = @typeInfo(T);
+    if (info != .@"struct") @compileError("Expected struct, got " ++ @typeName(T));
+
+    var ctx = try allocator.create(Context);
+    ctx.* = Context.init();
+
+    inline for (info.@"struct".fields) |field| {
+        const field_value = @field(value, field.name);
+        const str = fieldToString(field_value);
+        try ctx.set(allocator, field.name, str);
+    }
+
+    return ctx;
+}
+
+fn sliceToContextList(comptime T: type, slice: []const T, allocator: std.mem.Allocator) !std.ArrayList(*Context) {
+    var list = std.ArrayList(*Context).empty;
+    for (slice) |item| {
+        const ctx = try structToContext(T, item, allocator);
+        try list.append(allocator, ctx);
+    }
+    return list;
+}
+
+pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator) ![]u8 {
+    const T = @TypeOf(data);
+    const info = @typeInfo(T);
+
+    var context = try allocator.create(Context);
+    context.* = Context.init();
+    defer {
+        context.deinit(allocator);
+        allocator.destroy(context);
+    }
+
+    switch (info) {
+        .@"struct" => {
+            inline for (info.@"struct".fields) |field| {
+                const field_value = @field(data, field.name);
+                const str = fieldToString(field_value);
+                try context.set(allocator, field.name, str);
+            }
+        },
+        .array => |arr| {
+            const list = try sliceToContextList(arr.child, &data, allocator);
+            try context.setList(allocator, "items", list);
+        },
+        else => @compileError("Unsupported type for render: " ++ @typeName(T)),
+    }
+
+    return renderTemplate(template, context, allocator, EmptyTemplates{});
 }
 
 test "basic variable substitution" {
@@ -672,4 +749,28 @@ test "include with loop" {
     defer std.heap.page_allocator.free(result);
 
     try std.testing.expectEqualSlices(u8, "<ul><li>Item0</li><li>Item1</li><li>Item2</li></ul>", result);
+}
+
+const TestProduct = struct {
+    name: []const u8,
+    price: []const u8,
+};
+
+test "render with struct" {
+    const product = TestProduct{ .name = "Widget", .price = "9.99" };
+    const result = try render("Hello {{ name }}! Price: {{ price }}", product, std.heap.page_allocator);
+    defer std.heap.page_allocator.free(result);
+
+    try std.testing.expectEqualSlices(u8, "Hello Widget! Price: 9.99", result);
+}
+
+test "render with struct and for loop" {
+    const products = [_]TestProduct{
+        .{ .name = "Widget", .price = "9.99" },
+        .{ .name = "Gadget", .price = "19.99" },
+    };
+    const result = try render("{% for p in items %}{{ p.name }}: {{ p.price }},{% endfor %}", products, std.heap.page_allocator);
+    defer std.heap.page_allocator.free(result);
+
+    try std.testing.expectEqualSlices(u8, "Widget: 9.99,Gadget: 19.99,", result);
 }
