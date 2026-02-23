@@ -475,15 +475,37 @@ pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator)
 
     switch (info) {
         .@"struct" => {
-            inline for (info.@"struct".fields) |field| {
-                const field_value = @field(data, field.name);
-                const str = fieldToString(field_value);
-                try context.set(allocator, field.name, str);
+            const type_name = @typeName(T);
+            if (std.mem.indexOfScalar(u8, type_name, '.')) |dot| {
+                if (std.mem.eql(u8, type_name[dot..], ".ArrayList")) {
+                    const list = try sliceToContextList(info.@"struct".fields[0].type.@"struct".fields[0].type, data.items, allocator);
+                    try context.setList(allocator, "items", list);
+                } else {
+                    inline for (info.@"struct".fields) |field| {
+                        const field_value = @field(data, field.name);
+                        const str = fieldToString(field_value);
+                        try context.set(allocator, field.name, str);
+                    }
+                }
+            } else {
+                inline for (info.@"struct".fields) |field| {
+                    const field_value = @field(data, field.name);
+                    const str = fieldToString(field_value);
+                    try context.set(allocator, field.name, str);
+                }
             }
         },
         .array => |arr| {
             const list = try sliceToContextList(arr.child, &data, allocator);
             try context.setList(allocator, "items", list);
+        },
+        .pointer => |ptr| {
+            if (ptr.size == .slice) {
+                const list = try sliceToContextList(ptr.child, data, allocator);
+                try context.setList(allocator, "items", list);
+            } else {
+                @compileError("Unsupported pointer type for render: " ++ @typeName(T));
+            }
         },
         else => @compileError("Unsupported type for render: " ++ @typeName(T)),
     }

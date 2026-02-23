@@ -3,13 +3,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.2/css/bulma.min.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <title>Products</title>
 </head>
 <body>
 <section class="section">
   <div class="container">
     <h1 class="title">Products</h1>
-    <ul class="content">
+    
+    <button class="button is-primary mb-4" 
+            hx-get="/products/new" 
+            hx-target="#product-form"
+            hx-swap="innerHTML">
+      Add Product
+    </button>
+    
+    <div id="product-form"></div>
+    
+    <ul class="content mt-4">
       {% for product in items %}
       <li>
         <span class="tag is-primary">{{ product.name }}</span> - ${{ product.price }}

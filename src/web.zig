@@ -119,7 +119,24 @@ pub const Request = struct {
         var iter = std.mem.splitScalar(u8, q, '&');
         while (iter.next()) |pair| {
             if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
-                if (std.mem.eql(u8, pair[0..eq], name)) return pair[eq + 1 ..];
+                if (std.mem.eql(u8, pair[0..eq], name)) {
+                    return pair[eq + 1 ..];
+                }
+            }
+        }
+        return null;
+    }
+
+    pub fn formParam(self: *const Request, name: []const u8) ?[]const u8 {
+        const body = self.body orelse return null;
+        var iter = std.mem.splitScalar(u8, body, '&');
+        while (iter.next()) |pair| {
+            if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
+                const key = pair[0..eq];
+                const value = pair[eq + 1 ..];
+                if (std.mem.eql(u8, key, name)) {
+                    return value;
+                }
             }
         }
         return null;
