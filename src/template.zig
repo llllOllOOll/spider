@@ -478,8 +478,17 @@ pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator)
             const type_name = @typeName(T);
             if (std.mem.indexOfScalar(u8, type_name, '.')) |dot| {
                 if (std.mem.eql(u8, type_name[dot..], ".ArrayList")) {
-                    const list = try sliceToContextList(info.@"struct".fields[0].type.@"struct".fields[0].type, data.items, allocator);
-                    try context.setList(allocator, "items", list);
+                    const field_type = info.@"struct".fields[0].type;
+                    if (@typeInfo(field_type) == .@"struct") {
+                        const list = try sliceToContextList(info.@"struct".fields[0].type.@"struct".fields[0].type, data.items, allocator);
+                        try context.setList(allocator, "items", list);
+                    } else {
+                        inline for (info.@"struct".fields) |field| {
+                            const field_value = @field(data, field.name);
+                            const str = fieldToString(field_value);
+                            try context.set(allocator, field.name, str);
+                        }
+                    }
                 } else {
                     inline for (info.@"struct".fields) |field| {
                         const field_value = @field(data, field.name);

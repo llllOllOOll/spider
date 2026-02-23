@@ -5,6 +5,7 @@
       <input class="input" type="text" name="name" placeholder="Product name"
              hx-get="/products/check"
              hx-trigger="keyup changed delay:500ms"
+             hx-swap="innerHTML"
              hx-target="#name-validation"
              required>
     </div>

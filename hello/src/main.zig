@@ -5,6 +5,8 @@ const Spider = spider.Spider;
 const Response = spider.Response;
 const Request = spider.Request;
 
+const check_product_tmpl = @embedFile("templates/check_product.html");
+
 pub fn main(init: std.process.Init) !void {
     var app = try Spider.init(init.gpa, init.io, "0.0.0.0", 8082);
     defer app.deinit();
@@ -57,12 +59,16 @@ fn newProductForm(allocator: std.mem.Allocator, req: *Request) !Response {
 fn checkProduct(allocator: std.mem.Allocator, req: *Request) !Response {
     const name = req.queryParam("name") orelse return Response.text(allocator, "");
 
+    var result: ?[]const u8 = null;
     for (products[0..products_count]) |p| {
         if (std.mem.eql(u8, p.name, name)) {
-            return try Response.html(allocator, "<span class=\"has-text-danger\">❌ Already exists</span>");
+            result = p.name;
+            break;
         }
     }
-    return try Response.html(allocator, "<span class=\"has-text-success\">✅ Available</span>");
+
+    const html = try spider.template.render(check_product_tmpl, .{ .product = result }, allocator);
+    return try Response.html(allocator, html);
 }
 
 fn addProduct(allocator: std.mem.Allocator, req: *Request) !Response {
