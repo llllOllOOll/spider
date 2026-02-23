@@ -6,6 +6,9 @@
         .spider = .{
             .path = "..",
         },
+        .spider_pg = .{
+            .path = "../spider_pg",
+        },
     },
     .paths = .{"."},
 }

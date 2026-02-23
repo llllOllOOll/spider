@@ -6,9 +6,13 @@ COPY . .
 
 WORKDIR /app/hello
 
-RUN zig build -Doptimize=ReleaseSmall -Dtarget=x86_64-linux-musl
+RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev
 
-FROM scratch
+RUN zig build -Doptimize=ReleaseSmall
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5
 
 WORKDIR /app
 

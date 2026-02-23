@@ -25,6 +25,12 @@ proxy:
   host: 54.163.3.77
   app_port: 8082
 
+env:
+  clear:
+    HOST: "0.0.0.0"
+    PORT: "8082"
+    DATABASE_URL: "postgres://spider:spider@172.31.24.187:5432/spider"
+
 # Credentials for your image host.
 registry:
   # server: localhost:5555
