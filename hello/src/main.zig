@@ -11,12 +11,12 @@ pub fn main(init: std.process.Init) !void {
     var app = try Spider.init(init.gpa, init.io, "0.0.0.0", 8082);
     defer app.deinit();
 
-    _ = app.get("/up", healthCheck);
-    _ = app.get("/", helloWorld);
-    _ = app.get("/products", listProducts);
-    _ = app.get("/products/new", newProductForm);
-    _ = app.get("/products/check", checkProduct);
-    _ = app.post("/products", addProduct).listen() catch |err| return err;
+    app.get("/up", healthCheck)
+        .get("/", helloWorld)
+        .get("/products", listProducts)
+        .get("/products/new", newProductForm)
+        .get("/products/check", checkProduct)
+        .post("/products", addProduct).listen() catch |err| return err;
 }
 
 const Templates = struct {
