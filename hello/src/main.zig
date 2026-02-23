@@ -1,5 +1,8 @@
 const std = @import("std");
 const spider = @import("spider");
+const db = @import("db/conn.zig");
+const repository = @import("repository.zig");
+const env = @import("config/env.zig");
 
 const Spider = spider.Spider;
 const Response = spider.Response;
@@ -7,8 +10,21 @@ const Request = spider.Request;
 
 const check_product_tmpl = @embedFile("templates/check_product.html");
 
+var global_pool: *db.Pool = undefined;
+var global_repo: repository.ProductRepository = undefined;
+
 pub fn main(init: std.process.Init) !void {
-    var app = try Spider.init(init.gpa, init.io, "0.0.0.0", 8082);
+    var pool = try db.connect(init.gpa);
+    global_pool = &pool;
+    defer pool.deinit();
+
+    var repo = repository.ProductRepository.init(init.gpa, &pool);
+    global_repo = repo;
+    try repo.createTable();
+
+    const server_config = env.getServerConfig();
+
+    var app = try Spider.init(init.gpa, init.io, server_config.host, server_config.port);
     defer app.deinit();
 
     app.get("/up", healthCheck)
@@ -24,29 +40,11 @@ const Templates = struct {
     new_product: []const u8 = @embedFile("templates/new_product.html"),
 };
 
-const MockProducts = struct {
-    name: []const u8 = "",
-    price: []const u8 = "",
-};
-
-var products = [10]MockProducts{
-    .{ .name = "Widget", .price = "9.99" },
-    .{ .name = "Gadget", .price = "19.99" },
-    .{ .name = "Gizmo", .price = "29.99" },
-    .{},
-    .{},
-    .{},
-    .{},
-    .{},
-    .{},
-    .{},
-};
-var products_count: usize = 3;
-
 fn listProducts(allocator: std.mem.Allocator, req: *Request) !Response {
     _ = req;
+    const products = try global_repo.list();
     const tmpl = Templates{};
-    const html = try spider.template.render(tmpl.list_products, products[0..products_count], allocator);
+    const html = try spider.template.render(tmpl.list_products, products, allocator);
     return try Response.html(allocator, html);
 }
 
@@ -59,15 +57,9 @@ fn newProductForm(allocator: std.mem.Allocator, req: *Request) !Response {
 fn checkProduct(allocator: std.mem.Allocator, req: *Request) !Response {
     const name = req.queryParam("name") orelse return Response.text(allocator, "");
 
-    var result: ?[]const u8 = null;
-    for (products[0..products_count]) |p| {
-        if (std.mem.eql(u8, p.name, name)) {
-            result = p.name;
-            break;
-        }
-    }
+    const found = try global_repo.getByName(name);
 
-    const html = try spider.template.render(check_product_tmpl, .{ .product = result }, allocator);
+    const html = try spider.template.render(check_product_tmpl, .{ .product = if (found != null) found.?.name else null }, allocator);
     return try Response.html(allocator, html);
 }
 
@@ -75,14 +67,9 @@ fn addProduct(allocator: std.mem.Allocator, req: *Request) !Response {
     const name = req.formParam("name") orelse return Response.text(allocator, "Missing name");
     const price = req.formParam("price") orelse return Response.text(allocator, "Missing price");
 
-    if (products_count >= 10) {
-        return try Response.html(allocator, "<li><span class=\"has-text-warning\">Limit reached</span></li>");
-    }
+    const product = try global_repo.create(.{ .name = name, .price = price });
 
-    products[products_count] = .{ .name = try allocator.dupe(u8, name), .price = try allocator.dupe(u8, price) };
-    products_count += 1;
-
-    const html = try std.fmt.allocPrint(allocator, "<li><span class=\"tag is-primary\">{s}</span> - ${s}</li>", .{ name, price });
+    const html = try std.fmt.allocPrint(allocator, "<li><span class=\"tag is-primary\">{s}</span> - ${s}</li>", .{ product.name, product.price });
     return try Response.html(allocator, html);
 }
 
