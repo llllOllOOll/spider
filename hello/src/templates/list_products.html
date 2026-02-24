@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -9,24 +10,39 @@
 <body>
 <section class="section">
   <div class="container">
-    <h1 class="title">Products</h1>
-    
-    <button class="button is-primary mb-4" 
-            hx-get="/products/new" 
-            hx-target="#product-form"
-            hx-swap="innerHTML">
-      Add Product
-    </button>
-    
+    <div class="level">
+      <div class="level-left"><h1 class="title">Products</h1></div>
+      <div class="level-right">
+        <button class="button is-primary" hx-get="/products/new" hx-target="#product-form">+ Add Product</button>
+      </div>
+    </div>
+
     <div id="product-form"></div>
-    
-    <ul class="content mt-4">
-      {% for product in items %}
-      <li>
-        <span class="tag is-primary">{{ product.name }}</span> - ${{ product.price }}
-      </li>
-      {% endfor %}
-    </ul>
+
+    <div class="box p-0">
+      <table class="table is-fullwidth is-hoverable is-striped">
+        <thead>
+          <tr>
+            <th>Product Name</th>
+            <th>Product ID</th>
+            <th>Price</th>
+            <th>Stock</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="product-list">
+          {% for product in items %}
+          <tr>
+            <td><span class="tag is-primary is-light">{{ product.name }}</span></td>
+            <td><code class="is-size-7">#{{ product.id }}</code></td>
+            <td><strong>${{ product.price }}</strong></td>
+            <td>{{ product.stock }} pcs</td>
+            <td><span class="tag is-info is-light">Active</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
 </section>
 </body>

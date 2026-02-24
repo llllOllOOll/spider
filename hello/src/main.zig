@@ -9,6 +9,7 @@ const Response = spider.Response;
 const Request = spider.Request;
 
 const check_product_tmpl = @embedFile("templates/check_product.html");
+const add_product_tmpl = @embedFile("templates/add_product.html");
 
 var global_pool: *db.Pool = undefined;
 var global_repo: repository.ProductRepository = undefined;
@@ -40,9 +41,18 @@ const Templates = struct {
     new_product: []const u8 = @embedFile("templates/new_product.html"),
 };
 
+fn checkProduct(allocator: std.mem.Allocator, req: *Request) !Response {
+    const name = (try req.queryParam("name", allocator)) orelse return Response.text(allocator, "");
+
+    const result = try global_repo.getByName(name);
+
+    const html = try spider.template.render(check_product_tmpl, .{ .product = result }, allocator);
+    return try Response.html(allocator, html);
+}
+
 fn listProducts(allocator: std.mem.Allocator, req: *Request) !Response {
     _ = req;
-    const products = try global_repo.list();
+    const products = try global_repo.findAll();
     const tmpl = Templates{};
     const html = try spider.template.render(tmpl.list_products, products, allocator);
     return try Response.html(allocator, html);
@@ -53,23 +63,23 @@ fn newProductForm(allocator: std.mem.Allocator, req: *Request) !Response {
     const tmpl = Templates{};
     return try Response.html(allocator, tmpl.new_product);
 }
-
-fn checkProduct(allocator: std.mem.Allocator, req: *Request) !Response {
-    const name = req.queryParam("name") orelse return Response.text(allocator, "");
-
-    const found = try global_repo.getByName(name);
-
-    const html = try spider.template.render(check_product_tmpl, .{ .product = if (found != null) found.?.name else null }, allocator);
-    return try Response.html(allocator, html);
-}
-
-fn addProduct(allocator: std.mem.Allocator, req: *Request) !Response {
-    const name = req.formParam("name") orelse return Response.text(allocator, "Missing name");
-    const price = req.formParam("price") orelse return Response.text(allocator, "Missing price");
+fn saveProduct(allocator: std.mem.Allocator, req: *Request) !Response {
+    const name = (try req.formParam("name", allocator)) orelse return Response.text(allocator, "Missing name");
+    const price = (try req.formParam("price", allocator)) orelse return Response.text(allocator, "Missing price");
 
     const product = try global_repo.create(.{ .name = name, .price = price });
 
     const html = try std.fmt.allocPrint(allocator, "<li><span class=\"tag is-primary\">{s}</span> - ${s}</li>", .{ product.name, product.price });
+    return try Response.html(allocator, html);
+}
+
+fn addProduct(allocator: std.mem.Allocator, req: *Request) !Response {
+    const name = (try req.formParam("name", allocator)) orelse return Response.text(allocator, "Missing name");
+    const price = (try req.formParam("price", allocator)) orelse return Response.text(allocator, "Missing price");
+
+    const product = try global_repo.create(.{ .name = name, .price = price });
+
+    const html = try spider.template.render(add_product_tmpl, product, allocator);
     return try Response.html(allocator, html);
 }
 

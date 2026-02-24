@@ -431,6 +431,9 @@ fn fieldToString(value: anytype) []const u8 {
             }
             return "";
         },
+        .@"struct" => {
+            return "";
+        },
         else => {
             @compileError("Unsupported type: " ++ @typeName(T));
         },
@@ -460,6 +463,33 @@ fn sliceToContextList(comptime T: type, slice: []const T, allocator: std.mem.All
         try list.append(allocator, ctx);
     }
     return list;
+}
+
+fn setFieldValue(allocator: std.mem.Allocator, context: *Context, name: []const u8, value: anytype) !void {
+    const T = @TypeOf(value);
+    const info = @typeInfo(T);
+
+    switch (info) {
+        .@"struct" => {
+            const obj = try allocator.create(Context);
+            obj.* = Context.init();
+            inline for (info.@"struct".fields) |field| {
+                const field_value = @field(value, field.name);
+                const str = fieldToString(field_value);
+                try obj.set(allocator, field.name, str);
+            }
+            try context.setObject(allocator, name, obj);
+        },
+        .optional => {
+            if (value) |v| {
+                try setFieldValue(allocator, context, name, v);
+            }
+        },
+        else => {
+            const str = fieldToString(value);
+            try context.set(allocator, name, str);
+        },
+    }
 }
 
 pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator) ![]u8 {
@@ -492,15 +522,13 @@ pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator)
                 } else {
                     inline for (info.@"struct".fields) |field| {
                         const field_value = @field(data, field.name);
-                        const str = fieldToString(field_value);
-                        try context.set(allocator, field.name, str);
+                        try setFieldValue(allocator, context, field.name, field_value);
                     }
                 }
             } else {
                 inline for (info.@"struct".fields) |field| {
                     const field_value = @field(data, field.name);
-                    const str = fieldToString(field_value);
-                    try context.set(allocator, field.name, str);
+                    try setFieldValue(allocator, context, field.name, field_value);
                 }
             }
         },
@@ -514,6 +542,11 @@ pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator)
                 try context.setList(allocator, "items", list);
             } else {
                 @compileError("Unsupported pointer type for render: " ++ @typeName(T));
+            }
+        },
+        .optional => {
+            if (data) |value| {
+                return render(template, value, allocator);
             }
         },
         else => @compileError("Unsupported type for render: " ++ @typeName(T)),

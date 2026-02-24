@@ -114,20 +114,20 @@ pub const Request = struct {
         return std.meta.stringToEnum(Method, lower) orelse .get;
     }
 
-    pub fn queryParam(self: *const Request, name: []const u8) ?[]const u8 {
+    pub fn queryParam(self: *const Request, name: []const u8, allocator: std.mem.Allocator) !?[]u8 {
         const q = self.query orelse return null;
         var iter = std.mem.splitScalar(u8, q, '&');
         while (iter.next()) |pair| {
             if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
                 if (std.mem.eql(u8, pair[0..eq], name)) {
-                    return pair[eq + 1 ..];
+                    return try urlDecode(pair[eq + 1 ..], allocator);
                 }
             }
         }
         return null;
     }
 
-    pub fn formParam(self: *const Request, name: []const u8) ?[]const u8 {
+    pub fn formParam(self: *const Request, name: []const u8, allocator: std.mem.Allocator) !?[]u8 {
         const body = self.body orelse return null;
         var iter = std.mem.splitScalar(u8, body, '&');
         while (iter.next()) |pair| {
@@ -135,11 +135,32 @@ pub const Request = struct {
                 const key = pair[0..eq];
                 const value = pair[eq + 1 ..];
                 if (std.mem.eql(u8, key, name)) {
-                    return value;
+                    return try urlDecode(value, allocator);
                 }
             }
         }
         return null;
+    }
+
+    fn urlDecode(s: []const u8, allocator: std.mem.Allocator) ![]u8 {
+        var result = try allocator.alloc(u8, s.len);
+        var j: usize = 0;
+
+        var i: usize = 0;
+        while (i < s.len) : (i += 1) {
+            if (s[i] == '%' and i + 2 < s.len) {
+                const hex = s[i + 1 .. i + 3];
+                const decoded = try std.fmt.parseInt(u8, hex, 16);
+                result[j] = decoded;
+                i += 2;
+            } else if (s[i] == '+') {
+                result[j] = ' ';
+            } else {
+                result[j] = s[i];
+            }
+            j += 1;
+        }
+        return result[0..j];
     }
 
     pub fn header(self: *const Request, name: []const u8) ?[]const u8 {
