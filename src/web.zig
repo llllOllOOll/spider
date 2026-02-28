@@ -258,7 +258,18 @@ pub const App = struct {
             .middlewares = undefined,
             .middleware_count = 0,
         };
+
+        _ = @import("metrics.zig"); // Ensure metrics are initialized
+        try app.registerDashboardRoutes();
+
         return app;
+    }
+
+    fn registerDashboardRoutes(self: *App) !void {
+        const dashboard = @import("dashboard.zig");
+        try self.router.add(.get, "/_spider/metrics", dashboard.metricsHandler);
+        try self.router.add(.get, "/_spider/dashboard", dashboard.dashboardHandler);
+        try self.router.add(.get, "/_spider/dashboard/panel", dashboard.dashboardPanelHandler);
     }
 
     pub fn deinit(self: *App) void {

@@ -9,6 +9,7 @@ const web = @import("web.zig");
 const websocket = @import("websocket.zig");
 const spider = @import("spider.zig");
 const logger = @import("logger.zig");
+const metrics = @import("metrics.zig");
 
 const log = logger.Logger.init(.info);
 
@@ -16,6 +17,7 @@ const index_html = @embedFile("index.html");
 
 const MAX_BODY_SIZE: u64 = 1 * 1024 * 1024;
 const RETAIN_BYTES: usize = 8192;
+const SLOW_REQUEST_THRESHOLD_NS: u64 = 500 * 1000 * 1000; // 500ms in nanoseconds
 
 var shutdown_flag = std.atomic.Value(bool).init(false);
 var ws_counter = std.atomic.Value(u64).init(0);
@@ -94,6 +96,7 @@ pub const Server = struct {
 
     pub fn start(self: *Server) !void {
         setupSignalHandlers();
+        metrics.initMetrics(self.io);
         log.info("server_started", .{ .port = self.port, .mode = "Io.Group + concurrent" });
         var group: std.Io.Group = .init;
         while (true) {
@@ -192,6 +195,8 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 const hub = spider.getWsHub();
                 hub.add(.{ .id = conn_id, .stream = ctx.stream }) catch {};
 
+                metrics.global_metrics.setWsClients(hub.count());
+
                 // Broadcast client count
                 var count_buf: [64]u8 = undefined;
                 const count_msg = std.fmt.bufPrint(&count_buf, "{{\"type\":\"client_count\",\"count\":{}}}", .{hub.count()}) catch "{\"type\":\"client_count\",\"count\":0}";
@@ -218,6 +223,7 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
 
                 // Remove from hub on disconnect
                 hub.remove(conn_id);
+                metrics.global_metrics.setWsClients(hub.count());
                 var leave_buf: [64]u8 = undefined;
                 const leave_msg = std.fmt.bufPrint(&leave_buf, "{{\"type\":\"client_count\",\"count\":{}}}", .{hub.count()}) catch "{\"type\":\"client_count\",\"count\":0}";
                 hub.broadcast(leave_msg);
@@ -266,11 +272,28 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 .params = .{},
             };
 
+            const req_start_time = std.Io.Clock.now(.awake, ctx.io);
+
+            if (body) |b| {
+                metrics.global_metrics.addBytesIn(b.len);
+            }
+
             var web_res = app.dispatch(arena, &web_req) catch |err| {
                 std.debug.print("SERVER: dispatch error: {}\n", .{err});
+                metrics.global_metrics.incrementError();
                 break;
             };
             defer web_res.deinit();
+
+            const req_end_time = std.Io.Clock.now(.awake, ctx.io);
+            const req_duration = req_start_time.durationTo(req_end_time);
+            if (req_duration.toNanoseconds() > SLOW_REQUEST_THRESHOLD_NS) {
+                metrics.global_metrics.incrementSlowRequest();
+            }
+
+            if (web_res.body) |b| {
+                metrics.global_metrics.addBytesOut(b.len);
+            }
 
             var extra_headers: [16]std.http.Header = undefined;
             var header_count: usize = 0;
@@ -285,8 +308,12 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
             request.respond(web_res.body orelse "", .{
                 .status = @enumFromInt(@intFromEnum(web_res.status)),
                 .extra_headers = extra_headers[0..header_count],
-            }) catch break;
+            }) catch {
+                metrics.global_metrics.incrementError();
+                break;
+            };
 
+            metrics.global_metrics.incrementRequest();
             log.request(@intFromEnum(web_res.status), 0, method, path);
         } else {
             const handler = ctx.router.get(target);
