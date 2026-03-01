@@ -1,0 +1,30 @@
+<form hx-post="/products" hx-target="#product-list" hx-swap="beforeend" class="box mb-4">
+  <div class="field">
+    <label class="label">Name</label>
+    <div class="control">
+      <input class="input" type="text" name="name" placeholder="Product name"
+             hx-get="/products/check"
+             hx-trigger="keyup changed delay:500ms"
+             hx-swap="innerHTML"
+             hx-target="#name-validation"
+             required>
+    </div>
+
+    <p id="name-validation" class="help"></p>
+
+  </div>
+  <div class="field">
+    <label class="label">Price</label>
+    <div class="control">
+      <input class="input" type="text" name="price" placeholder="9.99" required>
+    </div>
+  </div>
+  <div class="field is-grouped">
+    <div class="control">
+      <button class="button is-primary" type="submit">Add</button>
+    </div>
+    <div class="control">
+      <button class="button is-light" type="button" onclick="this.closest('form').remove()">Cancel</button>
+    </div>
+  </div>
+</form>
