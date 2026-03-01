@@ -25,15 +25,13 @@ pub const Pool = struct {
     conninfo: []u8,
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !Pool {
-        const conninfo_slice = try std.fmt.allocPrint(allocator, "host={s} port={d} dbname={s} user={s} password={s}", .{ config.host, config.port, config.database, config.user, config.password });
-        const conninfo = try allocator.dupeZ(u8, conninfo_slice);
-        allocator.free(conninfo_slice);
+        const conninfo = try std.fmt.allocPrint(allocator, "host={s} port={d} dbname={s} user={s} password={s}\x00", .{ config.host, config.port, config.database, config.user, config.password });
 
         const conns = try allocator.alloc(Conn, config.pool_size);
         errdefer allocator.free(conns);
 
         for (conns) |*conn| {
-            const pg_conn = c.PQconnectdb(conninfo);
+            const pg_conn = c.PQconnectdb(conninfo.ptr);
             const status = if (pg_conn) |p| c.PQstatus(p) else c.CONNECTION_BAD;
             if (pg_conn == null or status != c.CONNECTION_OK) {
                 if (pg_conn) |p| c.PQfinish(p);
@@ -59,6 +57,10 @@ pub const Pool = struct {
         }
         self.allocator.free(self.conns);
         self.allocator.free(self.conninfo);
+        self.allocator.free(self.config.host);
+        self.allocator.free(self.config.user);
+        self.allocator.free(self.config.password);
+        self.allocator.free(self.config.database);
     }
 
     pub fn acquire(self: *Pool) !*Conn {

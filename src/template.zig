@@ -422,8 +422,9 @@ fn fieldToString(value: anytype) []const u8 {
         .bool => {
             return if (value) "true" else "false";
         },
-        .pointer => {
-            return value;
+        .pointer => |ptr| {
+            if (comptime ptr.child == u8) return value;
+            return "";
         },
         .optional => {
             if (value) |v| {
@@ -468,15 +469,24 @@ fn sliceToContextList(comptime T: type, slice: []const T, allocator: std.mem.All
 fn setFieldValue(allocator: std.mem.Allocator, context: *Context, name: []const u8, value: anytype) !void {
     const T = @TypeOf(value);
     const info = @typeInfo(T);
-
     switch (info) {
+        .pointer => |ptr| {
+            if (ptr.size == .slice and comptime ptr.child != u8) {
+                if (comptime @typeInfo(ptr.child) == .@"struct") {
+                    const list = try sliceToContextList(ptr.child, value, allocator);
+                    try context.setList(allocator, name, list);
+                    return;
+                }
+            }
+            const str = fieldToString(value);
+            try context.set(allocator, name, str);
+        },
         .@"struct" => {
             const obj = try allocator.create(Context);
             obj.* = Context.init();
             inline for (info.@"struct".fields) |field| {
                 const field_value = @field(value, field.name);
-                const str = fieldToString(field_value);
-                try obj.set(allocator, field.name, str);
+                try setFieldValue(allocator, obj, field.name, field_value);
             }
             try context.setObject(allocator, name, obj);
         },
@@ -837,4 +847,34 @@ test "render with struct and for loop" {
     defer std.heap.page_allocator.free(result);
 
     try std.testing.expectEqualSlices(u8, "Widget: 9.99,Gadget: 19.99,", result);
+}
+
+const TestDashboard = struct {
+    total_str: []const u8,
+    total_months: []const u8,
+    summaries: []const TestProduct,
+};
+
+test "render with struct containing named slice field" {
+    const rows = [_]TestProduct{
+        .{ .name = "Julho/2025", .price = "R$ 4.644,25" },
+        .{ .name = "Agosto/2025", .price = "R$ 5.482,31" },
+    };
+    const data = TestDashboard{
+        .total_str = "R$ 50.504,97",
+        .total_months = "8",
+        .summaries = &rows,
+    };
+    const result = try render(
+        "Total: {{ total_str }} ({{ total_months }} meses)\n{% for row in summaries %}{{ row.name }}: {{ row.price }}\n{% endfor %}",
+        data,
+        std.heap.page_allocator,
+    );
+    defer std.heap.page_allocator.free(result);
+
+    try std.testing.expectEqualSlices(
+        u8,
+        "Total: R$ 50.504,97 (8 meses)\nJulho/2025: R$ 4.644,25\nAgosto/2025: R$ 5.482,31\n",
+        result,
+    );
 }

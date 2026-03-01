@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Spider Finance Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.0/css/bulma.min.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        .variance-up { color: #f14668; font-weight: bold; } /* Vermelho para gastos subindo */
+        .variance-down { color: #48c78e; font-weight: bold; } /* Verde para gastos caindo */
+        .is-family-monospace { font-variant-numeric: tabular-nums; }
+    </style>
+</head>
+<body class="has-background-light">
+    <section class="section" x-data="{ openDetail: false }">
+        <div class="container">
+            <div class="columns is-multiline">
+                <div class="column is-3">
+                    <div class="notification is-white has-text-centered shadow">
+                        <p class="heading">Total Geral</p>
+                        <p class="title is-4">{{ total_str }}</p>
+                    </div>
+                </div>
+                <div class="column is-3">
+                    <div class="notification is-info is-light has-text-centered">
+                        <p class="heading">Média Mensal</p>
+                        <p class="title is-4">{{ avg_str }}</p>
+                    </div>
+                </div>
+                <div class="column is-3">
+                    <div class="notification is-warning is-light has-text-centered">
+                        <p class="heading">Maior Gasto ({{ biggest_month }})</p>
+                        <p class="title is-4">{{ biggest_str }}</p>
+                    </div>
+                </div>
+                <div class="column is-3">
+                    <div class="notification is-success is-light has-text-centered">
+                        <p class="heading">Menor Gasto ({{ lowest_month }})</p>
+                        <p class="title is-4">{{ lowest_str }}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mt-5">
+                <header class="card-header">
+                    <p class="card-header-title">Análise por Competência</p>
+                </header>
+                <div class="card-content">
+                    <div class="table-container">
+                        <table class="table is-fullwidth is-hoverable is-striped">
+                            <thead>
+                                <tr>
+                                    <th>Competência</th>
+                                    <th class="has-text-right">Valor Mensal</th>
+                                    <th class="has-text-centered">Tendência</th>
+                                </tr>
+                            </thead>
+                            <tbody hx-target="#drawer" @click="openDetail = true">
+                                {% for row in summaries %}
+                                <tr class="is-clickable" hx-get="/details/{{ row.label }}">
+                                    <td><span class="has-text-weight-semibold">{{ row.label }}</span></td>
+                                    <td class="has-text-right is-family-monospace">{{ row.amount_str }}</td>
+                                    <td class="has-text-centered">
+                                        <span class="tag is-rounded is-light {{ row.variance_class }}">
+                                            {{ row.variance_str if row.variance_str != "" else "---" }}
+                                        </span>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="drawer" class="box mt-5" x-show="openDetail" x-transition>
+                </div>
+        </div>
+    </section>
+</body>
+</html>

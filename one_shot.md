@@ -5,6 +5,11 @@
 
 ---
 
+## Zig 0.16 — `builtin.Type.Pointer.Size`
+- `.slice` (lowercase) — NOT `.Slice`
+- `.one`, `.many`, `.slice`, `.c`
+
+
 ## 1. Pre-Implementation Checklist
 
 Before writing a single line of code, always verify these points directly in the Spider source:
