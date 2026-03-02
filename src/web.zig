@@ -1,5 +1,6 @@
 const std = @import("std");
 const router_mod = @import("router.zig");
+const template = @import("template.zig");
 const Route = router_mod;
 
 pub const Group = Route.Group;
@@ -18,6 +19,7 @@ pub const Status = enum(u16) {
     created = 201,
     accepted = 202,
     no_content = 204,
+    found = 302,
     bad_request = 400,
     unauthorized = 401,
     forbidden = 403,
@@ -230,11 +232,29 @@ pub const Response = struct {
         return res;
     }
 
+    pub fn redirect(allocator: std.mem.Allocator, location: []const u8) !Response {
+        var res = Response.init();
+        res.allocator = allocator;
+        res.status = .found;
+        try res.headers.set(allocator, "Location", location);
+        return res;
+    }
+
+    pub fn render(allocator: std.mem.Allocator, tmpl: []const u8, data: anytype) !Response {
+        const rendered = try template.render(tmpl, data, allocator);
+        return Response.html(allocator, rendered);
+    }
+
     pub fn withStatus(self: *Response, status: Status) *Response {
         self.status = status;
         return self;
     }
 };
+
+pub fn render(allocator: std.mem.Allocator, tmpl: []const u8, data: anytype) !Response {
+    const rendered = try template.render(tmpl, data, allocator);
+    return Response.html(allocator, rendered);
+}
 
 pub const Handler = *const fn (allocator: std.mem.Allocator, req: *Request) anyerror!Response;
 
@@ -365,4 +385,18 @@ pub fn authMiddleware(allocator: std.mem.Allocator, req: *Request, next: NextFn)
     const key = req.header("x-api-key");
     _ = key;
     return try next(allocator, req);
+}
+
+test "redirect response" {
+    var res = try Response.redirect(std.heap.page_allocator, "/dashboard");
+    defer res.deinit();
+    try std.testing.expectEqual(res.status, .found);
+    try std.testing.expectEqualStrings(res.headers.get("Location").?, "/dashboard");
+}
+
+test "render helper" {
+    const Product = struct { name: []const u8 };
+    var res = try render(std.heap.page_allocator, "Hello {{ name }}!", Product{ .name = "Widget" });
+    defer res.deinit();
+    try std.testing.expectEqualStrings(res.body.?, "Hello Widget!");
 }
