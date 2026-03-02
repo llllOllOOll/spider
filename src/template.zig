@@ -111,36 +111,19 @@ fn parseTag(content: []const u8) ?struct { name: []const u8, args: []const u8 } 
     if (std.mem.startsWith(u8, trimmed, "for ")) {
         const args = trimmed[4..];
         if (std.mem.indexOf(u8, args, " in ") != null) {
-            return .{
-                .name = "for",
-                .args = args,
-            };
+            return .{ .name = "for", .args = args };
         }
     }
-    if (std.mem.startsWith(u8, trimmed, "endfor")) {
-        return .{ .name = "endfor", .args = "" };
-    }
-    if (std.mem.startsWith(u8, trimmed, "if ")) {
-        const args = trimmed[3..];
-        return .{ .name = "if", .args = args };
-    }
-    if (std.mem.startsWith(u8, trimmed, "else")) {
-        return .{ .name = "else", .args = "" };
-    }
-    if (std.mem.startsWith(u8, trimmed, "endif")) {
-        return .{ .name = "endif", .args = "" };
-    }
-    if (std.mem.startsWith(u8, trimmed, "include ")) {
-        const args = trimmed[8..];
-        return .{ .name = "include", .args = args };
-    }
+    if (std.mem.startsWith(u8, trimmed, "endfor")) return .{ .name = "endfor", .args = "" };
+    if (std.mem.startsWith(u8, trimmed, "if ")) return .{ .name = "if", .args = trimmed[3..] };
+    if (std.mem.startsWith(u8, trimmed, "else")) return .{ .name = "else", .args = "" };
+    if (std.mem.startsWith(u8, trimmed, "endif")) return .{ .name = "endif", .args = "" };
+    if (std.mem.startsWith(u8, trimmed, "include ")) return .{ .name = "include", .args = trimmed[8..] };
     return null;
 }
 
 fn isTruthy(context: *const Context, key: []const u8) bool {
-    if (context.get(key)) |value| {
-        return value.len > 0;
-    }
+    if (context.get(key)) |value| return value.len > 0;
     if (context.getValue(key)) |val| {
         switch (val) {
             .string => |s| return s.len > 0,
@@ -158,28 +141,17 @@ fn findEndIf(template: []const u8, start: usize) ?usize {
         if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
             const tag_start = i + 2;
             var tag_end = tag_start;
-            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) {
-                tag_end += 1;
-            }
+            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) tag_end += 1;
             if (tag_end < template.len) {
-                const tag_content = template[tag_start..tag_end];
-                if (parseTag(tag_content)) |tag| {
-                    if (std.mem.startsWith(u8, tag.name, "if")) {
-                        depth += 1;
-                    } else if (std.mem.eql(u8, tag.name, "endif")) {
+                if (parseTag(template[tag_start..tag_end])) |tag| {
+                    if (std.mem.startsWith(u8, tag.name, "if")) depth += 1 else if (std.mem.eql(u8, tag.name, "endif")) {
                         depth -= 1;
-                        if (depth == 0) {
-                            return tag_end + 2;
-                        }
+                        if (depth == 0) return tag_end + 2;
                     }
                 }
                 i = tag_end + 2;
-            } else {
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
+            } else i += 1;
+        } else i += 1;
     }
     return null;
 }
@@ -191,27 +163,14 @@ fn findElse(template: []const u8, start: usize, end: usize) ?usize {
         if (i + 1 < end and template[i] == '{' and template[i + 1] == '%') {
             const tag_start = i + 2;
             var tag_end = tag_start;
-            while (tag_end < end and !(template[tag_end] == '%' and tag_end + 1 < end and template[tag_end + 1] == '}')) {
-                tag_end += 1;
-            }
+            while (tag_end < end and !(template[tag_end] == '%' and tag_end + 1 < end and template[tag_end + 1] == '}')) tag_end += 1;
             if (tag_end < end) {
-                const tag_content = template[tag_start..tag_end];
-                if (parseTag(tag_content)) |tag| {
-                    if (std.mem.startsWith(u8, tag.name, "if")) {
-                        depth += 1;
-                    } else if (std.mem.eql(u8, tag.name, "endif")) {
-                        depth -= 1;
-                    } else if (std.mem.eql(u8, tag.name, "else") and depth == 1) {
-                        return tag_end + 2;
-                    }
+                if (parseTag(template[tag_start..tag_end])) |tag| {
+                    if (std.mem.startsWith(u8, tag.name, "if")) depth += 1 else if (std.mem.eql(u8, tag.name, "endif")) depth -= 1 else if (std.mem.eql(u8, tag.name, "else") and depth == 1) return tag_end + 2;
                 }
                 i = tag_end + 2;
-            } else {
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
+            } else i += 1;
+        } else i += 1;
     }
     return null;
 }
@@ -223,28 +182,17 @@ fn findEndFor(template: []const u8, start: usize) ?usize {
         if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
             const tag_start = i + 2;
             var tag_end = tag_start;
-            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) {
-                tag_end += 1;
-            }
+            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) tag_end += 1;
             if (tag_end < template.len) {
-                const tag_content = template[tag_start..tag_end];
-                if (parseTag(tag_content)) |tag| {
-                    if (std.mem.startsWith(u8, tag.name, "for")) {
-                        depth += 1;
-                    } else if (std.mem.eql(u8, tag.name, "endfor")) {
+                if (parseTag(template[tag_start..tag_end])) |tag| {
+                    if (std.mem.startsWith(u8, tag.name, "for")) depth += 1 else if (std.mem.eql(u8, tag.name, "endfor")) {
                         depth -= 1;
-                        if (depth == 0) {
-                            return tag_end + 2;
-                        }
+                        if (depth == 0) return tag_end + 2;
                     }
                 }
                 i = tag_end + 2;
-            } else {
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
+            } else i += 1;
+        } else i += 1;
     }
     return null;
 }
@@ -253,12 +201,7 @@ fn parseForArgs(args: []const u8) ?struct { item_var: []const u8, list_var: []co
     if (std.mem.indexOf(u8, args, " in ")) |in_idx| {
         const item_var = std.mem.trim(u8, args[0..in_idx], " ");
         const list_var = std.mem.trim(u8, args[in_idx + 4 ..], " ");
-        if (item_var.len > 0 and list_var.len > 0) {
-            return .{
-                .item_var = item_var,
-                .list_var = list_var,
-            };
-        }
+        if (item_var.len > 0 and list_var.len > 0) return .{ .item_var = item_var, .list_var = list_var };
     }
     return null;
 }
@@ -273,9 +216,7 @@ fn getTemplate(templates: anytype, name: []const u8) ?[]const u8 {
     const T = @TypeOf(templates);
     if (T == EmptyTemplates) return null;
     inline for (std.meta.fields(T)) |field| {
-        if (std.mem.eql(u8, field.name, name)) {
-            return @field(templates, field.name);
-        }
+        if (std.mem.eql(u8, field.name, name)) return @field(templates, field.name);
     }
     return null;
 }
@@ -290,9 +231,7 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
         if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
             const tag_start = i + 2;
             var tag_end = tag_start;
-            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) {
-                tag_end += 1;
-            }
+            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) tag_end += 1;
             if (tag_end >= template.len) {
                 try result.appendSlice(allocator, "{%");
                 i += 2;
@@ -304,14 +243,13 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                     if (parseForArgs(tag.args)) |for_args| {
                         var list_val = context.getValue(for_args.list_var);
                         if (list_val == null and for_args.list_var.len > 2 and for_args.list_var[0] == '[' and for_args.list_var[for_args.list_var.len - 1] == ']') {
-                            const key = for_args.list_var[1 .. for_args.list_var.len - 1];
-                            list_val = context.getValue(key);
+                            list_val = context.getValue(for_args.list_var[1 .. for_args.list_var.len - 1]);
                         }
                         if (list_val) |lv| {
-                            if (lv == .list) {
-                                const body_start = tag_end + 2;
-                                if (findEndFor(template, body_start)) |end_for| {
-                                    const body = template[body_start..end_for];
+                            const body_start = tag_end + 2;
+                            if (findEndFor(template, body_start)) |end_for| {
+                                const body = template[body_start..end_for];
+                                if (lv == .list) {
                                     for (lv.list.items) |item_ctx| {
                                         var loop_ctx = Context.init();
                                         try loop_ctx.values.put(allocator, for_args.item_var, Value{ .object = item_ctx });
@@ -320,22 +258,16 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                                         defer allocator.free(rendered);
                                         try result.appendSlice(allocator, rendered);
                                     }
-                                    i = end_for;
-                                    continue;
-                                }
-                            } else if (lv == .object) {
-                                const body_start = tag_end + 2;
-                                if (findEndFor(template, body_start)) |end_for| {
-                                    const body = template[body_start..end_for];
+                                } else if (lv == .object) {
                                     var loop_ctx = Context.init();
                                     try loop_ctx.values.put(allocator, for_args.item_var, Value{ .object = lv.object });
                                     const rendered = try renderTemplate(body, &loop_ctx, allocator, templates);
                                     loop_ctx.clear(allocator);
                                     defer allocator.free(rendered);
                                     try result.appendSlice(allocator, rendered);
-                                    i = end_for;
-                                    continue;
                                 }
+                                i = end_for;
+                                continue;
                             }
                         }
                     }
@@ -344,14 +276,12 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                     if (findEndIf(template, body_start)) |end_if| {
                         const else_pos = findElse(template, body_start, end_if);
                         if (isTruthy(context, tag.args)) {
-                            const if_body_end = else_pos orelse end_if;
-                            const if_body = template[body_start..if_body_end];
+                            const if_body = template[body_start .. else_pos orelse end_if];
                             const rendered = try renderTemplate(if_body, context, allocator, templates);
                             defer allocator.free(rendered);
                             try result.appendSlice(allocator, rendered);
                         } else if (else_pos) |else_start| {
-                            const else_body = template[else_start..end_if];
-                            const rendered = try renderTemplate(else_body, context, allocator, templates);
+                            const rendered = try renderTemplate(template[else_start..end_if], context, allocator, templates);
                             defer allocator.free(rendered);
                             try result.appendSlice(allocator, rendered);
                         }
@@ -373,18 +303,14 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
         } else if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '{') {
             const start = i + 2;
             var end = start;
-            while (end < template.len and !(template[end] == '}' and end + 1 < template.len and template[end + 1] == '}')) {
-                end += 1;
-            }
+            while (end < template.len and !(template[end] == '}' and end + 1 < template.len and template[end + 1] == '}')) end += 1;
             if (end >= template.len) {
                 try result.appendSlice(allocator, "{{");
                 i += 2;
                 continue;
             }
             const var_name = std.mem.trim(u8, template[start..end], " ");
-            if (context.get(var_name)) |value| {
-                try result.appendSlice(allocator, value);
-            }
+            if (context.get(var_name)) |value| try result.appendSlice(allocator, value);
             i = end + 2;
         } else {
             try result.append(allocator, template[i]);
@@ -413,47 +339,46 @@ pub fn renderStr(template: []const u8, context: *Context) ![]u8 {
     return renderContext(template, context, std.heap.page_allocator);
 }
 
+// Convert any scalar/string value to []const u8 for the context
 fn fieldToString(value: anytype) []const u8 {
     const T = @TypeOf(value);
-    switch (@typeInfo(T)) {
-        .int, .float => {
+    const info = @typeInfo(T);
+    switch (info) {
+        .int, .comptime_int => {
             return std.fmt.allocPrint(std.heap.page_allocator, "{}", .{value}) catch @panic("alloc fail");
         },
-        .bool => {
-            return if (value) "true" else "false";
+        .float, .comptime_float => {
+            return std.fmt.allocPrint(std.heap.page_allocator, "{}", .{value}) catch @panic("alloc fail");
         },
+        .bool => return if (value) "true" else "false",
         .pointer => |ptr| {
-            if (comptime ptr.child == u8) return value;
+            // []const u8 or []u8 — string slice
+            if (ptr.size == .slice and ptr.child == u8) return value;
+            // *const u8 / [*]const u8 — treat as C string, unsupported, return empty
             return "";
         },
         .optional => {
-            if (value) |v| {
-                return fieldToString(v);
-            }
+            if (value) |v| return fieldToString(v);
             return "";
         },
-        .@"struct" => {
+        .array => |arr| {
+            // [N]u8 — string array
+            if (arr.child == u8) return &value;
             return "";
         },
-        else => {
-            @compileError("Unsupported type: " ++ @typeName(T));
-        },
+        .@"struct", .@"enum", .@"union" => return "",
+        else => return "",
     }
 }
 
 fn structToContext(comptime T: type, value: T, allocator: std.mem.Allocator) !*Context {
     const info = @typeInfo(T);
     if (info != .@"struct") @compileError("Expected struct, got " ++ @typeName(T));
-
-    var ctx = try allocator.create(Context);
+    const ctx = try allocator.create(Context);
     ctx.* = Context.init();
-
     inline for (info.@"struct".fields) |field| {
-        const field_value = @field(value, field.name);
-        const str = fieldToString(field_value);
-        try ctx.set(allocator, field.name, str);
+        try setFieldValue(allocator, ctx, field.name, @field(value, field.name));
     }
-
     return ctx;
 }
 
@@ -471,33 +396,43 @@ fn setFieldValue(allocator: std.mem.Allocator, context: *Context, name: []const 
     const info = @typeInfo(T);
     switch (info) {
         .pointer => |ptr| {
-            if (ptr.size == .slice and comptime ptr.child != u8) {
+            // Slice of structs → named list
+            if (ptr.size == .slice and ptr.child != u8) {
                 if (comptime @typeInfo(ptr.child) == .@"struct") {
                     const list = try sliceToContextList(ptr.child, value, allocator);
                     try context.setList(allocator, name, list);
                     return;
                 }
             }
-            const str = fieldToString(value);
-            try context.set(allocator, name, str);
+            // []const u8 or []u8 — string slice
+            if (ptr.size == .slice and ptr.child == u8) {
+                try context.set(allocator, name, value);
+                return;
+            }
+            // *const [N:0]u8 — string literal from anonymous struct
+            if (ptr.size == .one) {
+                const child_info = @typeInfo(ptr.child);
+                if (child_info == .array and child_info.array.child == u8) {
+                    try context.set(allocator, name, value);
+                    return;
+                }
+            }
+            // Fallback
+            try context.set(allocator, name, fieldToString(value));
         },
         .@"struct" => {
             const obj = try allocator.create(Context);
             obj.* = Context.init();
             inline for (info.@"struct".fields) |field| {
-                const field_value = @field(value, field.name);
-                try setFieldValue(allocator, obj, field.name, field_value);
+                try setFieldValue(allocator, obj, field.name, @field(value, field.name));
             }
             try context.setObject(allocator, name, obj);
         },
         .optional => {
-            if (value) |v| {
-                try setFieldValue(allocator, context, name, v);
-            }
+            if (value) |v| try setFieldValue(allocator, context, name, v);
         },
         else => {
-            const str = fieldToString(value);
-            try context.set(allocator, name, str);
+            try context.set(allocator, name, fieldToString(value));
         },
     }
 }
@@ -515,30 +450,23 @@ pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator)
 
     switch (info) {
         .@"struct" => {
-            const type_name = @typeName(T);
-            if (std.mem.indexOfScalar(u8, type_name, '.')) |dot| {
-                if (std.mem.eql(u8, type_name[dot..], ".ArrayList")) {
-                    const field_type = info.@"struct".fields[0].type;
-                    if (@typeInfo(field_type) == .@"struct") {
-                        const list = try sliceToContextList(info.@"struct".fields[0].type.@"struct".fields[0].type, data.items, allocator);
-                        try context.setList(allocator, "items", list);
-                    } else {
-                        inline for (info.@"struct".fields) |field| {
-                            const field_value = @field(data, field.name);
-                            const str = fieldToString(field_value);
-                            try context.set(allocator, field.name, str);
-                        }
-                    }
-                } else {
-                    inline for (info.@"struct".fields) |field| {
-                        const field_value = @field(data, field.name);
-                        try setFieldValue(allocator, context, field.name, field_value);
+            // Detect ArrayList by presence of 'items' slice field
+            const is_array_list = comptime blk: {
+                for (info.@"struct".fields) |f| {
+                    if (std.mem.eql(u8, f.name, "items")) {
+                        const fi = @typeInfo(f.type);
+                        if (fi == .pointer and fi.pointer.size == .slice) break :blk true;
                     }
                 }
+                break :blk false;
+            };
+            if (is_array_list) {
+                const child_type = @typeInfo(@TypeOf(data.items)).pointer.child;
+                const list = try sliceToContextList(child_type, data.items, allocator);
+                try context.setList(allocator, "items", list);
             } else {
                 inline for (info.@"struct".fields) |field| {
-                    const field_value = @field(data, field.name);
-                    try setFieldValue(allocator, context, field.name, field_value);
+                    try setFieldValue(allocator, context, field.name, @field(data, field.name));
                 }
             }
         },
@@ -555,9 +483,7 @@ pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator)
             }
         },
         .optional => {
-            if (data) |value| {
-                return render(template, value, allocator);
-            }
+            if (data) |value| return render(template, value, allocator);
         },
         else => @compileError("Unsupported type for render: " ++ @typeName(T)),
     }
@@ -568,54 +494,41 @@ pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator)
 test "basic variable substitution" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     try context.set(std.heap.page_allocator, "name", "World");
     const result = try renderStr("Hello {{ name }}!", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Hello World!", result);
 }
 
 test "multiple variables" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     try context.set(std.heap.page_allocator, "greeting", "Hello");
     try context.set(std.heap.page_allocator, "target", "Zig");
     const result = try renderStr("{{ greeting }}, {{ target }}!", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Hello, Zig!", result);
 }
 
 test "missing variable" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     const result = try renderStr("Hello {{ name }}!", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Hello !", result);
 }
 
 test "no variables" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     const result = try renderStr("Hello World!", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Hello World!", result);
 }
 
 test "for loop" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     var items = std.ArrayList(*Context).empty;
     for (0..3) |j| {
         var item = try std.heap.page_allocator.create(Context);
@@ -624,18 +537,14 @@ test "for loop" {
         try items.append(std.heap.page_allocator, item);
     }
     try context.setList(std.heap.page_allocator, "items", items);
-
     const result = try renderStr("{% for item in items %}{{ item.name }}{% endfor %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Item0Item1Item2", result);
 }
 
 test "for loop with separator" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     var items = std.ArrayList(*Context).empty;
     for (0..3) |j| {
         var item = try std.heap.page_allocator.create(Context);
@@ -644,36 +553,27 @@ test "for loop with separator" {
         try items.append(std.heap.page_allocator, item);
     }
     try context.setList(std.heap.page_allocator, "items", items);
-
     const result = try renderStr("{% for item in items %}{{ item.name }},{% endfor %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Item0,Item1,Item2,", result);
 }
 
 test "for loop empty list" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     const items = std.ArrayList(*Context).empty;
     try context.setList(std.heap.page_allocator, "items", items);
-
     const result = try renderStr("{% for item in items %}{{ item.name }}{% endfor %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "", result);
 }
 
 test "nested for loop" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     var outer_item = try std.heap.page_allocator.create(Context);
     outer_item.* = Context.init();
     try outer_item.set(std.heap.page_allocator, "title", "Outer");
-
     var inner_items = std.ArrayList(*Context).empty;
     for (0..2) |j| {
         var inner = try std.heap.page_allocator.create(Context);
@@ -683,108 +583,77 @@ test "nested for loop" {
     }
     try outer_item.setList(std.heap.page_allocator, "children", inner_items);
     try context.setObject(std.heap.page_allocator, "outer", outer_item);
-
     const result = try renderStr("{% for outer in [outer] %}{{ outer.title }}: {% for child in outer.children %}{{ child.name }}{% endfor %}{% endfor %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Outer: Inner0Inner1", result);
 }
 
 test "if truthy" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     try context.set(std.heap.page_allocator, "show", "yes");
-
     const result = try renderStr("{% if show %}visible{% endif %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "visible", result);
 }
 
 test "if falsy - missing variable" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     const result = try renderStr("{% if show %}visible{% endif %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "", result);
 }
 
 test "if falsy - empty string" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     try context.set(std.heap.page_allocator, "show", "");
-
     const result = try renderStr("{% if show %}visible{% endif %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "", result);
 }
 
 test "if else truthy" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     try context.set(std.heap.page_allocator, "show", "yes");
-
     const result = try renderStr("{% if show %}yes{% else %}no{% endif %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "yes", result);
 }
 
 test "if else falsy" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     const result = try renderStr("{% if show %}yes{% else %}no{% endif %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "no", result);
 }
 
 test "if with variable substitution" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     try context.set(std.heap.page_allocator, "name", "World");
-
     const result = try renderStr("{% if name %}Hello {{ name }}{% endif %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Hello World", result);
 }
 
 test "nested if" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     try context.set(std.heap.page_allocator, "a", "1");
     try context.set(std.heap.page_allocator, "b", "2");
-
     const result = try renderStr("{% if a %}{% if b %}{{ a }}-{{ b }}{% endif %}{% endif %}", &context);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "1-2", result);
 }
 
 const item_template = "<li>{{ name }}</li>";
-
 const TestTemplates = struct {
     item: []const u8,
     item_tmpl: []const u8 = item_template,
-
     pub fn init() TestTemplates {
         return .{ .item = item_template };
     }
@@ -793,21 +662,16 @@ const TestTemplates = struct {
 test "include template" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     try context.set(std.heap.page_allocator, "name", "Test");
-
     const templates = TestTemplates{ .item = undefined, .item_tmpl = item_template };
     const result = try renderWith("{% include \"item_tmpl\" %}", &context, std.heap.page_allocator, templates);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "<li>Test</li>", result);
 }
 
 test "include with loop" {
     var context = Context.init();
     defer context.deinit(std.heap.page_allocator);
-
     var items = std.ArrayList(*Context).empty;
     for (0..3) |j| {
         var item = try std.heap.page_allocator.create(Context);
@@ -816,12 +680,9 @@ test "include with loop" {
         try items.append(std.heap.page_allocator, item);
     }
     try context.setList(std.heap.page_allocator, "items", items);
-
     const templates = TestTemplates{ .item = undefined, .item_tmpl = "<li>{{ i.name }}</li>" };
     const result = try renderWith("<ul>{% for i in items %}{% include \"item_tmpl\" %}{% endfor %}</ul>", &context, std.heap.page_allocator, templates);
-
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "<ul><li>Item0</li><li>Item1</li><li>Item2</li></ul>", result);
 }
 
@@ -834,7 +695,6 @@ test "render with struct" {
     const product = TestProduct{ .name = "Widget", .price = "9.99" };
     const result = try render("Hello {{ name }}! Price: {{ price }}", product, std.heap.page_allocator);
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Hello Widget! Price: 9.99", result);
 }
 
@@ -845,7 +705,6 @@ test "render with struct and for loop" {
     };
     const result = try render("{% for p in items %}{{ p.name }}: {{ p.price }},{% endfor %}", products, std.heap.page_allocator);
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(u8, "Widget: 9.99,Gadget: 19.99,", result);
 }
 
@@ -871,10 +730,15 @@ test "render with struct containing named slice field" {
         std.heap.page_allocator,
     );
     defer std.heap.page_allocator.free(result);
-
     try std.testing.expectEqualSlices(
         u8,
         "Total: R$ 50.504,97 (8 meses)\nJulho/2025: R$ 4.644,25\nAgosto/2025: R$ 5.482,31\n",
         result,
     );
+}
+
+test "render with anonymous struct" {
+    const result = try render("Hello {{ name }}!", .{ .name = "seven" }, std.heap.page_allocator);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Hello seven!", result);
 }

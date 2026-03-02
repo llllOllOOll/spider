@@ -5,130 +5,47 @@ const spider = @import("spider");
 const Spider = spider.Spider;
 const Response = spider.Response;
 const Request = spider.Request;
-const txns = @import("db/transactions.zig");
 const dashboard = @import("routes/dashboard.zig");
+const seed = @import("seed.zig");
 
 var pool: db.Pool = undefined;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
+    const allocator = init.gpa;
 
     pool = try db.connect(init.gpa);
     defer pool.deinit();
 
-    const repo = users.UserRepository.init(init.gpa, &pool);
+    // Find or create default user
+    const repo = users.UserRepository.init(allocator, &pool);
+    var user = try repo.findByEmail("dev@local");
 
-    // Find or create user
-    var user = try repo.findByEmail("test@smoney.dev");
     if (user == null) {
-        user = try repo.create(.{ .email = "test@smoney.dev", .name = "Test User" });
+        const created = try repo.create(.{ .email = "dev@local", .name = "Dev User" });
+        user = created;
+        std.log.info("Created user: id={d}", .{user.?.id});
     } else {
-        std.log.info("Found existing user", .{});
+        std.log.info("Found user: id={d}", .{user.?.id});
     }
+
     defer {
         init.gpa.free(user.?.email);
         init.gpa.free(user.?.name);
     }
-    std.log.info("User: id={d} email={s} name={s}", .{ user.?.id, user.?.email, user.?.name });
 
     dashboard.init(&pool, user.?.id);
 
-    // Teste: buscar por id
-    if (try repo.findById(user.?.id)) |found| {
-        defer {
-            init.gpa.free(found.email);
-            init.gpa.free(found.name);
-        }
-        std.log.info("Found by id: {s}", .{found.email});
-    }
+    // Seed CSVs if bank is empty
+    try seed.run(io, init.gpa, &pool, user.?.id);
 
-    // Teste: buscar por email
-    if (try repo.findByEmail("test@smoney.dev")) |found| {
-        defer {
-            init.gpa.free(found.email);
-            init.gpa.free(found.name);
-        }
-        std.log.info("Found by email: {s}", .{found.name});
-    }
-
-    // Teste: exists
-    const ok = try repo.exists("test@smoney.dev");
-    std.log.info("Exists: {}", .{ok});
-
-    // Teste: update
-    if (try repo.update(user.?.id, .{ .name = "Updated User" })) |updated| {
-        defer {
-            init.gpa.free(updated.email);
-            init.gpa.free(updated.name);
-        }
-        std.log.info("Updated: id={d} name={s}", .{ updated.id, updated.name });
-    }
-
-    // Teste: transactions
-    const tx_repo = txns.TransactionRepository.init(init.gpa, &pool);
-
-    const tx = try tx_repo.create(.{
-        .user_id = user.?.id,
-        .date = "2025-07-02",
-        .title = "Economart",
-        .amount = 1327.46,
-        .competencia_year = 2025,
-        .competencia_month = 7,
-        .is_expense = true,
-    });
-    defer {
-        init.gpa.free(tx.date);
-        init.gpa.free(tx.title);
-    }
-    std.log.info("Created tx: id={d} title={s} amount={d:.2}", .{ tx.id, tx.title, tx.amount });
-
-    const summaries = try tx_repo.getMonthlySummary(user.?.id);
-    defer init.gpa.free(summaries);
-    for (summaries) |s| {
-        std.log.info("Summary: {d}/{d} total={d:.2} count={d}", .{ s.month, s.year, s.total, s.count });
-    }
-
-    const parser = @import("finance/parser.zig");
-
-    const csv_files = [_][]const u8{
-        "/home/seven/Downloads/nubank/Nubank_2025-07-27.csv",
-        "/home/seven/Downloads/nubank/Nubank_2025-08-27.csv",
-        "/home/seven/Downloads/nubank/Nubank_2025-09-27.csv",
-        "/home/seven/Downloads/nubank/Nubank_2025-10-27.csv",
-        "/home/seven/Downloads/nubank/Nubank_2025-11-27.csv",
-        "/home/seven/Downloads/nubank/Nubank_2025-12-27.csv",
-        "/home/seven/Downloads/nubank/Nubank_2026-01-27.csv",
-        "/home/seven/Downloads/nubank/Nubank_2026-02-27.csv",
-    };
-
-    for (csv_files) |csv_path| {
-        const parsed = try parser.parseCSV(init.io, init.gpa, csv_path, user.?.id);
-        defer {
-            for (parsed) |p| {
-                init.gpa.free(p.date);
-                init.gpa.free(p.title);
-            }
-            init.gpa.free(parsed);
-        }
-        std.log.info("Parsed {d} transactions from {s}", .{ parsed.len, csv_path });
-        for (parsed) |p| {
-            _ = try tx_repo.create(p);
-        }
-    }
-
-    const summaries2 = try tx_repo.getMonthlySummary(user.?.id);
-    defer init.gpa.free(summaries2);
-    std.log.info("=== MONTHLY SUMMARY ===", .{});
-    for (summaries2) |s| {
-        std.log.info("{d}/{d}  total={d:.2}  count={d}", .{ s.month, s.year, s.total, s.count });
-    }
-
-    var app = try Spider.init(init.gpa, io, "127.0.0.1", 8080);
+    var app = try Spider.init(init.gpa, io, "0.0.0.0", 8080);
     defer app.deinit();
 
     app.get("/up", healthCheck)
         .get("/dashboard", dashboard.dashboardHandler)
         .get("/dashboard/data", dashboard.dashboardDataHandler)
+        .get("/details", dashboard.detailsHandler)
         .listen() catch |err| return err;
 }
 
@@ -136,7 +53,6 @@ fn healthCheck(alloc: std.mem.Allocator, req: *Request) !Response {
     _ = req;
     return try Response.text(alloc, "OK");
 }
-
 // const std = @import("std");
 // const db = @import("db/conn.zig");
 // const spider = @import("spider");

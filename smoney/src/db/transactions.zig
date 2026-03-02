@@ -79,6 +79,38 @@ pub const TransactionRepository = struct {
         };
     }
 
+    pub fn findByCompetencia(self: TransactionRepository, user_id: u64, year: i32, month: u8) ![]Transaction {
+        const sql =
+            \\SELECT id, user_id, date, title, amount, competencia_year, competencia_month, is_expense
+            \\FROM transactions 
+            \\WHERE user_id = $1 AND competencia_year = $2 AND competencia_month = $3
+            \\ORDER BY date DESC
+        ;
+        const conn = try self.pool.acquire();
+        defer self.pool.release(conn);
+
+        const user_id_str = try std.fmt.allocPrint(self.allocator, "{d}", .{user_id});
+        defer self.allocator.free(user_id_str);
+        const year_str = try std.fmt.allocPrint(self.allocator, "{d}", .{year});
+        defer self.allocator.free(year_str);
+        const month_str = try std.fmt.allocPrint(self.allocator, "{d}", .{month});
+        defer self.allocator.free(month_str);
+
+        var result = try spider_pg.queryParams(conn, sql, &.{ user_id_str, year_str, month_str }, self.allocator);
+        defer result.deinit();
+
+        const count = result.rows();
+        if (count == 0) return &[_]Transaction{};
+
+        var txns = try self.allocator.alloc(Transaction, count);
+        errdefer self.allocator.free(txns);
+
+        for (0..count) |i| {
+            txns[i] = try self.rowToTransaction(&result, i);
+        }
+        return txns;
+    }
+
     // ─── Read ─────────────────────────────────────────────
 
     pub fn findById(self: TransactionRepository, id: u64) !?Transaction {
@@ -93,7 +125,7 @@ pub const TransactionRepository = struct {
         defer result.deinit();
 
         if (result.rows() == 0) return null;
-        return try self.rowToTransaction(result, 0);
+        return try self.rowToTransaction(&result, 0);
     }
 
     pub fn findByUser(self: TransactionRepository, user_id: u64) ![]Transaction {
@@ -118,9 +150,45 @@ pub const TransactionRepository = struct {
 
         var i: usize = 0;
         while (i < count) : (i += 1) {
-            txns[i] = try self.rowToTransaction(result, i);
+            txns[i] = try self.rowToTransaction(&result, i);
         }
         return txns;
+    }
+
+    pub fn getByMonth(self: TransactionRepository, user_id: u64, month: u8, year: i32) ![]Transaction {
+        const sql =
+            \\SELECT id, user_id, date, title, amount::text,
+            \\       competencia_year, competencia_month, is_expense
+            \\FROM transactions
+            \\WHERE user_id = $1 AND competencia_month = $2 AND competencia_year = $3
+            \\ORDER BY date ASC
+        ;
+        const conn = try self.pool.acquire();
+        defer self.pool.release(conn);
+
+        const u_str = try std.fmt.allocPrint(self.allocator, "{d}", .{user_id});
+        const m_str = try std.fmt.allocPrint(self.allocator, "{d}", .{month});
+        const y_str = try std.fmt.allocPrint(self.allocator, "{d}", .{year});
+        defer {
+            self.allocator.free(u_str);
+            self.allocator.free(m_str);
+            self.allocator.free(y_str);
+        }
+
+        var result = try spider_pg.queryParams(conn, sql, &.{ u_str, m_str, y_str }, self.allocator);
+        defer result.deinit();
+
+        const count = result.rows();
+        if (count == 0) return &[_]Transaction{};
+
+        var txs = try self.allocator.alloc(Transaction, count);
+        errdefer self.allocator.free(txs);
+
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            txs[i] = try self.rowToTransaction(&result, i);
+        }
+        return txs;
     }
 
     pub fn getMonthlySummary(self: TransactionRepository, user_id: u64) ![]MonthlySummary {
@@ -189,7 +257,8 @@ pub const TransactionRepository = struct {
 
     // ─── Helpers ──────────────────────────────────────────
 
-    fn rowToTransaction(self: TransactionRepository, result: anytype, i: usize) !Transaction {
+    // Altere a assinatura para aceitar o ponteiro mutável do Result
+    fn rowToTransaction(self: TransactionRepository, result: *spider_pg.Result, i: usize) !Transaction {
         return Transaction{
             .id = try std.fmt.parseInt(u64, result.getValue(i, 0), 10),
             .user_id = try std.fmt.parseInt(u64, result.getValue(i, 1), 10),

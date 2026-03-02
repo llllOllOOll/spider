@@ -10,7 +10,7 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8082
-      - DATABASE_URL=postgres://spider:spider@db:5432/spider
+      - DATABASE_URL=postgres://spider:spider@db:5432/smoney
     depends_on:
       db:
         condition: service_healthy
@@ -20,7 +20,7 @@ services:
     environment:
       - POSTGRES_USER=spider
       - POSTGRES_PASSWORD=spider
-      - POSTGRES_DB=spider
+      - POSTGRES_DB=smoney
     ports:
       - "5433:5432"
     volumes:
