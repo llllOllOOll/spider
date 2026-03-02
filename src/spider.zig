@@ -14,6 +14,11 @@ pub const Value = template.Value;
 
 pub const render = web.render;
 
+pub fn renderBlock(allocator: std.mem.Allocator, view: []const u8, block_name: []const u8, data: anytype) !Response {
+    const html = try template.renderBlock(view, block_name, data, allocator);
+    return Response.html(allocator, html);
+}
+
 var global_ws_hub: ?*ws_hub.Hub = null;
 
 pub fn getWsHub() *ws_hub.Hub {

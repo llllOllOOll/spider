@@ -1,16 +1,32 @@
+{% block "index" %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Website</title>
-    <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
 </head>
 <body>
-    <div id="count">
-        Count: {{ count }}
+    {% template "form" %}
+    <div id="contacts">
+        {% template "display" %}
     </div>
-   <button hx-target="#count" hx-post="/count">Count</button>
 </body>
 </html>
+{% end %}
+
+{% block "form" %}
+    <form hx-post="/contacts" hx-target="#contacts">
+        name: <input type="text" name="name" />
+        email: <input type="email" name="email" />
+        <button type="submit">Create Contact</button>
+    </form>
+{% end %}
+
+{% block "display" %}
+    {% for contact in contacts %}
+    <div>
+        Name: <span>{{ contact.name }}</span>
+        Email: <span>{{ contact.email }}</span>
+    </div>
+    {% endfor %}
+{% end %}

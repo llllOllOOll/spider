@@ -119,6 +119,9 @@ fn parseTag(content: []const u8) ?struct { name: []const u8, args: []const u8 } 
     if (std.mem.startsWith(u8, trimmed, "else")) return .{ .name = "else", .args = "" };
     if (std.mem.startsWith(u8, trimmed, "endif")) return .{ .name = "endif", .args = "" };
     if (std.mem.startsWith(u8, trimmed, "include ")) return .{ .name = "include", .args = trimmed[8..] };
+    if (std.mem.startsWith(u8, trimmed, "block ")) return .{ .name = "block", .args = trimmed[6..] };
+    if (std.mem.startsWith(u8, trimmed, "template ")) return .{ .name = "template", .args = trimmed[9..] };
+    if (std.mem.eql(u8, trimmed, "end")) return .{ .name = "end", .args = "" };
     return null;
 }
 
@@ -197,6 +200,28 @@ fn findEndFor(template: []const u8, start: usize) ?usize {
     return null;
 }
 
+fn findEndBlock(template: []const u8, start: usize) ?usize {
+    var i = start;
+    var depth: usize = 1;
+    while (i < template.len) {
+        if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
+            const tag_start = i + 2;
+            var tag_end = tag_start;
+            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) tag_end += 1;
+            if (tag_end < template.len) {
+                if (parseTag(template[tag_start..tag_end])) |tag| {
+                    if (std.mem.eql(u8, tag.name, "block")) depth += 1 else if (std.mem.eql(u8, tag.name, "end")) {
+                        depth -= 1;
+                        if (depth == 0) return tag_end + 2;
+                    }
+                }
+                i = tag_end + 2;
+            } else i += 1;
+        } else i += 1;
+    }
+    return null;
+}
+
 fn parseForArgs(args: []const u8) ?struct { item_var: []const u8, list_var: []const u8 } {
     if (std.mem.indexOf(u8, args, " in ")) |in_idx| {
         const item_var = std.mem.trim(u8, args[0..in_idx], " ");
@@ -204,6 +229,34 @@ fn parseForArgs(args: []const u8) ?struct { item_var: []const u8, list_var: []co
         if (item_var.len > 0 and list_var.len > 0) return .{ .item_var = item_var, .list_var = list_var };
     }
     return null;
+}
+
+fn extractBlocks(template: []const u8, allocator: std.mem.Allocator) !std.StringHashMapUnmanaged([]const u8) {
+    var blocks = std.StringHashMapUnmanaged([]const u8){};
+    var i: usize = 0;
+    while (i < template.len) {
+        if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
+            const tag_start = i + 2;
+            var tag_end = tag_start;
+            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) tag_end += 1;
+            if (tag_end < template.len) {
+                if (parseTag(template[tag_start..tag_end])) |tag| {
+                    if (std.mem.eql(u8, tag.name, "block")) {
+                        const block_name = std.mem.trim(u8, tag.args, "\" ");
+                        const body_start = tag_end + 2;
+                        if (findEndBlock(template, body_start)) |end_block| {
+                            const body = template[body_start..end_block];
+                            try blocks.put(allocator, try allocator.dupe(u8, block_name), body);
+                            i = end_block;
+                            continue;
+                        }
+                    }
+                }
+                i = tag_end + 2;
+            } else i += 1;
+        } else i += 1;
+    }
+    return blocks;
 }
 
 pub const TemplateRegistry = struct {
@@ -221,7 +274,7 @@ fn getTemplate(templates: anytype, name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Allocator, templates: anytype) ![]u8 {
+fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Allocator, templates: anytype, blocks: ?*const std.StringHashMapUnmanaged([]const u8)) ![]u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     try result.ensureTotalCapacity(allocator, template.len);
@@ -253,7 +306,7 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                                     for (lv.list.items) |item_ctx| {
                                         var loop_ctx = Context.init();
                                         try loop_ctx.values.put(allocator, for_args.item_var, Value{ .object = item_ctx });
-                                        const rendered = try renderTemplate(body, &loop_ctx, allocator, templates);
+                                        const rendered = try renderTemplate(body, &loop_ctx, allocator, templates, null);
                                         loop_ctx.clear(allocator);
                                         defer allocator.free(rendered);
                                         try result.appendSlice(allocator, rendered);
@@ -261,7 +314,7 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                                 } else if (lv == .object) {
                                     var loop_ctx = Context.init();
                                     try loop_ctx.values.put(allocator, for_args.item_var, Value{ .object = lv.object });
-                                    const rendered = try renderTemplate(body, &loop_ctx, allocator, templates);
+                                    const rendered = try renderTemplate(body, &loop_ctx, allocator, templates, null);
                                     loop_ctx.clear(allocator);
                                     defer allocator.free(rendered);
                                     try result.appendSlice(allocator, rendered);
@@ -277,11 +330,11 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                         const else_pos = findElse(template, body_start, end_if);
                         if (isTruthy(context, tag.args)) {
                             const if_body = template[body_start .. else_pos orelse end_if];
-                            const rendered = try renderTemplate(if_body, context, allocator, templates);
+                            const rendered = try renderTemplate(if_body, context, allocator, templates, null);
                             defer allocator.free(rendered);
                             try result.appendSlice(allocator, rendered);
                         } else if (else_pos) |else_start| {
-                            const rendered = try renderTemplate(template[else_start..end_if], context, allocator, templates);
+                            const rendered = try renderTemplate(template[else_start..end_if], context, allocator, templates, null);
                             defer allocator.free(rendered);
                             try result.appendSlice(allocator, rendered);
                         }
@@ -291,7 +344,16 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                 } else if (std.mem.eql(u8, tag.name, "include")) {
                     const filename = std.mem.trim(u8, tag.args, "\" ");
                     if (getTemplate(templates, filename)) |included| {
-                        const rendered = try renderTemplate(included, context, allocator, templates);
+                        const rendered = try renderTemplate(included, context, allocator, templates, null);
+                        defer allocator.free(rendered);
+                        try result.appendSlice(allocator, rendered);
+                    }
+                    i = tag_end + 2;
+                    continue;
+                } else if (std.mem.eql(u8, tag.name, "template") and blocks != null) {
+                    const block_name = std.mem.trim(u8, tag.args, "\" ");
+                    if (blocks.?.get(block_name)) |block_content| {
+                        const rendered = try renderTemplate(block_content, context, allocator, templates, blocks);
                         defer allocator.free(rendered);
                         try result.appendSlice(allocator, rendered);
                     }
@@ -324,15 +386,15 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
 const EmptyTemplates = struct {};
 
 pub fn renderContext(template: []const u8, context: *Context, allocator: std.mem.Allocator) ![]u8 {
-    return renderTemplate(template, context, allocator, EmptyTemplates{});
+    return renderTemplate(template, context, allocator, EmptyTemplates{}, null);
 }
 
 pub fn renderWithTemplates(comptime T: type, template: []const u8, context: *Context, allocator: std.mem.Allocator) ![]u8 {
-    return renderTemplate(template, context, allocator, @as(T, undefined));
+    return renderTemplate(template, context, allocator, @as(T, undefined), null);
 }
 
 pub fn renderWith(template: []const u8, context: *Context, allocator: std.mem.Allocator, templates: anytype) ![]u8 {
-    return renderTemplate(template, context, allocator, templates);
+    return renderTemplate(template, context, allocator, templates, null);
 }
 
 pub fn renderStr(template: []const u8, context: *Context) ![]u8 {
@@ -488,7 +550,69 @@ pub fn render(template: []const u8, data: anytype, allocator: std.mem.Allocator)
         else => @compileError("Unsupported type for render: " ++ @typeName(T)),
     }
 
-    return renderTemplate(template, context, allocator, EmptyTemplates{});
+    return renderTemplate(template, context, allocator, EmptyTemplates{}, null);
+}
+
+pub fn renderBlock(template: []const u8, block_name: []const u8, data: anytype, allocator: std.mem.Allocator) ![]u8 {
+    var blocks = try extractBlocks(template, allocator);
+    defer {
+        var iter = blocks.iterator();
+        while (iter.next()) |entry| allocator.free(entry.key_ptr.*);
+        blocks.deinit(allocator);
+    }
+
+    const block_content = blocks.get(block_name) orelse return error.BlockNotFound;
+
+    const T = @TypeOf(data);
+    const info = @typeInfo(T);
+
+    var context = try allocator.create(Context);
+    context.* = Context.init();
+    defer {
+        context.deinit(allocator);
+        allocator.destroy(context);
+    }
+
+    switch (info) {
+        .@"struct" => {
+            const is_array_list = comptime blk: {
+                for (info.@"struct".fields) |f| {
+                    if (std.mem.eql(u8, f.name, "items")) {
+                        const fi = @typeInfo(f.type);
+                        if (fi == .pointer and fi.pointer.size == .slice) break :blk true;
+                    }
+                }
+                break :blk false;
+            };
+            if (is_array_list) {
+                const child_type = @typeInfo(@TypeOf(data.items)).pointer.child;
+                const list = try sliceToContextList(child_type, data.items, allocator);
+                try context.setList(allocator, "items", list);
+            } else {
+                inline for (info.@"struct".fields) |field| {
+                    try setFieldValue(allocator, context, field.name, @field(data, field.name));
+                }
+            }
+        },
+        .array => |arr| {
+            const list = try sliceToContextList(arr.child, &data, allocator);
+            try context.setList(allocator, "items", list);
+        },
+        .pointer => |ptr| {
+            if (ptr.size == .slice) {
+                const list = try sliceToContextList(ptr.child, data, allocator);
+                try context.setList(allocator, "items", list);
+            } else {
+                @compileError("Unsupported pointer type for renderBlock: " ++ @typeName(T));
+            }
+        },
+        .optional => {
+            if (data) |value| return renderBlock(template, block_name, value, allocator);
+        },
+        else => @compileError("Unsupported type for renderBlock: " ++ @typeName(T)),
+    }
+
+    return renderTemplate(block_content, context, allocator, EmptyTemplates{}, &blocks);
 }
 
 test "basic variable substitution" {
@@ -741,4 +865,25 @@ test "render with anonymous struct" {
     const result = try render("Hello {{ name }}!", .{ .name = "seven" }, std.heap.page_allocator);
     defer std.heap.page_allocator.free(result);
     try std.testing.expectEqualSlices(u8, "Hello seven!", result);
+}
+
+test "block and template" {
+    const tmpl =
+        \\{% block "index" %}<!DOCTYPE html>
+        \\<body>
+        \\    <div id="count">
+        \\        {% template "count" %}
+        \\    </div>
+        \\</body>
+        \\</html>{% end %}
+        \\
+        \\{% block "count" %}Count {{ count }}{% end %}
+    ;
+    const result = try renderBlock(tmpl, "index", .{ .count = 42 }, std.heap.page_allocator);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(
+        u8,
+        "<!DOCTYPE html>\n<body>\n    <div id=\"count\">\n        Count 42\n    </div>\n</body>\n</html>",
+        result,
+    );
 }
