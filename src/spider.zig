@@ -12,6 +12,8 @@ pub const Group = web.Group;
 pub const Context = template.Context;
 pub const Value = template.Value;
 
+pub const render = web.render;
+
 var global_ws_hub: ?*ws_hub.Hub = null;
 
 pub fn getWsHub() *ws_hub.Hub {

@@ -1,0 +1,14 @@
+.{
+    .name = .hexagonal,
+    .version = "0.1.0",
+    .fingerprint = 0xb76a06c9a3602343,
+    .dependencies = .{
+        .spider = .{
+            .path = "..",
+        },
+        .spider_pg = .{
+            .path = "../spider_pg",
+        },
+    },
+    .paths = .{"."},
+}

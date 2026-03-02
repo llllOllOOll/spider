@@ -1,0 +1,16 @@
+<style>
+  .tx-row { display: flex; align-items: center; padding: 12px 0; border-bottom: 1px solid #0a0a0a; }
+  .tx-row:hover { background: rgba(255,255,255,0.02); }
+  .tx-date { font-size: 0.65rem; color: #555; margin-bottom: 2px; }
+</style>
+{% for tx in transactions %}
+<div class="tx-row">
+  <div style="flex-grow: 1;">
+    <p class="tx-date">{{ tx.date }}</p>
+    <p class="is-size-7 has-text-white mb-0">{{ tx.title }}</p>
+  </div>
+  <div class="has-text-right">
+    <p class="val-mono is-size-7 has-text-white">{{ tx.amount_str }}</p>
+  </div>
+</div>
+{% endfor %}
