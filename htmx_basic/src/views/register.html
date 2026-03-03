@@ -1,0 +1,61 @@
+{% block "register" %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register</title>
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.2/css/bulma.min.css">
+</head>
+<body>
+    <section class="section">
+        <div class="container">
+            {% template "register_form" %}
+        </div>
+    </section>
+</body>
+</html>
+{% end %}
+
+{% block "register_form" %}
+<div class="columns is-centered">
+    <div class="column is-half">
+        <div class="box">
+            <h1 class="title has-text-centered">Create Account</h1>
+            <form hx-post="/users/register" hx-target="#message">
+                <div class="field">
+                    <label class="label">Name</label>
+                    <div class="control">
+                        <input class="input" type="text" name="name" placeholder="Your name" required>
+                    </div>
+                </div>
+                <div class="field">
+                    <label class="label">Email</label>
+                    <div class="control">
+                        <input class="input" type="email" name="email" placeholder="your@email.com" required>
+                    </div>
+                </div>
+                <div class="field">
+                    <div class="control">
+                        <button class="button is-primary is-fullwidth" type="submit">Register</button>
+                    </div>
+                </div>
+            </form>
+            <div id="message"></div>
+        </div>
+    </div>
+</div>
+{% end %}
+
+{% block "register_success" %}
+<div class="notification is-success">
+    <strong>Success!</strong> User created with id: {{ user_id }}
+</div>
+{% end %}
+
+{% block "register_error" %}
+<div class="notification is-danger">
+    {{ message }}
+</div>
+{% end %}

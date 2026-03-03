@@ -1,25 +1,21 @@
-
+{% block "home" %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Website</title>
-    <link rel="stylesheet" href="style.css">
+    <title>Home</title>
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@1.0.2/css/bulma.min.css">
 </head>
 <body>
-
-   <h1>Hello World!</h1>
-
-   {{ count }}
-
-   <!-- <form method="post" action="/users"> -->
-   <!--     <label for="name">Name</label><br> -->
-   <!--     <input name="name" /><br> -->
-   <!--     <label for="email">Email</label><br> -->
-   <!--     <input name="email" /><br> -->
-   <!--     <input type="submit" value="Submit"> -->
-   <!-- </form> -->
-
+    <section class="section">
+        <div class="container">
+            <h1 class="title">Welcome, {{ name }}!</h1>
+            <p>Your email: <strong>{{ email }}</strong></p>
+            <a href="/logout" class="button is-danger">Logout</a>
+        </div>
+    </section>
 </body>
 </html>
+{% end %}

@@ -166,3 +166,24 @@ pub const UserRepository = struct {
         return true;
     }
 };
+
+test "CreateUserInput creates valid input" {
+    const input = CreateUserInput{
+        .email = "test@example.com",
+        .name = "John Doe",
+    };
+
+    try std.testing.expectEqualStrings("test@example.com", input.email);
+    try std.testing.expectEqualStrings("John Doe", input.name);
+}
+
+test "User struct has expected fields" {
+    const user: User = .{
+        .id = 1,
+        .email = "test@example.com",
+        .name = "Test User",
+    };
+
+    try std.testing.expectEqual(@as(u64, 1), user.id);
+    try std.testing.expectEqualStrings("test@example.com", user.email);
+}
