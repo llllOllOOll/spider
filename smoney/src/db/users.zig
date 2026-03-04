@@ -5,6 +5,11 @@ pub const User = struct {
     id: u64,
     email: []const u8,
     name: []const u8,
+
+    pub fn deinit(self: User, alloc: std.mem.Allocator) void {
+        alloc.free(self.email);
+        alloc.free(self.name);
+    }
 };
 
 pub const CreateUserInput = struct {
@@ -164,5 +169,16 @@ pub const UserRepository = struct {
         defer result.deinit();
 
         return true;
+    }
+
+    pub fn destroy(self: UserRepository, user: User) void {
+        user.deinit(self.allocator);
+    }
+
+    pub fn destroyAll(self: UserRepository, users: []User) void {
+        for (users) |user| {
+            user.deinit(self.allocator);
+        }
+        self.allocator.free(users);
     }
 };
