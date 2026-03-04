@@ -1,8 +1,8 @@
-//! Spider Web Server Package
+//! Spider Web Framework
+//!
+//! High-performance HTTP web framework written in Zig.
 //!
 //! Usage:
 //!     const spider = @import("spider");
-//!     try spider.start(init);
 
-pub const Server = @import("server.zig").Server;
-pub const start = @import("server.zig").start;
+pub const Spider = @import("src/spider.zig").Spider;

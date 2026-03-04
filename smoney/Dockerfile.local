@@ -1,4 +1,0 @@
-FROM scratch
-WORKDIR /app
-COPY zig-out/bin/app /app/app
-CMD ["/app/app"]

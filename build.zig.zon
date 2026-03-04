@@ -1,7 +1,7 @@
 .{
-    .name = .simple_server,
-    .version = "0.0.0",
-    .fingerprint = 0xccd66f920a2f9924, // Changing this has security and trust implications.
+    .name = .spider,
+    .version = "0.3.0",
+    .fingerprint = 0x6ad76a84952d8744,
     .minimum_zig_version = "0.16.0-dev.2261+d6b3dd25a",
     .dependencies = .{},
     .paths = .{
@@ -9,5 +9,6 @@
         "build.zig.zon",
         "src",
         "lib.zig",
+        "README.md",
     },
 }
