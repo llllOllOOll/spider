@@ -20,7 +20,7 @@ services:
     environment:
       - POSTGRES_USER=spider
       - POSTGRES_PASSWORD=spider
-      - POSTGRES_DB=smoney
+      - POSTGRES_DB=db_users
     ports:
       - "5433:5432"
     volumes:

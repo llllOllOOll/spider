@@ -16,6 +16,11 @@ pub const Config = struct {
 const Conn = struct {
     inner: ?*c.PGconn,
     available: std.atomic.Value(bool),
+
+    pub fn errorMessage(self: *Conn) []const u8 {
+        const pg = self.inner orelse return "no connection";
+        return std.mem.span(c.PQerrorMessage(pg));
+    }
 };
 
 pub const Pool = struct {
@@ -117,6 +122,8 @@ pub fn query(conn: *Conn, sql: [:0]const u8) !Result {
     if (result == null) return error.QueryFailed;
     const status = c.PQresultStatus(result);
     if (status != c.PGRES_TUPLES_OK and status != c.PGRES_COMMAND_OK) {
+        const msg = std.mem.span(c.PQresultErrorMessage(result));
+        std.log.err("PostgreSQL: {s}", .{msg});
         c.PQclear(result);
         return error.QueryFailed;
     }
@@ -131,7 +138,6 @@ pub fn queryParams(
 ) !Result {
     const pg_conn = conn.inner orelse return error.QueryFailed;
 
-    // Create null-terminated copies of params for PostgreSQL
     const param_values = try allocator.alloc([*:0]const u8, params.len);
     defer allocator.free(param_values);
 
@@ -156,6 +162,8 @@ pub fn queryParams(
 
     const status = c.PQresultStatus(result);
     if (status != c.PGRES_TUPLES_OK and status != c.PGRES_COMMAND_OK) {
+        const msg = std.mem.span(c.PQresultErrorMessage(result));
+        std.log.err("PostgreSQL: {s}", .{msg});
         c.PQclear(result);
         return error.QueryFailed;
     }
