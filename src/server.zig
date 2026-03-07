@@ -305,13 +305,20 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 }
             }
 
-            request.respond(web_res.body orelse "", .{
-                .status = @enumFromInt(@intFromEnum(web_res.status)),
-                .extra_headers = extra_headers[0..header_count],
-            }) catch {
-                metrics.global_metrics.incrementError();
-                break;
-            };
+            // If 404 and static_dir is set, try serving static file
+            if (web_res.status == .not_found and ctx.static_dir.len > 0) {
+                staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch {
+                    metrics.global_metrics.incrementError();
+                };
+            } else {
+                request.respond(web_res.body orelse "", .{
+                    .status = @enumFromInt(@intFromEnum(web_res.status)),
+                    .extra_headers = extra_headers[0..header_count],
+                }) catch {
+                    metrics.global_metrics.incrementError();
+                    break;
+                };
+            }
 
             metrics.global_metrics.incrementRequest();
             log.request(@intFromEnum(web_res.status), 0, method, path);
