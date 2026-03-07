@@ -105,8 +105,9 @@ pub const Spider = struct {
     }
 
     pub fn staticDir(self: Spider, dir: []const u8) Spider {
-        self.static_dir = dir;
-        return self;
+        var s = self;
+        s.static_dir = dir;
+        return s;
     }
 
     pub fn listen(self: Spider) !void {
