@@ -1,3 +1,5 @@
+![Spider Logo](assets/spider_logo.png)
+
 # Spider
 
 Spider web framework written in Zig (tested with `0.16.0-dev`).
