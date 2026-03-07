@@ -369,7 +369,45 @@ fn payloadTooLargeHandler(req: *std.http.Server.Request, allocator: std.mem.Allo
 }
 
 fn staticFileHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator, static_dir: []const u8, io: Io) !void {
-    _ = static_dir;
-    _ = io;
-    try notFoundHandler(req, allocator);
+    // Remove leading slash from request path
+    const req_path = if (std.mem.startsWith(u8, req.head.target, "/")) req.head.target[1..] else req.head.target;
+
+    // Join static_dir with request path
+    const full_path = std.fs.path.join(allocator, &.{ static_dir, req_path }) catch |err| {
+        std.debug.print("SERVER: path join error: {}\n", .{err});
+        try notFoundHandler(req, allocator);
+        return;
+    };
+    defer allocator.free(full_path);
+
+    // Read file
+    const content = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        full_path,
+        allocator,
+        .limited(10 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("SERVER: file read error: {}\n", .{err});
+        try notFoundHandler(req, allocator);
+        return;
+    };
+    defer allocator.free(content);
+
+    // Determine MIME type
+    const content_type = blk: {
+        if (std.mem.endsWith(u8, req_path, ".png")) break :blk "image/png";
+        if (std.mem.endsWith(u8, req_path, ".jpg") or std.mem.endsWith(u8, req_path, ".jpeg")) break :blk "image/jpeg";
+        if (std.mem.endsWith(u8, req_path, ".svg")) break :blk "image/svg+xml";
+        if (std.mem.endsWith(u8, req_path, ".css")) break :blk "text/css";
+        if (std.mem.endsWith(u8, req_path, ".js")) break :blk "application/javascript";
+        if (std.mem.endsWith(u8, req_path, ".ico")) break :blk "image/x-icon";
+        if (std.mem.endsWith(u8, req_path, ".html")) break :blk "text/html";
+        if (std.mem.endsWith(u8, req_path, ".woff2")) break :blk "font/woff2";
+        break :blk "application/octet-stream";
+    };
+
+    try req.respond(content, .{
+        .status = .ok,
+        .extra_headers = &.{.{ .name = "content-type", .value = content_type }},
+    });
 }

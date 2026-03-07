@@ -72,7 +72,8 @@ pub const Group = struct {
 };
 
 fn isDynamic(path: []const u8) bool {
-    return std.mem.indexOfScalar(u8, path, ':') != null;
+    return std.mem.indexOfScalar(u8, path, ':') != null or
+        std.mem.indexOfScalar(u8, path, '*') != null;
 }
 
 fn toUppercase(in: []const u8, out: []u8) void {
