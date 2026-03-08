@@ -4,6 +4,7 @@ pub const websocket = @import("websocket.zig");
 pub const ws_hub = @import("ws_hub.zig");
 pub const template = @import("template.zig");
 pub const pg = @import("pg.zig");
+pub const env = @import("env.zig");
 const srv = @import("server.zig");
 pub const static = @import("static_handler.zig");
 
@@ -39,6 +40,8 @@ pub fn deinitWsHub(allocator: std.mem.Allocator) void {
         global_ws_hub = null;
     }
 }
+
+pub const loadEnv = env.loadEnv;
 
 pub const Spider = struct {
     allocator: std.mem.Allocator,
