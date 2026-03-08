@@ -212,6 +212,35 @@ pub const Result = struct {
         const val = c.PQgetvalue(r, @intCast(row), @intCast(col));
         return std.mem.span(val);
     }
+
+    pub fn mapAll(self: *Result, comptime T: type, alloc: std.mem.Allocator) ![]T {
+        const count = self.rows();
+        const items = try alloc.alloc(T, count);
+
+        const num_columns = self.columns();
+        inline for (@typeInfo(T).@"struct".fields) |field| {
+            var col_idx: ?usize = null;
+            for (0..num_columns) |i| {
+                if (std.mem.eql(u8, self.columnName(i), field.name)) {
+                    col_idx = i;
+                    break;
+                }
+            }
+            if (col_idx) |col| {
+                for (items, 0..) |*item, row| {
+                    const raw = self.getValue(row, col);
+                    @field(item, field.name) = switch (field.type) {
+                        []const u8 => try alloc.dupe(u8, raw),
+                        i32, i64 => try std.fmt.parseInt(field.type, raw, 10),
+                        f32, f64 => try std.fmt.parseFloat(field.type, raw),
+                        bool => std.mem.eql(u8, raw, "t"),
+                        else => @compileError("unsupported type: " ++ @typeName(field.type)),
+                    };
+                }
+            }
+        }
+        return items;
+    }
 };
 
 pub fn queryConn(conn: *Conn, sql: [:0]const u8) !Result {
