@@ -1,6 +1,7 @@
 const std = @import("std");
 pub const c = @cImport({
     @cInclude("libpq-fe.h");
+    @cInclude("stdlib.h");
 });
 
 pub const Config = struct {
@@ -12,6 +13,88 @@ pub const Config = struct {
     pool_size: usize = 10,
     timeout_ms: u64 = 5000,
 };
+
+pub const DbConfig = struct {
+    host: ?[]const u8 = null,
+    port: ?u16 = null,
+    database: ?[]const u8 = null,
+    user: ?[]const u8 = null,
+    password: ?[]const u8 = null,
+    pool_size: ?usize = null,
+};
+
+var db_pool: ?*Pool = null;
+var db_allocator: ?std.mem.Allocator = null;
+
+fn getEnv(key: []const u8, default: []const u8) []const u8 {
+    var key_null: [256]u8 = undefined;
+    @memcpy(key_null[0..key.len], key);
+    key_null[key.len] = 0;
+    if (c.getenv(&key_null)) |val| {
+        return std.mem.sliceTo(val, 0);
+    }
+    return default;
+}
+
+fn getEnvInt(key: []const u8, default: u16) u16 {
+    var key_null: [256]u8 = undefined;
+    @memcpy(key_null[0..key.len], key);
+    key_null[key.len] = 0;
+    if (c.getenv(&key_null)) |val| {
+        return std.fmt.parseInt(u16, std.mem.sliceTo(val, 0), 10) catch default;
+    }
+    return default;
+}
+
+pub fn init(allocator: std.mem.Allocator, overrides: DbConfig) !void {
+    db_allocator = allocator;
+
+    const host = overrides.host orelse getEnv("POSTGRES_HOST", "localhost");
+    const port = overrides.port orelse getEnvInt("POSTGRES_PORT", 5432);
+    const user = overrides.user orelse getEnv("POSTGRES_USER", "spider");
+    const password = overrides.password orelse getEnv("POSTGRES_PASSWORD", "spider");
+    const database = overrides.database orelse getEnv("POSTGRES_DB", "spider_db");
+    const pool_size = overrides.pool_size orelse 10;
+
+    const config = Config{
+        .host = host,
+        .port = port,
+        .database = database,
+        .user = user,
+        .password = password,
+        .pool_size = pool_size,
+    };
+
+    db_pool = try allocator.create(Pool);
+    db_pool.?.* = try Pool.init(allocator, config);
+}
+
+pub fn deinit() void {
+    if (db_pool) |p| {
+        p.deinit();
+        db_allocator.?.destroy(p);
+        db_pool = null;
+        db_allocator = null;
+    }
+}
+
+pub fn query(sql: [:0]const u8) !Result {
+    const conn = try db_pool.?.acquire();
+    errdefer db_pool.?.release(conn);
+    return queryConn(conn, sql);
+}
+
+pub fn queryParams(sql: [:0]const u8, params: []const []const u8) !Result {
+    const conn = try db_pool.?.acquire();
+    errdefer db_pool.?.release(conn);
+    return queryConnParams(conn, sql, params, db_allocator.?);
+}
+
+pub fn exec(sql: [:0]const u8) !void {
+    const conn = try db_pool.?.acquire();
+    defer db_pool.?.release(conn);
+    _ = try queryConn(conn, sql);
+}
 
 const Conn = struct {
     inner: ?*c.PGconn,
@@ -80,7 +163,6 @@ pub const Pool = struct {
                     return conn;
                 }
             }
-            // spin
         }
     }
 
@@ -116,7 +198,7 @@ pub const Result = struct {
     }
 };
 
-pub fn query(conn: *Conn, sql: [:0]const u8) !Result {
+pub fn queryConn(conn: *Conn, sql: [:0]const u8) !Result {
     const pg_conn = conn.inner orelse return error.QueryFailed;
     const result = c.PQexec(pg_conn, sql);
     if (result == null) return error.QueryFailed;
@@ -130,7 +212,7 @@ pub fn query(conn: *Conn, sql: [:0]const u8) !Result {
     return .{ .inner = result };
 }
 
-pub fn queryParams(
+pub fn queryConnParams(
     conn: *Conn,
     sql: [:0]const u8,
     params: []const []const u8,
