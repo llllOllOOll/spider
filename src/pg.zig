@@ -222,7 +222,12 @@ fn mapAllImpl(result: *Result, comptime T: type, allocator: std.mem.Allocator) !
     const count = result.rows();
     if (count == 0) return &[_]T{};
 
-    const fields = @typeInfo(T).Struct.fields;
+    const info = @typeInfo(T);
+    const struct_info = switch (info) {
+        .Struct => |s| s,
+        else => @compileError("mapAll requires a struct type"),
+    };
+    const fields = struct_info.fields;
     const field_map = try buildFieldMap(result, fields, allocator);
     defer allocator.free(field_map);
 
@@ -240,7 +245,7 @@ fn mapAllImpl(result: *Result, comptime T: type, allocator: std.mem.Allocator) !
     return items;
 }
 
-fn buildFieldMap(result: *Result, fields: anytype, allocator: std.mem.Allocator) ![]?usize {
+fn buildFieldMap(result: *Result, fields: []const std.builtin.Type.StructField, allocator: std.mem.Allocator) ![]?usize {
     const col_count = result.columns();
     const map = try allocator.alloc(?usize, fields.len);
     @memset(map, null);
