@@ -212,78 +212,7 @@ pub const Result = struct {
         const val = c.PQgetvalue(r, @intCast(row), @intCast(col));
         return std.mem.span(val);
     }
-
-    pub fn mapAll(self: *Result, comptime T: type, allocator: std.mem.Allocator) ![]T {
-        return mapAllImpl(self, T, allocator);
-    }
 };
-
-fn mapAllImpl(result: *Result, comptime T: type, allocator: std.mem.Allocator) ![]T {
-    const count = result.rows();
-    if (count == 0) return &[_]T{};
-
-    const info = @typeInfo(T);
-    const struct_info = switch (info) {
-        .Struct => |s| s,
-        else => @compileError("mapAll requires a struct type"),
-    };
-    const fields = struct_info.fields;
-    const field_map = try buildFieldMap(result, fields, allocator);
-    defer allocator.free(field_map);
-
-    const items = try allocator.alloc(T, count);
-    errdefer allocator.free(items);
-
-    for (items, 0..) |*item, row_idx| {
-        inline for (fields) |field| {
-            const col_idx = field_map[field.name] orelse continue;
-            const raw_value = result.getValue(row_idx, col_idx);
-            @field(item.*, field.name) = try parseField(field, raw_value, allocator);
-        }
-    }
-
-    return items;
-}
-
-fn buildFieldMap(result: *Result, fields: []const std.builtin.Type.StructField, allocator: std.mem.Allocator) ![]?usize {
-    const col_count = result.columns();
-    const map = try allocator.alloc(?usize, fields.len);
-    @memset(map, null);
-
-    for (0..col_count) |col_idx| {
-        const col_name = result.columnName(col_idx);
-        for (fields, 0..) |field, field_idx| {
-            if (std.mem.eql(u8, col_name, field.name)) {
-                map[field_idx] = col_idx;
-                break;
-            }
-        }
-    }
-
-    return map;
-}
-
-fn parseField(comptime field: std.builtin.Type.StructField, raw: []const u8, allocator: std.mem.Allocator) !field.type {
-    const T = field.type;
-    switch (@typeInfo(T)) {
-        .Int => {
-            return try std.fmt.parseInt(T, raw, 10);
-        },
-        .Float => {
-            return try std.fmt.parseFloat(T, raw);
-        },
-        .Bool => {
-            return std.mem.eql(u8, raw, "t") or std.mem.eql(u8, raw, "true") or std.mem.eql(u8, raw, "1");
-        },
-        .Pointer => |ptr_info| {
-            if (ptr_info.size == .Slice and ptr_info.child == u8) {
-                return try allocator.dupe(u8, raw);
-            }
-            @compileError("Unsupported pointer type: " ++ @typeName(T));
-        },
-        else => @compileError("Unsupported field type: " ++ @typeName(T)),
-    }
-}
 
 pub fn queryConn(conn: *Conn, sql: [:0]const u8) !Result {
     const pg_conn = conn.inner orelse return error.QueryFailed;
