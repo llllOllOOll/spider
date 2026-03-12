@@ -247,28 +247,13 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 else => web.Method.get,
             };
 
-            // Read body if present
-            var body: ?[]const u8 = null;
-            if (request.head.content_length) |len| {
-                std.debug.print("SERVER: content_length = {}\n", .{len});
-                if (len > 0 and len <= MAX_BODY_SIZE) {
-                    const body_reader = request.readerExpectNone(&read_buffer);
-                    body = body_reader.readAlloc(arena, @intCast(len)) catch |err| {
-                        std.debug.print("SERVER: Error reading body: {}\n", .{err});
-                        break;
-                    };
-                    std.debug.print("SERVER: Read body: {s}\n", .{body.?});
-                }
-            } else {
-                std.debug.print("SERVER: No content_length header\n", .{});
-            }
-
+            // Collect headers BEFORE reading body
             var web_req = web.Request{
                 .method = web_method,
                 .path = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[0..q] else url,
                 .query = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[q + 1 ..] else null,
                 .headers = web.Headers.init(),
-                .body = body,
+                .body = null,
                 .params = .{},
                 .io = ctx.io,
             };
@@ -276,6 +261,18 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
             while (req_header_iter.next()) |header| {
                 web_req.headers.set(arena, header.name, header.value) catch {};
             }
+            // Read body AFTER headers
+            var body: ?[]const u8 = null;
+            if (request.head.content_length) |len| {
+                if (len > 0 and len <= MAX_BODY_SIZE) {
+                    const body_reader = request.readerExpectNone(&read_buffer);
+                    body = body_reader.readAlloc(arena, @intCast(len)) catch |err| {
+                        std.debug.print("SERVER: Error reading body: {}\n", .{err});
+                        break;
+                    };
+                }
+            }
+            web_req.body = body;
             defer web_req.deinit(arena);
 
             const req_start_time = std.Io.Clock.now(.awake, ctx.io);
