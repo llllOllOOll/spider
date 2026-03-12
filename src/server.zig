@@ -265,7 +265,7 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
             var body: ?[]const u8 = null;
             if (request.head.content_length) |len| {
                 if (len > 0 and len <= MAX_BODY_SIZE) {
-                    const body_buffer = try arena.alloc(u8, @intCast(len));
+                    const body_buffer = arena.alloc(u8, @intCast(len)) catch break;
                     const body_reader = request.readerExpectNone(body_buffer);
                     body = body_reader.readAlloc(arena, @intCast(len)) catch |err| {
                         std.debug.print("SERVER: Error reading body: {}\n", .{err});
