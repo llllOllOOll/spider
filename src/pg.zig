@@ -46,7 +46,7 @@ fn getEnvInt(key: []const u8, default: u16) u16 {
     return default;
 }
 
-pub fn init(allocator: std.mem.Allocator, overrides: DbConfig) !void {
+pub fn init(allocator: std.mem.Allocator, io: std.Io, overrides: DbConfig) !void {
     db_allocator = allocator;
 
     const host_raw = overrides.host orelse getEnv("POSTGRES_HOST", "localhost");
@@ -66,7 +66,7 @@ pub fn init(allocator: std.mem.Allocator, overrides: DbConfig) !void {
     };
 
     db_pool = try allocator.create(Pool);
-    db_pool.?.* = try Pool.init(allocator, config);
+    db_pool.?.* = try Pool.init(allocator, io, config);
 }
 
 pub fn deinit() void {
@@ -76,6 +76,14 @@ pub fn deinit() void {
         db_pool = null;
         db_allocator = null;
     }
+}
+
+pub fn acquireConn() !*Conn {
+    return db_pool.?.acquire();
+}
+
+pub fn releaseConn(conn: *Conn) void {
+    db_pool.?.release(conn);
 }
 
 pub fn query(sql: [:0]const u8) !Result {
@@ -172,8 +180,11 @@ pub const Pool = struct {
     config: Config,
     allocator: std.mem.Allocator,
     conninfo: []u8,
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
+    cond: std.Io.Condition = .init,
 
-    pub fn init(allocator: std.mem.Allocator, config: Config) !Pool {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, config: Config) !Pool {
         const conninfo = try std.fmt.allocPrint(allocator, "host={s} port={d} dbname={s} user={s} password={s}\x00", .{ config.host, config.port, config.database, config.user, config.password });
 
         const conns = try allocator.alloc(Conn, config.pool_size);
@@ -197,6 +208,7 @@ pub const Pool = struct {
             .config = config,
             .allocator = allocator,
             .conninfo = conninfo,
+            .io = io,
         };
     }
 
@@ -213,6 +225,8 @@ pub const Pool = struct {
     }
 
     pub fn acquire(self: *Pool) !*Conn {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         while (true) {
             for (self.conns) |*conn| {
                 if (conn.available.cmpxchgWeak(true, false, .acquire, .monotonic) == null) {
@@ -224,12 +238,13 @@ pub const Pool = struct {
                     return conn;
                 }
             }
+            self.cond.waitUncancelable(self.io, &self.mutex);
         }
     }
 
     pub fn release(self: *Pool, conn: *Conn) void {
-        _ = self;
         conn.available.store(true, .release);
+        self.cond.signal(self.io);
     }
 };
 
