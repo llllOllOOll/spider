@@ -49,19 +49,19 @@ fn getEnvInt(key: []const u8, default: u16) u16 {
 pub fn init(allocator: std.mem.Allocator, overrides: DbConfig) !void {
     db_allocator = allocator;
 
-    const host = overrides.host orelse getEnv("POSTGRES_HOST", "localhost");
+    const host_raw = overrides.host orelse getEnv("POSTGRES_HOST", "localhost");
     const port = overrides.port orelse getEnvInt("POSTGRES_PORT", 5432);
-    const user = overrides.user orelse getEnv("POSTGRES_USER", "spider");
-    const password = overrides.password orelse getEnv("POSTGRES_PASSWORD", "spider");
-    const database = overrides.database orelse getEnv("POSTGRES_DB", "spider_db");
+    const user_raw = overrides.user orelse getEnv("POSTGRES_USER", "spider");
+    const password_raw = overrides.password orelse getEnv("POSTGRES_PASSWORD", "spider");
+    const database_raw = overrides.database orelse getEnv("POSTGRES_DB", "spider_db");
     const pool_size = overrides.pool_size orelse 10;
 
     const config = Config{
-        .host = host,
+        .host = try allocator.dupe(u8, host_raw),
         .port = port,
-        .database = database,
-        .user = user,
-        .password = password,
+        .database = try allocator.dupe(u8, database_raw),
+        .user = try allocator.dupe(u8, user_raw),
+        .password = try allocator.dupe(u8, password_raw),
         .pool_size = pool_size,
     };
 
@@ -88,6 +88,67 @@ pub fn queryParams(sql: [:0]const u8, params: []const []const u8) !Result {
     const conn = try db_pool.?.acquire();
     errdefer db_pool.?.release(conn);
     return queryConnParams(conn, sql, params, db_allocator.?);
+}
+
+pub fn queryWith(sql: [:0]const u8, params: anytype) !Result {
+    const conn = try db_pool.?.acquire();
+    errdefer db_pool.?.release(conn);
+
+    const allocator = db_allocator.?;
+    const params_info = @typeInfo(@TypeOf(params));
+
+    const param_count = switch (params_info) {
+        .@"struct" => params_info.@"struct".fields.len,
+        .@"union" => @compileError("Unions not supported as query parameters"),
+        else => @compileError("Query parameters must be a struct, got: " ++ @tagName(params_info)),
+    };
+
+    const param_strings = try allocator.alloc([]const u8, param_count);
+    defer allocator.free(param_strings);
+
+    const allocated = try allocator.alloc(bool, param_count);
+    defer allocator.free(allocated);
+    @memset(allocated, false);
+
+    inline for (0..param_count) |i| {
+        const field_name = comptime params_info.@"struct".fields[i].name;
+        const value = @field(params, field_name);
+        const field_type = params_info.@"struct".fields[i].type;
+
+        param_strings[i] = switch (@typeInfo(field_type)) {
+            .int, .comptime_int => blk: {
+                allocated[i] = true;
+                break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
+            },
+            .float, .comptime_float => blk: {
+                allocated[i] = true;
+                break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
+            },
+            .bool => if (value) "true" else "false",
+            .pointer => |ptr_info| if (ptr_info.size == .slice and ptr_info.child == u8) value else @compileError("Unsupported pointer type: " ++ @typeName(field_type)),
+            else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
+        };
+    }
+
+    errdefer {
+        for (0..param_count) |i| {
+            if (allocated[i]) allocator.free(param_strings[i]);
+        }
+    }
+
+    const result = try queryConnParams(conn, sql, param_strings, allocator);
+
+    for (0..param_count) |i| {
+        if (allocated[i]) allocator.free(param_strings[i]);
+    }
+
+    return result;
+}
+
+pub fn queryOneWith(comptime T: type, sql: [:0]const u8, params: anytype) !?T {
+    var result = try queryWith(sql, params);
+    defer result.deinit();
+    return try result.mapOne(T, db_allocator.?);
 }
 
 pub fn exec(sql: [:0]const u8) !void {
@@ -213,6 +274,11 @@ pub const Result = struct {
         return std.mem.span(val);
     }
 
+    pub fn isNull(self: *Result, row: usize, col: usize) bool {
+        const r = self.inner orelse return true;
+        return c.PQgetisnull(r, @intCast(row), @intCast(col)) == 1;
+    }
+
     pub fn mapAll(self: *Result, comptime T: type, alloc: std.mem.Allocator) ![]T {
         const count = self.rows();
         const items = try alloc.alloc(T, count);
@@ -228,18 +294,39 @@ pub const Result = struct {
             }
             if (col_idx) |col| {
                 for (items, 0..) |*item, row| {
-                    const raw = self.getValue(row, col);
-                    @field(item, field.name) = switch (field.type) {
-                        []const u8 => try alloc.dupe(u8, raw),
-                        i32, i64 => try std.fmt.parseInt(field.type, raw, 10),
-                        f32, f64 => try std.fmt.parseFloat(field.type, raw),
-                        bool => std.mem.eql(u8, raw, "t"),
-                        else => @compileError("unsupported type: " ++ @typeName(field.type)),
-                    };
+                    const is_null = self.isNull(row, col);
+                    const raw = if (is_null) "" else self.getValue(row, col);
+                    const type_info = @typeInfo(field.type);
+                    if (type_info == .optional) {
+                        const Child = type_info.optional.child;
+                        @field(item, field.name) = if (is_null) null else switch (Child) {
+                            []const u8 => try alloc.dupe(u8, raw),
+                            i32, i64 => try std.fmt.parseInt(Child, raw, 10),
+                            f32, f64 => try std.fmt.parseFloat(Child, raw),
+                            bool => std.mem.eql(u8, raw, "t"),
+                            else => @compileError("unsupported optional child type: " ++ @typeName(Child)),
+                        };
+                    } else {
+                        @field(item, field.name) = switch (field.type) {
+                            []const u8 => try alloc.dupe(u8, raw),
+                            i32, i64 => try std.fmt.parseInt(field.type, raw, 10),
+                            f32, f64 => try std.fmt.parseFloat(field.type, raw),
+                            bool => std.mem.eql(u8, raw, "t"),
+                            else => @compileError("unsupported type: " ++ @typeName(field.type)),
+                        };
+                    }
                 }
             }
         }
         return items;
+    }
+
+    pub fn mapOne(self: *Result, comptime T: type, alloc: std.mem.Allocator) !?T {
+        const items = try self.mapAll(T, alloc);
+        defer alloc.free(items);
+
+        if (items.len == 0) return null;
+        return items[0];
     }
 };
 

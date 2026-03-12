@@ -189,7 +189,11 @@ pub const Router = struct {
             if (node.children.get(segment)) |child| {
                 node = child;
             } else if (node.param_child) |child| {
-                try params.put(allocator, node.param_name.?, segment);
+                const key = try allocator.dupe(u8, node.param_name.?);
+                errdefer allocator.free(key);
+                const value = try allocator.dupe(u8, segment);
+                errdefer allocator.free(value);
+                try params.put(allocator, key, value);
                 node = child;
             } else if (node.wildcard_child) |child| {
                 node = child;

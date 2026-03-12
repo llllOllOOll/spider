@@ -46,7 +46,11 @@ pub const Headers = struct {
     }
 
     pub fn set(self: *Headers, allocator: std.mem.Allocator, name: []const u8, value: []const u8) !void {
-        try self.map.put(allocator, name, value);
+        const name_dup = try allocator.dupe(u8, name);
+        errdefer allocator.free(name_dup);
+        const value_dup = try allocator.dupe(u8, value);
+        errdefer allocator.free(value_dup);
+        try self.map.put(allocator, name_dup, value_dup);
     }
 
     pub fn has(self: *const Headers, name: []const u8) bool {
@@ -65,6 +69,17 @@ pub const Request = struct {
     _app: ?*App = null,
     _handler: ?Handler = null,
     _middleware_index: usize = 0,
+    io: std.Io = undefined,
+
+    pub fn deinit(self: *Request, allocator: std.mem.Allocator) void {
+        var params_iter = self.params.iterator();
+        while (params_iter.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.params.deinit(allocator);
+        self.headers.map.deinit(allocator);
+    }
 
     pub fn parse(allocator: std.mem.Allocator, raw: []const u8) !Request {
         var req = Request{

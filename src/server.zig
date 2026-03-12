@@ -270,7 +270,13 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 .headers = web.Headers.init(),
                 .body = body,
                 .params = .{},
+                .io = ctx.io,
             };
+            var req_header_iter = request.iterateHeaders();
+            while (req_header_iter.next()) |header| {
+                web_req.headers.set(arena, header.name, header.value) catch {};
+            }
+            defer web_req.deinit(arena);
 
             const req_start_time = std.Io.Clock.now(.awake, ctx.io);
 
@@ -311,6 +317,10 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                     metrics.global_metrics.incrementError();
                 };
             } else {
+                std.debug.print("DEBUG headers count: {d}\n", .{header_count});
+                for (extra_headers[0..header_count]) |h| {
+                    std.debug.print("DEBUG header: [{s}] = [{s}]\n", .{ h.name, h.value });
+                }
                 request.respond(web_res.body orelse "", .{
                     .status = @enumFromInt(@intFromEnum(web_res.status)),
                     .extra_headers = extra_headers[0..header_count],
