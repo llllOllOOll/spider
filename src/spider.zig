@@ -127,3 +127,5 @@ pub const Spider = struct {
         try server.start();
     }
 };
+pub const auth = @import("auth.zig");
+pub const google = @import("providers/google.zig");
