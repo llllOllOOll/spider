@@ -4,21 +4,6 @@ pub const HttpError = error{ RequestFailed, BadStatus };
 
 pub const Header = std.http.Header;
 
-fn readBody(alloc: std.mem.Allocator, response: *std.http.Client.Response, transfer_buffer: []u8, decompress_buffer: []u8) ![]u8 {
-    var decompress: std.http.Decompress = undefined;
-    var body_reader = response.readerDecompressing(transfer_buffer, &decompress, decompress_buffer);
-
-    var body = try std.ArrayList(u8).initCapacity(alloc, 4096);
-    errdefer body.deinit(alloc);
-
-    while (true) {
-        const byte = body_reader.takeByte() catch break;
-        try body.append(alloc, byte);
-    }
-
-    return body.toOwnedSlice(alloc);
-}
-
 pub fn get(
     alloc: std.mem.Allocator,
     io: std.Io,
