@@ -21,21 +21,27 @@ pub const JwtError = error{
 const HEADER_B64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
 
 pub fn jwtSign(alloc: std.mem.Allocator, claims: Claims, secret: []const u8) ![]u8 {
+    std.log.info("JWT: jwtSign start", .{});
     const payload_json = try std.fmt.allocPrint(
         alloc,
         "{{\"sub\":{d},\"email\":\"{s}\",\"exp\":{d}}}",
         .{ claims.sub, claims.email, claims.exp },
     );
     defer alloc.free(payload_json);
+    std.log.info("JWT: payload created: {s}", .{payload_json});
 
     var payload_b64_buf: [512]u8 = undefined;
     const payload_b64 = std.base64.url_safe_no_pad.Encoder.encode(&payload_b64_buf, payload_json);
+    std.log.info("JWT: payload_b64 created", .{});
 
     var signing_input_buf: [1024]u8 = undefined;
     const signing_input = try std.fmt.bufPrint(&signing_input_buf, "{s}.{s}", .{ HEADER_B64, payload_b64 });
+    std.log.info("JWT: signing_input created, len={d}", .{signing_input.len});
 
     var hmac_output: [32]u8 = undefined;
+    std.log.info("JWT: about to create HMAC with secret len={d}", .{secret.len});
     std.crypto.auth.hmac.sha2.HmacSha256.create(&hmac_output, signing_input, secret);
+    std.log.info("JWT: HMAC created", .{});
 
     var sig_b64_buf: [64]u8 = undefined;
     const sig_b64 = std.base64.url_safe_no_pad.Encoder.encode(&sig_b64_buf, &hmac_output);
