@@ -214,7 +214,9 @@ pub const Pool = struct {
 
                 if (attempt < max_attempts - 1) {
                     std.log.warn("pg: connection attempt {d}/{d} failed, retrying in {d}ms", .{ attempt + 1, max_attempts, delay_ms });
-                    std.time.sleep(delay_ms * std.time.ns_per_ms);
+                    const start = std.Io.Clock.now(.awake, io);
+                    const end = start.addNanoseconds(delay_ms * std.time.ns_per_ms);
+                    std.Io.Clock.sleep(.awake, io, end);
                     delay_ms *= 2; // Exponential backoff: 1s, 2s, 4s, 8s, 16s
                 } else {
                     std.log.err("pg: connection failed after {d} attempts", .{max_attempts});
