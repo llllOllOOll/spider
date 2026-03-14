@@ -224,17 +224,41 @@ pub const Pool = struct {
         self.allocator.free(self.config.database);
     }
 
+    fn connHealthCheck(conn: *Conn, conninfo: [*:0]const u8) !void {
+        const pg = conn.inner orelse {
+            std.log.warn("pg: connection is null, recreating", .{});
+            conn.inner = c.PQconnectdb(conninfo);
+            if (conn.inner == null or c.PQstatus(conn.inner.?) != c.CONNECTION_OK) {
+                return error.ConnectionFailed;
+            }
+            return;
+        };
+
+        if (c.PQstatus(pg) != c.CONNECTION_OK) {
+            std.log.warn("pg: connection bad, attempting reset", .{});
+            c.PQreset(pg);
+            if (c.PQstatus(pg) != c.CONNECTION_OK) {
+                std.log.warn("pg: reset failed, recreating connection", .{});
+                c.PQfinish(pg);
+                conn.inner = c.PQconnectdb(conninfo);
+                if (conn.inner == null or c.PQstatus(conn.inner.?) != c.CONNECTION_OK) {
+                    return error.ConnectionFailed;
+                }
+            }
+        }
+    }
+
     pub fn acquire(self: *Pool) !*Conn {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         while (true) {
             for (self.conns) |*conn| {
                 if (conn.available.cmpxchgWeak(true, false, .acquire, .monotonic) == null) {
-                    if (conn.inner) |pg| {
-                        if (c.PQstatus(pg) != c.CONNECTION_OK) {
-                            c.PQreset(pg);
-                        }
-                    }
+                    connHealthCheck(conn, self.conninfo.ptr) catch |err| {
+                        std.log.err("pg: connection health check failed: {}", .{err});
+                        conn.available.store(true, .release);
+                        continue;
+                    };
                     return conn;
                 }
             }
@@ -243,6 +267,15 @@ pub const Pool = struct {
     }
 
     pub fn release(self: *Pool, conn: *Conn) void {
+        // Check connection health before returning to pool
+        connHealthCheck(conn, self.conninfo.ptr) catch |err| {
+            std.log.warn("pg: releasing bad connection, recreating: {}", .{err});
+            if (conn.inner) |pg| {
+                c.PQfinish(pg);
+            }
+            conn.inner = c.PQconnectdb(self.conninfo.ptr);
+        };
+
         conn.available.store(true, .release);
         self.cond.signal(self.io);
     }
