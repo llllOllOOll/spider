@@ -25,32 +25,27 @@ pub fn get(
     url: []const u8,
     headers: []const Header,
 ) ![]u8 {
-    var client = std.http.Client{ .allocator = alloc, .io = io };
-    defer client.deinit();
+    _ = io;
 
-    var req = try client.request(.GET, try std.Uri.parse(url), .{
-        .extra_headers = headers,
-    });
-    defer req.deinit();
+    var args = std.ArrayList([]const u8).init(alloc);
+    defer args.deinit();
 
-    try req.sendBodiless();
+    try args.append("curl");
+    try args.append("-s");
+    try args.append(url);
 
-    var response = try req.receiveHead(&.{});
-
-    if (response.head.status != .ok) {
-        return HttpError.BadStatus;
+    for (headers) |h| {
+        try args.append("-H");
+        try args.append(try std.fmt.allocPrint(alloc, "{s}: {s}", .{ h.name, h.value }));
     }
 
-    const decompress_buffer: []u8 = switch (response.head.content_encoding) {
-        .identity => &.{},
-        .zstd => try alloc.alloc(u8, std.compress.zstd.default_window_len),
-        .deflate, .gzip => try alloc.alloc(u8, std.compress.flate.max_window_len),
-        .compress => return HttpError.RequestFailed,
-    };
-    defer if (decompress_buffer.len != 0) alloc.free(decompress_buffer);
+    var child = std.process.Child.init(args.items, alloc);
+    child.stdout_behavior = .pipe;
 
-    var transfer_buffer: [64]u8 = undefined;
-    return readBody(alloc, &response, &transfer_buffer, decompress_buffer);
+    try child.spawn();
+    const stdout = try child.stdout.?.reader().readAllAlloc(alloc, 1024 * 1024);
+    _ = try child.wait();
+    return stdout;
 }
 
 pub fn post(
@@ -60,30 +55,26 @@ pub fn post(
     body_content: []const u8,
     content_type: []const u8,
 ) ![]u8 {
-    var client = std.http.Client{ .allocator = alloc, .io = io };
-    defer client.deinit();
+    _ = io;
 
-    var req = try client.request(.POST, try std.Uri.parse(url), .{
-        .headers = .{ .content_type = .{ .override = content_type } },
-    });
-    defer req.deinit();
+    var args = std.ArrayList([]const u8).init(alloc);
+    defer args.deinit();
 
-    try req.sendBodyComplete(@constCast(body_content));
+    try args.append("curl");
+    try args.append("-s");
+    try args.append("-X");
+    try args.append("POST");
+    try args.append("-H");
+    try args.append(try std.fmt.allocPrint(alloc, "Content-Type: {s}", .{content_type}));
+    try args.append("-d");
+    try args.append(body_content);
+    try args.append(url);
 
-    var response = try req.receiveHead(&.{});
+    var child = std.process.Child.init(args.items, alloc);
+    child.stdout_behavior = .pipe;
 
-    if (response.head.status != .ok) {
-        return HttpError.BadStatus;
-    }
-
-    const decompress_buffer: []u8 = switch (response.head.content_encoding) {
-        .identity => &.{},
-        .zstd => try alloc.alloc(u8, std.compress.zstd.default_window_len),
-        .deflate, .gzip => try alloc.alloc(u8, std.compress.flate.max_window_len),
-        .compress => return HttpError.RequestFailed,
-    };
-    defer if (decompress_buffer.len != 0) alloc.free(decompress_buffer);
-
-    var transfer_buffer: [64]u8 = undefined;
-    return readBody(alloc, &response, &transfer_buffer, decompress_buffer);
+    try child.spawn();
+    const stdout = try child.stdout.?.reader().readAllAlloc(alloc, 1024 * 1024);
+    _ = try child.wait();
+    return stdout;
 }
