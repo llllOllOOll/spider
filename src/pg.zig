@@ -192,16 +192,35 @@ pub const Pool = struct {
         errdefer allocator.free(conns);
 
         for (conns) |*conn| {
-            const pg_conn = c.PQconnectdb(conninfo.ptr);
-            const status = if (pg_conn) |p| c.PQstatus(p) else c.CONNECTION_BAD;
-            if (pg_conn == null or status != c.CONNECTION_OK) {
+            var attempt: usize = 0;
+            const max_attempts = 5;
+            var delay_ms: u64 = 1000; // Start with 1 second
+
+            while (attempt < max_attempts) : (attempt += 1) {
+                const pg_conn = c.PQconnectdb(conninfo.ptr);
+                const status = if (pg_conn) |p| c.PQstatus(p) else c.CONNECTION_BAD;
+
+                if (pg_conn != null and status == c.CONNECTION_OK) {
+                    std.log.info("pg: connection established on attempt {d}/{d}", .{ attempt + 1, max_attempts });
+                    conn.* = .{
+                        .inner = pg_conn,
+                        .available = std.atomic.Value(bool).init(true),
+                    };
+                    break;
+                }
+
+                // Connection failed
                 if (pg_conn) |p| c.PQfinish(p);
-                return error.ConnectionFailed;
+
+                if (attempt < max_attempts - 1) {
+                    std.log.warn("pg: connection attempt {d}/{d} failed, retrying in {d}ms", .{ attempt + 1, max_attempts, delay_ms });
+                    std.time.sleep(delay_ms * std.time.ns_per_ms);
+                    delay_ms *= 2; // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                } else {
+                    std.log.err("pg: connection failed after {d} attempts", .{max_attempts});
+                    return error.ConnectionFailed;
+                }
             }
-            conn.* = .{
-                .inner = pg_conn,
-                .available = std.atomic.Value(bool).init(true),
-            };
         }
 
         return .{
