@@ -186,7 +186,7 @@ pub const Pool = struct {
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: Config) !Pool {
         const conninfo_with_null = try std.fmt.allocPrint(allocator, "host={s} port={d} dbname={s} user={s} password={s}\x00", .{ config.host, config.port, config.database, config.user, config.password });
-        const conninfo = conninfo_with_null[0..conninfo_with_null.len :0];
+        const conninfo = conninfo_with_null[0.. :0];
 
         const conns = try allocator.alloc(Conn, config.pool_size);
         errdefer allocator.free(conns);
