@@ -88,19 +88,19 @@ pub fn releaseConn(conn: *Conn) void {
 
 pub fn query(sql: [:0]const u8) !Result {
     const conn = try db_pool.?.acquire();
-    errdefer db_pool.?.release(conn);
+    defer db_pool.?.release(conn);
     return queryConn(conn, sql);
 }
 
 pub fn queryParams(sql: [:0]const u8, params: []const []const u8) !Result {
     const conn = try db_pool.?.acquire();
-    errdefer db_pool.?.release(conn);
+    defer db_pool.?.release(conn);
     return queryConnParams(conn, sql, params, db_allocator.?);
 }
 
 pub fn queryWith(sql: [:0]const u8, params: anytype) !Result {
     const conn = try db_pool.?.acquire();
-    errdefer db_pool.?.release(conn);
+    defer db_pool.?.release(conn);
 
     const allocator = db_allocator.?;
     const params_info = @typeInfo(@TypeOf(params));
