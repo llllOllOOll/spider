@@ -179,13 +179,13 @@ pub const Pool = struct {
     conns: []Conn,
     config: Config,
     allocator: std.mem.Allocator,
-    conninfo: []u8,
+    conninfo: [:0]const u8,
     io: std.Io,
     mutex: std.Io.Mutex = .init,
     cond: std.Io.Condition = .init,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: Config) !Pool {
-        const conninfo = try std.fmt.allocPrint(allocator, "host={s} port={d} dbname={s} user={s} password={s}\x00", .{ config.host, config.port, config.database, config.user, config.password });
+        const conninfo: [:0]const u8 = try std.fmt.allocPrint(allocator, "host={s} port={d} dbname={s} user={s} password={s}\x00", .{ config.host, config.port, config.database, config.user, config.password });
 
         const conns = try allocator.alloc(Conn, config.pool_size);
         errdefer allocator.free(conns);
