@@ -1,20 +1,24 @@
-![Spider Logo](assets/spider_logo.png)
-
-# Spider
+# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider
 
 Spider web framework written in Zig (tested with `0.16.0-dev`).
 
+📖 **Full Documentation:** https://spiderme.org
+
 ## Features
 
+* **Authentication System** - JWT, cookies, Google OAuth
+* **HTTP Client** - External API requests with HTTPS
+* **PostgreSQL Client** - With connection pooling and retry logic
 * **Trie-based router** with dynamic params (`/users/:id`)
-* **JSON & text responses**
 * **WebSocket support** + hub broadcasting
-* **PostgreSQL client** with pooling
+* **JSON & text responses**
 * **Connection & buffer pooling**
 * **Structured JSON logging**
 * **Metrics + built-in dashboard**
 * **Static file serving**
-* **Graceful shutdown (SIGINT/SIGTERM)**
+* **Graceful shutdown (SIGINT/SIGTERM)
+* **Environment configuration** (.env file support)
+* **Template engine** - Embedded HTML templates**
 
 ---
 
@@ -81,16 +85,33 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
+    // Load environment configuration
+    spider.loadEnv(allocator, ".env") catch {};
+
     const server = try spider.Spider.init(allocator, io, "127.0.0.1", 8080);
     defer server.deinit();
 
     try server
         .get("/", pingHandler)
+        .get("/api/data", apiHandler)
         .listen();
 }
 
 fn pingHandler(alc: std.mem.Allocator, _: *spider.Request) !spider.Response {
     return spider.Response.json(alc, .{ .msg = "pong" });
+}
+
+fn apiHandler(alc: std.mem.Allocator, _: *spider.Request) !spider.Response {
+    // Example using HTTP client
+    const http_client = spider.http_client;
+    const response = try http_client.get(
+        alc,
+        "https://jsonplaceholder.typicode.com/posts/1",
+        &.{}
+    );
+    defer alc.free(response);
+    
+    return spider.Response.json(alc, .{ .external_data = response });
 }
 ```
 
@@ -133,6 +154,57 @@ Includes:
 
 ---
 
+## Authentication Example
+
+Spider provides a complete authentication system:
+
+```zig
+const auth = spider.auth;
+
+// JWT Token
+const token = try auth.jwtSign(allocator, .{
+    .sub = user_id,
+    .email = user_email,
+    .exp = std.time.timestamp() + 3600
+}, jwt_secret);
+
+// Cookie Management
+const cookie = try auth.cookieSet(allocator, token);
+```
+
+## HTTP Client Example
+
+Make external API requests easily:
+
+```zig
+const http_client = spider.http_client;
+
+const response = try http_client.get(
+    allocator,
+    "https://api.example.com/data",
+    &.{.{ .name = "Authorization", .value = "Bearer token" }}
+);
+```
+
+## Environment Configuration
+
+Spider automatically loads `.env` files:
+
+```bash
+# .env
+POSTGRES_HOST=localhost
+POSTGRES_USER=spider
+POSTGRES_PASSWORD=secret
+```
+
+```zig
+// Uses environment variables automatically
+spider.loadEnv(allocator, ".env") catch {};
+try spider.pg.init(allocator, io, .{});
+```
+
+---
+
 ## Development
 
 ```bash
@@ -147,17 +219,29 @@ zig fmt .
 
 ## Project Structure
 
-| Module             | Description         |
-| ------------------ | ------------------- |
-| `spider.web`       | HTTP primitives     |
-| `spider.router`    | Trie router         |
-| `spider.websocket` | WebSocket protocol  |
-| `spider.ws_hub`    | WS broadcasting hub |
-| `spider.pg`        | PostgreSQL client   |
-| `spider.logger`    | JSON logger         |
-| `spider.metrics`   | Metrics system      |
+| Module                 | Description                    |
+| ---------------------- | ------------------------------ |
+| `spider.web`           | HTTP primitives                |
+| `spider.router`        | Trie router                    |
+| `spider.websocket`     | WebSocket protocol             |
+| `spider.ws_hub`        | WS broadcasting hub            |
+| `spider.pg`            | PostgreSQL client              |
+| `spider.logger`        | JSON logger                    |
+| `spider.metrics`       | Metrics system                 |
+| `spider.auth`          | Authentication system          |
+| `spider.http_client`   | External HTTP requests         |
+| `spider.google`        | Google OAuth integration       |
+| `spider.template`      | Template engine                |
 
 ---
+
+## Examples & Resources
+
+* 📖 **Full Documentation**: https://spiderme.org
+* 🚀 **Demo Application**: https://spiderme.org (live demo)
+* 💬 **WebSocket Chat Demo**: https://spiderme.org/chat
+* 📊 **Metrics Dashboard**: https://spiderme.org/_spider/dashboard
+* 🔐 **Authentication Examples**: Check the `smoney` project
 
 ## License
 
