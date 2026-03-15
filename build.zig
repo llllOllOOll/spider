@@ -3,9 +3,17 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
+    const curl_dep = b.dependency("curl", .{
+        .target = target,
+        .sanitize_c = .off,
+    });
+
     const mod = b.addModule("spider", .{
         .root_source_file = b.path("src/spider.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "curl", .module = curl_dep.module("curl") },
+        },
     });
 
     const mod_tests = b.addTest(.{
