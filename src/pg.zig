@@ -507,12 +507,27 @@ pub fn queryConnParams(
     return .{ .inner = result };
 }
 
+fn logQuery(sql: [:0]const u8, elapsed: std.Io.Duration, rows: usize, p: []const []const u8) void {
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed.toMilliseconds())) / 1_000.0;
+    std.log.info("pg: {s} ({d} rows, {d:.2}ms)", .{ sql, rows, elapsed_ms });
+    std.log.debug("pg: params: {any}", .{p});
+}
+
+fn logExec(sql: [:0]const u8, elapsed: std.Io.Duration, affected: usize) void {
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed.toMilliseconds())) / 1_000.0;
+    std.log.info("pg: {s} ({d} rows, {d:.2}ms)", .{ sql, affected, elapsed_ms });
+}
+
 fn queryConnParamsWith(
     conn: *Conn,
     sql: [:0]const u8,
     params: anytype,
     allocator: std.mem.Allocator,
 ) !Result {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const start_time = std.Io.Clock.now(.awake, io);
+
     const params_info = @typeInfo(@TypeOf(params));
 
     const param_count = switch (params_info) {
@@ -521,7 +536,11 @@ fn queryConnParamsWith(
     };
 
     if (param_count == 0) {
-        return queryConnParams(conn, sql, &.{}, allocator);
+        var result = try queryConnParams(conn, sql, &.{}, allocator);
+        const end_time = std.Io.Clock.now(.awake, io);
+        const elapsed_ns = start_time.durationTo(end_time);
+        logQuery(sql, elapsed_ns, result.rows(), &.{});
+        return result;
     }
 
     const param_strings = try allocator.alloc([]const u8, param_count);
@@ -561,11 +580,16 @@ fn queryConnParamsWith(
         }
     }
 
-    const result = try queryConnParams(conn, sql, param_strings, allocator);
+    var result = try queryConnParams(conn, sql, param_strings, allocator);
+
+    const end_time = std.Io.Clock.now(.awake, io);
+    const elapsed_ns = start_time.durationTo(end_time);
 
     for (0..param_count) |i| {
         if (allocated[i]) allocator.free(param_strings[i]);
     }
+
+    logQuery(sql, elapsed_ns, result.rows(), param_strings);
 
     return result;
 }
@@ -814,4 +838,73 @@ test "begin - rollback" {
     var row = try queryRow("SELECT balance FROM accounts WHERE id = 1", .{});
     defer row.deinit();
     try std.testing.expectEqualStrings("100", row.get(0, "balance"));
+}
+
+test "query logging - info level shows sql and row count" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    try exec("CREATE TEMP TABLE logtest (id integer, name text)", .{});
+    try exec("INSERT INTO logtest VALUES (1, 'alice')", .{});
+    try exec("INSERT INTO logtest VALUES (2, 'bob')", .{});
+    defer exec("DROP TABLE logtest", .{}) catch {};
+
+    var result = try query("SELECT id, name FROM logtest ORDER BY id", .{});
+    defer result.deinit();
+
+    try std.testing.expect(result.rows() == 2);
+}
+
+test "query logging - debug level shows sql params and rows" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    try exec("CREATE TEMP TABLE logtest (id integer, name text)", .{});
+    try exec("INSERT INTO logtest VALUES (1, 'alice')", .{});
+    defer exec("DROP TABLE logtest", .{}) catch {};
+
+    var result = try query("SELECT id, name FROM logtest WHERE id = $1", .{@as(i32, 1)});
+    defer result.deinit();
+
+    try std.testing.expect(result.rows() == 1);
+    try std.testing.expectEqualStrings("1", result.get(0, "id"));
+    try std.testing.expectEqualStrings("alice", result.get(0, "name"));
+}
+
+test "query logging - exec shows affected rows" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    try exec("CREATE TEMP TABLE logtest (id integer)", .{});
+    defer exec("DROP TABLE logtest", .{}) catch {};
+
+    try exec("INSERT INTO logtest VALUES (1), (2), (3)", .{});
+
+    var count = try queryRow("SELECT COUNT(*) AS cnt FROM logtest", .{});
+    defer count.deinit();
+    try std.testing.expectEqualStrings("3", count.get(0, "cnt"));
+}
+
+test "query logging - timing is included" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    try exec("CREATE TEMP TABLE logtest (id integer)", .{});
+    defer exec("DROP TABLE logtest", .{}) catch {};
+
+    var result = try query("SELECT * FROM logtest", .{});
+    defer result.deinit();
+    try std.testing.expect(result.rows() == 0);
+}
+
+test "query logging - transaction commits" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    try exec("CREATE TEMP TABLE logtest (id integer PRIMARY KEY, value integer)", .{});
+    defer exec("DROP TABLE logtest", .{}) catch {};
+
+    var tx = try begin();
+    defer tx.rollback();
+    try tx.exec("INSERT INTO logtest VALUES (1, 100)", .{});
+    try tx.commit();
+
+    var row = try queryRow("SELECT value FROM logtest WHERE id = 1", .{});
+    defer row.deinit();
+    try std.testing.expectEqualStrings("100", row.get(0, "value"));
 }
