@@ -585,11 +585,11 @@ fn queryConnParamsWith(
     const end = std.Io.Clock.now(.awake, io);
     const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
 
+    logQuery(sql, elapsed_us, result.rows(), param_strings);
+
     for (0..param_count) |i| {
         if (allocated[i]) allocator.free(param_strings[i]);
     }
-
-    logQuery(sql, elapsed_us, result.rows(), param_strings);
 
     return result;
 }
