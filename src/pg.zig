@@ -507,15 +507,15 @@ pub fn queryConnParams(
     return .{ .inner = result };
 }
 
-fn logQuery(sql: [:0]const u8, elapsed: std.Io.Duration, rows: usize, p: []const []const u8) void {
-    const elapsed_ms = @as(f64, @floatFromInt(elapsed.toMilliseconds())) / 1_000.0;
-    std.log.info("pg: {s} ({d} rows, {d:.2}ms)", .{ sql, rows, elapsed_ms });
-    std.log.debug("pg: params: {any}", .{p});
+fn logQuery(sql: [:0]const u8, elapsed_us: i64, rows: usize, param_count: usize, p: []const []const u8) void {
+    std.log.info("pg: {s} ({d} rows, {d}µs)", .{ sql, rows, elapsed_us });
+    if (param_count > 0) {
+        std.log.debug("pg: params: {any}", .{p});
+    }
 }
 
-fn logExec(sql: [:0]const u8, elapsed: std.Io.Duration, affected: usize) void {
-    const elapsed_ms = @as(f64, @floatFromInt(elapsed.toMilliseconds())) / 1_000.0;
-    std.log.info("pg: {s} ({d} rows, {d:.2}ms)", .{ sql, affected, elapsed_ms });
+fn logExec(sql: [:0]const u8, elapsed_us: i64, affected: usize) void {
+    std.log.info("pg: {s} ({d} rows, {d}µs)", .{ sql, affected, elapsed_us });
 }
 
 fn queryConnParamsWith(
@@ -526,7 +526,7 @@ fn queryConnParamsWith(
 ) !Result {
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
-    const start_time = std.Io.Clock.now(.awake, io);
+    const start = std.Io.Clock.now(.awake, io);
 
     const params_info = @typeInfo(@TypeOf(params));
 
@@ -537,9 +537,9 @@ fn queryConnParamsWith(
 
     if (param_count == 0) {
         var result = try queryConnParams(conn, sql, &.{}, allocator);
-        const end_time = std.Io.Clock.now(.awake, io);
-        const elapsed_ns = start_time.durationTo(end_time);
-        logQuery(sql, elapsed_ns, result.rows(), &.{});
+        const end = std.Io.Clock.now(.awake, io);
+        const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
+        logQuery(sql, elapsed_us, result.rows(), 0, &.{});
         return result;
     }
 
@@ -582,14 +582,14 @@ fn queryConnParamsWith(
 
     var result = try queryConnParams(conn, sql, param_strings, allocator);
 
-    const end_time = std.Io.Clock.now(.awake, io);
-    const elapsed_ns = start_time.durationTo(end_time);
+    const end = std.Io.Clock.now(.awake, io);
+    const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
 
     for (0..param_count) |i| {
         if (allocated[i]) allocator.free(param_strings[i]);
     }
 
-    logQuery(sql, elapsed_ns, result.rows(), param_strings);
+    logQuery(sql, elapsed_us, result.rows(), param_count, param_strings);
 
     return result;
 }
