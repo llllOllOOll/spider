@@ -133,7 +133,11 @@ pub fn queryWith(sql: [:0]const u8, params: anytype) !Result {
                 break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
             },
             .bool => if (value) "true" else "false",
-            .pointer => |ptr_info| if (ptr_info.size == .slice and ptr_info.child == u8) value else @compileError("Unsupported pointer type: " ++ @typeName(field_type)),
+            .pointer => |ptr_info| switch (ptr_info.size) {
+                .slice => value,
+                .one => if (@typeInfo(ptr_info.child) == .array) value else @compileError("Unsupported pointer type: " ++ @typeName(field_type)),
+                else => @compileError("Unsupported pointer type: " ++ @typeName(field_type)),
+            },
             else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
         };
     }
@@ -164,6 +168,56 @@ pub fn exec(sql: [:0]const u8) !void {
     defer db_pool.?.release(conn);
     _ = try queryConn(conn, sql);
 }
+
+pub const db = struct {
+    pub fn query(sql: [:0]const u8, params: anytype) !Result {
+        const conn = try db_pool.?.acquire();
+        defer db_pool.?.release(conn);
+        return queryConnParamsWith(conn, sql, params, db_allocator.?);
+    }
+
+    pub fn queryRow(sql: [:0]const u8, params: anytype) !Result {
+        const conn = try db_pool.?.acquire();
+        defer db_pool.?.release(conn);
+        return queryConnParamsWith(conn, sql, params, db_allocator.?);
+    }
+
+    pub fn exec(sql: [:0]const u8, params: anytype) !Result {
+        const conn = try db_pool.?.acquire();
+        defer db_pool.?.release(conn);
+        return queryConnParamsWith(conn, sql, params, db_allocator.?);
+    }
+
+    pub fn begin() !Tx {
+        const conn = try db_pool.?.acquire();
+        _ = try queryConn(conn, "BEGIN");
+        return Tx{ .conn = conn };
+    }
+};
+
+pub const Tx = struct {
+    conn: *Conn,
+    committed: bool = false,
+    rolled_back: bool = false,
+
+    pub fn exec(self: *Tx, sql: [:0]const u8, params: anytype) !Result {
+        return queryConnParamsWith(self.conn, sql, params, db_allocator.?);
+    }
+
+    pub fn commit(self: *Tx) !void {
+        if (self.committed or self.rolled_back) return error.TransactionAlreadyFinished;
+        _ = try queryConn(self.conn, "COMMIT");
+        db_pool.?.release(self.conn);
+        self.committed = true;
+    }
+
+    pub fn rollback(self: *Tx) void {
+        if (self.committed or self.rolled_back) return;
+        _ = queryConn(self.conn, "ROLLBACK") catch {};
+        db_pool.?.release(self.conn);
+        self.rolled_back = true;
+    }
+};
 
 const Conn = struct {
     inner: ?*c.PGconn,
@@ -342,6 +396,19 @@ pub const Result = struct {
         return std.mem.span(val);
     }
 
+    pub fn get(self: *Result, row: usize, comptime name: []const u8) []const u8 {
+        const r = self.inner orelse return "";
+        const num_cols = @as(usize, @intCast(c.PQnfields(r)));
+        for (0..num_cols) |i| {
+            const col_name = c.PQfname(r, @intCast(i));
+            if (col_name != null and std.mem.eql(u8, std.mem.span(col_name), name)) {
+                const val = c.PQgetvalue(r, @intCast(row), @intCast(i));
+                return std.mem.span(val);
+            }
+        }
+        return "";
+    }
+
     pub fn isNull(self: *Result, row: usize, col: usize) bool {
         const r = self.inner orelse return true;
         return c.PQgetisnull(r, @intCast(row), @intCast(col)) == 1;
@@ -450,4 +517,330 @@ pub fn queryConnParams(
         return error.QueryFailed;
     }
     return .{ .inner = result };
+}
+
+fn queryConnParamsWith(
+    conn: *Conn,
+    sql: [:0]const u8,
+    params: anytype,
+    allocator: std.mem.Allocator,
+) !Result {
+    const params_info = @typeInfo(@TypeOf(params));
+
+    const param_count = switch (params_info) {
+        .@"struct" => params_info.@"struct".fields.len,
+        else => 0,
+    };
+
+    if (param_count == 0) {
+        return queryConnParams(conn, sql, &.{}, allocator);
+    }
+
+    const param_strings = try allocator.alloc([]const u8, param_count);
+    defer allocator.free(param_strings);
+
+    const allocated = try allocator.alloc(bool, param_count);
+    defer allocator.free(allocated);
+    @memset(allocated, false);
+
+    inline for (0..param_count) |i| {
+        const field_name = comptime params_info.@"struct".fields[i].name;
+        const value = @field(params, field_name);
+        const field_type = params_info.@"struct".fields[i].type;
+
+        param_strings[i] = switch (@typeInfo(field_type)) {
+            .int, .comptime_int => blk: {
+                allocated[i] = true;
+                break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
+            },
+            .float, .comptime_float => blk: {
+                allocated[i] = true;
+                break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
+            },
+            .bool => if (value) "true" else "false",
+            .pointer => |ptr_info| switch (ptr_info.size) {
+                .slice => value,
+                .one => if (@typeInfo(ptr_info.child) == .array) value else @compileError("Unsupported pointer type: " ++ @typeName(field_type)),
+                else => @compileError("Unsupported pointer type: " ++ @typeName(field_type)),
+            },
+            else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
+        };
+    }
+
+    errdefer {
+        for (0..param_count) |i| {
+            if (allocated[i]) allocator.free(param_strings[i]);
+        }
+    }
+
+    const result = try queryConnParams(conn, sql, param_strings, allocator);
+
+    for (0..param_count) |i| {
+        if (allocated[i]) allocator.free(param_strings[i]);
+    }
+
+    return result;
+}
+
+fn initTestDb(allocator: std.mem.Allocator) !void {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    try init(allocator, io, .{
+        .host = null,
+        .database = null,
+        .user = null,
+        .password = null,
+    });
+}
+
+test "query - no params" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try query("SELECT 1::integer");
+    defer result.deinit();
+    try std.testing.expect(result.rows() == 1);
+    try std.testing.expectEqualStrings("1", result.getValue(0, 0));
+}
+
+test "result - isNull" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try query("SELECT NULL::text");
+    defer result.deinit();
+    try std.testing.expect(result.isNull(0, 0));
+    try std.testing.expectEqualStrings("", result.getValue(0, 0));
+}
+
+test "queryWith - native int" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try queryWith("SELECT $1::integer", .{@as(i32, 42)});
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.getValue(0, 0));
+}
+
+test "queryWith - native float" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try queryWith("SELECT $1::numeric", .{@as(f64, 49.90)});
+    defer result.deinit();
+    try std.testing.expectEqualStrings("49.9", result.getValue(0, 0));
+}
+
+test "queryWith - native bool" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try queryWith("SELECT $1::boolean", .{true});
+    defer result.deinit();
+    try std.testing.expectEqualStrings("t", result.getValue(0, 0));
+}
+
+test "queryWith - heap string" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    const s = try std.testing.allocator.dupe(u8, "hello");
+    defer std.testing.allocator.free(s);
+    var result = try queryWith("SELECT $1::text", .{s});
+    defer result.deinit();
+    try std.testing.expectEqualStrings("hello", result.getValue(0, 0));
+}
+
+test "queryWith - static string literal" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try queryWith("SELECT $1::text", .{"monthly"});
+    defer result.deinit();
+    try std.testing.expectEqualStrings("monthly", result.getValue(0, 0));
+}
+
+test "queryWith - multiple mixed types" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try queryWith(
+        "SELECT $1::integer, $2::text, $3::boolean, $4::numeric",
+        .{ @as(i32, 1), "test", false, @as(f64, 99.99) },
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.getValue(0, 0));
+    try std.testing.expectEqualStrings("test", result.getValue(0, 1));
+    try std.testing.expectEqualStrings("f", result.getValue(0, 2));
+    try std.testing.expectEqualStrings("99.99", result.getValue(0, 3));
+}
+
+test "queryParams - heap strings" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    const p1 = try std.testing.allocator.dupe(u8, "42");
+    const p2 = try std.testing.allocator.dupe(u8, "hello");
+    defer std.testing.allocator.free(p1);
+    defer std.testing.allocator.free(p2);
+    var result = try queryParams("SELECT $1::integer, $2::text", &.{ p1, p2 });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.getValue(0, 0));
+    try std.testing.expectEqualStrings("hello", result.getValue(0, 1));
+}
+
+test "queryParams - static string literal" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try queryParams("SELECT $1::text", &.{"monthly"});
+    defer result.deinit();
+    try std.testing.expectEqualStrings("monthly", result.getValue(0, 0));
+}
+
+test "db.query - no params" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try db.query("SELECT 1::integer AS num, 'hello' AS text", .{});
+    defer result.deinit();
+    try std.testing.expect(result.rows() == 1);
+    try std.testing.expectEqualStrings("1", result.get(0, "num"));
+    try std.testing.expectEqualStrings("hello", result.get(0, "text"));
+}
+
+test "db.query - with params" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var result = try db.query(
+        "SELECT $1::integer AS id, $2::text AS name",
+        .{ @as(i32, 42), "Alice" },
+    );
+    defer result.deinit();
+    try std.testing.expect(result.rows() == 1);
+    try std.testing.expectEqualStrings("42", result.get(0, "id"));
+    try std.testing.expectEqualStrings("Alice", result.get(0, "name"));
+}
+
+test "db.query - multiple rows" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    _ = try db.exec("CREATE TEMP TABLE items (id integer, name text)", .{});
+    _ = try db.exec("INSERT INTO items VALUES (1, 'one')", .{});
+    _ = try db.exec("INSERT INTO items VALUES (2, 'two')", .{});
+    _ = try db.exec("INSERT INTO items VALUES (3, 'three')", .{});
+    defer _ = db.exec("DROP TABLE items", .{}) catch {};
+
+    var result = try db.query("SELECT id, name FROM items ORDER BY id", .{});
+    defer result.deinit();
+    try std.testing.expect(result.rows() == 3);
+    try std.testing.expectEqualStrings("1", result.get(0, "id"));
+    try std.testing.expectEqualStrings("one", result.get(0, "name"));
+    try std.testing.expectEqualStrings("2", result.get(1, "id"));
+    try std.testing.expectEqualStrings("two", result.get(1, "name"));
+    try std.testing.expectEqualStrings("3", result.get(2, "id"));
+    try std.testing.expectEqualStrings("three", result.get(2, "name"));
+}
+
+test "db.queryRow - returns one row" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    _ = try db.exec("CREATE TEMP TABLE users (id integer, email text)", .{});
+    _ = try db.exec("INSERT INTO users VALUES (1, 'a@b.com')", .{});
+    _ = try db.exec("INSERT INTO users VALUES (2, 'c@d.com')", .{});
+    defer _ = db.exec("DROP TABLE users", .{}) catch {};
+
+    var row = try db.queryRow("SELECT * FROM users WHERE id = $1", .{@as(i32, 1)});
+    defer row.deinit();
+    try std.testing.expectEqualStrings("1", row.get(0, "id"));
+    try std.testing.expectEqualStrings("a@b.com", row.get(0, "email"));
+}
+
+test "db.queryRow - returns null when no rows" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    _ = try db.exec("CREATE TEMP TABLE users (id integer)", .{});
+    defer _ = db.exec("DROP TABLE users", .{}) catch {};
+
+    var row = try db.queryRow("SELECT * FROM users WHERE id = $1", .{@as(i32, 999)});
+    defer row.deinit();
+    try std.testing.expect(row.rows() == 0);
+}
+
+test "db.exec - insert" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    _ = try db.exec("CREATE TEMP TABLE users (id SERIAL PRIMARY KEY, name text)", .{});
+    defer _ = db.exec("DROP TABLE users", .{}) catch {};
+
+    var result = try db.exec(
+        "INSERT INTO users (name) VALUES ($1) RETURNING id, name",
+        .{"Charlie"},
+    );
+    try std.testing.expect(result.rows() == 1);
+    try std.testing.expectEqualStrings("1", result.get(0, "id"));
+    try std.testing.expectEqualStrings("Charlie", result.get(0, "name"));
+}
+
+test "db.exec - update" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    _ = try db.exec("CREATE TEMP TABLE users (id integer, name text)", .{});
+    _ = try db.exec("INSERT INTO users VALUES (1, 'Alice')", .{});
+    _ = try db.exec("INSERT INTO users VALUES (2, 'Bob')", .{});
+    defer _ = db.exec("DROP TABLE users", .{}) catch {};
+
+    var result = try db.exec(
+        "UPDATE users SET name = $1 WHERE id = $2",
+        .{ "Alicia", @as(i32, 1) },
+    );
+    try std.testing.expect(result.affectedRows() == 1);
+
+    var row = try db.queryRow("SELECT name FROM users WHERE id = $1", .{@as(i32, 1)});
+    defer row.deinit();
+    try std.testing.expectEqualStrings("Alicia", row.get(0, "name"));
+}
+
+test "db.exec - delete" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    _ = try db.exec("CREATE TEMP TABLE users (id integer, name text)", .{});
+    _ = try db.exec("INSERT INTO users VALUES (1, 'Alice')", .{});
+    _ = try db.exec("INSERT INTO users VALUES (2, 'Bob')", .{});
+    defer _ = db.exec("DROP TABLE users", .{}) catch {};
+
+    var result = try db.exec("DELETE FROM users WHERE id = $1", .{@as(i32, 1)});
+    try std.testing.expect(result.affectedRows() == 1);
+
+    var count = try db.queryRow("SELECT COUNT(*) AS cnt FROM users", .{});
+    defer count.deinit();
+    try std.testing.expectEqualStrings("1", count.get(0, "cnt"));
+}
+
+test "db.begin - commit" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    _ = try db.exec("CREATE TEMP TABLE accounts (id integer PRIMARY KEY, balance integer)", .{});
+    _ = try db.exec("INSERT INTO accounts VALUES (1, 100), (2, 100)", .{});
+    defer _ = db.exec("DROP TABLE accounts", .{}) catch {};
+
+    var tx = try db.begin();
+    defer tx.rollback();
+
+    _ = try tx.exec("UPDATE accounts SET balance = balance - 50 WHERE id = 1", .{});
+    _ = try tx.exec("UPDATE accounts SET balance = balance + 50 WHERE id = 2", .{});
+    try tx.commit();
+
+    var b1 = try db.queryRow("SELECT balance FROM accounts WHERE id = 1", .{});
+    defer b1.deinit();
+    try std.testing.expectEqualStrings("50", b1.get(0, "balance"));
+
+    var b2 = try db.queryRow("SELECT balance FROM accounts WHERE id = 2", .{});
+    defer b2.deinit();
+    try std.testing.expectEqualStrings("150", b2.get(0, "balance"));
+}
+
+test "db.begin - rollback" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    _ = try db.exec("CREATE TEMP TABLE accounts (id integer PRIMARY KEY, balance integer)", .{});
+    _ = try db.exec("INSERT INTO accounts VALUES (1, 100)", .{});
+    defer _ = db.exec("DROP TABLE accounts", .{}) catch {};
+
+    var tx = try db.begin();
+    _ = try tx.exec("UPDATE accounts SET balance = 0 WHERE id = 1", .{});
+    tx.rollback();
+
+    var row = try db.queryRow("SELECT balance FROM accounts WHERE id = 1", .{});
+    defer row.deinit();
+    try std.testing.expectEqualStrings("100", row.get(0, "balance"));
 }

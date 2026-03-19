@@ -1,0 +1,11 @@
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: smoney_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5455:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
