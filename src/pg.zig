@@ -169,10 +169,11 @@ pub fn queryRow(sql: [:0]const u8, params: anytype) !Result {
     return queryConnParamsWith(conn, sql, params, db_allocator.?);
 }
 
-pub fn exec(sql: [:0]const u8, params: anytype) !Result {
+pub fn exec(sql: [:0]const u8, params: anytype) !void {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
-    return queryConnParamsWith(conn, sql, params, db_allocator.?);
+    var result = try queryConnParamsWith(conn, sql, params, db_allocator.?);
+    result.deinit();
 }
 
 pub fn begin() !Transaction {
@@ -186,8 +187,9 @@ pub const Transaction = struct {
     committed: bool = false,
     rolled_back: bool = false,
 
-    pub fn exec(self: *Transaction, sql: [:0]const u8, params: anytype) !Result {
-        return queryConnParamsWith(self.conn, sql, params, db_allocator.?);
+    pub fn exec(self: *Transaction, sql: [:0]const u8, params: anytype) !void {
+        var result = try queryConnParamsWith(self.conn, sql, params, db_allocator.?);
+        result.deinit();
     }
 
     pub fn commit(self: *Transaction) !void {
@@ -682,11 +684,11 @@ test "query - with params" {
 test "query - multiple rows" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    _ = try exec("CREATE TEMP TABLE items (id integer, name text)", .{});
-    _ = try exec("INSERT INTO items VALUES (1, 'one')", .{});
-    _ = try exec("INSERT INTO items VALUES (2, 'two')", .{});
-    _ = try exec("INSERT INTO items VALUES (3, 'three')", .{});
-    defer _ = exec("DROP TABLE items", .{}) catch {};
+    try exec("CREATE TEMP TABLE items (id integer, name text)", .{});
+    try exec("INSERT INTO items VALUES (1, 'one')", .{});
+    try exec("INSERT INTO items VALUES (2, 'two')", .{});
+    try exec("INSERT INTO items VALUES (3, 'three')", .{});
+    defer exec("DROP TABLE items", .{}) catch {};
 
     var result = try query("SELECT id, name FROM items ORDER BY id", .{});
     defer result.deinit();
@@ -702,10 +704,10 @@ test "query - multiple rows" {
 test "queryRow - returns one row" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    _ = try exec("CREATE TEMP TABLE users (id integer, email text)", .{});
-    _ = try exec("INSERT INTO users VALUES (1, 'a@b.com')", .{});
-    _ = try exec("INSERT INTO users VALUES (2, 'c@d.com')", .{});
-    defer _ = exec("DROP TABLE users", .{}) catch {};
+    try exec("CREATE TEMP TABLE users (id integer, email text)", .{});
+    try exec("INSERT INTO users VALUES (1, 'a@b.com')", .{});
+    try exec("INSERT INTO users VALUES (2, 'c@d.com')", .{});
+    defer exec("DROP TABLE users", .{}) catch {};
 
     var row = try queryRow("SELECT * FROM users WHERE id = $1", .{@as(i32, 1)});
     defer row.deinit();
@@ -716,8 +718,8 @@ test "queryRow - returns one row" {
 test "queryRow - returns null when no rows" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    _ = try exec("CREATE TEMP TABLE users (id integer)", .{});
-    defer _ = exec("DROP TABLE users", .{}) catch {};
+    try exec("CREATE TEMP TABLE users (id integer)", .{});
+    defer exec("DROP TABLE users", .{}) catch {};
 
     var row = try queryRow("SELECT * FROM users WHERE id = $1", .{@as(i32, 999)});
     defer row.deinit();
@@ -727,13 +729,16 @@ test "queryRow - returns null when no rows" {
 test "exec - insert" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    _ = try exec("CREATE TEMP TABLE users (id SERIAL PRIMARY KEY, name text)", .{});
-    defer _ = exec("DROP TABLE users", .{}) catch {};
+    try exec("CREATE TEMP TABLE users (id SERIAL PRIMARY KEY, name text)", .{});
+    defer exec("DROP TABLE users", .{}) catch {};
 
-    var result = try exec(
-        "INSERT INTO users (name) VALUES ($1) RETURNING id, name",
+    try exec(
+        "INSERT INTO users (name) VALUES ($1)",
         .{"Charlie"},
     );
+
+    var result = try query("SELECT id, name FROM users", .{});
+    defer result.deinit();
     try std.testing.expect(result.rows() == 1);
     try std.testing.expectEqualStrings("1", result.get(0, "id"));
     try std.testing.expectEqualStrings("Charlie", result.get(0, "name"));
@@ -742,16 +747,15 @@ test "exec - insert" {
 test "exec - update" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    _ = try exec("CREATE TEMP TABLE users (id integer, name text)", .{});
-    _ = try exec("INSERT INTO users VALUES (1, 'Alice')", .{});
-    _ = try exec("INSERT INTO users VALUES (2, 'Bob')", .{});
-    defer _ = exec("DROP TABLE users", .{}) catch {};
+    try exec("CREATE TEMP TABLE users (id integer, name text)", .{});
+    try exec("INSERT INTO users VALUES (1, 'Alice')", .{});
+    try exec("INSERT INTO users VALUES (2, 'Bob')", .{});
+    defer exec("DROP TABLE users", .{}) catch {};
 
-    var result = try exec(
+    try exec(
         "UPDATE users SET name = $1 WHERE id = $2",
         .{ "Alicia", @as(i32, 1) },
     );
-    try std.testing.expect(result.affectedRows() == 1);
 
     var row = try queryRow("SELECT name FROM users WHERE id = $1", .{@as(i32, 1)});
     defer row.deinit();
@@ -761,13 +765,12 @@ test "exec - update" {
 test "exec - delete" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    _ = try exec("CREATE TEMP TABLE users (id integer, name text)", .{});
-    _ = try exec("INSERT INTO users VALUES (1, 'Alice')", .{});
-    _ = try exec("INSERT INTO users VALUES (2, 'Bob')", .{});
-    defer _ = exec("DROP TABLE users", .{}) catch {};
+    try exec("CREATE TEMP TABLE users (id integer, name text)", .{});
+    try exec("INSERT INTO users VALUES (1, 'Alice')", .{});
+    try exec("INSERT INTO users VALUES (2, 'Bob')", .{});
+    defer exec("DROP TABLE users", .{}) catch {};
 
-    var result = try exec("DELETE FROM users WHERE id = $1", .{@as(i32, 1)});
-    try std.testing.expect(result.affectedRows() == 1);
+    try exec("DELETE FROM users WHERE id = $1", .{@as(i32, 1)});
 
     var count = try queryRow("SELECT COUNT(*) AS cnt FROM users", .{});
     defer count.deinit();
@@ -777,15 +780,15 @@ test "exec - delete" {
 test "begin - commit" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    _ = try exec("CREATE TEMP TABLE accounts (id integer PRIMARY KEY, balance integer)", .{});
-    _ = try exec("INSERT INTO accounts VALUES (1, 100), (2, 100)", .{});
-    defer _ = exec("DROP TABLE accounts", .{}) catch {};
+    try exec("CREATE TEMP TABLE accounts (id integer PRIMARY KEY, balance integer)", .{});
+    try exec("INSERT INTO accounts VALUES (1, 100), (2, 100)", .{});
+    defer exec("DROP TABLE accounts", .{}) catch {};
 
     var tx = try begin();
     defer tx.rollback();
 
-    _ = try tx.exec("UPDATE accounts SET balance = balance - 50 WHERE id = 1", .{});
-    _ = try tx.exec("UPDATE accounts SET balance = balance + 50 WHERE id = 2", .{});
+    try tx.exec("UPDATE accounts SET balance = balance - 50 WHERE id = 1", .{});
+    try tx.exec("UPDATE accounts SET balance = balance + 50 WHERE id = 2", .{});
     try tx.commit();
 
     var b1 = try queryRow("SELECT balance FROM accounts WHERE id = 1", .{});
@@ -800,12 +803,12 @@ test "begin - commit" {
 test "begin - rollback" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    _ = try exec("CREATE TEMP TABLE accounts (id integer PRIMARY KEY, balance integer)", .{});
-    _ = try exec("INSERT INTO accounts VALUES (1, 100)", .{});
-    defer _ = exec("DROP TABLE accounts", .{}) catch {};
+    try exec("CREATE TEMP TABLE accounts (id integer PRIMARY KEY, balance integer)", .{});
+    try exec("INSERT INTO accounts VALUES (1, 100)", .{});
+    defer exec("DROP TABLE accounts", .{}) catch {};
 
     var tx = try begin();
-    _ = try tx.exec("UPDATE accounts SET balance = 0 WHERE id = 1", .{});
+    try tx.exec("UPDATE accounts SET balance = 0 WHERE id = 1", .{});
     tx.rollback();
 
     var row = try queryRow("SELECT balance FROM accounts WHERE id = 1", .{});
