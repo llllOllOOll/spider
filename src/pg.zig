@@ -507,10 +507,10 @@ pub fn queryConnParams(
     return .{ .inner = result };
 }
 
-fn logQuery(sql: [:0]const u8, elapsed_us: i64, rows: usize, param_count: usize, p: []const []const u8) void {
+fn logQuery(sql: [:0]const u8, elapsed_us: i64, rows: usize, p: []const []const u8) void {
     std.log.info("pg: {s} ({d} rows, {d}µs)", .{ sql, rows, elapsed_us });
-    if (param_count > 0) {
-        std.log.debug("pg: params: {any}", .{p});
+    for (p, 0..) |val, i| {
+        std.log.debug("pg:   ${d} = \"{s}\"", .{ i + 1, val });
     }
 }
 
@@ -539,7 +539,7 @@ fn queryConnParamsWith(
         var result = try queryConnParams(conn, sql, &.{}, allocator);
         const end = std.Io.Clock.now(.awake, io);
         const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
-        logQuery(sql, elapsed_us, result.rows(), 0, &.{});
+        logQuery(sql, elapsed_us, result.rows(), &.{});
         return result;
     }
 
@@ -589,7 +589,7 @@ fn queryConnParamsWith(
         if (allocated[i]) allocator.free(param_strings[i]);
     }
 
-    logQuery(sql, elapsed_us, result.rows(), param_count, param_strings);
+    logQuery(sql, elapsed_us, result.rows(), param_strings);
 
     return result;
 }
