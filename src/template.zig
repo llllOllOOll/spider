@@ -125,11 +125,71 @@ fn parseTag(content: []const u8) ?struct { name: []const u8, args: []const u8 } 
     return null;
 }
 
-fn isTruthy(context: *const Context, key: []const u8) bool {
-    if (context.get(key)) |value| return value.len > 0;
-    if (context.getValue(key)) |val| {
+fn evalCondition(context: *const Context, expr: []const u8) bool {
+    const trimmed_expr = std.mem.trim(u8, expr, " ");
+
+    // Handle negation operator
+    if (std.mem.startsWith(u8, trimmed_expr, "!")) {
+        const inner_expr = std.mem.trim(u8, trimmed_expr[1..], " ");
+        return !evalCondition(context, inner_expr);
+    }
+
+    // Handle equality and inequality operators
+    if (std.mem.indexOf(u8, trimmed_expr, "==")) |eq_idx| {
+        const left = std.mem.trim(u8, trimmed_expr[0..eq_idx], " ");
+        const right = std.mem.trim(u8, trimmed_expr[eq_idx + 2 ..], " ");
+        const left_value = getValueForComparison(context, left);
+        const right_value = getValueForComparison(context, right);
+        return std.mem.eql(u8, left_value, right_value);
+    }
+
+    if (std.mem.indexOf(u8, trimmed_expr, "!=")) |neq_idx| {
+        const left = std.mem.trim(u8, trimmed_expr[0..neq_idx], " ");
+        const right = std.mem.trim(u8, trimmed_expr[neq_idx + 2 ..], " ");
+        const left_value = getValueForComparison(context, left);
+        const right_value = getValueForComparison(context, right);
+        return !std.mem.eql(u8, left_value, right_value);
+    }
+
+    // Handle logical operators (and/or)
+    if (std.mem.indexOf(u8, trimmed_expr, " and ")) |and_idx| {
+        const left = std.mem.trim(u8, trimmed_expr[0..and_idx], " ");
+        const right = std.mem.trim(u8, trimmed_expr[and_idx + 5 ..], " ");
+        return evalCondition(context, left) and evalCondition(context, right);
+    }
+
+    if (std.mem.indexOf(u8, trimmed_expr, " or ")) |or_idx| {
+        const left = std.mem.trim(u8, trimmed_expr[0..or_idx], " ");
+        const right = std.mem.trim(u8, trimmed_expr[or_idx + 4 ..], " ");
+        return evalCondition(context, left) or evalCondition(context, right);
+    }
+
+    // Handle boolean strings specially
+    if (context.get(trimmed_expr)) |value| {
+        // Treat "false", "0", "no" as falsy
+        if (std.mem.eql(u8, value, "false") or std.mem.eql(u8, value, "0") or std.mem.eql(u8, value, "no")) {
+            return false;
+        }
+        // Treat "true", "1", "yes" as truthy
+        if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "yes")) {
+            return true;
+        }
+        // Default: non-empty string is truthy
+        return value.len > 0;
+    }
+
+    if (context.getValue(trimmed_expr)) |val| {
         switch (val) {
-            .string => |s| return s.len > 0,
+            .string => |s| {
+                // Handle boolean strings for string values too
+                if (std.mem.eql(u8, s, "false") or std.mem.eql(u8, s, "0") or std.mem.eql(u8, s, "no")) {
+                    return false;
+                }
+                if (std.mem.eql(u8, s, "true") or std.mem.eql(u8, s, "1") or std.mem.eql(u8, s, "yes")) {
+                    return true;
+                }
+                return s.len > 0;
+            },
             .list => |l| return l.items.len > 0,
             .object => return true,
         }
@@ -328,7 +388,7 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                     const body_start = tag_end + 2;
                     if (findEndIf(template, body_start)) |end_if| {
                         const else_pos = findElse(template, body_start, end_if);
-                        if (isTruthy(context, tag.args)) {
+                        if (evalCondition(context, tag.args)) {
                             const if_body = template[body_start .. else_pos orelse end_if];
                             const rendered = try renderTemplate(if_body, context, allocator, templates, null);
                             defer allocator.free(rendered);
@@ -372,7 +432,8 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                 continue;
             }
             const var_name = std.mem.trim(u8, template[start..end], " ");
-            if (context.get(var_name)) |value| try result.appendSlice(allocator, value);
+            const value = getValueWithFilter(context, var_name);
+            try result.appendSlice(allocator, value);
             i = end + 2;
         } else {
             try result.append(allocator, template[i]);
@@ -381,6 +442,40 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
     }
 
     return result.toOwnedSlice(allocator);
+}
+
+fn getValueWithFilter(context: *const Context, var_expr: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, var_expr, "|")) |pipe_idx| {
+        const var_name = std.mem.trim(u8, var_expr[0..pipe_idx], " ");
+        const filter_part = std.mem.trim(u8, var_expr[pipe_idx + 1 ..], " ");
+
+        if (std.mem.startsWith(u8, filter_part, "default:")) {
+            var fallback_part = std.mem.trim(u8, filter_part[8..], " ");
+            // Handle quoted strings
+            if (fallback_part.len >= 2 and fallback_part[0] == '"' and fallback_part[fallback_part.len - 1] == '"') {
+                fallback_part = fallback_part[1 .. fallback_part.len - 1];
+            }
+            if (context.get(var_name)) |value| {
+                if (value.len > 0) return value;
+            }
+            return fallback_part;
+        }
+    }
+
+    // No filter or unknown filter - return original value or empty string
+    return context.get(var_expr) orelse "";
+}
+
+fn getValueForComparison(context: *const Context, expr: []const u8) []const u8 {
+    const trimmed_expr = std.mem.trim(u8, expr, " ");
+
+    // Handle quoted strings
+    if (trimmed_expr.len >= 2 and trimmed_expr[0] == '"' and trimmed_expr[trimmed_expr.len - 1] == '"') {
+        return trimmed_expr[1 .. trimmed_expr.len - 1];
+    }
+
+    // Handle variables
+    return context.get(trimmed_expr) orelse "";
 }
 
 const EmptyTemplates = struct {};
@@ -886,4 +981,171 @@ test "block and template" {
         "<!DOCTYPE html>\n<body>\n    <div id=\"count\">\n        Count 42\n    </div>\n</body>\n</html>",
         result,
     );
+}
+
+// ===== NEW FEATURE TESTS =====
+
+test "negation operator - truthy case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "is_expense", "false");
+    const result = try renderStr("{% if !is_expense %}income{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "income", result);
+}
+
+test "negation operator - falsy case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "is_expense", "true");
+    const result = try renderStr("{% if !is_expense %}income{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "negation operator - missing variable" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const result = try renderStr("{% if !empty %}has items{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "has items", result);
+}
+
+test "equality operator - true case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "locale", "pt_BR");
+    const result = try renderStr("{% if locale == \"pt_BR\" %}R${% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "R$", result);
+}
+
+test "equality operator - false case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "locale", "en_US");
+    const result = try renderStr("{% if locale == \"pt_BR\" %}R${% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "equality operator - empty string" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "status", "");
+    const result = try renderStr("{% if status == \"\" %}empty{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "empty", result);
+}
+
+test "inequality operator - true case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "status", "inactive");
+    const result = try renderStr("{% if status != \"active\" %}inactive{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "inactive", result);
+}
+
+test "inequality operator - false case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "status", "active");
+    const result = try renderStr("{% if status != \"active\" %}inactive{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "and operator - both true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "active", "true");
+    try context.set(std.heap.page_allocator, "verified", "yes");
+    const result = try renderStr("{% if active and verified %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "ok", result);
+}
+
+test "and operator - first false" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "active", "");
+    try context.set(std.heap.page_allocator, "verified", "yes");
+    const result = try renderStr("{% if active and verified %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "and operator - second false" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "active", "true");
+    try context.set(std.heap.page_allocator, "verified", "");
+    const result = try renderStr("{% if active and verified %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "or operator - first true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "error", "true");
+    try context.set(std.heap.page_allocator, "warning", "");
+    const result = try renderStr("{% if error or warning %}alert{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "alert", result);
+}
+
+test "or operator - second true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "error", "");
+    try context.set(std.heap.page_allocator, "warning", "true");
+    const result = try renderStr("{% if error or warning %}alert{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "alert", result);
+}
+
+test "or operator - both false" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "error", "");
+    try context.set(std.heap.page_allocator, "warning", "");
+    const result = try renderStr("{% if error or warning %}alert{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "default filter - variable exists" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "name", "John");
+    const result = try renderStr("Hello {{ name | default:\"Anonymous\" }}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Hello John", result);
+}
+
+test "default filter - missing variable" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const result = try renderStr("Hello {{ name | default:\"Anonymous\" }}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Hello Anonymous", result);
+}
+
+test "default filter - empty string" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "amount", "");
+    const result = try renderStr("Amount: {{ amount | default:\"0,00\" }}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Amount: 0,00", result);
+}
+
+test "default filter - edge case with spaces" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const result = try renderStr("Value: {{ missing | default: \" fallback \" }}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Value:  fallback ", result);
 }
