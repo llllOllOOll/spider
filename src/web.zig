@@ -1,6 +1,7 @@
 const std = @import("std");
 const router_mod = @import("router.zig");
 const template = @import("template.zig");
+const form = @import("form.zig");
 const Route = router_mod;
 
 pub const Group = Route.Group;
@@ -194,6 +195,10 @@ pub const Request = struct {
 
     pub fn param(self: *const Request, name: []const u8) ?[]const u8 {
         return self.params.get(name);
+    }
+
+    pub fn form(self: *Request, allocator: std.mem.Allocator) !@import("form.zig").FormData {
+        return @import("form.zig").parse(allocator, self.body);
     }
 };
 

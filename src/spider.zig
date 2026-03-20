@@ -5,6 +5,7 @@ pub const ws_hub = @import("ws_hub.zig");
 pub const template = @import("template.zig");
 pub const pg = @import("pg.zig");
 pub const env = @import("env.zig");
+pub const form = @import("form.zig");
 const srv = @import("server.zig");
 pub const static = @import("static_handler.zig");
 
