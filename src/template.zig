@@ -1149,3 +1149,19 @@ test "default filter - edge case with spaces" {
     defer std.heap.page_allocator.free(result);
     try std.testing.expectEqualSlices(u8, "Value:  fallback ", result);
 }
+
+test "renderBlock with concatenated layout and view" {
+    const layout =
+        \\{% block "base" %}<!DOCTYPE html><html><body><main>{% template "content" %}</main></body></html>{% end %}
+    ;
+    const view =
+        \\{% block "content" %}Hello World{% end %}
+    ;
+
+    const tmpl = try std.mem.concat(std.heap.page_allocator, u8, &.{ layout, view });
+    defer std.heap.page_allocator.free(tmpl);
+
+    const result = try renderBlock(tmpl, "base", .{}, std.heap.page_allocator);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "<!DOCTYPE html><html><body><main>Hello World</main></body></html>", result);
+}

@@ -205,12 +205,26 @@ pub const Request = struct {
 pub fn renderView(
     allocator: std.mem.Allocator,
     req: *Request,
-    view: []const u8,
+    view_tmpl: []const u8,
     data: anytype,
 ) !Response {
     const is_htmx = req.headers.get("HX-Request") != null;
-    const block = if (is_htmx) "content" else "base";
-    const html = try template.renderBlock(view, block, data, allocator);
+
+    if (is_htmx) {
+        const html = try template.renderBlock(view_tmpl, "content", data, allocator);
+        return Response.html(allocator, html);
+    }
+
+    if (req._app) |app| {
+        if (app.layout) |layout| {
+            const tmpl = try std.mem.concat(allocator, u8, &.{ layout, view_tmpl });
+            defer allocator.free(tmpl);
+            const html = try template.renderBlock(tmpl, "base", data, allocator);
+            return Response.html(allocator, html);
+        }
+    }
+
+    const html = try template.render(view_tmpl, data, allocator);
     return Response.html(allocator, html);
 }
 
@@ -296,19 +310,25 @@ pub const MiddlewareFn = *const fn (std.mem.Allocator, *Request, NextFn) anyerro
 
 const MAX_MIDDLEWARES = 16;
 
+pub const AppConfig = struct {
+    layout: ?[]const u8 = null,
+};
+
 pub const App = struct {
     allocator: std.mem.Allocator,
     router: Route.Router,
     middlewares: [MAX_MIDDLEWARES]MiddlewareFn,
     middleware_count: usize,
+    layout: ?[]const u8 = null,
 
-    pub fn init(allocator: std.mem.Allocator) !*App {
+    pub fn init(allocator: std.mem.Allocator, config: AppConfig) !*App {
         const app = try allocator.create(App);
         app.* = .{
             .allocator = allocator,
             .router = try Route.Router.init(allocator),
             .middlewares = undefined,
             .middleware_count = 0,
+            .layout = config.layout,
         };
 
         _ = @import("metrics.zig"); // Ensure metrics are initialized
@@ -439,6 +459,9 @@ test "renderView with HX-Request header renders content block" {
         \\{% block "content" %}Partial Content{% end %}
     ;
 
+    const app = try App.init(std.heap.page_allocator, .{});
+    defer app.deinit();
+
     var req = Request{
         .method = .post,
         .path = "/test",
@@ -446,6 +469,7 @@ test "renderView with HX-Request header renders content block" {
         .headers = Headers.init(),
         .body = null,
         .params = .{},
+        ._app = app,
     };
     defer req.deinit(std.heap.page_allocator);
     try req.headers.set(std.heap.page_allocator, "HX-Request", "true");
@@ -461,6 +485,9 @@ test "renderView without HX-Request header renders base block" {
         \\{% block "content" %}Partial Content{% end %}
     ;
 
+    const app = try App.init(std.heap.page_allocator, .{});
+    defer app.deinit();
+
     var req = Request{
         .method = .get,
         .path = "/test",
@@ -468,10 +495,91 @@ test "renderView without HX-Request header renders base block" {
         .headers = Headers.init(),
         .body = null,
         .params = .{},
+        ._app = app,
     };
     defer req.deinit(std.heap.page_allocator);
 
     var res = try renderView(std.heap.page_allocator, &req, tmpl, .{});
     defer res.deinit();
     try std.testing.expectEqualStrings(res.body.?, "<!DOCTYPE html><html><body><div id=\"content\">Partial Content</div></body></html>");
+}
+
+test "renderView with layout + normal request renders base with layout prepended" {
+    const layout =
+        \\{% block "base" %}<!DOCTYPE html><html><body><main>{% template "content" %}</main></body></html>{% end %}
+    ;
+    const view =
+        \\{% block "content" %}Hello World{% end %}
+    ;
+
+    const tmpl = try std.mem.concat(std.heap.page_allocator, u8, &.{ layout, view });
+    defer std.heap.page_allocator.free(tmpl);
+
+    const app = try App.init(std.heap.page_allocator, .{ .layout = layout });
+    defer app.deinit();
+
+    var req = Request{
+        .method = .get,
+        .path = "/test",
+        .query = null,
+        .headers = Headers.init(),
+        .body = null,
+        .params = .{},
+        ._app = app,
+    };
+    defer req.deinit(std.heap.page_allocator);
+
+    var res = try renderView(std.heap.page_allocator, &req, view, .{});
+    defer res.deinit();
+    try std.testing.expectEqualStrings(res.body.?, "<!DOCTYPE html><html><body><main>Hello World</main></body></html>");
+}
+
+test "renderView with layout + HTMX request renders content block only" {
+    const layout =
+        \\{% block "base" %}<!DOCTYPE html><html><body><main>{% template "content" %}</main></body></html>{% end %}
+    ;
+    const view =
+        \\{% block "content" %}Hello World{% end %}
+    ;
+
+    const app = try App.init(std.heap.page_allocator, .{ .layout = layout });
+    defer app.deinit();
+
+    var req = Request{
+        .method = .post,
+        .path = "/test",
+        .query = null,
+        .headers = Headers.init(),
+        .body = null,
+        .params = .{},
+        ._app = app,
+    };
+    defer req.deinit(std.heap.page_allocator);
+    try req.headers.set(std.heap.page_allocator, "HX-Request", "true");
+
+    var res = try renderView(std.heap.page_allocator, &req, view, .{});
+    defer res.deinit();
+    try std.testing.expectEqualStrings(res.body.?, "Hello World");
+}
+
+test "renderView without layout + normal request renders view directly" {
+    const view = "Hello {{ name }}!";
+
+    const app = try App.init(std.heap.page_allocator, .{});
+    defer app.deinit();
+
+    var req = Request{
+        .method = .get,
+        .path = "/test",
+        .query = null,
+        .headers = Headers.init(),
+        .body = null,
+        .params = .{},
+        ._app = app,
+    };
+    defer req.deinit(std.heap.page_allocator);
+
+    var res = try renderView(std.heap.page_allocator, &req, view, .{ .name = "World" });
+    defer res.deinit();
+    try std.testing.expectEqualStrings(res.body.?, "Hello World!");
 }

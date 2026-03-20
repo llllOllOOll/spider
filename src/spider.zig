@@ -53,8 +53,8 @@ pub const Spider = struct {
     port: u16,
     static_dir: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8, port: u16) !Spider {
-        const app_ptr = try web.App.init(allocator);
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8, port: u16, config: web.AppConfig) !Spider {
+        const app_ptr = try web.App.init(allocator, config);
         return Spider{
             .allocator = allocator,
             .app_ptr = app_ptr,
