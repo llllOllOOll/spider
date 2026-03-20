@@ -17,6 +17,7 @@ pub const Context = template.Context;
 pub const Value = template.Value;
 
 pub const render = web.render;
+pub const renderView = web.renderView;
 
 pub fn renderBlock(allocator: std.mem.Allocator, view: []const u8, block_name: []const u8, data: anytype) !Response {
     const html = try template.renderBlock(view, block_name, data, allocator);

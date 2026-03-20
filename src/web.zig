@@ -202,6 +202,18 @@ pub const Request = struct {
     }
 };
 
+pub fn renderView(
+    allocator: std.mem.Allocator,
+    req: *Request,
+    view: []const u8,
+    data: anytype,
+) !Response {
+    const is_htmx = req.headers.get("HX-Request") != null;
+    const block = if (is_htmx) "content" else "base";
+    const html = try template.renderBlock(view, block, data, allocator);
+    return Response.html(allocator, html);
+}
+
 pub const Response = struct {
     status: Status,
     headers: Headers,
@@ -419,4 +431,47 @@ test "render helper" {
     var res = try render(std.heap.page_allocator, "Hello {{ name }}!", Product{ .name = "Widget" });
     defer res.deinit();
     try std.testing.expectEqualStrings(res.body.?, "Hello Widget!");
+}
+
+test "renderView with HX-Request header renders content block" {
+    const tmpl =
+        \\{% block "base" %}<!DOCTYPE html><html><body><div id="content">{% template "content" %}</div></body></html>{% end %}
+        \\{% block "content" %}Partial Content{% end %}
+    ;
+
+    var req = Request{
+        .method = .post,
+        .path = "/test",
+        .query = null,
+        .headers = Headers.init(),
+        .body = null,
+        .params = .{},
+    };
+    defer req.deinit(std.heap.page_allocator);
+    try req.headers.set(std.heap.page_allocator, "HX-Request", "true");
+
+    var res = try renderView(std.heap.page_allocator, &req, tmpl, .{});
+    defer res.deinit();
+    try std.testing.expectEqualStrings(res.body.?, "Partial Content");
+}
+
+test "renderView without HX-Request header renders base block" {
+    const tmpl =
+        \\{% block "base" %}<!DOCTYPE html><html><body><div id="content">{% template "content" %}</div></body></html>{% end %}
+        \\{% block "content" %}Partial Content{% end %}
+    ;
+
+    var req = Request{
+        .method = .get,
+        .path = "/test",
+        .query = null,
+        .headers = Headers.init(),
+        .body = null,
+        .params = .{},
+    };
+    defer req.deinit(std.heap.page_allocator);
+
+    var res = try renderView(std.heap.page_allocator, &req, tmpl, .{});
+    defer res.deinit();
+    try std.testing.expectEqualStrings(res.body.?, "<!DOCTYPE html><html><body><div id=\"content\">Partial Content</div></body></html>");
 }
