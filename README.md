@@ -88,7 +88,10 @@ pub fn main(init: std.process.Init) !void {
     // Load environment configuration
     spider.loadEnv(allocator, ".env") catch {};
 
-    const server = try spider.Spider.init(allocator, io, "127.0.0.1", 8080);
+    // Initialize server with optional layout
+    const server = try spider.Spider.init(allocator, io, "127.0.0.1", 8080, .{
+        .layout = @embedFile("views/layout.html"),
+    });
     defer server.deinit();
 
     try server
@@ -186,6 +189,46 @@ const response = try http_client.get(
 );
 ```
 
+## Form Data
+
+Parse form submissions with support for arrays, dot notation, and URL decoding:
+
+```zig
+fn handleForm(alc: std.mem.Allocator, req: *spider.Request) !spider.Response {
+    var form = try req.form(alc);
+    defer form.deinit();
+
+    // Simple field
+    const name = form.get("name");
+
+    // Nested field (dot notation)
+    const email = form.get("user.email");
+
+    // Array field (items[]=a&items[]=b)
+    const tags = form.getArray("tags");
+
+    return spider.Response.json(alc, .{ .name = name });
+}
+```
+
+## HTMX-Aware Rendering
+
+`renderView` automatically handles HTMX requests by returning partial content:
+
+```zig
+// Full page or partial content — handled automatically
+const view = @embedFile("views/dashboard.html");
+return spider.renderView(alc, req, view, data);
+
+// For explicit block rendering:
+const html = try spider.renderBlock(alc, view, "content", data);
+return spider.Response.html(alc, html);
+```
+
+With a registered layout, `renderView`:
+- Returns full page with layout for normal requests
+- Returns only the content block for HTMX requests (when `HX-Request` header is set)
+
 ## Environment Configuration
 
 Spider automatically loads `.env` files:
@@ -232,6 +275,7 @@ zig fmt .
 | `spider.http_client`   | External HTTP requests         |
 | `spider.google`        | Google OAuth integration       |
 | `spider.template`      | Template engine                |
+| `spider.form`          | FormData parsing               |
 
 ---
 
