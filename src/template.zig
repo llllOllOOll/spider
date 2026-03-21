@@ -122,6 +122,8 @@ fn parseTag(content: []const u8) ?struct { name: []const u8, args: []const u8 } 
     if (std.mem.startsWith(u8, trimmed, "block ")) return .{ .name = "block", .args = trimmed[6..] };
     if (std.mem.startsWith(u8, trimmed, "template ")) return .{ .name = "template", .args = trimmed[9..] };
     if (std.mem.eql(u8, trimmed, "end")) return .{ .name = "end", .args = "" };
+    if (std.mem.eql(u8, trimmed, "raw")) return .{ .name = "raw", .args = "" };
+    if (std.mem.eql(u8, trimmed, "endraw")) return .{ .name = "endraw", .args = "" };
     return null;
 }
 
@@ -282,6 +284,26 @@ fn findEndBlock(template: []const u8, start: usize) ?usize {
     return null;
 }
 
+fn findEndRaw(template: []const u8, start: usize) ?usize {
+    var i = start;
+    while (i < template.len) {
+        if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
+            const tag_start = i + 2;
+            var tag_end = tag_start;
+            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) tag_end += 1;
+            if (tag_end < template.len) {
+                if (parseTag(template[tag_start..tag_end])) |tag| {
+                    if (std.mem.eql(u8, tag.name, "endraw")) {
+                        return i;
+                    }
+                }
+                i = tag_end + 2;
+            } else i += 1;
+        } else i += 1;
+    }
+    return null;
+}
+
 fn parseForArgs(args: []const u8) ?struct { item_var: []const u8, list_var: []const u8 } {
     if (std.mem.indexOf(u8, args, " in ")) |in_idx| {
         const item_var = std.mem.trim(u8, args[0..in_idx], " ");
@@ -419,6 +441,14 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                     }
                     i = tag_end + 2;
                     continue;
+                } else if (std.mem.eql(u8, tag.name, "raw")) {
+                    const body_start = tag_end + 2;
+                    if (findEndRaw(template, body_start)) |end_raw| {
+                        const raw_content = template[body_start..end_raw];
+                        try result.appendSlice(allocator, raw_content);
+                        i = end_raw;
+                        continue;
+                    }
                 }
             }
             i = tag_end + 2;
@@ -1164,4 +1194,49 @@ test "renderBlock with concatenated layout and view" {
     const result = try renderBlock(tmpl, "base", .{}, std.heap.page_allocator);
     defer std.heap.page_allocator.free(result);
     try std.testing.expectEqualSlices(u8, "<!DOCTYPE html><html><body><main>Hello World</main></body></html>", result);
+}
+
+test "raw block - variable syntax inside raw" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const result = try renderStr("{% raw %}{{ not_a_var }}{% endraw %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "{{ not_a_var }}", result);
+}
+
+test "raw block - template tags inside raw" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const result = try renderStr("{% raw %}{% if x %}{% endraw %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "{% if x %}", result);
+}
+
+test "raw block - mixed with normal content" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const result = try renderStr("Before {% raw %}{{ raw_var }}{% endraw %} After {{ name }}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Before {{ raw_var }} After ", result);
+}
+
+test "raw block - multiple raw blocks" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const result = try renderStr("{% raw %}A{% endraw %} {{ x }} {% raw %}B{% endraw %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "A  B", result);
+}
+
+test "raw block - complex template syntax preserved" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const tmpl = "{% raw %}{% if condition %}\n  {{ variable }}\n{% endif %}\n{% for item in items %}{{ item }}{% endfor %}{% endraw %}";
+    const result = try renderStr(tmpl, &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(
+        u8,
+        "{% if condition %}\n  {{ variable }}\n{% endif %}\n{% for item in items %}{{ item }}{% endfor %}",
+        result,
+    );
 }
