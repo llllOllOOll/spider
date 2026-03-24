@@ -176,6 +176,13 @@ pub fn exec(sql: [:0]const u8, params: anytype) !void {
     result.deinit();
 }
 
+pub fn execRaw(sql: [:0]const u8) !void {
+    const conn = try db_pool.?.acquire();
+    defer db_pool.?.release(conn);
+    var result = try queryConn(conn, sql);
+    result.deinit();
+}
+
 pub fn begin() !Transaction {
     const conn = try db_pool.?.acquire();
     _ = try queryConn(conn, "BEGIN");
@@ -799,6 +806,17 @@ test "exec - delete" {
     var count = try queryRow("SELECT COUNT(*) AS cnt FROM users", .{});
     defer count.deinit();
     try std.testing.expectEqualStrings("1", count.get(0, "cnt"));
+}
+
+test "execRaw - multiple statements" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    try execRaw("CREATE TEMP TABLE raw_test (id integer); INSERT INTO raw_test VALUES (1), (2), (3);");
+    defer execRaw("DROP TABLE raw_test") catch {};
+
+    var result = try query("SELECT COUNT(*) AS cnt FROM raw_test", .{});
+    defer result.deinit();
+    try std.testing.expectEqualStrings("3", result.get(0, "cnt"));
 }
 
 test "begin - commit" {
