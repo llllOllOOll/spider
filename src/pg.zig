@@ -569,7 +569,7 @@ pub fn queryAs(
     defer db_pool.?.release(conn);
 
     const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
-    const param_strings = try allocator.alloc([]const u8, param_count);
+    const param_strings = try allocator.alloc([*:0]const u8, param_count);
     defer allocator.free(param_strings);
 
     const allocated = try allocator.alloc(bool, param_count);
@@ -583,20 +583,38 @@ pub fn queryAs(
         param_strings[i] = switch (@typeInfo(field_type)) {
             .int, .comptime_int => blk: {
                 allocated[i] = true;
-                break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
+                const z = try allocator.dupeZ(u8, s);
+                allocator.free(s);
+                break :blk z;
             },
             .float, .comptime_float => blk: {
                 allocated[i] = true;
-                break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
+                const z = try allocator.dupeZ(u8, s);
+                allocator.free(s);
+                break :blk z;
             },
             .bool => if (value) "true" else "false",
             .pointer => |p| switch (p.size) {
-                .slice => value,
-                .one => if (@typeInfo(p.child) == .array) value else @compileError("Unsupported pointer type"),
+                .slice => blk: {
+                    allocated[i] = true;
+                    break :blk try allocator.dupeZ(u8, value);
+                },
+                .one => if (@typeInfo(p.child) == .array) blk: {
+                    allocated[i] = true;
+                    break :blk try allocator.dupeZ(u8, value);
+                } else @compileError("Unsupported pointer type"),
                 else => @compileError("Unsupported pointer type"),
             },
             else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
         };
+    }
+
+    defer {
+        for (0..param_count) |i| {
+            if (allocated[i]) allocator.free(std.mem.span(param_strings[i]));
+        }
     }
 
     const pg_result = c.PQexecParams(
