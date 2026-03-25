@@ -385,12 +385,12 @@ pub const Result = struct {
         return std.fmt.parseInt(usize, std.mem.span(cmd_tuples), 10) catch 0;
     }
 
-    // Use get instead
-    // pub fn getValue(self: *Result, row: usize, col: usize) []const u8 {
-    //     const r = self.inner orelse return "";
-    //     const val = c.PQgetvalue(r, @intCast(row), @intCast(col));
-    //     return std.mem.span(val);
-    // }
+    // deprecated: use get instead with column name
+    pub fn getValue(self: *Result, row: usize, col: usize) []const u8 {
+        const r = self.inner orelse return "";
+        const val = c.PQgetvalue(r, @intCast(row), @intCast(col));
+        return std.mem.span(val);
+    }
 
     pub fn get(self: *Result, row: usize, comptime name: []const u8) []const u8 {
         const r = self.inner orelse return "";
