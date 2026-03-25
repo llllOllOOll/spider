@@ -474,6 +474,17 @@ pub fn MappedRows(comptime T: type) type {
 
         const Self = @This();
 
+        pub fn init(allocator: std.mem.Allocator, count: usize) !Self {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            errdefer arena.deinit();
+            const items = try arena.allocator().alloc(T, count);
+            return .{
+                .arena = arena,
+                .items = items,
+                .inner = null,
+            };
+        }
+
         pub fn deinit(self: *Self) void {
             if (self.inner) |r| c.PQclear(r);
             self.arena.deinit();
