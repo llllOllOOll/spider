@@ -116,6 +116,7 @@ fn parseTag(content: []const u8) ?struct { name: []const u8, args: []const u8 } 
     }
     if (std.mem.startsWith(u8, trimmed, "endfor")) return .{ .name = "endfor", .args = "" };
     if (std.mem.startsWith(u8, trimmed, "if ")) return .{ .name = "if", .args = trimmed[3..] };
+    if (std.mem.startsWith(u8, trimmed, "elif ")) return .{ .name = "elif", .args = trimmed[5..] };
     if (std.mem.startsWith(u8, trimmed, "else")) return .{ .name = "else", .args = "" };
     if (std.mem.startsWith(u8, trimmed, "endif")) return .{ .name = "endif", .args = "" };
     if (std.mem.startsWith(u8, trimmed, "include ")) return .{ .name = "include", .args = trimmed[8..] };
@@ -125,6 +126,23 @@ fn parseTag(content: []const u8) ?struct { name: []const u8, args: []const u8 } 
     if (std.mem.eql(u8, trimmed, "raw")) return .{ .name = "raw", .args = "" };
     if (std.mem.eql(u8, trimmed, "endraw")) return .{ .name = "endraw", .args = "" };
     return null;
+}
+
+fn compareNumeric(a: []const u8, b: []const u8) i32 {
+    const a_int = std.fmt.parseInt(i64, a, 10) catch null;
+    const b_int = std.fmt.parseInt(i64, b, 10) catch null;
+    if (a_int != null and b_int != null) {
+        if (a_int.? < b_int.?) return -1;
+        if (a_int.? > b_int.?) return 1;
+        return 0;
+    }
+    // Fall back to lexicographic comparison
+    const order = std.mem.order(u8, a, b);
+    return switch (order) {
+        .lt => -1,
+        .eq => 0,
+        .gt => 1,
+    };
 }
 
 fn evalCondition(context: *const Context, expr: []const u8) bool {
@@ -151,6 +169,36 @@ fn evalCondition(context: *const Context, expr: []const u8) bool {
         const left_value = getValueForComparison(context, left);
         const right_value = getValueForComparison(context, right);
         return !std.mem.eql(u8, left_value, right_value);
+    }
+
+    // Handle comparison operators (>=, <=, >, <) — check longer operators first
+    if (std.mem.indexOf(u8, trimmed_expr, ">=")) |idx| {
+        const left = std.mem.trim(u8, trimmed_expr[0..idx], " ");
+        const right = std.mem.trim(u8, trimmed_expr[idx + 2 ..], " ");
+        const left_value = getValueForComparison(context, left);
+        const right_value = getValueForComparison(context, right);
+        return compareNumeric(left_value, right_value) >= 0;
+    }
+    if (std.mem.indexOf(u8, trimmed_expr, "<=")) |idx| {
+        const left = std.mem.trim(u8, trimmed_expr[0..idx], " ");
+        const right = std.mem.trim(u8, trimmed_expr[idx + 2 ..], " ");
+        const left_value = getValueForComparison(context, left);
+        const right_value = getValueForComparison(context, right);
+        return compareNumeric(left_value, right_value) <= 0;
+    }
+    if (std.mem.indexOf(u8, trimmed_expr, ">")) |idx| {
+        const left = std.mem.trim(u8, trimmed_expr[0..idx], " ");
+        const right = std.mem.trim(u8, trimmed_expr[idx + 1 ..], " ");
+        const left_value = getValueForComparison(context, left);
+        const right_value = getValueForComparison(context, right);
+        return compareNumeric(left_value, right_value) > 0;
+    }
+    if (std.mem.indexOf(u8, trimmed_expr, "<")) |idx| {
+        const left = std.mem.trim(u8, trimmed_expr[0..idx], " ");
+        const right = std.mem.trim(u8, trimmed_expr[idx + 1 ..], " ");
+        const left_value = getValueForComparison(context, left);
+        const right_value = getValueForComparison(context, right);
+        return compareNumeric(left_value, right_value) < 0;
     }
 
     // Handle logical operators (and/or)
@@ -235,6 +283,43 @@ fn findElse(template: []const u8, start: usize, end: usize) ?usize {
                 }
                 i = tag_end + 2;
             } else i += 1;
+        } else i += 1;
+    }
+    return null;
+}
+
+const IfBranch = struct {
+    kind: enum { elif, @"else", endif },
+    args: []const u8,
+    body_start: usize,
+    body_end: usize,
+    next_pos: usize, // position right after the closing tag (endif → after {% endif %})
+};
+
+fn findNextIfBranch(template: []const u8, start: usize) ?IfBranch {
+    var i = start;
+    var depth: usize = 1;
+    while (i < template.len) {
+        if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
+            const tag_start = i + 2;
+            var tag_end = tag_start;
+            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) tag_end += 1;
+            if (tag_end >= template.len) return null;
+            if (parseTag(template[tag_start..tag_end])) |tag| {
+                if (std.mem.startsWith(u8, tag.name, "if")) {
+                    depth += 1;
+                } else if (std.mem.eql(u8, tag.name, "endif")) {
+                    depth -= 1;
+                    if (depth == 0) {
+                        return IfBranch{ .kind = .endif, .args = "", .body_start = i, .body_end = i, .next_pos = tag_end + 2 };
+                    }
+                } else if (depth == 1 and std.mem.eql(u8, tag.name, "elif")) {
+                    return IfBranch{ .kind = .elif, .args = tag.args, .body_start = tag_end + 2, .body_end = i, .next_pos = tag_end + 2 };
+                } else if (depth == 1 and std.mem.eql(u8, tag.name, "else")) {
+                    return IfBranch{ .kind = .@"else", .args = "", .body_start = tag_end + 2, .body_end = i, .next_pos = tag_end + 2 };
+                }
+            }
+            i = tag_end + 2;
         } else i += 1;
     }
     return null;
@@ -409,16 +494,55 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                 } else if (std.mem.eql(u8, tag.name, "if")) {
                     const body_start = tag_end + 2;
                     if (findEndIf(template, body_start)) |end_if| {
-                        const else_pos = findElse(template, body_start, end_if);
+                        // Evaluate if condition
                         if (evalCondition(context, tag.args)) {
-                            const if_body = template[body_start .. else_pos orelse end_if];
-                            const rendered = try renderTemplate(if_body, context, allocator, templates, null);
-                            defer allocator.free(rendered);
-                            try result.appendSlice(allocator, rendered);
-                        } else if (else_pos) |else_start| {
-                            const rendered = try renderTemplate(template[else_start..end_if], context, allocator, templates, null);
-                            defer allocator.free(rendered);
-                            try result.appendSlice(allocator, rendered);
+                            // if-body is from body_start to first elif/else/endif
+                            if (findNextIfBranch(template, body_start)) |branch| {
+                                const if_body = template[body_start..branch.body_end];
+                                const rendered = try renderTemplate(if_body, context, allocator, templates, null);
+                                defer allocator.free(rendered);
+                                try result.appendSlice(allocator, rendered);
+                            }
+                        } else {
+                            // Walk through elif/else branches
+                            var pos = body_start;
+                            var done = false;
+                            while (!done) {
+                                if (findNextIfBranch(template, pos)) |branch| {
+                                    switch (branch.kind) {
+                                        .elif => {
+                                            if (evalCondition(context, branch.args)) {
+                                                // Found true elif — find its end
+                                                if (findNextIfBranch(template, branch.body_start)) |next| {
+                                                    const elif_body = template[branch.body_start..next.body_end];
+                                                    const rendered = try renderTemplate(elif_body, context, allocator, templates, null);
+                                                    defer allocator.free(rendered);
+                                                    try result.appendSlice(allocator, rendered);
+                                                }
+                                                done = true;
+                                            } else {
+                                                pos = branch.body_start;
+                                            }
+                                        },
+                                        .@"else" => {
+                                            // Render else body until endif
+                                            // Find the endif to get the body range
+                                            if (findNextIfBranch(template, branch.body_start)) |next| {
+                                                const else_body = template[branch.body_start..next.body_end];
+                                                const rendered = try renderTemplate(else_body, context, allocator, templates, null);
+                                                defer allocator.free(rendered);
+                                                try result.appendSlice(allocator, rendered);
+                                            }
+                                            done = true;
+                                        },
+                                        .endif => {
+                                            done = true;
+                                        },
+                                    }
+                                } else {
+                                    done = true;
+                                }
+                            }
                         }
                         i = end_if;
                         continue;
@@ -462,8 +586,20 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                 continue;
             }
             const var_name = std.mem.trim(u8, template[start..end], " ");
-            const value = getValueWithFilter(context, var_name);
-            try result.appendSlice(allocator, value);
+            // Handle .len on lists specially
+            if (std.mem.endsWith(u8, var_name, ".len")) {
+                const list_key = var_name[0 .. var_name.len - 4];
+                if (context.getValue(list_key)) |val| {
+                    if (val == .list) {
+                        const len_str = try std.fmt.allocPrint(allocator, "{}", .{val.list.items.len});
+                        defer allocator.free(len_str);
+                        try result.appendSlice(allocator, len_str);
+                    }
+                }
+            } else {
+                const value = getValueWithFilter(context, var_name);
+                try result.appendSlice(allocator, value);
+            }
             i = end + 2;
         } else {
             try result.append(allocator, template[i]);
@@ -504,8 +640,34 @@ fn getValueForComparison(context: *const Context, expr: []const u8) []const u8 {
         return trimmed_expr[1 .. trimmed_expr.len - 1];
     }
 
-    // Handle variables
-    return context.get(trimmed_expr) orelse "";
+    // Handle numeric literals
+    _ = std.fmt.parseInt(i64, trimmed_expr, 10) catch {
+        // Not a number — check for .len on lists
+        if (std.mem.endsWith(u8, trimmed_expr, ".len")) {
+            const list_key = trimmed_expr[0 .. trimmed_expr.len - 4];
+            if (context.getValue(list_key)) |val| {
+                if (val == .list) {
+                    const n = val.list.items.len;
+                    return switch (n) {
+                        0 => "0",
+                        1 => "1",
+                        2 => "2",
+                        3 => "3",
+                        4 => "4",
+                        5 => "5",
+                        6 => "6",
+                        7 => "7",
+                        8 => "8",
+                        9 => "9",
+                        else => "",
+                    };
+                }
+            }
+            return "0";
+        }
+        return context.get(trimmed_expr) orelse "";
+    };
+    return trimmed_expr;
 }
 
 const EmptyTemplates = struct {};
@@ -1239,4 +1401,262 @@ test "raw block - complex template syntax preserved" {
         "{% if condition %}\n  {{ variable }}\n{% endif %}\n{% for item in items %}{{ item }}{% endfor %}",
         result,
     );
+}
+
+// ===== COMPARISON OPERATORS (>, <, >=, <=) =====
+
+test "greater than - true case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "5");
+    const result = try renderStr("{% if count > 3 %}big{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "big", result);
+}
+
+test "greater than - false case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "2");
+    const result = try renderStr("{% if count > 3 %}big{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "greater than - equal case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "3");
+    const result = try renderStr("{% if count > 3 %}big{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "less than - true case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "2");
+    const result = try renderStr("{% if count < 10 %}small{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "small", result);
+}
+
+test "less than - false case" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "15");
+    const result = try renderStr("{% if count < 10 %}small{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "greater than or equal - greater" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "5");
+    const result = try renderStr("{% if count >= 3 %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "ok", result);
+}
+
+test "greater than or equal - equal" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "3");
+    const result = try renderStr("{% if count >= 3 %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "ok", result);
+}
+
+test "greater than or equal - less" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "1");
+    const result = try renderStr("{% if count >= 3 %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "less than or equal - less" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "2");
+    const result = try renderStr("{% if count <= 5 %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "ok", result);
+}
+
+test "less than or equal - equal" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "5");
+    const result = try renderStr("{% if count <= 5 %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "ok", result);
+}
+
+test "less than or equal - greater" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "count", "10");
+    const result = try renderStr("{% if count <= 5 %}ok{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+// ===== .len PROPERTY ON LISTS =====
+
+test "list .len - non-empty list" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    var items = std.ArrayList(*Context).empty;
+    for (0..3) |j| {
+        var item = try std.heap.page_allocator.create(Context);
+        item.* = Context.init();
+        try item.set(std.heap.page_allocator, "name", try std.fmt.allocPrint(std.heap.page_allocator, "Item{}", .{j}));
+        try items.append(std.heap.page_allocator, item);
+    }
+    try context.setList(std.heap.page_allocator, "items", items);
+    const result = try renderStr("Count: {{ items.len }}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Count: 3", result);
+}
+
+test "list .len - empty list" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const items = std.ArrayList(*Context).empty;
+    try context.setList(std.heap.page_allocator, "items", items);
+    const result = try renderStr("Count: {{ items.len }}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Count: 0", result);
+}
+
+test "list .len with greater than - true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    var items = std.ArrayList(*Context).empty;
+    for (0..3) |j| {
+        var item = try std.heap.page_allocator.create(Context);
+        item.* = Context.init();
+        try item.set(std.heap.page_allocator, "name", try std.fmt.allocPrint(std.heap.page_allocator, "Item{}", .{j}));
+        try items.append(std.heap.page_allocator, item);
+    }
+    try context.setList(std.heap.page_allocator, "items", items);
+    const result = try renderStr("{% if items.len > 0 %}has items{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "has items", result);
+}
+
+test "list .len with greater than - false" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const items = std.ArrayList(*Context).empty;
+    try context.setList(std.heap.page_allocator, "items", items);
+    const result = try renderStr("{% if items.len > 0 %}has items{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+// ===== ELIF TAG =====
+
+test "elif - first condition true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "a", "yes");
+    try context.set(std.heap.page_allocator, "b", "no");
+    const result = try renderStr("{% if a %}A{% elif b %}B{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "A", result);
+}
+
+test "elif - second condition true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "a", "");
+    try context.set(std.heap.page_allocator, "b", "yes");
+    const result = try renderStr("{% if a %}A{% elif b %}B{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "B", result);
+}
+
+test "elif - all conditions false" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "a", "");
+    try context.set(std.heap.page_allocator, "b", "");
+    const result = try renderStr("{% if a %}A{% elif b %}B{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "elif with else - first true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "a", "yes");
+    try context.set(std.heap.page_allocator, "b", "");
+    const result = try renderStr("{% if a %}A{% elif b %}B{% else %}C{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "A", result);
+}
+
+test "elif with else - second true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "a", "");
+    try context.set(std.heap.page_allocator, "b", "yes");
+    const result = try renderStr("{% if a %}A{% elif b %}B{% else %}C{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "B", result);
+}
+
+test "elif with else - none true" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "a", "");
+    try context.set(std.heap.page_allocator, "b", "");
+    const result = try renderStr("{% if a %}A{% elif b %}B{% else %}C{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "C", result);
+}
+
+test "multiple elif" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "a", "");
+    try context.set(std.heap.page_allocator, "b", "");
+    try context.set(std.heap.page_allocator, "c", "yes");
+    const result = try renderStr("{% if a %}A{% elif b %}B{% elif c %}C{% else %}D{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "C", result);
+}
+
+test "elif with comparison - statement scenario" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const txns = std.ArrayList(*Context).empty;
+    var stmts = std.ArrayList(*Context).empty;
+    var stmt = try std.heap.page_allocator.create(Context);
+    stmt.* = Context.init();
+    try stmt.set(std.heap.page_allocator, "period_label", "July 2025");
+    try stmts.append(std.heap.page_allocator, stmt);
+    try context.setList(std.heap.page_allocator, "statement_transactions", txns);
+    try context.setList(std.heap.page_allocator, "statements", stmts);
+    const tmpl = "{% if statement_transactions.len > 0 %}txns{% elif statements.len > 0 %}stmts{% else %}none{% endif %}";
+    const result = try renderStr(tmpl, &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "stmts", result);
+}
+
+test "elif with comparison - all empty" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    const txns = std.ArrayList(*Context).empty;
+    const stmts = std.ArrayList(*Context).empty;
+    try context.setList(std.heap.page_allocator, "statement_transactions", txns);
+    try context.setList(std.heap.page_allocator, "statements", stmts);
+    const tmpl = "{% if statement_transactions.len > 0 %}txns{% elif statements.len > 0 %}stmts{% else %}none{% endif %}";
+    const result = try renderStr(tmpl, &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "none", result);
 }
