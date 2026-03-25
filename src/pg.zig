@@ -151,6 +151,7 @@ pub fn queryWith(sql: [:0]const u8, params: anytype) !Result {
     return result;
 }
 
+/// Deprecated: use queryOneAs() instead for arena-managed memory and type-safe mapping.
 pub fn queryOneWith(comptime T: type, sql: [:0]const u8, params: anytype) !?T {
     var result = try queryWith(sql, params);
     defer result.deinit();
@@ -410,6 +411,7 @@ pub const Result = struct {
         return c.PQgetisnull(r, @intCast(row), @intCast(col)) == 1;
     }
 
+    /// Deprecated: use queryAs() instead for arena-managed memory and type-safe mapping.
     pub fn mapAll(self: *Result, comptime T: type, alloc: std.mem.Allocator) ![]T {
         const count = self.rows();
         const items = try alloc.alloc(T, count);
@@ -452,6 +454,7 @@ pub const Result = struct {
         return items;
     }
 
+    /// Deprecated: use queryOneAs() instead for arena-managed memory and type-safe mapping.
     pub fn mapOne(self: *Result, comptime T: type, alloc: std.mem.Allocator) !?T {
         const items = try self.mapAll(T, alloc);
         defer alloc.free(items);
@@ -460,6 +463,179 @@ pub const Result = struct {
         return items[0];
     }
 };
+
+// ─── Typed query API (SQLx-style) ─────────────────────────────────────
+
+pub fn MappedRows(comptime T: type) type {
+    return struct {
+        arena: std.heap.ArenaAllocator,
+        items: []T,
+        inner: ?*c.PGresult,
+
+        const Self = @This();
+
+        pub fn deinit(self: *Self) void {
+            if (self.inner) |r| c.PQclear(r);
+            self.arena.deinit();
+        }
+    };
+}
+
+fn mapRowValue(
+    comptime FieldType: type,
+    raw: []const u8,
+    is_null: bool,
+    arena_alloc: std.mem.Allocator,
+) !FieldType {
+    const type_info = @typeInfo(FieldType);
+    if (type_info == .optional) {
+        const Child = type_info.optional.child;
+        if (is_null or raw.len == 0) return null;
+        return try mapRowValue(Child, raw, false, arena_alloc);
+    }
+    if (is_null or raw.len == 0) {
+        return switch (FieldType) {
+            []const u8 => "",
+            bool => false,
+            i8, i16, i32, i64, u8, u16, u32, u64 => 0,
+            f32, f64 => 0.0,
+            else => @compileError("pg.queryAs: unsupported type " ++ @typeName(FieldType)),
+        };
+    }
+    return switch (FieldType) {
+        []const u8 => try arena_alloc.dupe(u8, raw),
+        bool => raw[0] == 't' or raw[0] == 'T',
+        i8, i16, i32, i64 => std.fmt.parseInt(FieldType, raw, 10) catch 0,
+        u8, u16, u32, u64 => std.fmt.parseInt(FieldType, raw, 10) catch 0,
+        f32, f64 => std.fmt.parseFloat(FieldType, raw) catch 0.0,
+        else => @compileError("pg.queryAs: unsupported type " ++ @typeName(FieldType)),
+    };
+}
+
+fn mapRowFromPg(
+    comptime T: type,
+    pg_result: ?*c.PGresult,
+    row: usize,
+    num_cols: usize,
+    arena_alloc: std.mem.Allocator,
+) !T {
+    var item: T = undefined;
+    inline for (@typeInfo(T).@"struct".fields) |field| {
+        var col_idx: ?usize = null;
+        for (0..num_cols) |ci| {
+            const col_name = c.PQfname(pg_result, @intCast(ci));
+            if (col_name != null and std.mem.eql(u8, std.mem.span(col_name), field.name)) {
+                col_idx = ci;
+                break;
+            }
+        }
+        if (col_idx) |col| {
+            const is_null = c.PQgetisnull(pg_result, @intCast(row), @intCast(col)) == 1;
+            const raw = if (is_null) "" else blk: {
+                const val = c.PQgetvalue(pg_result, @intCast(row), @intCast(col));
+                break :blk std.mem.span(val);
+            };
+            @field(item, field.name) = try mapRowValue(field.type, raw, is_null, arena_alloc);
+        } else {
+            @field(item, field.name) = try mapRowValue(field.type, "", true, arena_alloc);
+        }
+    }
+    return item;
+}
+
+pub fn queryAs(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    sql: [:0]const u8,
+    params: anytype,
+) !MappedRows(T) {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
+    const arena_alloc = arena.allocator();
+
+    var conn = try db_pool.?.acquire();
+    defer db_pool.?.release(conn);
+
+    const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
+    const param_strings = try allocator.alloc([]const u8, param_count);
+    defer allocator.free(param_strings);
+
+    const allocated = try allocator.alloc(bool, param_count);
+    defer allocator.free(allocated);
+    @memset(allocated, false);
+
+    inline for (0..param_count) |i| {
+        const value = @field(params, @typeInfo(@TypeOf(params)).@"struct".fields[i].name);
+        const field_type = @typeInfo(@TypeOf(params)).@"struct".fields[i].type;
+
+        param_strings[i] = switch (@typeInfo(field_type)) {
+            .int, .comptime_int => blk: {
+                allocated[i] = true;
+                break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
+            },
+            .float, .comptime_float => blk: {
+                allocated[i] = true;
+                break :blk try std.fmt.allocPrint(allocator, "{d}", .{value});
+            },
+            .bool => if (value) "true" else "false",
+            .pointer => |p| switch (p.size) {
+                .slice => value,
+                .one => if (@typeInfo(p.child) == .array) value else @compileError("Unsupported pointer type"),
+                else => @compileError("Unsupported pointer type"),
+            },
+            else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
+        };
+    }
+
+    const pg_result = c.PQexecParams(
+        conn.inner.?,
+        sql,
+        @intCast(param_count),
+        null,
+        @ptrCast(param_strings.ptr),
+        null,
+        null,
+        0,
+    );
+    if (pg_result == null) return error.QueryFailed;
+
+    const status = c.PQresultStatus(pg_result);
+    if (status != c.PGRES_TUPLES_OK and status != c.PGRES_COMMAND_OK) {
+        const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
+        std.log.err("PostgreSQL: {s}", .{msg});
+        c.PQclear(pg_result);
+        return error.QueryFailed;
+    }
+
+    const row_count: usize = @intCast(c.PQntuples(pg_result));
+    const num_cols: usize = @intCast(c.PQnfields(pg_result));
+    const items = try arena_alloc.alloc(T, row_count);
+
+    for (0..row_count) |row| {
+        items[row] = try mapRowFromPg(T, pg_result, row, num_cols, arena_alloc);
+    }
+
+    return MappedRows(T){
+        .arena = arena,
+        .items = items,
+        .inner = pg_result,
+    };
+}
+
+pub fn queryOneAs(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    sql: [:0]const u8,
+    params: anytype,
+) !?MappedRows(T) {
+    var result = try queryAs(T, allocator, sql, params);
+    if (result.items.len == 0) {
+        result.deinit();
+        return null;
+    }
+    return result;
+}
 
 pub fn queryConn(conn: *Conn, sql: [:0]const u8) !Result {
     const pg_conn = conn.inner orelse return error.QueryFailed;
