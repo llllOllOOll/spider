@@ -157,7 +157,9 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
         _ = ctx.req_arena.reset(.{ .retain_with_limit = RETAIN_BYTES });
 
         var request = http_server.receiveHead() catch |err| {
-            std.debug.print("SERVER: receiveHead error: {}\n", .{err});
+            if (err != error.HttpConnectionClosing) {
+                std.debug.print("SERVER: receiveHead error: {}\n", .{err});
+            }
             break;
         };
 
