@@ -504,6 +504,9 @@ fn mapRowValue(
         if (is_null or raw.len == 0) return null;
         return try mapRowValue(Child, raw, false, arena_alloc);
     }
+    if (type_info == .@"enum") {
+        return std.meta.stringToEnum(FieldType, raw) orelse @panic("pg.queryAs: invalid enum value for " ++ @typeName(FieldType));
+    }
     if (is_null or raw.len == 0) {
         return switch (FieldType) {
             []const u8 => "",
