@@ -70,7 +70,7 @@ pub const Server = struct {
         self.* = .{
             .io = io,
             .allocator = allocator,
-            .listener = try net.IpAddress.listen(address, io, .{ .reuse_address = true }),
+            .listener = try net.IpAddress.listen(&address, io, .{ .reuse_address = true }),
             .router = std.StringHashMap(HandlerFn).init(allocator),
             .static_dir = static_dir,
             .app = null,
@@ -299,7 +299,7 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 metrics.global_metrics.addBytesOut(b.len);
             }
 
-            var extra_headers: [16]std.http.Header = undefined;
+            var extra_headers: [17]std.http.Header = undefined;
             var header_count: usize = 0;
             var hit = web_res.headers.map.iterator();
             while (hit.next()) |entry| {
@@ -309,19 +309,27 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 }
             }
 
+            // If request has no Content-Length or Transfer-Encoding and response has no body,
+            // add Connection: close to prevent server from trying to discard body
+            const has_request_body_info = request.head.content_length != null or request.head.transfer_encoding != .none;
+
             // If 404 and static_dir is set, try serving static file
             if (web_res.status == .not_found and ctx.static_dir.len > 0) {
                 staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch {
                     metrics.global_metrics.incrementError();
                 };
             } else {
-                std.debug.print("DEBUG headers count: {d}\n", .{header_count});
-                for (extra_headers[0..header_count]) |h| {
-                    std.debug.print("DEBUG header: [{s}] = [{s}]\n", .{ h.name, h.value });
+                const should_close = !has_request_body_info;
+                if (should_close) {
+                    if (header_count < 17) {
+                        extra_headers[header_count] = .{ .name = "Connection", .value = "close" };
+                        header_count += 1;
+                    }
                 }
                 request.respond(web_res.body orelse "", .{
                     .status = @enumFromInt(@intFromEnum(web_res.status)),
                     .extra_headers = extra_headers[0..header_count],
+                    .keep_alive = has_request_body_info,
                 }) catch {
                     metrics.global_metrics.incrementError();
                     break;

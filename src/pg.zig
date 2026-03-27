@@ -565,7 +565,7 @@ pub fn queryAs(
 
     const arena_alloc = arena.allocator();
 
-    var conn = try db_pool.?.acquire();
+    const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
 
     const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;

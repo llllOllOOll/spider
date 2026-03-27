@@ -1,6 +1,6 @@
 # <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider
 
-Spider web framework written in Zig (tested with `0.16.0-dev`).
+Spider web framework written in Zig (tested with `0.16.0-dev.2984+`).
 
 📖 **Full Documentation:** https://spiderme.org
 
@@ -24,11 +24,17 @@ Spider web framework written in Zig (tested with `0.16.0-dev`).
 
 ## Requirements
 
-* Zig `0.16.0-dev` (or compatible)
+* Zig `0.16.0-dev.2984+` (or compatible)
 
 ```bash
 zig version
 ```
+
+> **Note for Zig 0.16.0-dev.2984+**: The following changes were made for compatibility:
+> - `ArrayList` initialization now uses `.empty` instead of `{}`
+> - `ArrayListUnmanaged` requires explicit struct fields: `{ .items = &.{}, .capacity = 0 }`
+> - `net.IpAddress.listen()` now requires a pointer: `&address` instead of `address`
+> - POST/PUT requests without `Content-Length` header are now handled gracefully (returns 400 or redirect)
 
 ---
 

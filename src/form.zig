@@ -81,7 +81,7 @@ pub fn parse(allocator: std.mem.Allocator, body: ?[]const u8) !FormData {
                 switch (existing.*) {
                     .string => |old_val| {
                         // Promote to array
-                        var arr = std.ArrayListUnmanaged([]const u8){};
+                        var arr = std.ArrayListUnmanaged([]const u8){ .items = &.{}, .capacity = 0 };
                         try arr.append(allocator, old_val);
                         try arr.append(allocator, decoded_value);
                         existing.* = .{ .array = arr };
@@ -109,7 +109,7 @@ fn addToArray(allocator: std.mem.Allocator, fields: *std.StringHashMap(FormValue
         allocator.free(key);
         switch (existing.*) {
             .string => {
-                var arr = std.ArrayListUnmanaged([]const u8){};
+                var arr = std.ArrayListUnmanaged([]const u8){ .items = &.{}, .capacity = 0 };
                 try arr.append(allocator, existing.*.string);
                 try arr.append(allocator, value);
                 existing.* = .{ .array = arr };
@@ -119,7 +119,7 @@ fn addToArray(allocator: std.mem.Allocator, fields: *std.StringHashMap(FormValue
             },
         }
     } else {
-        var arr = std.ArrayListUnmanaged([]const u8){};
+        var arr = std.ArrayListUnmanaged([]const u8){ .items = &.{}, .capacity = 0 };
         try arr.append(allocator, value);
         try fields.put(key, .{ .array = arr });
     }

@@ -283,6 +283,8 @@ pub const Response = struct {
         res.allocator = allocator;
         res.status = .found;
         try res.headers.set(allocator, "Location", location);
+        try res.headers.set(allocator, "Content-Length", "0");
+        try res.headers.set(allocator, "Connection", "close");
         return res;
     }
 
