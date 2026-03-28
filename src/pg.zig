@@ -669,6 +669,100 @@ pub fn queryOneAs(
     return result;
 }
 
+pub fn queryOne(
+    comptime T: type,
+    arena: std.mem.Allocator,
+    sql: [:0]const u8,
+    params: anytype,
+) !?T {
+    const conn = try db_pool.?.acquire();
+    defer db_pool.?.release(conn);
+
+    const allocator = db_allocator.?;
+
+    const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
+    const param_strings = try allocator.alloc([*:0]const u8, param_count);
+    defer allocator.free(param_strings);
+
+    const allocated = try allocator.alloc(bool, param_count);
+    defer allocator.free(allocated);
+    @memset(allocated, false);
+
+    inline for (0..param_count) |i| {
+        const value = @field(params, @typeInfo(@TypeOf(params)).@"struct".fields[i].name);
+        const field_type = @typeInfo(@TypeOf(params)).@"struct".fields[i].type;
+
+        param_strings[i] = switch (@typeInfo(field_type)) {
+            .int, .comptime_int => blk: {
+                allocated[i] = true;
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
+                const z = try allocator.dupeZ(u8, s);
+                allocator.free(s);
+                break :blk z;
+            },
+            .float, .comptime_float => blk: {
+                allocated[i] = true;
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
+                const z = try allocator.dupeZ(u8, s);
+                allocator.free(s);
+                break :blk z;
+            },
+            .bool => if (value) "true" else "false",
+            .pointer => |p| switch (p.size) {
+                .slice => blk: {
+                    allocated[i] = true;
+                    break :blk try allocator.dupeZ(u8, value);
+                },
+                .one => if (@typeInfo(p.child) == .array) blk: {
+                    allocated[i] = true;
+                    break :blk try allocator.dupeZ(u8, value);
+                } else @compileError("Unsupported pointer type"),
+                else => @compileError("Unsupported pointer type"),
+            },
+            else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
+        };
+    }
+
+    defer {
+        for (0..param_count) |i| {
+            if (allocated[i]) allocator.free(std.mem.span(param_strings[i]));
+        }
+    }
+
+    const pg_result = c.PQexecParams(
+        conn.inner.?,
+        sql,
+        @intCast(param_count),
+        null,
+        @ptrCast(param_strings.ptr),
+        null,
+        null,
+        0,
+    );
+    if (pg_result == null) return error.QueryFailed;
+
+    const status = c.PQresultStatus(pg_result);
+    if (status != c.PGRES_TUPLES_OK) {
+        const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
+        std.log.err("PostgreSQL: {s}", .{msg});
+        c.PQclear(pg_result);
+        return error.QueryFailed;
+    }
+
+    const row_count: usize = @intCast(c.PQntuples(pg_result));
+    if (row_count == 0) {
+        c.PQclear(pg_result);
+        return null;
+    }
+
+    const num_cols: usize = @intCast(c.PQnfields(pg_result));
+    const item = try mapRowFromPg(T, pg_result, 0, num_cols, arena);
+
+    c.PQclear(pg_result);
+
+    return item;
+}
+
 pub fn queryConn(conn: *Conn, sql: [:0]const u8) !Result {
     const pg_conn = conn.inner orelse return error.QueryFailed;
     const result = c.PQexec(pg_conn, sql);
@@ -1134,4 +1228,95 @@ test "query logging - transaction commits" {
     var row = try queryRow("SELECT value FROM logtest WHERE id = 1", .{});
     defer row.deinit();
     try std.testing.expectEqualStrings("100", row.get(0, "value"));
+}
+
+test "queryOne - returns struct directly" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qone_users (id integer, name text, email text)", .{});
+    defer exec("DROP TABLE qone_users", .{}) catch {};
+    try exec("INSERT INTO qone_users VALUES (1, 'Alice', 'alice@example.com')", .{});
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+        email: []const u8,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const user = try queryOne(TestUser, arena.allocator(), "SELECT id, name, email FROM qone_users WHERE id = $1", .{@as(i32, 1)});
+
+    try std.testing.expect(user != null);
+    try std.testing.expectEqual(@as(i32, 1), user.?.id);
+    try std.testing.expectEqualStrings("Alice", user.?.name);
+    try std.testing.expectEqualStrings("alice@example.com", user.?.email);
+}
+
+test "queryOne - returns null when not found" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qone_empty (id integer, name text)", .{});
+    defer exec("DROP TABLE qone_empty", .{}) catch {};
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const user = try queryOne(TestUser, arena.allocator(), "SELECT id, name FROM qone_empty WHERE id = $1", .{@as(i32, 999)});
+
+    try std.testing.expect(user == null);
+}
+
+test "queryOne - strings live in caller arena" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qone_arena (id integer, name text)", .{});
+    defer exec("DROP TABLE qone_arena", .{}) catch {};
+    try exec("INSERT INTO qone_arena VALUES (1, 'Bob')", .{});
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const user = try queryOne(TestUser, arena.allocator(), "SELECT id, name FROM qone_arena WHERE id = $1", .{@as(i32, 1)});
+
+    try std.testing.expect(user != null);
+    try std.testing.expectEqualStrings("Bob", user.?.name);
+}
+
+test "queryOne - optional fields return null when db value is null" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qone_optional (id integer, name text, bio text)", .{});
+    defer exec("DROP TABLE qone_optional", .{}) catch {};
+    try exec("INSERT INTO qone_optional VALUES (1, 'Alice', NULL)", .{});
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+        bio: ?[]const u8,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const user = try queryOne(TestUser, arena.allocator(), "SELECT id, name, bio FROM qone_optional WHERE id = $1", .{@as(i32, 1)});
+
+    try std.testing.expect(user != null);
+    try std.testing.expectEqualStrings("Alice", user.?.name);
+    try std.testing.expect(user.?.bio == null);
 }

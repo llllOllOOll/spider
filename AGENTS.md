@@ -27,6 +27,9 @@ zig test src/template.zig --test-filter "basic variable"
 # Run module tests only
 zig test src/ --cache on
 
+# Run tests that require PostgreSQL (uses Docker)
+./test.sh
+
 # Format code
 zig fmt src/
 zig fmt .
