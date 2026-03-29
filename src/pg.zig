@@ -4,6 +4,9 @@ pub const c = @cImport({
     @cInclude("stdlib.h");
 });
 
+// TODO: Implementar logging condicional para evitar overhead em produção
+//       Usar flag de ambiente SPIDER_LOG_QUERIES para controle
+
 pub const Config = struct {
     host: []const u8 = "localhost",
     port: u16 = 5432,
@@ -222,6 +225,10 @@ pub fn query(
         param_ptrs[i] = if (pg_params[i].is_null) null else @ptrCast(pg_params[i].ptr);
     }
 
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const start = std.Io.Clock.now(.awake, io);
+
     const pg_result = c.PQexecParams(
         conn.inner.?,
         sql,
@@ -235,6 +242,18 @@ pub fn query(
     if (pg_result == null) return error.QueryFailed;
 
     const status = c.PQresultStatus(pg_result);
+
+    const end = std.Io.Clock.now(.awake, io);
+    const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
+
+    if (status == c.PGRES_TUPLES_OK) {
+        const row_count: usize = @intCast(c.PQntuples(pg_result));
+        logQuery(sql, elapsed_us, row_count, &.{});
+    } else if (status == c.PGRES_COMMAND_OK) {
+        const cmd_tuples = c.PQcmdTuples(pg_result);
+        const affected_rows = if (cmd_tuples[0] == 0) 0 else std.fmt.parseInt(usize, std.mem.span(cmd_tuples), 10) catch 0;
+        logExec(sql, elapsed_us, affected_rows);
+    }
 
     if (status == c.PGRES_TUPLES_OK) {
         const row_count: usize = @intCast(c.PQntuples(pg_result));
@@ -863,6 +882,10 @@ pub fn queryOne(
         param_ptrs[i] = if (pg_params[i].is_null) null else @ptrCast(pg_params[i].ptr);
     }
 
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const start = std.Io.Clock.now(.awake, io);
+
     const pg_result = c.PQexecParams(
         conn.inner.?,
         sql,
@@ -876,6 +899,15 @@ pub fn queryOne(
     if (pg_result == null) return error.QueryFailed;
 
     const status = c.PQresultStatus(pg_result);
+
+    const end = std.Io.Clock.now(.awake, io);
+    const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
+
+    if (status == c.PGRES_TUPLES_OK) {
+        const row_count: usize = @intCast(c.PQntuples(pg_result));
+        logQuery(sql, elapsed_us, row_count, &.{});
+    }
+
     if (status != c.PGRES_TUPLES_OK) {
         const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
         std.log.err("PostgreSQL: {s}", .{msg});
