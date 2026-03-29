@@ -175,6 +175,19 @@ fn QueryResult(comptime T: type) type {
     };
 }
 
+/// Query the database and return results as native Zig types.
+///
+/// The return type is determined by T:
+///
+///   query(User, arena, sql, params)  → ![]User   // SELECT multiple rows
+///   query(void, arena, sql, params)  → !void     // INSERT/UPDATE/DELETE
+///   query(i32,  arena, sql, params)  → !i32      // INSERT/UPDATE RETURNING id
+///
+/// Ownership: caller passes arena, function allocates into it,
+/// caller calls arena.deinit() when done.
+///
+/// Params support native Zig types: i32, i64, f64, bool,
+/// []const u8, and optionals (?i32, ?[]const u8, etc).
 pub fn query(
     comptime T: type,
     arena: std.mem.Allocator,
@@ -808,6 +821,14 @@ pub fn queryOneAs(
     return result;
 }
 
+/// Query the database and return a single row as a native Zig struct.
+///
+///   queryOne(User, arena, sql, params) → !?User
+///
+/// Returns null if no rows found, the struct if found.
+/// Only for structs — use query(i32, ...) for RETURNING id.
+///
+/// Ownership: same as query — caller owns the arena.
 pub fn queryOne(
     comptime T: type,
     arena: std.mem.Allocator,
