@@ -187,52 +187,26 @@ pub fn query(
     const allocator = db_allocator.?;
 
     const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
-    const param_strings = try allocator.alloc([*:0]const u8, param_count);
-    defer allocator.free(param_strings);
-
-    const allocated = try allocator.alloc(bool, param_count);
-    defer allocator.free(allocated);
-    @memset(allocated, false);
+    const pg_params = try allocator.alloc(PgParam, param_count);
+    defer allocator.free(pg_params);
 
     inline for (0..param_count) |i| {
         const value = @field(params, @typeInfo(@TypeOf(params)).@"struct".fields[i].name);
-        const field_type = @typeInfo(@TypeOf(params)).@"struct".fields[i].type;
-
-        param_strings[i] = switch (@typeInfo(field_type)) {
-            .int, .comptime_int => blk: {
-                allocated[i] = true;
-                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
-                const z = try allocator.dupeZ(u8, s);
-                allocator.free(s);
-                break :blk z;
-            },
-            .float, .comptime_float => blk: {
-                allocated[i] = true;
-                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
-                const z = try allocator.dupeZ(u8, s);
-                allocator.free(s);
-                break :blk z;
-            },
-            .bool => if (value) "true" else "false",
-            .pointer => |p| switch (p.size) {
-                .slice => blk: {
-                    allocated[i] = true;
-                    break :blk try allocator.dupeZ(u8, value);
-                },
-                .one => if (@typeInfo(p.child) == .array) blk: {
-                    allocated[i] = true;
-                    break :blk try allocator.dupeZ(u8, value);
-                } else @compileError("Unsupported pointer type"),
-                else => @compileError("Unsupported pointer type"),
-            },
-            else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
-        };
+        pg_params[i] = try paramToPg(allocator, value);
     }
 
     defer {
         for (0..param_count) |i| {
-            if (allocated[i]) allocator.free(std.mem.span(param_strings[i]));
+            if (pg_params[i].needs_free) {
+                allocator.free(@constCast(pg_params[i].ptr));
+            }
         }
+    }
+
+    const param_ptrs = try allocator.alloc(?[*]const u8, param_count);
+    defer allocator.free(param_ptrs);
+    for (0..param_count) |i| {
+        param_ptrs[i] = if (pg_params[i].is_null) null else @ptrCast(pg_params[i].ptr);
     }
 
     const pg_result = c.PQexecParams(
@@ -240,7 +214,7 @@ pub fn query(
         sql,
         @intCast(param_count),
         null,
-        @ptrCast(param_strings.ptr),
+        @ptrCast(param_ptrs.ptr),
         null,
         null,
         0,
@@ -603,6 +577,56 @@ pub const Result = struct {
     }
 };
 
+const PgParam = struct {
+    ptr: [:0]const u8,
+    needs_free: bool,
+    is_null: bool,
+};
+
+fn paramToPg(
+    allocator: std.mem.Allocator,
+    value: anytype,
+) !PgParam {
+    const T = @TypeOf(value);
+    const type_info = @typeInfo(T);
+
+    if (type_info == .optional) {
+        if (value) |v| {
+            return paramToPg(allocator, v);
+        } else {
+            return .{ .ptr = "", .needs_free = false, .is_null = true };
+        }
+    }
+
+    return switch (type_info) {
+        .int, .comptime_int => blk: {
+            const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
+            const z = try allocator.dupeZ(u8, s);
+            allocator.free(s);
+            break :blk .{ .ptr = z, .needs_free = true, .is_null = false };
+        },
+        .float, .comptime_float => blk: {
+            const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
+            const z = try allocator.dupeZ(u8, s);
+            allocator.free(s);
+            break :blk .{ .ptr = z, .needs_free = true, .is_null = false };
+        },
+        .bool => .{ .ptr = if (value) "true" else "false", .needs_free = false, .is_null = false },
+        .pointer => |p| switch (p.size) {
+            .slice => blk: {
+                const z = try allocator.dupeZ(u8, value);
+                break :blk .{ .ptr = z, .needs_free = true, .is_null = false };
+            },
+            .one => if (@typeInfo(p.child) == .array) blk: {
+                const z = try allocator.dupeZ(u8, value);
+                break :blk .{ .ptr = z, .needs_free = true, .is_null = false };
+            } else @compileError("Unsupported pointer type"),
+            else => @compileError("Unsupported pointer type"),
+        },
+        else => @compileError("Unsupported parameter type: " ++ @typeName(T)),
+    };
+}
+
 // ─── Typed query API (SQLx-style) ─────────────────────────────────────
 
 pub fn MappedRows(comptime T: type) type {
@@ -712,52 +736,26 @@ pub fn queryAs(
     defer db_pool.?.release(conn);
 
     const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
-    const param_strings = try allocator.alloc([*:0]const u8, param_count);
-    defer allocator.free(param_strings);
-
-    const allocated = try allocator.alloc(bool, param_count);
-    defer allocator.free(allocated);
-    @memset(allocated, false);
+    const pg_params = try allocator.alloc(PgParam, param_count);
+    defer allocator.free(pg_params);
 
     inline for (0..param_count) |i| {
         const value = @field(params, @typeInfo(@TypeOf(params)).@"struct".fields[i].name);
-        const field_type = @typeInfo(@TypeOf(params)).@"struct".fields[i].type;
-
-        param_strings[i] = switch (@typeInfo(field_type)) {
-            .int, .comptime_int => blk: {
-                allocated[i] = true;
-                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
-                const z = try allocator.dupeZ(u8, s);
-                allocator.free(s);
-                break :blk z;
-            },
-            .float, .comptime_float => blk: {
-                allocated[i] = true;
-                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
-                const z = try allocator.dupeZ(u8, s);
-                allocator.free(s);
-                break :blk z;
-            },
-            .bool => if (value) "true" else "false",
-            .pointer => |p| switch (p.size) {
-                .slice => blk: {
-                    allocated[i] = true;
-                    break :blk try allocator.dupeZ(u8, value);
-                },
-                .one => if (@typeInfo(p.child) == .array) blk: {
-                    allocated[i] = true;
-                    break :blk try allocator.dupeZ(u8, value);
-                } else @compileError("Unsupported pointer type"),
-                else => @compileError("Unsupported pointer type"),
-            },
-            else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
-        };
+        pg_params[i] = try paramToPg(allocator, value);
     }
 
     defer {
         for (0..param_count) |i| {
-            if (allocated[i]) allocator.free(std.mem.span(param_strings[i]));
+            if (pg_params[i].needs_free) {
+                allocator.free(@constCast(pg_params[i].ptr));
+            }
         }
+    }
+
+    const param_ptrs = try allocator.alloc(?[*]const u8, param_count);
+    defer allocator.free(param_ptrs);
+    for (0..param_count) |i| {
+        param_ptrs[i] = if (pg_params[i].is_null) null else @ptrCast(pg_params[i].ptr);
     }
 
     const pg_result = c.PQexecParams(
@@ -765,7 +763,7 @@ pub fn queryAs(
         sql,
         @intCast(param_count),
         null,
-        @ptrCast(param_strings.ptr),
+        @ptrCast(param_ptrs.ptr),
         null,
         null,
         0,
@@ -822,52 +820,26 @@ pub fn queryOne(
     const allocator = db_allocator.?;
 
     const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
-    const param_strings = try allocator.alloc([*:0]const u8, param_count);
-    defer allocator.free(param_strings);
-
-    const allocated = try allocator.alloc(bool, param_count);
-    defer allocator.free(allocated);
-    @memset(allocated, false);
+    const pg_params = try allocator.alloc(PgParam, param_count);
+    defer allocator.free(pg_params);
 
     inline for (0..param_count) |i| {
         const value = @field(params, @typeInfo(@TypeOf(params)).@"struct".fields[i].name);
-        const field_type = @typeInfo(@TypeOf(params)).@"struct".fields[i].type;
-
-        param_strings[i] = switch (@typeInfo(field_type)) {
-            .int, .comptime_int => blk: {
-                allocated[i] = true;
-                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
-                const z = try allocator.dupeZ(u8, s);
-                allocator.free(s);
-                break :blk z;
-            },
-            .float, .comptime_float => blk: {
-                allocated[i] = true;
-                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
-                const z = try allocator.dupeZ(u8, s);
-                allocator.free(s);
-                break :blk z;
-            },
-            .bool => if (value) "true" else "false",
-            .pointer => |p| switch (p.size) {
-                .slice => blk: {
-                    allocated[i] = true;
-                    break :blk try allocator.dupeZ(u8, value);
-                },
-                .one => if (@typeInfo(p.child) == .array) blk: {
-                    allocated[i] = true;
-                    break :blk try allocator.dupeZ(u8, value);
-                } else @compileError("Unsupported pointer type"),
-                else => @compileError("Unsupported pointer type"),
-            },
-            else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
-        };
+        pg_params[i] = try paramToPg(allocator, value);
     }
 
     defer {
         for (0..param_count) |i| {
-            if (allocated[i]) allocator.free(std.mem.span(param_strings[i]));
+            if (pg_params[i].needs_free) {
+                allocator.free(@constCast(pg_params[i].ptr));
+            }
         }
+    }
+
+    const param_ptrs = try allocator.alloc(?[*]const u8, param_count);
+    defer allocator.free(param_ptrs);
+    for (0..param_count) |i| {
+        param_ptrs[i] = if (pg_params[i].is_null) null else @ptrCast(pg_params[i].ptr);
     }
 
     const pg_result = c.PQexecParams(
@@ -875,7 +847,7 @@ pub fn queryOne(
         sql,
         @intCast(param_count),
         null,
-        @ptrCast(param_strings.ptr),
+        @ptrCast(param_ptrs.ptr),
         null,
         null,
         0,
@@ -897,6 +869,14 @@ pub fn queryOne(
     }
 
     const num_cols: usize = @intCast(c.PQnfields(pg_result));
+
+    if (T == i32) {
+        const val = c.PQgetvalue(pg_result, 0, 0);
+        const result = try std.fmt.parseInt(i32, std.mem.span(val), 10);
+        c.PQclear(pg_result);
+        return result;
+    }
+
     const item = try mapRowFromPg(T, pg_result, 0, num_cols, arena);
 
     c.PQclear(pg_result);
@@ -1609,4 +1589,95 @@ test "query i32 - returning id" {
     const id = try query(i32, std.testing.allocator, "INSERT INTO qi32_users (name) VALUES ($1) RETURNING id", .{"Bob"});
 
     try std.testing.expect(id > 0);
+}
+
+test "query void - optional ?i32 param null" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qopt_users (id integer, name text, age integer)", .{});
+    defer exec("DROP TABLE qopt_users", .{}) catch {};
+    try exec("INSERT INTO qopt_users VALUES (1, 'Alice', 25)", .{});
+
+    const result = try query(void, std.testing.allocator, "UPDATE qopt_users SET age = $1 WHERE name = $2", .{ @as(?i32, null), "Alice" });
+
+    try std.testing.expectEqual({}, result);
+}
+
+test "query void - optional ?i32 param with value" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qopt_users (id integer, name text, age integer)", .{});
+    defer exec("DROP TABLE qopt_users", .{}) catch {};
+    try exec("INSERT INTO qopt_users VALUES (1, 'Alice', 25)", .{});
+
+    const result = try query(void, std.testing.allocator, "UPDATE qopt_users SET age = $1 WHERE name = $2", .{ @as(?i32, 30), "Alice" });
+
+    try std.testing.expectEqual({}, result);
+}
+
+test "query void - optional ?[]const u8 param null" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qopt_bio (id integer, name text, bio text)", .{});
+    defer exec("DROP TABLE qopt_bio", .{}) catch {};
+    try exec("INSERT INTO qopt_bio VALUES (1, 'Alice', 'engineer')", .{});
+
+    const result = try query(void, std.testing.allocator, "UPDATE qopt_bio SET bio = $1 WHERE name = $2", .{ @as(?[]const u8, null), "Alice" });
+
+    try std.testing.expectEqual({}, result);
+}
+
+test "query void - optional ?[]const u8 param with value" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qopt_bio (id integer, name text, bio text)", .{});
+    defer exec("DROP TABLE qopt_bio", .{}) catch {};
+    try exec("INSERT INTO qopt_bio VALUES (1, 'Alice', 'engineer')", .{});
+
+    const result = try query(void, std.testing.allocator, "UPDATE qopt_bio SET bio = $1 WHERE name = $2", .{ @as(?[]const u8, "developer"), "Alice" });
+
+    try std.testing.expectEqual({}, result);
+}
+
+test "query i32 - with optional params" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qopt_items (id SERIAL PRIMARY KEY, name text, price integer)", .{});
+    defer exec("DROP TABLE qopt_items", .{}) catch {};
+    try exec("INSERT INTO qopt_items (name, price) VALUES ('Apple', 100)", .{});
+    try exec("INSERT INTO qopt_items (name, price) VALUES ('Banana', null)", .{});
+
+    const id = try query(i32, std.testing.allocator, "INSERT INTO qopt_items (name, price) VALUES ($1, $2) RETURNING id", .{ "Cherry", @as(?i32, 50) });
+
+    try std.testing.expect(id > 0);
+}
+
+test "queryOne - optional ?i32 param" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qopt_search (id integer, name text, age integer)", .{});
+    defer exec("DROP TABLE qopt_search", .{}) catch {};
+    try exec("INSERT INTO qopt_search VALUES (1, 'Alice', 25)", .{});
+    try exec("INSERT INTO qopt_search VALUES (2, 'Bob', null)", .{});
+
+    const User = struct {
+        id: i32,
+        name: []const u8,
+        age: ?i32,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const user = try queryOne(User, arena.allocator(), "SELECT id, name, age FROM qopt_search WHERE id = $1", .{@as(?i32, 2)});
+
+    try std.testing.expect(user != null);
+    try std.testing.expectEqualStrings("Bob", user.?.name);
+    try std.testing.expect(user.?.age == null);
 }
