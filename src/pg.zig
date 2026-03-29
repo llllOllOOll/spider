@@ -249,14 +249,7 @@ pub fn query(
     if (status == c.PGRES_TUPLES_OK) {
         const row_count: usize = @intCast(c.PQntuples(pg_result));
         logQuery(sql, elapsed_us, row_count, &.{});
-    } else if (status == c.PGRES_COMMAND_OK) {
-        const cmd_tuples = c.PQcmdTuples(pg_result);
-        const affected_rows = if (cmd_tuples[0] == 0) 0 else std.fmt.parseInt(usize, std.mem.span(cmd_tuples), 10) catch 0;
-        logExec(sql, elapsed_us, affected_rows);
-    }
 
-    if (status == c.PGRES_TUPLES_OK) {
-        const row_count: usize = @intCast(c.PQntuples(pg_result));
         const num_cols: usize = @intCast(c.PQnfields(pg_result));
 
         if (T == void) {
@@ -286,12 +279,15 @@ pub fn query(
     }
 
     if (status == c.PGRES_COMMAND_OK) {
+        const cmd_tuples = c.PQcmdTuples(pg_result);
+        const affected_rows = if (cmd_tuples[0] == 0) 0 else std.fmt.parseInt(usize, std.mem.span(cmd_tuples), 10) catch 0;
+        logExec(sql, elapsed_us, affected_rows);
+
         if (T == void) {
             c.PQclear(pg_result);
             return {};
         }
         if (T == i32) {
-            const cmd_tuples = c.PQcmdTuples(pg_result);
             const result = if (cmd_tuples[0] == 0) 0 else try std.fmt.parseInt(i32, std.mem.span(cmd_tuples), 10);
             c.PQclear(pg_result);
             return result;
@@ -903,11 +899,6 @@ pub fn queryOne(
     const end = std.Io.Clock.now(.awake, io);
     const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
 
-    if (status == c.PGRES_TUPLES_OK) {
-        const row_count: usize = @intCast(c.PQntuples(pg_result));
-        logQuery(sql, elapsed_us, row_count, &.{});
-    }
-
     if (status != c.PGRES_TUPLES_OK) {
         const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
         std.log.err("PostgreSQL: {s}", .{msg});
@@ -916,6 +907,7 @@ pub fn queryOne(
     }
 
     const row_count: usize = @intCast(c.PQntuples(pg_result));
+    logQuery(sql, elapsed_us, row_count, &.{});
     if (row_count == 0) {
         c.PQclear(pg_result);
         return null;
