@@ -86,12 +86,14 @@ pub fn releaseConn(conn: *Conn) void {
     db_pool.?.release(conn);
 }
 
+/// Deprecated: use query(void, arena, sql, params) instead.
 pub fn queryParams(sql: [:0]const u8, params: []const []const u8) !Result {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     return queryConnParams(conn, sql, params, db_allocator.?);
 }
 
+/// Deprecated: use query(void, arena, sql, params) or query(T, arena, sql, params) instead.
 pub fn queryWith(sql: [:0]const u8, params: anytype) !Result {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
@@ -158,10 +160,19 @@ pub fn queryOneWith(comptime T: type, sql: [:0]const u8, params: anytype) !?T {
     return try result.mapOne(T, db_allocator.?);
 }
 
+/// Deprecated: use query(void, arena, sql, params) or query(T, arena, sql, params) instead.
 pub fn queryRaw(sql: [:0]const u8, params: anytype) !Result {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     return queryConnParamsWith(conn, sql, params, db_allocator.?);
+}
+
+fn QueryResult(comptime T: type) type {
+    return switch (T) {
+        void => void,
+        i32 => i32,
+        else => []T,
+    };
 }
 
 pub fn query(
@@ -169,7 +180,7 @@ pub fn query(
     arena: std.mem.Allocator,
     sql: [:0]const u8,
     params: anytype,
-) ![]T {
+) !QueryResult(T) {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
 
@@ -237,31 +248,66 @@ pub fn query(
     if (pg_result == null) return error.QueryFailed;
 
     const status = c.PQresultStatus(pg_result);
-    if (status != c.PGRES_TUPLES_OK) {
-        const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
-        std.log.err("PostgreSQL: {s}", .{msg});
+
+    if (status == c.PGRES_TUPLES_OK) {
+        const row_count: usize = @intCast(c.PQntuples(pg_result));
+        const num_cols: usize = @intCast(c.PQnfields(pg_result));
+
+        if (T == void) {
+            c.PQclear(pg_result);
+            return {};
+        }
+
+        if (T == i32) {
+            if (row_count == 0) {
+                c.PQclear(pg_result);
+                return 0;
+            }
+            const val = c.PQgetvalue(pg_result, 0, 0);
+            const result = try std.fmt.parseInt(i32, std.mem.span(val), 10);
+            c.PQclear(pg_result);
+            return result;
+        }
+
+        const items = try arena.alloc(T, row_count);
+
+        for (0..row_count) |row| {
+            items[row] = try mapRowFromPg(T, pg_result, row, num_cols, arena);
+        }
+
         c.PQclear(pg_result);
-        return error.QueryFailed;
+        return items;
     }
 
-    const row_count: usize = @intCast(c.PQntuples(pg_result));
-    const num_cols: usize = @intCast(c.PQnfields(pg_result));
-    const items = try arena.alloc(T, row_count);
-
-    for (0..row_count) |row| {
-        items[row] = try mapRowFromPg(T, pg_result, row, num_cols, arena);
+    if (status == c.PGRES_COMMAND_OK) {
+        if (T == void) {
+            c.PQclear(pg_result);
+            return {};
+        }
+        if (T == i32) {
+            const cmd_tuples = c.PQcmdTuples(pg_result);
+            const result = if (cmd_tuples[0] == 0) 0 else try std.fmt.parseInt(i32, std.mem.span(cmd_tuples), 10);
+            c.PQclear(pg_result);
+            return result;
+        }
+        c.PQclear(pg_result);
+        return error.InvalidQueryType;
     }
 
+    const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
+    std.log.err("PostgreSQL: {s}", .{msg});
     c.PQclear(pg_result);
-    return items;
+    return error.QueryFailed;
 }
 
+/// Deprecated: use queryOne(T, arena, sql, params) instead.
 pub fn queryRow(sql: [:0]const u8, params: anytype) !Result {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     return queryConnParamsWith(conn, sql, params, db_allocator.?);
 }
 
+/// Deprecated: use query(void, arena, sql, params) instead.
 pub fn exec(sql: [:0]const u8, params: anytype) !void {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
@@ -269,6 +315,7 @@ pub fn exec(sql: [:0]const u8, params: anytype) !void {
     result.deinit();
 }
 
+/// Deprecated: use query(void, arena, sql, params) instead.
 pub fn execRaw(sql: [:0]const u8) !void {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
@@ -649,6 +696,7 @@ fn mapRowFromPg(
     return item;
 }
 
+/// Deprecated: use query(T, arena, sql, params) instead.
 pub fn queryAs(
     comptime T: type,
     allocator: std.mem.Allocator,
@@ -747,6 +795,7 @@ pub fn queryAs(
     };
 }
 
+/// Deprecated: use queryOne(T, arena, sql, params) instead.
 pub fn queryOneAs(
     comptime T: type,
     allocator: std.mem.Allocator,
@@ -1510,4 +1559,54 @@ test "query - optional fields" {
     try std.testing.expect(users[0].bio != null);
     try std.testing.expectEqualStrings("Engineer", users[0].bio.?);
     try std.testing.expect(users[1].bio == null);
+}
+
+test "query void - insert" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qvoid_users (id SERIAL PRIMARY KEY, name text)", .{});
+    defer exec("DROP TABLE qvoid_users", .{}) catch {};
+
+    const result = try query(void, std.testing.allocator, "INSERT INTO qvoid_users (name) VALUES ($1)", .{"Alice"});
+
+    try std.testing.expectEqual({}, result);
+}
+
+test "query void - update" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qvoid_users (id integer, name text)", .{});
+    defer exec("DROP TABLE qvoid_users", .{}) catch {};
+    try exec("INSERT INTO qvoid_users VALUES (1, 'Alice')", .{});
+
+    const result = try query(void, std.testing.allocator, "UPDATE qvoid_users SET name = $1 WHERE id = $2", .{ "Alicia", @as(i32, 1) });
+
+    try std.testing.expectEqual({}, result);
+}
+
+test "query void - delete" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qvoid_users (id integer, name text)", .{});
+    defer exec("DROP TABLE qvoid_users", .{}) catch {};
+    try exec("INSERT INTO qvoid_users VALUES (1, 'Alice')", .{});
+
+    const result = try query(void, std.testing.allocator, "DELETE FROM qvoid_users WHERE id = $1", .{@as(i32, 1)});
+
+    try std.testing.expectEqual({}, result);
+}
+
+test "query i32 - returning id" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qi32_users (id SERIAL PRIMARY KEY, name text)", .{});
+    defer exec("DROP TABLE qi32_users", .{}) catch {};
+
+    const id = try query(i32, std.testing.allocator, "INSERT INTO qi32_users (name) VALUES ($1) RETURNING id", .{"Bob"});
+
+    try std.testing.expect(id > 0);
 }
