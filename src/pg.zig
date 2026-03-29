@@ -158,10 +158,102 @@ pub fn queryOneWith(comptime T: type, sql: [:0]const u8, params: anytype) !?T {
     return try result.mapOne(T, db_allocator.?);
 }
 
-pub fn query(sql: [:0]const u8, params: anytype) !Result {
+pub fn queryRaw(sql: [:0]const u8, params: anytype) !Result {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     return queryConnParamsWith(conn, sql, params, db_allocator.?);
+}
+
+pub fn query(
+    comptime T: type,
+    arena: std.mem.Allocator,
+    sql: [:0]const u8,
+    params: anytype,
+) ![]T {
+    const conn = try db_pool.?.acquire();
+    defer db_pool.?.release(conn);
+
+    const allocator = db_allocator.?;
+
+    const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
+    const param_strings = try allocator.alloc([*:0]const u8, param_count);
+    defer allocator.free(param_strings);
+
+    const allocated = try allocator.alloc(bool, param_count);
+    defer allocator.free(allocated);
+    @memset(allocated, false);
+
+    inline for (0..param_count) |i| {
+        const value = @field(params, @typeInfo(@TypeOf(params)).@"struct".fields[i].name);
+        const field_type = @typeInfo(@TypeOf(params)).@"struct".fields[i].type;
+
+        param_strings[i] = switch (@typeInfo(field_type)) {
+            .int, .comptime_int => blk: {
+                allocated[i] = true;
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
+                const z = try allocator.dupeZ(u8, s);
+                allocator.free(s);
+                break :blk z;
+            },
+            .float, .comptime_float => blk: {
+                allocated[i] = true;
+                const s = try std.fmt.allocPrint(allocator, "{d}", .{value});
+                const z = try allocator.dupeZ(u8, s);
+                allocator.free(s);
+                break :blk z;
+            },
+            .bool => if (value) "true" else "false",
+            .pointer => |p| switch (p.size) {
+                .slice => blk: {
+                    allocated[i] = true;
+                    break :blk try allocator.dupeZ(u8, value);
+                },
+                .one => if (@typeInfo(p.child) == .array) blk: {
+                    allocated[i] = true;
+                    break :blk try allocator.dupeZ(u8, value);
+                } else @compileError("Unsupported pointer type"),
+                else => @compileError("Unsupported pointer type"),
+            },
+            else => @compileError("Unsupported parameter type: " ++ @typeName(field_type)),
+        };
+    }
+
+    defer {
+        for (0..param_count) |i| {
+            if (allocated[i]) allocator.free(std.mem.span(param_strings[i]));
+        }
+    }
+
+    const pg_result = c.PQexecParams(
+        conn.inner.?,
+        sql,
+        @intCast(param_count),
+        null,
+        @ptrCast(param_strings.ptr),
+        null,
+        null,
+        0,
+    );
+    if (pg_result == null) return error.QueryFailed;
+
+    const status = c.PQresultStatus(pg_result);
+    if (status != c.PGRES_TUPLES_OK) {
+        const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
+        std.log.err("PostgreSQL: {s}", .{msg});
+        c.PQclear(pg_result);
+        return error.QueryFailed;
+    }
+
+    const row_count: usize = @intCast(c.PQntuples(pg_result));
+    const num_cols: usize = @intCast(c.PQnfields(pg_result));
+    const items = try arena.alloc(T, row_count);
+
+    for (0..row_count) |row| {
+        items[row] = try mapRowFromPg(T, pg_result, row, num_cols, arena);
+    }
+
+    c.PQclear(pg_result);
+    return items;
 }
 
 pub fn queryRow(sql: [:0]const u8, params: anytype) !Result {
@@ -995,7 +1087,7 @@ test "queryParams - static string literal" {
 test "query - no params" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    var result = try query("SELECT 1::integer AS num, 'hello' AS text", .{});
+    var result = try queryRaw("SELECT 1::integer AS num, 'hello' AS text", .{});
     defer result.deinit();
     try std.testing.expect(result.rows() == 1);
     try std.testing.expectEqualStrings("1", result.get(0, "num"));
@@ -1005,7 +1097,7 @@ test "query - no params" {
 test "query - with params" {
     try initTestDb(std.testing.allocator);
     defer deinit();
-    var result = try query(
+    var result = try queryRaw(
         "SELECT $1::integer AS id, $2::text AS name",
         .{ @as(i32, 42), "Alice" },
     );
@@ -1024,7 +1116,7 @@ test "query - multiple rows" {
     try exec("INSERT INTO items VALUES (3, 'three')", .{});
     defer exec("DROP TABLE items", .{}) catch {};
 
-    var result = try query("SELECT id, name FROM items ORDER BY id", .{});
+    var result = try queryRaw("SELECT id, name FROM items ORDER BY id", .{});
     defer result.deinit();
     try std.testing.expect(result.rows() == 3);
     try std.testing.expectEqualStrings("1", result.get(0, "id"));
@@ -1071,7 +1163,7 @@ test "exec - insert" {
         .{"Charlie"},
     );
 
-    var result = try query("SELECT id, name FROM users", .{});
+    var result = try queryRaw("SELECT id, name FROM users", .{});
     defer result.deinit();
     try std.testing.expect(result.rows() == 1);
     try std.testing.expectEqualStrings("1", result.get(0, "id"));
@@ -1117,7 +1209,7 @@ test "execRaw - multiple statements" {
     try execRaw("CREATE TEMP TABLE raw_test (id integer); INSERT INTO raw_test VALUES (1), (2), (3);");
     defer execRaw("DROP TABLE raw_test") catch {};
 
-    var result = try query("SELECT COUNT(*) AS cnt FROM raw_test", .{});
+    var result = try queryRaw("SELECT COUNT(*) AS cnt FROM raw_test", .{});
     defer result.deinit();
     try std.testing.expectEqualStrings("3", result.get(0, "cnt"));
 }
@@ -1169,7 +1261,7 @@ test "query logging - info level shows sql and row count" {
     try exec("INSERT INTO logtest VALUES (2, 'bob')", .{});
     defer exec("DROP TABLE logtest", .{}) catch {};
 
-    var result = try query("SELECT id, name FROM logtest ORDER BY id", .{});
+    var result = try queryRaw("SELECT id, name FROM logtest ORDER BY id", .{});
     defer result.deinit();
 
     try std.testing.expect(result.rows() == 2);
@@ -1182,7 +1274,7 @@ test "query logging - debug level shows sql params and rows" {
     try exec("INSERT INTO logtest VALUES (1, 'alice')", .{});
     defer exec("DROP TABLE logtest", .{}) catch {};
 
-    var result = try query("SELECT id, name FROM logtest WHERE id = $1", .{@as(i32, 1)});
+    var result = try queryRaw("SELECT id, name FROM logtest WHERE id = $1", .{@as(i32, 1)});
     defer result.deinit();
 
     try std.testing.expect(result.rows() == 1);
@@ -1209,7 +1301,7 @@ test "query logging - timing is included" {
     try exec("CREATE TEMP TABLE logtest (id integer)", .{});
     defer exec("DROP TABLE logtest", .{}) catch {};
 
-    var result = try query("SELECT * FROM logtest", .{});
+    var result = try queryRaw("SELECT * FROM logtest", .{});
     defer result.deinit();
     try std.testing.expect(result.rows() == 0);
 }
@@ -1319,4 +1411,103 @@ test "queryOne - optional fields return null when db value is null" {
     try std.testing.expect(user != null);
     try std.testing.expectEqualStrings("Alice", user.?.name);
     try std.testing.expect(user.?.bio == null);
+}
+
+test "query - returns slice of structs" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qall_users (id integer, name text)", .{});
+    defer exec("DROP TABLE qall_users", .{}) catch {};
+    try exec("INSERT INTO qall_users VALUES (1, 'Alice')", .{});
+    try exec("INSERT INTO qall_users VALUES (2, 'Bob')", .{});
+    try exec("INSERT INTO qall_users VALUES (3, 'Carol')", .{});
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const users = try query(TestUser, arena.allocator(), "SELECT id, name FROM qall_users ORDER BY id", .{});
+
+    try std.testing.expectEqual(@as(usize, 3), users.len);
+    try std.testing.expectEqual(@as(i32, 1), users[0].id);
+    try std.testing.expectEqualStrings("Alice", users[0].name);
+    try std.testing.expectEqual(@as(i32, 2), users[1].id);
+    try std.testing.expectEqualStrings("Bob", users[1].name);
+    try std.testing.expectEqual(@as(i32, 3), users[2].id);
+    try std.testing.expectEqualStrings("Carol", users[2].name);
+}
+
+test "query - returns empty slice when no rows" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qall_empty (id integer, name text)", .{});
+    defer exec("DROP TABLE qall_empty", .{}) catch {};
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const users = try query(TestUser, arena.allocator(), "SELECT id, name FROM qall_empty", .{});
+
+    try std.testing.expectEqual(@as(usize, 0), users.len);
+}
+
+test "query - strings live in caller arena" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qall_arena (id integer, name text)", .{});
+    defer exec("DROP TABLE qall_arena", .{}) catch {};
+    try exec("INSERT INTO qall_arena VALUES (1, 'Dave')", .{});
+    try exec("INSERT INTO qall_arena VALUES (2, 'Eve')", .{});
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const users = try query(TestUser, arena.allocator(), "SELECT id, name FROM qall_arena ORDER BY id", .{});
+
+    try std.testing.expectEqual(@as(usize, 2), users.len);
+    try std.testing.expectEqualStrings("Dave", users[0].name);
+    try std.testing.expectEqualStrings("Eve", users[1].name);
+}
+
+test "query - optional fields" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE qall_optional (id integer, name text, bio text)", .{});
+    defer exec("DROP TABLE qall_optional", .{}) catch {};
+    try exec("INSERT INTO qall_optional VALUES (1, 'Alice', 'Engineer')", .{});
+    try exec("INSERT INTO qall_optional VALUES (2, 'Bob', NULL)", .{});
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+        bio: ?[]const u8,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const users = try query(TestUser, arena.allocator(), "SELECT id, name, bio FROM qall_optional ORDER BY id", .{});
+
+    try std.testing.expectEqual(@as(usize, 2), users.len);
+    try std.testing.expect(users[0].bio != null);
+    try std.testing.expectEqualStrings("Engineer", users[0].bio.?);
+    try std.testing.expect(users[1].bio == null);
 }
