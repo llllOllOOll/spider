@@ -153,7 +153,7 @@ pub fn queryWith(sql: [:0]const u8, params: anytype) !Result {
     return result;
 }
 
-/// Deprecated: use queryOneAs() instead for arena-managed memory and type-safe mapping.
+/// Deprecated: use queryOne(T, arena, sql, params) instead.
 pub fn queryOneWith(comptime T: type, sql: [:0]const u8, params: anytype) !?T {
     var result = try queryWith(sql, params);
     defer result.deinit();
@@ -524,7 +524,7 @@ pub const Result = struct {
         return c.PQgetisnull(r, @intCast(row), @intCast(col)) == 1;
     }
 
-    /// Deprecated: use queryAs() instead for arena-managed memory and type-safe mapping.
+    /// Deprecated: use query(T, arena, sql, params) instead.
     pub fn mapAll(self: *Result, comptime T: type, alloc: std.mem.Allocator) ![]T {
         const count = self.rows();
         const items = try alloc.alloc(T, count);
@@ -567,7 +567,7 @@ pub const Result = struct {
         return items;
     }
 
-    /// Deprecated: use queryOneAs() instead for arena-managed memory and type-safe mapping.
+    /// Deprecated: use queryOne(T, arena, sql, params) instead.
     pub fn mapOne(self: *Result, comptime T: type, alloc: std.mem.Allocator) !?T {
         const items = try self.mapAll(T, alloc);
         defer alloc.free(items);
