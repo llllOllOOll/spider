@@ -302,6 +302,225 @@ pub fn query(
     return error.QueryFailed;
 }
 
+/// Execute a query using a specific connection and return results as native Zig types.
+///
+/// This is an internal function used by `Transaction.query()` to reuse a connection
+/// without the overhead of pool acquire/release operations.
+///
+/// The return type is determined by T:
+///
+///   queryConnTyped(User, arena, sql, params)  → ![]User   // SELECT multiple rows
+///   queryConnTyped(void, arena, sql, params)  → !void     // INSERT/UPDATE/DELETE
+///   queryConnTyped(i32,  arena, sql, params)  → !i32      // INSERT/UPDATE RETURNING id
+///
+/// Ownership: caller passes arena, function allocates into it,
+/// caller calls arena.deinit() when done.
+///
+/// Params support native Zig types: i32, i64, f64, bool,
+/// []const u8, and optionals (?i32, ?[]const u8, etc).
+fn queryConnTyped(
+    conn: *Conn,
+    comptime T: type,
+    arena: std.mem.Allocator,
+    sql: [:0]const u8,
+    params: anytype,
+) !QueryResult(T) {
+    const allocator = db_allocator.?;
+
+    const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
+    const pg_params = try allocator.alloc(PgParam, param_count);
+    defer allocator.free(pg_params);
+
+    inline for (0..param_count) |i| {
+        const value = @field(params, @typeInfo(@TypeOf(params)).@"struct".fields[i].name);
+        pg_params[i] = try paramToPg(allocator, value);
+    }
+
+    defer {
+        for (0..param_count) |i| {
+            if (pg_params[i].needs_free) {
+                allocator.free(@constCast(pg_params[i].ptr));
+            }
+        }
+    }
+
+    const param_ptrs = try allocator.alloc(?[*]const u8, param_count);
+    defer allocator.free(param_ptrs);
+    for (0..param_count) |i| {
+        param_ptrs[i] = if (pg_params[i].is_null) null else @ptrCast(pg_params[i].ptr);
+    }
+
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const start = std.Io.Clock.now(.awake, io);
+
+    const pg_result = c.PQexecParams(
+        conn.inner.?,
+        sql,
+        @intCast(param_count),
+        null,
+        @ptrCast(param_ptrs.ptr),
+        null,
+        null,
+        0,
+    );
+    if (pg_result == null) return error.QueryFailed;
+
+    const status = c.PQresultStatus(pg_result);
+
+    const end = std.Io.Clock.now(.awake, io);
+    const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
+
+    if (status == c.PGRES_TUPLES_OK) {
+        const row_count: usize = @intCast(c.PQntuples(pg_result));
+        logQuery(sql, elapsed_us, row_count, &.{});
+
+        const num_cols: usize = @intCast(c.PQnfields(pg_result));
+
+        if (T == void) {
+            c.PQclear(pg_result);
+            return {};
+        }
+
+        if (T == i32) {
+            if (row_count == 0) {
+                c.PQclear(pg_result);
+                return 0;
+            }
+            const val = c.PQgetvalue(pg_result, 0, 0);
+            const result = try std.fmt.parseInt(i32, std.mem.span(val), 10);
+            c.PQclear(pg_result);
+            return result;
+        }
+
+        const items = try arena.alloc(T, row_count);
+
+        for (0..row_count) |row| {
+            items[row] = try mapRowFromPg(T, pg_result, row, num_cols, arena);
+        }
+
+        c.PQclear(pg_result);
+        return items;
+    }
+
+    if (status == c.PGRES_COMMAND_OK) {
+        const cmd_tuples = c.PQcmdTuples(pg_result);
+        const affected_rows = if (cmd_tuples[0] == 0) 0 else std.fmt.parseInt(usize, std.mem.span(cmd_tuples), 10) catch 0;
+        logExec(sql, elapsed_us, affected_rows);
+
+        if (T == void) {
+            c.PQclear(pg_result);
+            return {};
+        }
+        if (T == i32) {
+            const result = if (cmd_tuples[0] == 0) 0 else try std.fmt.parseInt(i32, std.mem.span(cmd_tuples), 10);
+            c.PQclear(pg_result);
+            return result;
+        }
+        c.PQclear(pg_result);
+        return error.InvalidQueryType;
+    }
+
+    const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
+    std.log.err("PostgreSQL: {s}", .{msg});
+    c.PQclear(pg_result);
+    return error.QueryFailed;
+}
+
+/// Query a single row using a specific connection and return it as a native Zig struct.
+///
+/// This is an internal function used by `Transaction.queryOne()` to reuse a connection
+/// without the overhead of pool acquire/release operations.
+///
+///   queryOneConn(User, arena, sql, params) → !?User
+///
+/// Returns null if no rows found, the struct if found.
+/// Only for structs — use queryConnTyped(i32, ...) for RETURNING id.
+///
+/// Ownership: same as queryConnTyped — caller owns the arena.
+fn queryOneConn(
+    conn: *Conn,
+    comptime T: type,
+    arena: std.mem.Allocator,
+    sql: [:0]const u8,
+    params: anytype,
+) !?T {
+    const allocator = db_allocator.?;
+
+    const param_count = comptime @typeInfo(@TypeOf(params)).@"struct".fields.len;
+    const pg_params = try allocator.alloc(PgParam, param_count);
+    defer allocator.free(pg_params);
+
+    inline for (0..param_count) |i| {
+        const value = @field(params, @typeInfo(@TypeOf(params)).@"struct".fields[i].name);
+        pg_params[i] = try paramToPg(allocator, value);
+    }
+
+    defer {
+        for (0..param_count) |i| {
+            if (pg_params[i].needs_free) {
+                allocator.free(@constCast(pg_params[i].ptr));
+            }
+        }
+    }
+
+    const param_ptrs = try allocator.alloc(?[*]const u8, param_count);
+    defer allocator.free(param_ptrs);
+    for (0..param_count) |i| {
+        param_ptrs[i] = if (pg_params[i].is_null) null else @ptrCast(pg_params[i].ptr);
+    }
+
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const start = std.Io.Clock.now(.awake, io);
+
+    const pg_result = c.PQexecParams(
+        conn.inner.?,
+        sql,
+        @intCast(param_count),
+        null,
+        @ptrCast(param_ptrs.ptr),
+        null,
+        null,
+        0,
+    );
+    if (pg_result == null) return error.QueryFailed;
+
+    const status = c.PQresultStatus(pg_result);
+
+    const end = std.Io.Clock.now(.awake, io);
+    const elapsed_us = @as(i64, @intCast(@divTrunc(start.durationTo(end).nanoseconds, 1000)));
+
+    if (status != c.PGRES_TUPLES_OK) {
+        const msg = std.mem.span(c.PQresultErrorMessage(pg_result));
+        std.log.err("PostgreSQL: {s}", .{msg});
+        c.PQclear(pg_result);
+        return error.QueryFailed;
+    }
+
+    const row_count: usize = @intCast(c.PQntuples(pg_result));
+    logQuery(sql, elapsed_us, row_count, &.{});
+    if (row_count == 0) {
+        c.PQclear(pg_result);
+        return null;
+    }
+
+    const num_cols: usize = @intCast(c.PQnfields(pg_result));
+
+    if (T == i32) {
+        const val = c.PQgetvalue(pg_result, 0, 0);
+        const result = try std.fmt.parseInt(i32, std.mem.span(val), 10);
+        c.PQclear(pg_result);
+        return result;
+    }
+
+    const item = try mapRowFromPg(T, pg_result, 0, num_cols, arena);
+
+    c.PQclear(pg_result);
+
+    return item;
+}
+
 /// Deprecated: use queryOne(T, arena, sql, params) instead.
 pub fn queryRow(sql: [:0]const u8, params: anytype) !Result {
     const conn = try db_pool.?.acquire();
@@ -331,14 +550,57 @@ pub fn begin() !Transaction {
     return Transaction{ .conn = conn };
 }
 
+/// Represents a database transaction.
+///
+/// Example usage:
+/// ```zig
+/// var tx = try pg.begin();
+/// defer tx.rollback(); // Rollback automático se falhar
+///
+/// // INSERT usando a nova API tipada
+/// try tx.query(void, arena, "INSERT INTO users (name) VALUES ($1)", .{"Alice"});
+///
+/// // SELECT usando a nova API tipada
+/// const users = try tx.query(User, arena, "SELECT id, name FROM users", .{});
+///
+/// // SELECT de uma linha usando a nova API tipada
+/// const user = try tx.queryOne(User, arena, "SELECT id, name FROM users WHERE id = $1", .{@as(i32, 1)});
+///
+/// try tx.commit(); // Confirma as alterações
+/// ```
 pub const Transaction = struct {
     conn: *Conn,
     committed: bool = false,
     rolled_back: bool = false,
 
+    /// Deprecated: use tx.query(void, arena, sql, params) instead.
     pub fn exec(self: *Transaction, sql: [:0]const u8, params: anytype) !void {
         var result = try queryConnParamsWith(self.conn, sql, params, db_allocator.?);
         result.deinit();
+    }
+
+    /// Execute a query within the transaction and return results as native Zig types.
+    /// Same API as the global `query` function but uses the transaction's connection.
+    pub fn query(
+        self: *Transaction,
+        comptime T: type,
+        arena: std.mem.Allocator,
+        sql: [:0]const u8,
+        params: anytype,
+    ) !QueryResult(T) {
+        return queryConnTyped(self.conn, T, arena, sql, params);
+    }
+
+    /// Query a single row within the transaction and return it as a native Zig struct.
+    /// Same API as the global `queryOne` function but uses the transaction's connection.
+    pub fn queryOne(
+        self: *Transaction,
+        comptime T: type,
+        arena: std.mem.Allocator,
+        sql: [:0]const u8,
+        params: anytype,
+    ) !?T {
+        return queryOneConn(self.conn, T, arena, sql, params);
     }
 
     pub fn commit(self: *Transaction) !void {
@@ -1725,4 +1987,109 @@ test "queryOne - optional ?i32 param" {
     try std.testing.expect(user != null);
     try std.testing.expectEqualStrings("Bob", user.?.name);
     try std.testing.expect(user.?.age == null);
+}
+
+test "transaction - query with typed API" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE tx_test (id integer, name text)", .{});
+    defer exec("DROP TABLE tx_test", .{}) catch {};
+
+    var tx = try begin();
+    defer tx.rollback();
+
+    // Test INSERT com query(void, ...) dentro da transação
+    try tx.query(void, std.testing.allocator, "INSERT INTO tx_test VALUES (1, 'Alice')", .{});
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Test SELECT com query(TestUser, ...) dentro da transação
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+    };
+
+    const users = try tx.query(TestUser, arena.allocator(), "SELECT id, name FROM tx_test", .{});
+    try std.testing.expectEqual(@as(usize, 1), users.len);
+    try std.testing.expectEqual(@as(i32, 1), users[0].id);
+    try std.testing.expectEqualStrings("Alice", users[0].name);
+
+    try tx.commit();
+}
+
+test "transaction - queryOne with typed API" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE tx_test_one (id integer, name text)", .{});
+    defer exec("DROP TABLE tx_test_one", .{}) catch {};
+    try exec("INSERT INTO tx_test_one VALUES (1, 'Bob')", .{});
+
+    var tx = try begin();
+    defer tx.rollback();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const TestUser = struct {
+        id: i32,
+        name: []const u8,
+    };
+
+    const user = try tx.queryOne(TestUser, arena.allocator(), "SELECT id, name FROM tx_test_one WHERE id = $1", .{@as(i32, 1)});
+
+    try std.testing.expect(user != null);
+    try std.testing.expectEqual(@as(i32, 1), user.?.id);
+    try std.testing.expectEqualStrings("Bob", user.?.name);
+
+    try tx.commit();
+}
+
+test "transaction - rollback prevents changes" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE tx_rollback (id integer, name text)", .{});
+    defer exec("DROP TABLE tx_rollback", .{}) catch {};
+    try exec("INSERT INTO tx_rollback VALUES (1, 'Original')", .{});
+
+    var tx = try begin();
+    try tx.query(void, std.testing.allocator, "UPDATE tx_rollback SET name = 'Updated' WHERE id = 1", .{});
+    tx.rollback();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const TestRow = struct {
+        name: []const u8,
+    };
+
+    const row = try queryOne(TestRow, arena.allocator(), "SELECT name FROM tx_rollback WHERE id = 1", .{});
+    try std.testing.expect(row != null);
+    try std.testing.expectEqualStrings("Original", row.?.name);
+}
+
+test "transaction - commit persists changes" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    try exec("CREATE TEMP TABLE tx_commit (id integer, name text)", .{});
+    defer exec("DROP TABLE tx_commit", .{}) catch {};
+
+    var tx = try begin();
+    try tx.query(void, std.testing.allocator, "INSERT INTO tx_commit VALUES (1, 'Committed')", .{});
+    try tx.commit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const TestRow = struct {
+        name: []const u8,
+    };
+
+    const row = try queryOne(TestRow, arena.allocator(), "SELECT name FROM tx_commit WHERE id = 1", .{});
+    try std.testing.expect(row != null);
+    try std.testing.expectEqualStrings("Committed", row.?.name);
 }
