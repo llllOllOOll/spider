@@ -648,19 +648,7 @@ fn getValueForComparison(context: *const Context, expr: []const u8) []const u8 {
             if (context.getValue(list_key)) |val| {
                 if (val == .list) {
                     const n = val.list.items.len;
-                    return switch (n) {
-                        0 => "0",
-                        1 => "1",
-                        2 => "2",
-                        3 => "3",
-                        4 => "4",
-                        5 => "5",
-                        6 => "6",
-                        7 => "7",
-                        8 => "8",
-                        9 => "9",
-                        else => "",
-                    };
+                    return std.fmt.allocPrint(std.heap.page_allocator, "{}", .{n}) catch "";
                 }
             }
             return "0";
@@ -1556,6 +1544,53 @@ test "list .len with greater than - false" {
     const result = try renderStr("{% if items.len > 0 %}has items{% endif %}", &context);
     defer std.heap.page_allocator.free(result);
     try std.testing.expectEqualSlices(u8, "", result);
+}
+
+test "list .len with double digit - interpolation" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    var items = std.ArrayList(*Context).empty;
+    for (0..11) |j| {
+        var item = try std.heap.page_allocator.create(Context);
+        item.* = Context.init();
+        try item.set(std.heap.page_allocator, "name", try std.fmt.allocPrint(std.heap.page_allocator, "Item{}", .{j}));
+        try items.append(std.heap.page_allocator, item);
+    }
+    try context.setList(std.heap.page_allocator, "items", items);
+    const result = try renderStr("Count: {{ items.len }}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Count: 11", result);
+}
+
+test "list .len with double digit comparison" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    var items = std.ArrayList(*Context).empty;
+    for (0..11) |j| {
+        var item = try std.heap.page_allocator.create(Context);
+        item.* = Context.init();
+        try item.set(std.heap.page_allocator, "name", try std.fmt.allocPrint(std.heap.page_allocator, "Item{}", .{j}));
+        try items.append(std.heap.page_allocator, item);
+    }
+    try context.setList(std.heap.page_allocator, "items", items);
+    const result = try renderStr("{% if items.len > 10 %}has many items{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "has many items", result);
+}
+
+test "list .len with double digit - equals" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    var items = std.ArrayList(*Context).empty;
+    for (0..11) |_| {
+        const item = try std.heap.page_allocator.create(Context);
+        item.* = Context.init();
+        try items.append(std.heap.page_allocator, item);
+    }
+    try context.setList(std.heap.page_allocator, "items", items);
+    const result = try renderStr("{% if items.len == 11 %}exactly 11{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "exactly 11", result);
 }
 
 // ===== ELIF TAG =====
