@@ -426,6 +426,56 @@ fn extractBlocks(template: []const u8, allocator: std.mem.Allocator) !std.String
     return blocks;
 }
 
+fn copyContext(parent: *const Context, allocator: std.mem.Allocator) !*Context {
+    const ctx = try allocator.create(Context);
+    ctx.* = Context.init();
+    var iter = parent.values.iterator();
+    while (iter.next()) |entry| {
+        switch (entry.value_ptr.*) {
+            .string => |s| {
+                try ctx.values.put(allocator, entry.key_ptr.*, Value{ .string = try allocator.dupe(u8, s) });
+            },
+            .list => |*list| {
+                var new_list = std.ArrayList(*Context).empty;
+                for (list.items) |item| {
+                    const new_item = try allocator.create(Context);
+                    new_item.* = Context.init();
+                    var item_iter = item.values.iterator();
+                    while (item_iter.next()) |item_entry| {
+                        switch (item_entry.value_ptr.*) {
+                            .string => |s| {
+                                try new_item.values.put(allocator, item_entry.key_ptr.*, Value{ .string = try allocator.dupe(u8, s) });
+                            },
+                            else => {
+                                try new_item.values.put(allocator, item_entry.key_ptr.*, item_entry.value_ptr.*);
+                            },
+                        }
+                    }
+                    try new_list.append(allocator, new_item);
+                }
+                try ctx.values.put(allocator, entry.key_ptr.*, Value{ .list = new_list });
+            },
+            .object => |obj| {
+                const new_obj = try allocator.create(Context);
+                new_obj.* = Context.init();
+                var obj_iter = obj.values.iterator();
+                while (obj_iter.next()) |obj_entry| {
+                    switch (obj_entry.value_ptr.*) {
+                        .string => |s| {
+                            try new_obj.values.put(allocator, obj_entry.key_ptr.*, Value{ .string = try allocator.dupe(u8, s) });
+                        },
+                        else => {
+                            try new_obj.values.put(allocator, obj_entry.key_ptr.*, obj_entry.value_ptr.*);
+                        },
+                    }
+                }
+                try ctx.values.put(allocator, entry.key_ptr.*, Value{ .object = new_obj });
+            },
+        }
+    }
+    return ctx;
+}
+
 pub const TemplateRegistry = struct {
     pub fn get(comptime name: [:0]const u8) []const u8 {
         return @embedFile(name);
@@ -471,20 +521,32 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                                 const body = template[body_start..end_for];
                                 if (lv == .list) {
                                     for (lv.list.items) |item_ctx| {
-                                        var loop_ctx = Context.init();
+                                        var loop_ctx = try copyContext(context, allocator);
+                                        errdefer {
+                                            loop_ctx.deinit(allocator);
+                                            allocator.destroy(loop_ctx);
+                                        }
                                         try loop_ctx.values.put(allocator, for_args.item_var, Value{ .object = item_ctx });
-                                        const rendered = try renderTemplate(body, &loop_ctx, allocator, templates, null);
+                                        {
+                                            const rendered = try renderTemplate(body, loop_ctx, allocator, templates, null);
+                                            loop_ctx.clear(allocator);
+                                            defer allocator.free(rendered);
+                                            try result.appendSlice(allocator, rendered);
+                                        }
+                                    }
+                                } else if (lv == .object) {
+                                    var loop_ctx = try copyContext(context, allocator);
+                                    errdefer {
+                                        loop_ctx.deinit(allocator);
+                                        allocator.destroy(loop_ctx);
+                                    }
+                                    try loop_ctx.values.put(allocator, for_args.item_var, Value{ .object = lv.object });
+                                    {
+                                        const rendered = try renderTemplate(body, loop_ctx, allocator, templates, null);
                                         loop_ctx.clear(allocator);
                                         defer allocator.free(rendered);
                                         try result.appendSlice(allocator, rendered);
                                     }
-                                } else if (lv == .object) {
-                                    var loop_ctx = Context.init();
-                                    try loop_ctx.values.put(allocator, for_args.item_var, Value{ .object = lv.object });
-                                    const rendered = try renderTemplate(body, &loop_ctx, allocator, templates, null);
-                                    loop_ctx.clear(allocator);
-                                    defer allocator.free(rendered);
-                                    try result.appendSlice(allocator, rendered);
                                 }
                                 i = end_for;
                                 continue;
@@ -1694,4 +1756,56 @@ test "elif with comparison - all empty" {
     const result = try renderStr(tmpl, &context);
     defer std.heap.page_allocator.free(result);
     try std.testing.expectEqualSlices(u8, "none", result);
+}
+
+test "for loop should preserve parent context variables" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+
+    try context.set(std.heap.page_allocator, "label_pay_button", "Pay Now");
+
+    var groups = std.ArrayList(*Context).empty;
+    var group = try std.heap.page_allocator.create(Context);
+    group.* = Context.init();
+    try group.set(std.heap.page_allocator, "period_label", "January/2025");
+    try group.set(std.heap.page_allocator, "due_date", "2025-01-15");
+
+    var transactions = std.ArrayList(*Context).empty;
+    var tx = try std.heap.page_allocator.create(Context);
+    tx.* = Context.init();
+    try tx.set(std.heap.page_allocator, "title", "Purchase");
+    try transactions.append(std.heap.page_allocator, tx);
+    try group.setList(std.heap.page_allocator, "transactions", transactions);
+
+    try groups.append(std.heap.page_allocator, group);
+    try context.setList(std.heap.page_allocator, "statement_groups", groups);
+
+    const tmpl = "{% for group in statement_groups %}{{ label_pay_button }}|{{ group.period_label }}{% for tx in group.transactions %}{{ label_pay_button }}|{{ tx.title }}{% endfor %}{% endfor %}";
+
+    const result = try renderStr(tmpl, &context);
+    defer std.heap.page_allocator.free(result);
+
+    try std.testing.expectEqualSlices(u8, "Pay Now|January/2025Pay Now|Purchase", result);
+}
+
+test "for loop should preserve parent context inside nested if" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+
+    try context.set(std.heap.page_allocator, "label_pay_button", "Pay Now");
+
+    var groups = std.ArrayList(*Context).empty;
+    var group = try std.heap.page_allocator.create(Context);
+    group.* = Context.init();
+    try group.set(std.heap.page_allocator, "period_label", "January/2025");
+
+    try groups.append(std.heap.page_allocator, group);
+    try context.setList(std.heap.page_allocator, "statement_groups", groups);
+
+    const tmpl = "{% for group in statement_groups %}{% if group.period_label %}{{ label_pay_button }}|{{ group.period_label }}{% endif %}{% endfor %}";
+
+    const result = try renderStr(tmpl, &context);
+    defer std.heap.page_allocator.free(result);
+
+    try std.testing.expectEqualSlices(u8, "Pay Now|January/2025", result);
 }
