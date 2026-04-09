@@ -316,8 +316,9 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
             const has_request_body_info = request.head.content_length != null or request.head.transfer_encoding != .none;
 
             // If 404 and static_dir is set, try serving static file
-            if (web_res.status == .not_found and ctx.static_dir.len > 0) {
-                staticFileHandler(&request, arena, ctx.static_dir, ctx.io) catch {
+            if (web_res.status == .not_found) {
+                const static_dir = if (ctx.static_dir.len > 0) ctx.static_dir else "public";
+                staticFileHandler(&request, arena, static_dir, ctx.io) catch {
                     metrics.global_metrics.incrementError();
                 };
             } else {
