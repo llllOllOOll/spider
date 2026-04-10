@@ -20,13 +20,9 @@ pub const JwtError = error{
 
 const HEADER_B64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
 
-pub fn jwtSign(alloc: std.mem.Allocator, claims: Claims, secret: []const u8) ![]u8 {
+pub fn jwtSign(alloc: std.mem.Allocator, claims: anytype, secret: []const u8) ![]u8 {
     std.log.info("JWT: jwtSign start", .{});
-    const payload_json = try std.fmt.allocPrint(
-        alloc,
-        "{{\"sub\":{d},\"email\":\"{s}\",\"exp\":{d}}}",
-        .{ claims.sub, claims.email, claims.exp },
-    );
+    const payload_json = try std.json.Stringify.valueAlloc(alloc, claims, .{});
     defer alloc.free(payload_json);
     std.log.info("JWT: payload created: {s}", .{payload_json});
 
@@ -49,7 +45,11 @@ pub fn jwtSign(alloc: std.mem.Allocator, claims: Claims, secret: []const u8) ![]
     return std.fmt.allocPrint(alloc, "{s}.{s}.{s}", .{ HEADER_B64, payload_b64, sig_b64 });
 }
 
-pub fn jwtVerify(alloc: std.mem.Allocator, token: []const u8, secret: []const u8) !Claims {
+pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, token: []const u8, secret: []const u8) !T {
+    comptime std.debug.assert(@hasField(T, "exp"));
+    comptime std.debug.assert(@hasField(T, "sub"));
+    comptime std.debug.assert(@hasField(T, "email"));
+
     var parts = std.mem.splitScalar(u8, token, '.');
     const header_b64 = parts.next() orelse return JwtError.InvalidFormat;
     const payload_b64 = parts.next() orelse return JwtError.InvalidFormat;
@@ -73,18 +73,22 @@ pub fn jwtVerify(alloc: std.mem.Allocator, token: []const u8, secret: []const u8
     const decoded_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(payload_b64) catch return JwtError.InvalidFormat;
     std.base64.url_safe_no_pad.Decoder.decode(&payload_json_buf, payload_b64) catch return JwtError.InvalidFormat;
 
-    var parsed = try std.json.parseFromSlice(Claims, alloc, payload_json_buf[0..decoded_len], .{});
+    var parsed = try std.json.parseFromSlice(T, alloc, payload_json_buf[0..decoded_len], .{});
     defer parsed.deinit();
 
     var tv: std.c.timeval = undefined;
     _ = std.c.gettimeofday(&tv, null);
     if (parsed.value.exp <= tv.sec) return JwtError.Expired;
 
-    return Claims{
-        .sub = parsed.value.sub,
-        .email = try alloc.dupe(u8, parsed.value.email),
-        .exp = parsed.value.exp,
-    };
+    if (T == Claims) {
+        return Claims{
+            .sub = parsed.value.sub,
+            .email = try alloc.dupe(u8, parsed.value.email),
+            .exp = parsed.value.exp,
+        };
+    }
+
+    return parsed.value;
 }
 
 // ─── Cookie ─────────────────────────────────────────────────────────────────
@@ -145,7 +149,7 @@ pub const Auth = struct {
         const token = cookieGet(cookie_header) orelse
             return Response.redirect(alloc, self.config.redirect_to);
 
-        const claims = jwtVerify(alloc, token, self.config.secret) catch
+        const claims = jwtVerify(Claims, alloc, token, self.config.secret) catch
             return Response.redirect(alloc, self.config.redirect_to);
 
         const user_id = try std.fmt.allocPrint(alloc, "{d}", .{claims.sub});
