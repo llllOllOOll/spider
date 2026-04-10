@@ -82,7 +82,20 @@ pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, token: []const u8, 
         };
     }
 
-    return parsed.value;
+    // Always duplicate string fields to avoid dangling pointers
+    // Caller must free these fields after use!
+    var result = parsed.value;
+    if (@hasField(T, "email")) {
+        result.email = try alloc.dupe(u8, parsed.value.email);
+    }
+    if (@hasField(T, "name")) {
+        result.name = try alloc.dupe(u8, parsed.value.name);
+    }
+    if (@hasField(T, "locale")) {
+        result.locale = try alloc.dupe(u8, parsed.value.locale);
+    }
+
+    return result;
 }
 
 // ─── Cookie ─────────────────────────────────────────────────────────────────
