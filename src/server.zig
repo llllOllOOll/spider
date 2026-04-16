@@ -317,10 +317,15 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
 
             // If 404 and static_dir is set, try serving static file
             if (web_res.status == .not_found) {
-                const static_dir = if (ctx.static_dir.len > 0) ctx.static_dir else "public";
-                staticFileHandler(&request, arena, static_dir, ctx.io) catch {
-                    metrics.global_metrics.incrementError();
-                };
+                const target_len = request.head.target.len;
+                if (target_len > 0 and target_len < 4096) {
+                    const static_dir = if (ctx.static_dir.len > 0) ctx.static_dir else "public";
+                    staticFileHandler(&request, arena, static_dir, ctx.io) catch {
+                        metrics.global_metrics.incrementError();
+                    };
+                } else {
+                    notFoundHandler(&request, arena) catch {};
+                }
             } else {
                 const should_close = !has_request_body_info;
                 if (should_close) {
@@ -395,8 +400,21 @@ fn payloadTooLargeHandler(req: *std.http.Server.Request, allocator: std.mem.Allo
 }
 
 fn staticFileHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator, static_dir: []const u8, io: Io) !void {
+    const raw_target = req.head.target;
+
+    if (raw_target.len == 0) {
+        try notFoundHandler(req, allocator);
+        return;
+    }
+
+    const target = allocator.dupe(u8, raw_target) catch {
+        try notFoundHandler(req, allocator);
+        return;
+    };
+    defer allocator.free(target);
+
     // Remove leading slash from request path
-    const req_path = if (std.mem.startsWith(u8, req.head.target, "/")) req.head.target[1..] else req.head.target;
+    const req_path = if (std.mem.startsWith(u8, target, "/")) target[1..] else target;
 
     // Join static_dir with request path
     const full_path = std.fs.path.join(allocator, &.{ static_dir, req_path }) catch |err| {
