@@ -200,6 +200,12 @@ pub const Request = struct {
     pub fn form(self: *Request, allocator: std.mem.Allocator) !@import("form.zig").FormData {
         return @import("form.zig").parse(allocator, self.body);
     }
+
+    pub fn parseForm(self: *Request, allocator: std.mem.Allocator, comptime T: type) !T {
+        var parser = try @import("form_parser.zig").FormParser.init(allocator, self.body);
+        defer parser.deinit();
+        return try parser.parse(T);
+    }
 };
 
 pub fn renderView(
