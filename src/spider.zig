@@ -14,6 +14,7 @@ pub const Request = web.Request;
 pub const Response = web.Response;
 pub const Method = web.Method;
 pub const Group = web.Group;
+pub const UserInfo = web.UserInfo;
 pub const Context = template.Context;
 pub const Value = template.Value;
 

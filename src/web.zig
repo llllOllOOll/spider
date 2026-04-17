@@ -59,6 +59,12 @@ pub const Headers = struct {
     }
 };
 
+pub const UserInfo = struct {
+    id: ?[]const u8 = null,
+    email: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+};
+
 pub const Request = struct {
     method: Method,
     path: []const u8,
@@ -67,6 +73,7 @@ pub const Request = struct {
     body: ?[]const u8,
     params: std.StringHashMapUnmanaged([]const u8),
     locale: ?[]const u8 = null,
+    user: UserInfo = .{},
 
     _app: ?*App = null,
     _handler: ?Handler = null,
