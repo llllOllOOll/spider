@@ -66,6 +66,7 @@ pub const Request = struct {
     headers: Headers,
     body: ?[]const u8,
     params: std.StringHashMapUnmanaged([]const u8),
+    locale: ?[]const u8 = null,
 
     _app: ?*App = null,
     _handler: ?Handler = null,
