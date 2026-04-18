@@ -18,10 +18,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    _ = b.addModule("templates", .{
-        .root_source_file = b.path("src/templates_stub.zig"),
-    });
-
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
@@ -30,4 +26,14 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    const generate_step = b.step("generate-templates", "Generate embedded templates");
+    generate_step.dependOn(&b.addSystemCommand(&.{ "zig", "run", "-lc", "src/generate_templates.zig" }).step);
+}
+
+pub fn generateTemplates(b: *std.Build, source_dir: []const u8) *std.Build.Module {
+    _ = source_dir;
+    return b.addModule("templates", .{
+        .root_source_file = b.path("src/templates_stub.zig"),
+    });
 }

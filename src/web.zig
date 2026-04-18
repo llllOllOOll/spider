@@ -222,6 +222,21 @@ pub fn renderView(
     view_tmpl: []const u8,
     data: anytype,
 ) !Response {
+    return renderViewWithTemplates(allocator, req, view_tmpl, data, null);
+}
+
+pub fn renderViewWithTemplates(
+    allocator: std.mem.Allocator,
+    req: *Request,
+    view_name: []const u8,
+    data: anytype,
+    templates: ?type,
+) !Response {
+    const view_tmpl = if (templates) |T|
+        getTemplateFromStruct(T, view_name) orelse return error.TemplateNotFound
+    else
+        view_name;
+
     const is_htmx = req.headers.get("HX-Request") != null;
 
     if (is_htmx) {
@@ -242,42 +257,15 @@ pub fn renderView(
     return Response.html(allocator, html);
 }
 
-pub const RenderOptions = struct {
-    block: ?[]const u8 = null,
-};
-
-// Search template by name in app's templates list
-pub fn renderByName(
-    allocator: std.mem.Allocator,
-    req: *Request,
-    name: []const u8,
-    data: anytype,
-) !Response {
-    // Normalize name: "todo/index" -> "todo_index"
-    const key = blk: {
-        var normalized: [256]u8 = undefined;
-        var j: usize = 0;
-        for (name) |c| {
-            if (c == '/') {
-                normalized[j] = '_';
-            } else {
-                normalized[j] = c;
+fn getTemplateFromStruct(comptime Templates: type, name: []const u8) ?[]const u8 {
+    comptime {
+        for (@typeInfo(Templates).Struct.fields) |field| {
+            if (std.mem.eql(u8, field.name, name)) {
+                return @field(Templates, field.name);
             }
-            j += 1;
-        }
-        break :blk normalized[0..j];
-    };
-
-    // Search in app templates
-    const app_templates = req._app.?.templates;
-    for (app_templates) |entry| {
-        if (std.mem.eql(u8, entry.name, key)) {
-            const rendered = try template.render(entry.content, data, allocator);
-            return Response.html(allocator, rendered);
         }
     }
-
-    return error.TemplateNotFound;
+    return null;
 }
 
 pub const Response = struct {
@@ -356,6 +344,25 @@ pub fn render(allocator: std.mem.Allocator, tmpl: []const u8, data: anytype) !Re
     return Response.html(allocator, rendered);
 }
 
+pub fn renderByName(allocator: std.mem.Allocator, req: *Request, template_content: []const u8, data: anytype) !Response {
+    const app = req._app orelse return error.NoAppContext;
+
+    // Apply layout if available
+    const layout_content = app.layout;
+
+    if (layout_content) |layout| {
+        const full_template = try std.mem.concat(allocator, u8, &.{ layout, template_content });
+        defer allocator.free(full_template);
+
+        const html = try template.renderBlock(full_template, "base", data, allocator);
+        return Response.html(allocator, html);
+    }
+
+    // Render without layout
+    const html = try template.render(template_content, data, allocator);
+    return Response.html(allocator, html);
+}
+
 pub const Handler = *const fn (allocator: std.mem.Allocator, req: *Request) anyerror!Response;
 
 pub const NextFn = *const fn (std.mem.Allocator, *Request) anyerror!Response;
@@ -366,28 +373,7 @@ const MAX_MIDDLEWARES = 16;
 
 pub const AppConfig = struct {
     layout: ?[]const u8 = null,
-    templates: ?type = null,
 };
-
-pub const TemplateEntry = struct {
-    name: []const u8,
-    content: []const u8,
-};
-
-fn convertTemplates(_: std.mem.Allocator, comptime T: type) []const TemplateEntry {
-    const fields = std.meta.fields(T);
-    var entries: [fields.len]TemplateEntry = undefined;
-    const instance: T = undefined;
-
-    inline for (fields, 0..) |field, i| {
-        entries[i] = .{
-            .name = field.name,
-            .content = @field(instance, field.name),
-        };
-    }
-
-    return entries[0..];
-}
 
 pub const App = struct {
     allocator: std.mem.Allocator,
@@ -395,7 +381,7 @@ pub const App = struct {
     middlewares: [MAX_MIDDLEWARES]MiddlewareFn,
     middleware_count: usize,
     layout: ?[]const u8 = null,
-    templates: []const TemplateEntry = &.{},
+    config: AppConfig,
 
     pub fn init(allocator: std.mem.Allocator, config: AppConfig) !*App {
         const app = try allocator.create(App);
@@ -405,7 +391,7 @@ pub const App = struct {
             .middlewares = undefined,
             .middleware_count = 0,
             .layout = config.layout,
-            .templates = if (config.templates) |T| convertTemplates(allocator, T) else &.{},
+            .config = config,
         };
 
         _ = @import("metrics.zig"); // Ensure metrics are initialized
@@ -557,9 +543,28 @@ test "renderView with HX-Request header renders content block" {
 }
 
 test "renderView without HX-Request header renders base block" {
-    // BUG: test has incorrect expected value - expects full render but returns content block only
-    // skipping assertion until test is fixed
-    try std.testing.expect(true);
+    const tmpl =
+        \\{% block "base" %}<!DOCTYPE html><html><body><div id="content">{% template "content" %}</div></body></html>{% end %}
+        \\{% block "content" %}Partial Content{% end %}
+    ;
+
+    const app = try App.init(std.heap.page_allocator, .{});
+    defer app.deinit();
+
+    var req = Request{
+        .method = .get,
+        .path = "/test",
+        .query = null,
+        .headers = Headers.init(),
+        .body = null,
+        .params = .{},
+        ._app = app,
+    };
+    defer req.deinit(std.heap.page_allocator);
+
+    var res = try renderView(std.heap.page_allocator, &req, tmpl, .{});
+    defer res.deinit();
+    try std.testing.expectEqualStrings(res.body.?, "<!DOCTYPE html><html><body><div id=\"content\">Partial Content</div></body></html>");
 }
 
 test "renderView with layout + normal request renders base with layout prepended" {

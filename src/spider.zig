@@ -27,6 +27,16 @@ pub fn renderBlock(allocator: std.mem.Allocator, view: []const u8, block_name: [
     return Response.html(allocator, html);
 }
 
+pub fn renderViewWithTemplates(
+    allocator: std.mem.Allocator,
+    req: *web.Request,
+    view_name: []const u8,
+    data: anytype,
+    templates: ?type,
+) !Response {
+    return web.renderViewWithTemplates(allocator, req, view_name, data, templates);
+}
+
 var global_ws_hub: ?*ws_hub.Hub = null;
 
 pub fn getWsHub() *ws_hub.Hub {
@@ -135,3 +145,6 @@ pub const Spider = struct {
 pub const auth = @import("auth.zig");
 pub const google = @import("providers/google.zig");
 pub const http_client = @import("http_curlient.zig");
+
+// Build-time helpers
+pub const build_helpers = @import("build_helpers.zig");
