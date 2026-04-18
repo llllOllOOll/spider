@@ -18,6 +18,10 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    _ = b.addModule("templates", .{
+        .root_source_file = b.path("src/templates_stub.zig"),
+    });
+
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
