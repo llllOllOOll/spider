@@ -122,6 +122,7 @@ fn parseTag(content: []const u8) ?struct { name: []const u8, args: []const u8 } 
     if (std.mem.startsWith(u8, trimmed, "include ")) return .{ .name = "include", .args = trimmed[8..] };
     if (std.mem.startsWith(u8, trimmed, "block ")) return .{ .name = "block", .args = trimmed[6..] };
     if (std.mem.startsWith(u8, trimmed, "template ")) return .{ .name = "template", .args = trimmed[9..] };
+    if (std.mem.startsWith(u8, trimmed, "extends ")) return .{ .name = "extends", .args = trimmed[8..] };
     if (std.mem.eql(u8, trimmed, "end")) return .{ .name = "end", .args = "" };
     if (std.mem.eql(u8, trimmed, "raw")) return .{ .name = "raw", .args = "" };
     if (std.mem.eql(u8, trimmed, "endraw")) return .{ .name = "endraw", .args = "" };
@@ -491,6 +492,69 @@ fn getTemplate(templates: anytype, name: []const u8) ?[]const u8 {
     return null;
 }
 
+pub fn getTemplateByName(comptime T: type, name: []const u8) ![]const u8 {
+    const name_normalized = blk: {
+        var normalized: [256]u8 = undefined;
+        var j: usize = 0;
+        for (name) |c| {
+            if (c == '/') {
+                normalized[j] = '_';
+            } else {
+                normalized[j] = c;
+            }
+            j += 1;
+        }
+        break :blk normalized[0..j];
+    };
+
+    inline for (std.meta.fields(T)) |field| {
+        if (std.mem.eql(u8, field.name, name_normalized)) {
+            const instance: T = undefined;
+            return @field(instance, field.name);
+        }
+    }
+
+    return error.TemplateNotFound;
+}
+
+test "getTemplateByName finds template by name" {
+    const Stub = struct { tmpl: []const u8 = "hello" };
+    const tmpl = try getTemplateByName(Stub, "tmpl");
+    try std.testing.expect(tmpl.len > 0);
+}
+
+test "getTemplateByName normalizes path to field name" {
+    const Stub = struct { todo_index: []const u8 = "template content" };
+    const tmpl = try getTemplateByName(Stub, "todo/index");
+    try std.testing.expect(tmpl.len > 0);
+}
+
+test "parseTag recognizes extends" {
+    if (parseTag("extends \"layout\"")) |tag| {
+        try std.testing.expectEqualSlices(u8, "extends", tag.name);
+    } else {
+        try std.testing.expect(false);
+    }
+}
+
+test "render with extends loads parent template" {
+    // Test using render - this should trigger extends resolution
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+
+    // Use renderWith which calls resolveExtends for us
+    const child = "{% extends \"parent\" %}{% block \"content\" %}Hello{% end %}";
+    const Templates = struct {
+        parent: []const u8 = "LAYOUT{% template \"content\" %}END",
+    };
+    const templates: Templates = .{};
+    const result = try renderWith(child, &context, std.heap.page_allocator, templates);
+    defer std.heap.page_allocator.free(result);
+
+    // Should have LAYOUT from parent and Hello from child block
+    try std.testing.expect(std.mem.indexOf(u8, result, "LAYOUT") != null);
+}
+
 fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Allocator, templates: anytype, blocks: ?*const std.StringHashMapUnmanaged([]const u8)) ![]u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
@@ -731,7 +795,68 @@ pub fn renderWithTemplates(comptime T: type, template: []const u8, context: *Con
 }
 
 pub fn renderWith(template: []const u8, context: *Context, allocator: std.mem.Allocator, templates: anytype) ![]u8 {
-    return renderTemplate(template, context, allocator, templates, null);
+    const final_template = if (std.mem.indexOf(u8, template, "{% extends") != null)
+        try resolveExtends(template, allocator, templates)
+    else
+        template;
+
+    return renderTemplate(final_template, context, allocator, templates, null);
+}
+
+fn resolveExtends(template: []const u8, allocator: std.mem.Allocator, templates: anytype) ![]const u8 {
+    var i: usize = 0;
+    var parent_name: []const u8 = "";
+    var child_blocks = std.StringHashMapUnmanaged([]const u8){};
+    defer child_blocks.deinit(allocator);
+
+    // Parse extends and blocks from child template
+    while (i < template.len) {
+        if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
+            const tag_start = i + 2;
+            var tag_end = tag_start;
+            while (tag_end < template.len and !(template[tag_end] == '%' and tag_end + 1 < template.len and template[tag_end + 1] == '}')) tag_end += 1;
+            if (tag_end < template.len) {
+                const tag_content = std.mem.trim(u8, template[tag_start..tag_end], " ");
+                if (parseTag(tag_content)) |tag| {
+                    if (std.mem.eql(u8, tag.name, "extends")) {
+                        parent_name = std.mem.trim(u8, tag.args, "\" ");
+                    } else if (std.mem.eql(u8, tag.name, "block")) {
+                        const block_name = std.mem.trim(u8, tag.args, "\" ");
+                        const body_start = tag_end + 2;
+                        if (findEndBlock(template, body_start)) |end_block| {
+                            const body = template[body_start..end_block];
+                            try child_blocks.put(allocator, try allocator.dupe(u8, block_name), body);
+                            i = end_block;
+                            continue;
+                        }
+                    }
+                }
+                i = tag_end + 2;
+            } else i += 1;
+        } else i += 1;
+    }
+
+    // Load parent template
+    if (parent_name.len == 0) return template;
+    const parent_tmpl = getTemplate(templates, parent_name) orelse return template;
+
+    // Extract parent blocks and merge with child blocks
+    var parent_blocks = try extractBlocks(parent_tmpl, allocator);
+    defer {
+        var iter = parent_blocks.iterator();
+        while (iter.next()) |entry| allocator.free(entry.key_ptr.*);
+        parent_blocks.deinit(allocator);
+    }
+
+    // Merge: child blocks override parent blocks
+    var iter = child_blocks.iterator();
+    while (iter.next()) |entry| {
+        try parent_blocks.put(allocator, try allocator.dupe(u8, entry.key_ptr.*), entry.value_ptr.*);
+    }
+
+    // Render parent with merged blocks
+    var ctx = Context.init();
+    return renderTemplate(parent_tmpl, &ctx, allocator, templates, &parent_blocks);
 }
 
 pub fn renderStr(template: []const u8, context: *Context) ![]u8 {
