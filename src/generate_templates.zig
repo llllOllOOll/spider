@@ -70,19 +70,26 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
-    // Pega só o nome do arquivo sem extensão
-    const basename = std.fs.path.basename(path);
-    const name = if (std.mem.endsWith(u8, basename, ".html"))
-        basename[0 .. basename.len - 5]
+    // Remove .html extension
+    const name = if (std.mem.endsWith(u8, path, ".html"))
+        path[0 .. path.len - 5]
     else
-        basename;
+        path;
 
-    // Substitui caracteres inválidos
+    // Substitui caracteres inválidos (/ -> _, - -> _, remove .)
     var result: [256]u8 = undefined;
-    @memcpy(result[0..name.len], name);
-    for (result[0..name.len]) |*char| {
-        if (char.* == '-') char.* = '_';
-        if (char.* == '.') char.* = '_';
+    var j: usize = 0;
+    for (name) |char| {
+        if (char == '/') {
+            result[j] = '_';
+            j += 1;
+        } else if (char == '-') {
+            result[j] = '_';
+            j += 1;
+        } else if (char != '.') {
+            result[j] = char;
+            j += 1;
+        }
     }
-    return try std.fmt.bufPrint(buffer, "{s}", .{result[0..name.len]});
+    return try std.fmt.bufPrint(buffer, "{s}", .{result[0..j]});
 }
