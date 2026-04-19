@@ -46,10 +46,10 @@ pub fn main(init: std.process.Init) !void {
         var field_name_buf: [256]u8 = undefined;
         const field_name = try generateFieldName(entry.path, &field_name_buf);
 
-        // Get relative path from source directory
-        const full_path = try std.fs.path.join(allocator, &.{ source_dir, entry.path });
+        // Use relative path for @embedFile (relative to the generated file location)
+        const embed_path = entry.path;
 
-        const line = try std.fmt.allocPrint(allocator, "    {s}: []const u8 = @embedFile(\"{s}\"),\n", .{ field_name, full_path });
+        const line = try std.fmt.allocPrint(allocator, "    {s}: []const u8 = @embedFile(\"{s}\"),\n", .{ field_name, embed_path });
         defer allocator.free(line);
         try output.appendSlice(allocator, line);
         template_count += 1;
@@ -66,33 +66,23 @@ pub fn main(init: std.process.Init) !void {
     try writer.interface.writeAll(output.items);
     try writer.interface.flush();
 
-    std.debug.print("Generated {d} embedded templates in {s}\n", .{ template_count, output_file });
+    std.debug.print("Ride the lightning — {d} templates forged in {s}\n", .{ template_count, output_file });
 }
 
 fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
-    var parts = std.mem.splitScalar(u8, path, std.fs.path.sep);
-    var result = try std.ArrayList(u8).initCapacity(std.heap.page_allocator, 256);
-    defer result.deinit(std.heap.page_allocator);
+    // Pega só o nome do arquivo sem extensão
+    const basename = std.fs.path.basename(path);
+    const name = if (std.mem.endsWith(u8, basename, ".html"))
+        basename[0 .. basename.len - 5]
+    else
+        basename;
 
-    var first = true;
-    while (parts.next()) |part| {
-        if (std.mem.eql(u8, part, "views")) continue;
-        if (std.mem.endsWith(u8, part, ".html")) {
-            const base_name = part[0 .. part.len - 5]; // Remove .html
-            if (!first) try result.appendSlice(std.heap.page_allocator, "_");
-            try result.appendSlice(std.heap.page_allocator, base_name);
-        } else {
-            if (!first) try result.appendSlice(std.heap.page_allocator, "_");
-            try result.appendSlice(std.heap.page_allocator, part);
-        }
-        first = false;
-    }
-
-    // Replace invalid characters
-    for (result.items) |*char| {
+    // Substitui caracteres inválidos
+    var result: [256]u8 = undefined;
+    @memcpy(result[0..name.len], name);
+    for (result[0..name.len]) |*char| {
         if (char.* == '-') char.* = '_';
         if (char.* == '.') char.* = '_';
     }
-
-    return try std.fmt.bufPrint(buffer, "{s}", .{result.items});
+    return try std.fmt.bufPrint(buffer, "{s}", .{result[0..name.len]});
 }

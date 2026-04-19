@@ -247,7 +247,7 @@ pub const RenderOptions = struct {
 };
 
 // Search template by name in app's templates list
-pub fn renderByName(
+pub fn chuckBerry(
     allocator: std.mem.Allocator,
     req: *Request,
     name: []const u8,
@@ -272,6 +272,29 @@ pub fn renderByName(
     const app_templates = req._app.?.templates;
     for (app_templates) |entry| {
         if (std.mem.eql(u8, entry.name, key)) {
+
+            // Verifica se tem extends
+            if (std.mem.indexOf(u8, entry.content, "{% extends") != null) {
+                // Extrai o nome do layout do extends
+                // ex: {% extends "layout" %} → "layout"
+                const extends_start = std.mem.indexOf(u8, entry.content, "{% extends \"") orelse return error.TemplateNotFound;
+                const name_start = extends_start + 12;
+                const name_end = std.mem.indexOf(u8, entry.content[name_start..], "\"") orelse return error.TemplateNotFound;
+                const layout_name = entry.content[name_start .. name_start + name_end];
+
+                // Busca o layout no mesmo slice
+                for (app_templates) |layout_entry| {
+                    if (std.mem.eql(u8, layout_entry.name, layout_name)) {
+                        // Concatena layout + view e renderiza
+                        const full = try std.mem.concat(allocator, u8, &.{ layout_entry.content, entry.content });
+                        defer allocator.free(full);
+                        return renderView(allocator, req, full, data);
+                    }
+                }
+                return error.LayoutNotFound;
+            }
+
+            // Sem extends — renderiza direto
             const rendered = try template.render(entry.content, data, allocator);
             return Response.html(allocator, rendered);
         }
@@ -374,19 +397,21 @@ pub const TemplateEntry = struct {
     content: []const u8,
 };
 
-fn convertTemplates(_: std.mem.Allocator, comptime T: type) []const TemplateEntry {
+fn convertTemplates(comptime T: type) []const TemplateEntry {
     const fields = std.meta.fields(T);
-    var entries: [fields.len]TemplateEntry = undefined;
-    const instance: T = undefined;
-
-    inline for (fields, 0..) |field, i| {
-        entries[i] = .{
-            .name = field.name,
-            .content = @field(instance, field.name),
+    const Static = struct {
+        var entries: [fields.len]TemplateEntry = blk: {
+            var e: [fields.len]TemplateEntry = undefined;
+            for (fields, 0..) |field, i| {
+                e[i] = .{
+                    .name = field.name,
+                    .content = @as(*const []const u8, @ptrCast(@alignCast(field.default_value_ptr.?))).*,
+                };
+            }
+            break :blk e;
         };
-    }
-
-    return entries[0..];
+    };
+    return &Static.entries;
 }
 
 pub const App = struct {
@@ -405,7 +430,7 @@ pub const App = struct {
             .middlewares = undefined,
             .middleware_count = 0,
             .layout = config.layout,
-            .templates = if (config.templates) |T| convertTemplates(allocator, T) else &.{},
+            .templates = if (config.templates) |T| convertTemplates(T) else &.{},
         };
 
         _ = @import("metrics.zig"); // Ensure metrics are initialized

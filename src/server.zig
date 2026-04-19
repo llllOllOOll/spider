@@ -97,7 +97,7 @@ pub const Server = struct {
     pub fn start(self: *Server) !void {
         setupSignalHandlers();
         metrics.initMetrics(self.io);
-        log.info("server_started", .{ .port = self.port, .mode = "Io.Group + concurrent" });
+        log.info("Generals gathered in their masses — server rising on port | uptime since 11110110011", .{ .port = self.port });
         var group: std.Io.Group = .init;
         while (true) {
             if (shutdown_flag.load(.acquire)) {
