@@ -246,6 +246,34 @@ pub const RenderOptions = struct {
     block: ?[]const u8 = null,
 };
 
+fn rootBlockName(tmpl: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (std.mem.indexOf(u8, tmpl[i..], "{% block \"")) |pos| {
+        const abs_pos = i + pos;
+        const name_start = abs_pos + 10;
+        const name_end = std.mem.indexOf(u8, tmpl[name_start..], "\"") orelse break;
+        const block_name = tmpl[name_start .. name_start + name_end];
+        const block_content_start = name_start + name_end + 2;
+        const block_content = tmpl[block_content_start..];
+        if (std.mem.indexOf(u8, block_content, "<html") != null or
+            std.mem.indexOf(u8, block_content, "<!DOCTYPE") != null)
+        {
+            return block_name;
+        }
+        i = abs_pos + 1;
+    }
+    return null;
+}
+
+fn firstBlockName(tmpl: []const u8) ?[]const u8 {
+    if (std.mem.indexOf(u8, tmpl, "{% block \"")) |pos| {
+        const name_start = pos + 10;
+        const name_end = std.mem.indexOf(u8, tmpl[name_start..], "\"") orelse return null;
+        return tmpl[name_start .. name_start + name_end];
+    }
+    return null;
+}
+
 // Search template by name in app's templates list
 pub fn chuckBerry(
     allocator: std.mem.Allocator,
@@ -288,7 +316,15 @@ pub fn chuckBerry(
                         // Concatena layout + view e renderiza
                         const full = try std.mem.concat(allocator, u8, &.{ layout_entry.content, entry.content });
                         defer allocator.free(full);
-                        return renderView(allocator, req, full, data);
+                        const root_block = rootBlockName(layout_entry.content) orelse return error.RootBlockNotFound;
+                        const content_block = firstBlockName(entry.content) orelse return error.ContentBlockNotFound;
+                        const is_htmx = req.headers.get("HX-Request") != null;
+                        if (is_htmx) {
+                            const html = try template.renderBlock(full, content_block, data, allocator);
+                            return Response.html(allocator, html);
+                        }
+                        const html = try template.renderBlock(full, root_block, data, allocator);
+                        return Response.html(allocator, html);
                     }
                 }
                 return error.LayoutNotFound;
