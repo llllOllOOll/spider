@@ -295,31 +295,25 @@ pub fn chuckBerry(
         }
         break :blk normalized[0..j];
     };
-
     // Search in app templates
     const app_templates = req._app.?.templates;
     for (app_templates) |entry| {
         if (std.mem.eql(u8, entry.name, key)) {
-
             // Verifica se tem extends
             if (std.mem.indexOf(u8, entry.content, "{% extends") != null) {
-                // Extrai o nome do layout do extends
-                // ex: {% extends "layout" %} → "layout"
                 const extends_start = std.mem.indexOf(u8, entry.content, "{% extends \"") orelse return error.TemplateNotFound;
                 const name_start = extends_start + 12;
                 const name_end = std.mem.indexOf(u8, entry.content[name_start..], "\"") orelse return error.TemplateNotFound;
                 const layout_name = entry.content[name_start .. name_start + name_end];
-
-                // Busca o layout no mesmo slice
                 for (app_templates) |layout_entry| {
                     if (std.mem.eql(u8, layout_entry.name, layout_name)) {
-                        // Concatena layout + view e renderiza
                         const full = try std.mem.concat(allocator, u8, &.{ layout_entry.content, entry.content });
                         defer allocator.free(full);
                         const root_block = rootBlockName(layout_entry.content) orelse return error.RootBlockNotFound;
                         const content_block = firstBlockName(entry.content) orelse return error.ContentBlockNotFound;
                         const is_htmx = req.headers.get("HX-Request") != null;
-                        if (is_htmx) {
+                        const is_boosted = req.headers.get("HX-Boosted") != null;
+                        if (is_htmx and !is_boosted) {
                             const html = try template.renderBlockWithTemplates(full, content_block, data, allocator, app_templates);
                             return Response.html(allocator, html);
                         }
@@ -329,13 +323,11 @@ pub fn chuckBerry(
                 }
                 return error.LayoutNotFound;
             }
-
             // Sem extends — renderiza direto
             const rendered = try template.render(entry.content, data, allocator);
             return Response.html(allocator, rendered);
         }
     }
-
     return error.TemplateNotFound;
 }
 
