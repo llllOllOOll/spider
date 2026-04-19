@@ -486,10 +486,33 @@ pub const TemplateRegistry = struct {
 fn getTemplate(templates: anytype, name: []const u8) ?[]const u8 {
     const T = @TypeOf(templates);
     if (T == EmptyTemplates) return null;
+
+    // Check if templates is a slice of TemplateEntry (web.zig format)
+    if (comptime isTemplateEntrySlice(T)) {
+        for (templates) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return entry.content;
+        }
+        return null;
+    }
+
     inline for (std.meta.fields(T)) |field| {
         if (std.mem.eql(u8, field.name, name)) return @field(templates, field.name);
     }
     return null;
+}
+
+fn isTemplateEntrySlice(comptime T: type) bool {
+    const info = @typeInfo(T);
+    if (info != .pointer) return false;
+    const ptr = info.pointer;
+    if (ptr.size != .slice) return false;
+    const child_info = @typeInfo(ptr.child);
+    if (child_info != .@"struct") return false;
+    const fields = child_info.@"struct".fields;
+    if (fields.len != 2) return false;
+    if (!std.mem.eql(u8, fields[0].name, "name")) return false;
+    if (!std.mem.eql(u8, fields[1].name, "content")) return false;
+    return true;
 }
 
 pub fn getTemplateByName(comptime T: type, name: []const u8) ![]const u8 {
@@ -1075,6 +1098,74 @@ pub fn renderBlock(template: []const u8, block_name: []const u8, data: anytype, 
     }
 
     return renderTemplate(block_content, context, allocator, EmptyTemplates{}, &blocks);
+}
+
+pub fn renderBlockWithTemplates(
+    tmpl: []const u8,
+    block_name: []const u8,
+    data: anytype,
+    allocator: std.mem.Allocator,
+    templates: anytype,
+) ![]u8 {
+    var blocks = try extractBlocks(tmpl, allocator);
+    defer {
+        var iter = blocks.iterator();
+        while (iter.next()) |entry| allocator.free(entry.key_ptr.*);
+        blocks.deinit(allocator);
+    }
+
+    const block_content = blocks.get(block_name) orelse return error.BlockNotFound;
+
+    const T = @TypeOf(data);
+    const info = @typeInfo(T);
+
+    var context = try allocator.create(Context);
+    context.* = Context.init();
+    defer {
+        context.deinit(allocator);
+        allocator.destroy(context);
+    }
+
+    switch (info) {
+        .@"struct" => {
+            const is_array_list = comptime blk: {
+                for (info.@"struct".fields) |f| {
+                    if (std.mem.eql(u8, f.name, "items")) {
+                        const fi = @typeInfo(f.type);
+                        if (fi == .pointer and fi.pointer.size == .slice) break :blk true;
+                    }
+                }
+                break :blk false;
+            };
+            if (is_array_list) {
+                const child_type = @typeInfo(@TypeOf(data.items)).pointer.child;
+                const list = try sliceToContextList(child_type, data.items, allocator);
+                try context.setList(allocator, "items", list);
+            } else {
+                inline for (info.@"struct".fields) |field| {
+                    try setFieldValue(allocator, context, field.name, @field(data, field.name));
+                }
+            }
+        },
+        .array => |arr| {
+            const list = try sliceToContextList(arr.child, &data, allocator);
+            try context.setList(allocator, "items", list);
+        },
+        .pointer => |ptr| {
+            if (ptr.size == .slice) {
+                const list = try sliceToContextList(ptr.child, data, allocator);
+                try context.setList(allocator, "items", list);
+            } else {
+                @compileError("Unsupported pointer type for renderBlockWithTemplates: " ++ @typeName(T));
+            }
+        },
+        .optional => {
+            if (data) |value| return renderBlockWithTemplates(tmpl, block_name, value, allocator, templates);
+        },
+        else => @compileError("Unsupported type for renderBlockWithTemplates: " ++ @typeName(T)),
+    }
+
+    return renderTemplate(block_content, context, allocator, templates, &blocks);
 }
 
 test "basic variable substitution" {

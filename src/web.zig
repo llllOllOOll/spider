@@ -320,10 +320,10 @@ pub fn chuckBerry(
                         const content_block = firstBlockName(entry.content) orelse return error.ContentBlockNotFound;
                         const is_htmx = req.headers.get("HX-Request") != null;
                         if (is_htmx) {
-                            const html = try template.renderBlock(full, content_block, data, allocator);
+                            const html = try template.renderBlockWithTemplates(full, content_block, data, allocator, app_templates);
                             return Response.html(allocator, html);
                         }
-                        const html = try template.renderBlock(full, root_block, data, allocator);
+                        const html = try template.renderBlockWithTemplates(full, root_block, data, allocator, app_templates);
                         return Response.html(allocator, html);
                     }
                 }
