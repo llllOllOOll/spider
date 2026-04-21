@@ -2,3 +2,5 @@
 zig-out/
 zig-pkg/
 examples/
+docs/
+src/test_templates.zig
