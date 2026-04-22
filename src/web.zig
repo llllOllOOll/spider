@@ -37,22 +37,22 @@ fn convertMdWithRawBlocks(allocator: std.mem.Allocator, input: []const u8) ![]u8
             if (rs > 0) {
                 const non_raw = remaining[0..rs];
                 const converted = try zmd.parse(allocator, non_raw, .{});
-                try result.appendSlice(converted);
+                try result.appendSlice(allocator, converted);
                 allocator.free(converted);
             }
 
             remaining = remaining[rs..];
             const raw_end = std.mem.indexOf(u8, remaining, "{% endraw %}");
             if (raw_end) |re| {
-                try result.appendSlice(remaining[0 .. re + 11]);
+                try result.appendSlice(allocator, remaining[0 .. re + 11]);
                 remaining = remaining[re + 11 ..];
             } else {
-                try result.appendSlice(remaining);
+                try result.appendSlice(allocator, remaining);
                 remaining = "";
             }
         } else {
             const converted = try zmd.parse(allocator, remaining, .{});
-            try result.appendSlice(converted);
+            try result.appendSlice(allocator, converted);
             allocator.free(converted);
             break;
         }
