@@ -17,13 +17,50 @@ fn convertMdBlocks(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     const inner_end = be;
 
     const inner_md = std.mem.trim(u8, content[inner_start..inner_end], "\n\r ");
-    const inner_html = try zmd.parse(allocator, inner_md, .{});
+    const inner_html = try convertMdWithRawBlocks(allocator, inner_md);
 
     const header = content[0..bs];
     const block_tag = content[bs .. bs + tag_end + 2];
     const footer = content[be..];
 
-    return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n", inner_html, "\n", footer });
+    return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n{% raw %}", inner_html, "{% endraw %}", "\n", footer });
+}
+
+fn convertMdWithRawBlocks(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var result = std.ArrayList(u8).init(allocator);
+    defer result.deinit();
+
+    var remaining = input;
+    while (remaining.len > 0) {
+        const raw_start = std.mem.indexOf(u8, remaining, "{% raw %}");
+        if (raw_start) |rs| {
+            if (rs > 0) {
+                const non_raw = remaining[0..rs];
+                const converted = try zmd.parse(allocator, non_raw, .{});
+                errdefer allocator.free(converted);
+                try result.appendSlice(converted);
+                allocator.free(converted);
+            }
+
+            remaining = remaining[rs..];
+            const raw_end = std.mem.indexOf(u8, remaining, "{% endraw %}");
+            if (raw_end) |re| {
+                try result.appendSlice(remaining[0 .. re + 11]);
+                remaining = remaining[re + 11 ..];
+            } else {
+                try result.appendSlice(remaining);
+                remaining = "";
+            }
+        } else {
+            const converted = try zmd.parse(allocator, remaining, .{});
+            errdefer allocator.free(converted);
+            try result.appendSlice(converted);
+            allocator.free(converted);
+            break;
+        }
+    }
+
+    return result.toOwnedSlice();
 }
 
 pub const Group = Route.Group;
