@@ -168,8 +168,8 @@ test "preserves {% raw %} blocks untouched" {
     const html = try parse(std.testing.allocator, input, .{});
     defer std.testing.allocator.free(html);
     try std.testing.expect(std.mem.indexOf(u8, html, "{{ not_a_var }}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "{% raw %}") == null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "{% endraw %}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "{% raw %}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "{% endraw %}") != null);
 }
 
 test "preserves {% raw %} with template tags inside" {
@@ -185,4 +185,20 @@ test "preserves {% raw %} with code block" {
     defer std.testing.allocator.free(html);
     try std.testing.expect(std.mem.indexOf(u8, html, "{% for item in items %}") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "{{ item }}") != null);
+}
+
+test "zmd handles raw block alone" {
+    const input = "{% raw %}{{ title }}{% endraw %}";
+    const result = try parse(std.testing.allocator, input, .{});
+    defer std.testing.allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{% raw %}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{% endraw %}") != null);
+}
+
+test "zmd handles raw block with surrounding text" {
+    const input = "Some text\n{% raw %}{{ title }}{% endraw %}\nMore text";
+    const result = try parse(std.testing.allocator, input, .{});
+    defer std.testing.allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{% raw %}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{% endraw %}") != null);
 }

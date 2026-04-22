@@ -571,8 +571,7 @@ fn parseBlock(self: *Ast, node: *Node, index: usize) void {
 fn parseRawBlock(self: *Ast, node: *Node, index: usize) void {
     const close_index = self.getCloseIndex(index) orelse return;
     const close_token = self.tokens_list.items[close_index];
-    const content = self.input[node.token.start + node.token.element.syntax.len .. close_token.start];
-    node.content = content;
+    node.content = self.input[node.token.start..close_token.end];
 
     for (index + 1..close_index) |nullify_index| {
         self.nullifyToken(nullify_index);

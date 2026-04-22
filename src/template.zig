@@ -2025,3 +2025,12 @@ test "for loop should preserve parent context inside nested if" {
 
     try std.testing.expectEqualSlices(u8, "Pay Now|January/2025", result);
 }
+
+test "raw block - {{ }} not processed" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "title", "SHOULD NOT APPEAR");
+    const result = try renderStr("before {% raw %}{{ title }}{% endraw %} after", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "before {{ title }} after", result);
+}
