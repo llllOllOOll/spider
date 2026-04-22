@@ -1,5 +1,10 @@
 const std = @import("std");
 
+fn isMdContent(content: []const u8) bool {
+    const trimmed = std.mem.trim(u8, content, "\n\r ");
+    return std.mem.startsWith(u8, trimmed, "<!-- md -->");
+}
+
 pub const Value = union(enum) {
     string: []const u8,
     list: std.ArrayList(*Context),
@@ -583,6 +588,8 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
     errdefer result.deinit(allocator);
     try result.ensureTotalCapacity(allocator, template.len);
 
+    const md_mode = isMdContent(template);
+
     var i: usize = 0;
     while (i < template.len) {
         if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '%') {
@@ -596,6 +603,17 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
             }
             const tag_content = std.mem.trim(u8, template[tag_start..tag_end], " ");
             if (parseTag(tag_content)) |tag| {
+                const is_structural = std.mem.eql(u8, tag.name, "extends") or
+                    std.mem.eql(u8, tag.name, "block") or
+                    std.mem.eql(u8, tag.name, "end") or
+                    std.mem.eql(u8, tag.name, "template") or
+                    std.mem.eql(u8, tag.name, "raw") or
+                    std.mem.eql(u8, tag.name, "endraw");
+                if (md_mode and !is_structural) {
+                    try result.appendSlice(allocator, template[i .. tag_end + 2]);
+                    i = tag_end + 2;
+                    continue;
+                }
                 if (std.mem.startsWith(u8, tag.name, "for")) {
                     if (parseForArgs(tag.args)) |for_args| {
                         var list_val = context.getValue(for_args.list_var);
@@ -726,6 +744,11 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
             }
             i = tag_end + 2;
         } else if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '{') {
+            if (md_mode) {
+                try result.append(allocator, template[i]);
+                i += 1;
+                continue;
+            }
             const start = i + 2;
             var end = start;
             while (end < template.len and !(template[end] == '}' and end + 1 < template.len and template[end + 1] == '}')) end += 1;
@@ -2033,4 +2056,29 @@ test "raw block - {{ }} not processed" {
     const result = try renderStr("before {% raw %}{{ title }}{% endraw %} after", &context);
     defer std.heap.page_allocator.free(result);
     try std.testing.expectEqualSlices(u8, "before {{ title }} after", result);
+}
+
+test "md mode: {{ }} not processed" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "title", "WRONG");
+    const result = try renderStr("<!-- md -->\n<h1>{{ title }}</h1>", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "<!-- md -->\n<h1>{{ title }}</h1>", result);
+}
+
+test "md mode: {% if %} not processed" {
+    var context = Context.init();
+    defer context.deinit(std.heap.page_allocator);
+    try context.set(std.heap.page_allocator, "show", "true");
+    const result = try renderStr("<!-- md -->\n{% if show %}yes{% endif %}", &context);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "<!-- md -->\n{% if show %}yes{% endif %}", result);
+}
+
+test "md mode: {% block %} still processed" {
+    const tmpl = "<!-- md -->\n{% block \"content\" %}Hello{% end %}";
+    const result = try renderBlock(tmpl, "content", .{}, std.heap.page_allocator);
+    defer std.heap.page_allocator.free(result);
+    try std.testing.expectEqualSlices(u8, "Hello", result);
 }

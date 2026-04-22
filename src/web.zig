@@ -52,7 +52,9 @@ fn convertMdBlocks(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     const block_tag = content[bs .. bs + tag_end + 2];
     const footer = content[be..];
 
-    return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n", body.items, "\n", footer });
+    const with_sig = try std.mem.concat(allocator, u8, &.{ "<!-- md -->\n", body.items });
+    defer allocator.free(with_sig);
+    return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n", with_sig, "\n", footer });
 }
 
 test "convertMdBlocks preserves {% raw %} content" {
@@ -489,7 +491,10 @@ pub fn render(allocator: std.mem.Allocator, tmpl: []const u8, data: anytype) !Re
             try zmd.parseFull(allocator, md_content, .{})
         else
             try zmd.parse(allocator, md_content, .{});
-        return Response.html(allocator, html);
+        // Prepend md signature for template processing
+        const with_sig = try std.mem.concat(allocator, u8, &.{ "<!-- md -->\n", html });
+        defer allocator.free(with_sig);
+        return Response.html(allocator, with_sig);
     }
     const rendered = try template.render(tmpl, data, allocator);
     return Response.html(allocator, rendered);
