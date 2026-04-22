@@ -27,8 +27,8 @@ fn convertMdBlocks(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
 }
 
 fn convertMdWithRawBlocks(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    defer result.deinit();
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
 
     var remaining = input;
     while (remaining.len > 0) {
@@ -37,7 +37,6 @@ fn convertMdWithRawBlocks(allocator: std.mem.Allocator, input: []const u8) ![]u8
             if (rs > 0) {
                 const non_raw = remaining[0..rs];
                 const converted = try zmd.parse(allocator, non_raw, .{});
-                errdefer allocator.free(converted);
                 try result.appendSlice(converted);
                 allocator.free(converted);
             }
@@ -53,7 +52,6 @@ fn convertMdWithRawBlocks(allocator: std.mem.Allocator, input: []const u8) ![]u8
             }
         } else {
             const converted = try zmd.parse(allocator, remaining, .{});
-            errdefer allocator.free(converted);
             try result.appendSlice(converted);
             allocator.free(converted);
             break;
