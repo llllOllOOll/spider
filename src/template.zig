@@ -719,7 +719,7 @@ fn renderTemplate(template: []const u8, context: *Context, allocator: std.mem.Al
                     if (findEndRaw(template, body_start)) |end_raw| {
                         const raw_content = template[body_start..end_raw];
                         try result.appendSlice(allocator, raw_content);
-                        i = end_raw;
+                        i = end_raw + "{% endraw %}".len;
                         continue;
                     }
                 }
