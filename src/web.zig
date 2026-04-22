@@ -58,7 +58,7 @@ fn convertMdWithRawBlocks(allocator: std.mem.Allocator, input: []const u8) ![]u8
         }
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 pub const Group = Route.Group;
