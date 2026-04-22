@@ -11,24 +11,48 @@ fn convertMdBlocks(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
 
     const bs = std.mem.indexOf(u8, content, block_start_tag) orelse return try allocator.dupe(u8, content);
     const be = std.mem.indexOf(u8, content, block_end_tag) orelse return try allocator.dupe(u8, content);
-
     const tag_end = std.mem.indexOf(u8, content[bs..], "%}") orelse return try allocator.dupe(u8, content);
     const inner_start = bs + tag_end + 2;
     const inner_end = be;
+    const inner = std.mem.trim(u8, content[inner_start..inner_end], "\n\r ");
 
-    const inner_md = std.mem.trim(u8, content[inner_start..inner_end], "\n\r ");
-    const inner_html = try zmd.parse(allocator, inner_md, .{});
-    defer allocator.free(inner_html);
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(allocator);
+
+    var remaining = inner;
+    while (remaining.len > 0) {
+        if (std.mem.indexOf(u8, remaining, "{% raw %}")) |raw_start| {
+            const before = remaining[0..raw_start];
+            if (before.len > 0) {
+                const converted = try zmd.parse(allocator, before, .{});
+                defer allocator.free(converted);
+                try body.appendSlice(allocator, converted);
+            }
+            const after_raw_tag = remaining[raw_start + "{% raw %}".len ..];
+            if (std.mem.indexOf(u8, after_raw_tag, "{% endraw %}")) |endraw_pos| {
+                try body.appendSlice(allocator, "{% raw %}");
+                try body.appendSlice(allocator, after_raw_tag[0..endraw_pos]);
+                try body.appendSlice(allocator, "{% endraw %}");
+                remaining = after_raw_tag[endraw_pos + "{% endraw %}".len ..];
+            } else {
+                const converted = try zmd.parse(allocator, remaining, .{});
+                defer allocator.free(converted);
+                try body.appendSlice(allocator, converted);
+                remaining = "";
+            }
+        } else {
+            const converted = try zmd.parse(allocator, remaining, .{});
+            defer allocator.free(converted);
+            try body.appendSlice(allocator, converted);
+            remaining = "";
+        }
+    }
 
     const header = content[0..bs];
     const block_tag = content[bs .. bs + tag_end + 2];
     const footer = content[be..];
 
-    const has_raw = std.mem.indexOf(u8, inner_html, "{% raw %}") != null;
-    if (has_raw) {
-        return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n", inner_html, "\n", footer });
-    }
-    return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n{% raw %}", inner_html, "{% endraw %}", "\n", footer });
+    return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n", body.items, "\n", footer });
 }
 
 test "convertMdBlocks preserves {% raw %} content" {
