@@ -71,6 +71,9 @@ fn tokenize(self: *Ast, allocator: Allocator) !void {
     for (tokens.elements) |element|
         try self.elements_map.put(element.type, element);
 
+    for (tokens.raw_block_elements) |element|
+        try self.elements_map.put(element.type, element);
+
     var index: usize = 0;
 
     var previous_token: ?Token = null;
@@ -227,6 +230,16 @@ fn firstToken(self: *Ast, previous_token: ?Token, index: usize) ?Token {
             };
     }
 
+    for (tokens.raw_block_elements) |element| {
+        if (index + element.syntax.len > self.input.len) continue;
+        if (std.mem.startsWith(u8, self.input[index..], element.syntax))
+            return .{
+                .element = element,
+                .start = index,
+                .end = index + element.syntax.len,
+            };
+    }
+
     // Ordered list items: any digits followed by ". "
     if (index_clear and std.ascii.isDigit(self.input[index])) {
         var end = index + 1;
@@ -292,6 +305,7 @@ fn parseChildNodes(
             .link_title => self.parseLink(child_node, index, .link),
             .image_title => self.parseLink(child_node, index, .image),
             .block, .code => self.parseBlock(child_node, index),
+            .raw_block => self.parseRawBlock(child_node, index),
             .unordered_list_item => try self.parseList(
                 allocator,
                 node,
@@ -552,6 +566,17 @@ fn parseBlock(self: *Ast, node: *Node, index: usize) void {
             node.content = strip(content[linebreak_index..]);
         }
     } else node.content = strip(content);
+}
+
+fn parseRawBlock(self: *Ast, node: *Node, index: usize) void {
+    const close_index = self.getCloseIndex(index) orelse return;
+    const close_token = self.tokens_list.items[close_index];
+    const content = self.input[node.token.start + node.token.element.syntax.len .. close_token.start];
+    node.content = content;
+
+    for (index + 1..close_index) |nullify_index| {
+        self.nullifyToken(nullify_index);
+    }
 }
 
 /// Parse a list into a single node with list item children, of which each list item has a text

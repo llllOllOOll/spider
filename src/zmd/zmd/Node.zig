@@ -56,6 +56,9 @@ pub fn toHtml(
             defer allocator.free(escaped);
             try allocating.writer.writeAll(escaped);
         },
+        .raw_block => {
+            try allocating.writer.writeAll(self.content);
+        },
         else => {},
     }
 

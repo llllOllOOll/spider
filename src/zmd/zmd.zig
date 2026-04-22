@@ -162,3 +162,27 @@ test "full page: has html wrapper" {
     try std.testing.expect(std.mem.indexOf(u8, html, "<html>") != null);
     try std.testing.expect(std.mem.indexOf(u8, html, "<body>") != null);
 }
+
+test "preserves {% raw %} blocks untouched" {
+    const input = "Some text\n{% raw %}{{ not_a_var }}{% endraw %}\nMore text";
+    const html = try parse(std.testing.allocator, input, .{});
+    defer std.testing.allocator.free(html);
+    try std.testing.expect(std.mem.indexOf(u8, html, "{{ not_a_var }}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "{% raw %}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "{% endraw %}") == null);
+}
+
+test "preserves {% raw %} with template tags inside" {
+    const input = "Example:\n{% raw %}\n{% if x %}yes{% endif %}\n{% endraw %}";
+    const html = try parse(std.testing.allocator, input, .{});
+    defer std.testing.allocator.free(html);
+    try std.testing.expect(std.mem.indexOf(u8, html, "{% if x %}yes{% endif %}") != null);
+}
+
+test "preserves {% raw %} with code block" {
+    const input = "{% raw %}\n```html\n{% for item in items %}{{ item }}{% endfor %}\n```\n{% endraw %}";
+    const html = try parse(std.testing.allocator, input, .{});
+    defer std.testing.allocator.free(html);
+    try std.testing.expect(std.mem.indexOf(u8, html, "{% for item in items %}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "{{ item }}") != null);
+}

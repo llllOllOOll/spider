@@ -34,6 +34,8 @@ pub const ElementType = enum {
     none,
     eof,
     container,
+    raw_block,
+    raw_block_close,
 };
 
 pub const Element = struct {
@@ -70,8 +72,14 @@ pub const toggles = std.StaticStringMap(Element).initComptime(
     .{
         .{ "code", Element{ .type = .code_close, .syntax = "`" } },
         .{ "block", Element{ .type = .block_close, .syntax = "```" } },
+        .{ "raw_block", Element{ .type = .raw_block_close, .syntax = "{% endraw %}" } },
     },
 );
+
+pub const raw_block_elements = [_]Element{
+    .{ .type = .raw_block, .syntax = "{% raw %}", .close = .raw_block_close },
+    .{ .type = .raw_block_close, .syntax = "{% endraw %}" },
+};
 
 pub const formatters = [_]Element{
     .{ .type = .bold, .syntax = "**", .close = .bold_close },

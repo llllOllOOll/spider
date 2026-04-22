@@ -24,6 +24,7 @@ ordered_list: Handler = Default.ordered_list,
 list_item: Handler = Default.list_item,
 code: Handler = Default.code,
 paragraph: Handler = Default.paragraph,
+raw_block: Handler = Default.raw_block,
 default_handler: Handler = Default.default,
 
 pub const Default = struct {
@@ -163,6 +164,10 @@ pub const Default = struct {
             \\<p>{s}</p>
             \\
         , .{node.content});
+    }
+
+    pub fn raw_block(allocator: Allocator, node: Node) ![]const u8 {
+        return allocator.dupe(u8, node.content);
     }
 
     pub fn default(allocator: Allocator, node: Node) ![]const u8 {
