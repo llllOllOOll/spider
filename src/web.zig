@@ -24,8 +24,8 @@ fn convertMdBlocks(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     const block_tag = content[bs .. bs + tag_end + 2];
     const footer = content[be..];
 
-    const has_raw_blocks = std.mem.indexOf(u8, inner_html, "{% raw %}") != null;
-    if (has_raw_blocks) {
+    const has_raw = std.mem.indexOf(u8, inner_html, "{% raw %}") != null;
+    if (has_raw) {
         return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n", inner_html, "\n", footer });
     }
     return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n{% raw %}", inner_html, "{% endraw %}", "\n", footer });
