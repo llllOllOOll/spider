@@ -2,7 +2,29 @@ const std = @import("std");
 const router_mod = @import("router.zig");
 const template = @import("template.zig");
 const form = @import("form.zig");
+const zmd = @import("zmd/zmd.zig");
 const Route = router_mod;
+
+fn convertMdBlocks(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    const block_start_tag = "{% block";
+    const block_end_tag = "{% end %}";
+
+    const bs = std.mem.indexOf(u8, content, block_start_tag) orelse return try allocator.dupe(u8, content);
+    const be = std.mem.indexOf(u8, content, block_end_tag) orelse return try allocator.dupe(u8, content);
+
+    const tag_end = std.mem.indexOf(u8, content[bs..], "%}") orelse return try allocator.dupe(u8, content);
+    const inner_start = bs + tag_end + 2;
+    const inner_end = be;
+
+    const inner_md = std.mem.trim(u8, content[inner_start..inner_end], "\n\r ");
+    const inner_html = try zmd.parse(allocator, inner_md, .{});
+
+    const header = content[0..bs];
+    const block_tag = content[bs .. bs + tag_end + 2];
+    const footer = content[be..];
+
+    return std.mem.concat(allocator, u8, &.{ header, block_tag, "\n", inner_html, "\n", footer });
+}
 
 pub const Group = Route.Group;
 pub const Method = enum {
@@ -295,31 +317,32 @@ pub fn chuckBerry(
         }
         break :blk normalized[0..j];
     };
-
     // Search in app templates
     const app_templates = req._app.?.templates;
     for (app_templates) |entry| {
         if (std.mem.eql(u8, entry.name, key)) {
-
             // Verifica se tem extends
             if (std.mem.indexOf(u8, entry.content, "{% extends") != null) {
-                // Extrai o nome do layout do extends
-                // ex: {% extends "layout" %} → "layout"
-                const extends_start = std.mem.indexOf(u8, entry.content, "{% extends \"") orelse return error.TemplateNotFound;
-                const name_start = extends_start + 12;
-                const name_end = std.mem.indexOf(u8, entry.content[name_start..], "\"") orelse return error.TemplateNotFound;
-                const layout_name = entry.content[name_start .. name_start + name_end];
+                const is_md = std.mem.startsWith(u8, entry.content, "-- md\n");
+                const content_to_render = if (is_md) blk: {
+                    const converted = try convertMdBlocks(allocator, entry.content[5..]);
+                    break :blk converted;
+                } else entry.content;
+                defer if (is_md) allocator.free(content_to_render);
 
-                // Busca o layout no mesmo slice
+                const extends_start = std.mem.indexOf(u8, content_to_render, "{% extends \"") orelse return error.TemplateNotFound;
+                const name_start = extends_start + 12;
+                const name_end = std.mem.indexOf(u8, content_to_render[name_start..], "\"") orelse return error.TemplateNotFound;
+                const layout_name = content_to_render[name_start .. name_start + name_end];
                 for (app_templates) |layout_entry| {
                     if (std.mem.eql(u8, layout_entry.name, layout_name)) {
-                        // Concatena layout + view e renderiza
-                        const full = try std.mem.concat(allocator, u8, &.{ layout_entry.content, entry.content });
+                        const full = try std.mem.concat(allocator, u8, &.{ layout_entry.content, content_to_render });
                         defer allocator.free(full);
                         const root_block = rootBlockName(layout_entry.content) orelse return error.RootBlockNotFound;
-                        const content_block = firstBlockName(entry.content) orelse return error.ContentBlockNotFound;
+                        const content_block = firstBlockName(content_to_render) orelse return error.ContentBlockNotFound;
                         const is_htmx = req.headers.get("HX-Request") != null;
-                        if (is_htmx) {
+                        const is_boosted = req.headers.get("HX-Boosted") != null;
+                        if (is_htmx and !is_boosted) {
                             const html = try template.renderBlockWithTemplates(full, content_block, data, allocator, app_templates);
                             return Response.html(allocator, html);
                         }
@@ -329,13 +352,17 @@ pub fn chuckBerry(
                 }
                 return error.LayoutNotFound;
             }
-
             // Sem extends — renderiza direto
+            if (std.mem.startsWith(u8, entry.content, "-- md\n")) {
+                const md_content = entry.content[5..];
+                const html = try zmd.parse(allocator, md_content, .{});
+                return Response.html(allocator, html);
+            }
             const rendered = try template.render(entry.content, data, allocator);
             return Response.html(allocator, rendered);
         }
     }
-
+    // TODO: improve erro mesnad  return name of the template tea failed
     return error.TemplateNotFound;
 }
 
@@ -411,6 +438,19 @@ pub const Response = struct {
 };
 
 pub fn render(allocator: std.mem.Allocator, tmpl: []const u8, data: anytype) !Response {
+    const is_md = std.mem.startsWith(u8, tmpl, "-- md\n") or std.mem.startsWith(u8, tmpl, "-- mdpage\n");
+    if (is_md) {
+        const md_content = if (std.mem.startsWith(u8, tmpl, "-- mdpage\n"))
+            tmpl[10..]
+        else
+            tmpl[5..];
+        const is_full = std.mem.startsWith(u8, tmpl, "-- mdpage\n");
+        const html = if (is_full)
+            try zmd.parseFull(allocator, md_content, .{})
+        else
+            try zmd.parse(allocator, md_content, .{});
+        return Response.html(allocator, html);
+    }
     const rendered = try template.render(tmpl, data, allocator);
     return Response.html(allocator, rendered);
 }

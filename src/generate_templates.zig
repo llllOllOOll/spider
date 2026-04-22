@@ -39,8 +39,9 @@ pub fn main(init: std.process.Init) !void {
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
 
-        // Only process HTML files
-        if (!std.mem.endsWith(u8, entry.path, ".html")) continue;
+        // Process HTML and Markdown files
+        if (!std.mem.endsWith(u8, entry.path, ".html") and
+            !std.mem.endsWith(u8, entry.path, ".md")) continue;
 
         // Generate field name from path
         var field_name_buf: [256]u8 = undefined;
@@ -70,88 +71,38 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
-    // Remove .html extension
-    const name_without_html = if (std.mem.endsWith(u8, path, ".html"))
+    const no_ext = if (std.mem.endsWith(u8, path, ".html"))
         path[0 .. path.len - 5]
+    else if (std.mem.endsWith(u8, path, ".md"))
+        path[0 .. path.len - 3]
     else
         path;
 
-    // Rule 1: If path contains "views/"
-    if (std.mem.indexOf(u8, name_without_html, "views/") != null) {
-        const views_pos = std.mem.indexOf(u8, name_without_html, "views/").?;
+    if (std.mem.indexOf(u8, no_ext, "views/")) |idx| {
+        const before = no_ext[0..idx];
+        const after = no_ext[idx + "views/".len ..];
 
-        // Find the "/" that precedes "views/" - look backwards from views_pos
-        var search_end = views_pos;
-        if (search_end > 0 and name_without_html[search_end - 1] == '/') {
-            search_end -= 1;
+        const dir = std.fs.path.basename(before);
+        const file = std.fs.path.basename(after);
+
+        if (std.mem.eql(u8, dir, file)) {
+            return try std.fmt.bufPrint(buffer, "{s}", .{file});
+        } else {
+            return try std.fmt.bufPrint(buffer, "{s}_{s}", .{ dir, file });
         }
-
-        // Find the "/" that precedes "views/" (the "/" between the dir and "views")
-        // For "features/auth/views", this is the "/" at position 15
-        const slash_before_views = std.mem.lastIndexOf(u8, name_without_html[0..views_pos], "/");
-
-        // Now find the "/" before THAT - that's the real directory component
-        const dir_start: usize = if (slash_before_views) |sbv_pos|
-            (std.mem.lastIndexOf(u8, name_without_html[0..sbv_pos], "/") orelse 0) + 1
-        else
-            0;
-
-        const dir_part = name_without_html[dir_start..slash_before_views.?];
-
-        // Get the filename after "views/"
-        const after_views = name_without_html[views_pos + 6 ..];
-
-        // Build result: dir_part _ filename
-        var result: [256]u8 = undefined;
-        var j: usize = 0;
-        for (dir_part) |char| {
-            if (char == '-') {
-                result[j] = '_';
-                j += 1;
-            } else {
-                result[j] = char;
-                j += 1;
-            }
-        }
-        result[j] = '_';
-        j += 1;
-        for (after_views) |char| {
-            if (char == '-') {
-                result[j] = '_';
-                j += 1;
-            } else {
-                result[j] = char;
-                j += 1;
-            }
-        }
-
-        return try std.fmt.bufPrint(buffer, "{s}", .{result[0..j]});
     }
 
-    // Rule 2: No "views/" - remove generic prefixes
-    var remaining = name_without_html;
-
-    if (std.mem.startsWith(u8, remaining, "features/")) {
-        remaining = remaining["features/".len..];
-    } else if (std.mem.startsWith(u8, remaining, "shared/templates/")) {
+    // shared/templates/
+    var remaining = no_ext;
+    if (std.mem.startsWith(u8, remaining, "shared/templates/")) {
         remaining = remaining["shared/templates/".len..];
     }
 
-    // Replace / with _ and - with _
-    var result: [256]u8 = undefined;
     var j: usize = 0;
-    for (remaining) |char| {
-        if (char == '/') {
-            result[j] = '_';
-            j += 1;
-        } else if (char == '-') {
-            result[j] = '_';
-            j += 1;
-        } else {
-            result[j] = char;
-            j += 1;
-        }
+    for (remaining) |c| {
+        buffer[j] = if (c == '/' or c == '-') '_' else c;
+        j += 1;
     }
 
-    return try std.fmt.bufPrint(buffer, "{s}", .{result[0..j]});
+    return buffer[0..j];
 }
