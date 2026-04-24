@@ -1,6 +1,6 @@
 .{
     .name = .spider,
-    .version = "0.4.0",
+    .version = "0.2.0",
     .fingerprint = 0x6ad76a84952d8744,
     .minimum_zig_version = "0.17.0-dev.93+76174e1bc",
     .dependencies = .{
