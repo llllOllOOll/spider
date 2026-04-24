@@ -1,8 +1,5 @@
 const std = @import("std");
-
-pub const c = @cImport({
-    @cInclude("stdlib.h");
-});
+const c = @import("c_env");
 
 pub fn loadEnv(allocator: std.mem.Allocator, path: []const u8) !void {
     var threaded = std.Io.Threaded.init_single_threaded;

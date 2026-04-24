@@ -1,8 +1,5 @@
 const std = @import("std");
-pub const c = @cImport({
-    @cInclude("libpq-fe.h");
-    @cInclude("stdlib.h");
-});
+const c = @import("c_pg");
 
 // TODO: Implementar logging condicional para evitar overhead em produção
 //       Usar flag de ambiente SPIDER_LOG_QUERIES para controle

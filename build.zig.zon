@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0-dev.2261+d6b3dd25a",
     .dependencies = .{
         .curl = .{
-            .url = "git+https://github.com/llllOllOOll/zig-curl#348d8a7e9a8900f4ecd430c2aeb43b72b97d8bfc",
-            .hash = "curl-0.4.0-P4tT4ST2AABRk9iMM8npiCIBhsFV-_5Ka_IBUcxgb4i5",
+            .url = "git+https://github.com/jiacai2050/zig-curl.git#f701e602d962e149338521e9848528a372c05966",
+            .hash = "curl-0.5.1-P4tT4VsCAQBQ_kA6SBylS7sDyKXdcnuv-13p21ZNx8Az",
         },
     },
     .paths = .{
