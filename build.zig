@@ -14,16 +14,16 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    tc_env.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
     const c_env = tc_env.createModule();
-    c_env.addSystemIncludePath("/usr/include");
 
     const tc_pg = b.addTranslateC(.{
         .root_source_file = b.path("includes/pg.h"),
         .target = target,
         .optimize = optimize,
     });
+    tc_pg.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
     const c_pg = tc_pg.createModule();
-    c_pg.addSystemIncludePath("/usr/include");
 
     const mod = b.addModule("spider", .{
         .root_source_file = b.path("src/spider.zig"),
