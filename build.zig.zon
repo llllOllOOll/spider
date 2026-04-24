@@ -1,8 +1,8 @@
 .{
     .name = .spider,
-    .version = "0.3.0",
+    .version = "0.4.0",
     .fingerprint = 0x6ad76a84952d8744,
-    .minimum_zig_version = "0.16.0-dev.2261+d6b3dd25a",
+    .minimum_zig_version = "0.17.0-dev.93+76174e1bc",
     .dependencies = .{
         .curl = .{
             .url = "git+https://github.com/jiacai2050/zig-curl.git#f701e602d962e149338521e9848528a372c05966",
@@ -14,6 +14,7 @@
         "build.zig.zon",
         "src",
         "lib.zig",
+        "includes",
         "README.md",
     },
 }
