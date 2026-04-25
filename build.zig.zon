@@ -1,12 +1,12 @@
 .{
     .name = .spider,
-    .version = "0.2.0",
-    .fingerprint = 0x6ad76a84952d8744,
+    .version = "0.3.0",
+    .fingerprint = 0x6ad76a84ae06b73f,
     .minimum_zig_version = "0.17.0-dev.93+76174e1bc",
     .dependencies = .{
-        .curl = .{
-            .url = "git+https://github.com/jiacai2050/zig-curl.git#f701e602d962e149338521e9848528a372c05966",
-            .hash = "curl-0.5.1-P4tT4VsCAQBQ_kA6SBylS7sDyKXdcnuv-13p21ZNx8Az",
+        .pacman = .{
+            .url = "git+https://github.com/llllOllOOll/pacman#fa4cfdbc2429fbf39bb569ae307ccc6ca6024f3a",
+            .hash = "pacman-0.1.0-SPnstaF-AAAkk0-mLHhUVku-ICUINnnSxQ-dDvifsC_S",
         },
     },
     .paths = .{

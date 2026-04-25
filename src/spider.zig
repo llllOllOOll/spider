@@ -134,4 +134,4 @@ pub const Spider = struct {
 };
 pub const auth = @import("auth.zig");
 pub const google = @import("providers/google.zig");
-pub const http_client = @import("http_curlient.zig");
+pub const http_client = @import("pacman");

@@ -4,10 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const curl_dep = b.dependency("curl", .{
-        .target = target,
-        .sanitize_c = .off,
-    });
+    const pacman_dep = b.dependency("pacman", .{});
 
     const tc_env = b.addTranslateC(.{
         .root_source_file = b.path("includes/env.h"),
@@ -31,7 +28,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "curl", .module = curl_dep.module("curl") },
+            .{ .name = "pacman", .module = pacman_dep.module("pacman") },
             .{ .name = "c_env", .module = c_env },
             .{ .name = "c_pg", .module = c_pg },
         },
