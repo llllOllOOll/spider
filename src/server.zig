@@ -10,8 +10,11 @@ const websocket = @import("websocket.zig");
 const spider = @import("spider.zig");
 const logger = @import("logger.zig");
 const metrics = @import("metrics.zig");
+const Duration = std.Io.Duration;
 
 const log = logger.Logger.init(.info);
+
+var active_connections = std.atomic.Value(usize).init(0);
 
 const index_html = @embedFile("index.html");
 
@@ -128,15 +131,33 @@ pub const Server = struct {
             group.concurrent(self.io, handleConnection, .{ctx}) catch |err| {
                 log.warn("concurrent_error", .{ .err = @errorName(err) });
                 stream.close(self.io);
+                ctx.conn_arena.deinit();
+                ctx.req_arena.deinit();
+                self.allocator.destroy(ctx.conn_arena);
+                self.allocator.destroy(ctx.req_arena);
                 self.allocator.destroy(ctx);
             };
         }
         log.info("shutting_down", .{});
+        const shutdown_timeout_ns = 10 * 1000 * 1000 * 1000;
+        const start_time = std.Io.Clock.now(.awake, self.io);
+        while (active_connections.load(.acquire) > 0) {
+            const elapsed = start_time.durationTo(std.Io.Clock.now(.awake, self.io));
+            if (elapsed.toNanoseconds() > shutdown_timeout_ns) {
+                log.warn("Forced shutdown with {} active connections", .{active_connections.load(.acquire)});
+                break;
+            }
+            std.Io.sleep(self.io, std.Io.Duration.fromNanoseconds(100 * 1000 * 1000), .awake) catch {};
+        }
+        group.await(self.io) catch {};
+        log.info("Shutdown complete", .{});
     }
 };
 
 fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
+    _ = active_connections.fetchAdd(1, .monotonic);
     defer {
+        _ = active_connections.fetchSub(1, .monotonic);
         ctx.req_arena.deinit();
         ctx.conn_arena.deinit();
         ctx.allocator.destroy(ctx.req_arena);
@@ -166,11 +187,10 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
         const arena = ctx.req_arena.allocator();
         const method = @tagName(request.head.method);
         // Copy path to persistent memory since request.head.target may point to buffer that gets overwritten
-        const path = ctx.allocator.dupe(u8, request.head.target) catch |err| {
+        const path = arena.dupe(u8, request.head.target) catch |err| {
             std.debug.print("ERROR: dupe failed: {}\n", .{err});
             break;
         };
-        defer ctx.allocator.free(path);
         std.debug.print("SERVER: Received {s} {s}\n", .{ method, path });
 
         const target = path;
@@ -246,7 +266,13 @@ fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 .DELETE => web.Method.delete,
                 .OPTIONS => web.Method.options,
                 .HEAD => web.Method.head,
-                else => web.Method.get,
+                else => {
+                    request.respond("405 Method Not Allowed", .{
+                        .status = .method_not_allowed,
+                        .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
+                    }) catch {};
+                    return;
+                },
             };
 
             // Collect headers BEFORE reading body
@@ -415,6 +441,12 @@ fn staticFileHandler(req: *std.http.Server.Request, allocator: std.mem.Allocator
 
     // Remove leading slash from request path
     const req_path = if (std.mem.startsWith(u8, target, "/")) target[1..] else target;
+
+    // Path traversal protection
+    if (std.mem.indexOf(u8, req_path, "..")) |_| {
+        try notFoundHandler(req, allocator);
+        return;
+    }
 
     // Join static_dir with request path
     const full_path = std.fs.path.join(allocator, &.{ static_dir, req_path }) catch |err| {

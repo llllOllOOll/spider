@@ -41,21 +41,25 @@ pub const Group = struct {
 
     pub fn get(self: Group, path: []const u8, handler: Handler) !void {
         const full_path = try self.joinPrefix(path);
+        defer if (full_path.ptr != path.ptr) self.router.allocator.free(full_path);
         try self.router.add(.get, full_path, handler);
     }
 
     pub fn post(self: Group, path: []const u8, handler: Handler) !void {
         const full_path = try self.joinPrefix(path);
+        defer if (full_path.ptr != path.ptr) self.router.allocator.free(full_path);
         try self.router.add(.post, full_path, handler);
     }
 
     pub fn put(self: Group, path: []const u8, handler: Handler) !void {
         const full_path = try self.joinPrefix(path);
+        defer if (full_path.ptr != path.ptr) self.router.allocator.free(full_path);
         try self.router.add(.put, full_path, handler);
     }
 
     pub fn delete(self: Group, path: []const u8, handler: Handler) !void {
         const full_path = try self.joinPrefix(path);
+        defer if (full_path.ptr != path.ptr) self.router.allocator.free(full_path);
         try self.router.add(.delete, full_path, handler);
     }
 
@@ -117,7 +121,10 @@ pub const Router = struct {
         while (child_it.next()) |entry| {
             self.deinitNode(entry.value_ptr.*);
         }
-        if (node.param_child) |n| self.deinitNode(n);
+        if (node.param_child) |n| {
+            if (node.param_name) |name| self.allocator.free(name);
+            self.deinitNode(n);
+        }
         if (node.wildcard_child) |n| self.deinitNode(n);
         node.children.deinit();
         self.allocator.destroy(node);
@@ -144,7 +151,9 @@ pub const Router = struct {
             if (segment[0] == ':') {
                 if (node.param_child == null) {
                     node.param_child = try Node.init(self.allocator);
-                    node.param_name = segment[1..];
+                    node.param_name = try self.allocator.dupe(u8, segment[1..]);
+                } else {
+                    std.debug.print("ROUTER: Warning: parameter conflict at segment '{s}'", .{segment});
                 }
                 node = node.param_child.?;
             } else if (std.mem.eql(u8, segment, "*")) {
@@ -196,6 +205,11 @@ pub const Router = struct {
                 try params.put(allocator, key, value);
                 node = child;
             } else if (node.wildcard_child) |child| {
+                const key = try allocator.dupe(u8, "*");
+                errdefer allocator.free(key);
+                const value = try allocator.dupe(u8, segment);
+                errdefer allocator.free(value);
+                try params.put(allocator, key, value);
                 node = child;
             } else {
                 return null;
