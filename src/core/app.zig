@@ -6,6 +6,7 @@ const Response = @import("context.zig").Response;
 const MiddlewareFn = @import("context.zig").MiddlewareFn;
 const ErrorHandler = @import("context.zig").ErrorHandler;
 const Database = @import("database.zig").Database;
+const DriverType = @import("database.zig").DriverType;
 const Router = @import("../routing/router.zig").Router;
 const Handler = @import("../routing/router.zig").Handler;
 
@@ -56,7 +57,10 @@ fn collectMiddlewares(
     var count: usize = 0;
 
     for (srv.global_middlewares[0..srv.global_middleware_count]) |m| {
-        if (count < buf.len) { buf[count] = m; count += 1; }
+        if (count < buf.len) {
+            buf[count] = m;
+            count += 1;
+        }
     }
 
     for (srv.path_middlewares[0..srv.path_middleware_count]) |entry| {
@@ -65,12 +69,18 @@ fn collectMiddlewares(
         else
             entry.path;
         if (std.mem.startsWith(u8, path, prefix)) {
-            if (count < buf.len) { buf[count] = entry.middleware; count += 1; }
+            if (count < buf.len) {
+                buf[count] = entry.middleware;
+                count += 1;
+            }
         }
     }
 
     for (route_middlewares) |m| {
-        if (count < buf.len) { buf[count] = m; count += 1; }
+        if (count < buf.len) {
+            buf[count] = m;
+            count += 1;
+        }
     }
 
     return count;
@@ -165,7 +175,14 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
 
         const match = ctx.router.match(request.head.method, path, arena) catch null;
         const response = if (match) |m| blk: {
-            var ctx_req = Ctx{ .request = request, .arena = arena, .params = m.params, .body = body, ._db = if (ctx.server._db) |*d| d else null };
+            var ctx_req = Ctx{
+                .request = request,
+                .arena = arena,
+                .params = m.params,
+                .body = body,
+                ._db = if (ctx.server._db) |*d| d else null,
+                ._driver_type = ctx.server._driver_type,
+            };
 
             var route_mws: []const MiddlewareFn = &.{};
             for (ctx.server.route_middlewares.items) |entry| {
@@ -190,7 +207,14 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 break :r Response{ .status = .internal_server_error, .body = "Internal Server Error", .content_type = "text/plain" };
             };
         } else blk: {
-            var ctx_req = Ctx{ .request = request, .arena = arena, .params = .{}, .body = body };
+            var ctx_req = Ctx{
+                .request = request,
+                .arena = arena,
+                .params = .{},
+                .body = body,
+                ._db = if (ctx.server._db) |*db| db else null,
+                ._driver_type = ctx.server._driver_type,
+            };
             break :blk ctx_req.text("404 Not Found", .{ .status = .not_found }) catch
                 Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };
         };
@@ -233,6 +257,7 @@ pub const Server = struct {
     route_middlewares: std.ArrayList(RouteMiddlewareEntry),
     error_handler: ?ErrorHandler = null,
     _db: ?Database = null,
+    _driver_type: DriverType = .postgresql,
 
     pub fn init() Server {
         var self: Server = .{
@@ -283,6 +308,7 @@ pub const Server = struct {
 
     pub fn db(self: *Server, database: Database) *Server {
         self._db = database;
+        self._driver_type = database.driver_type;
         return self;
     }
 

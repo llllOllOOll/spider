@@ -22,6 +22,14 @@ pub fn build(b: *std.Build) void {
     tc_pg.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
     const c_pg = tc_pg.createModule();
 
+    const tc_sqlite = b.addTranslateC(.{
+        .root_source_file = b.path("includes/sqlite.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    tc_sqlite.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+    const c_sqlite = tc_sqlite.createModule();
+
     const mod = b.addModule("spider", .{
         .root_source_file = b.path("src/spider.zig"),
         .target = target,
@@ -31,9 +39,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pacman", .module = pacman_dep.module("pacman") },
             .{ .name = "c_env", .module = c_env },
             .{ .name = "c_pg", .module = c_pg },
+            .{ .name = "c_sqlite", .module = c_sqlite },
         },
     });
     mod.linkSystemLibrary("pq", .{});
+    mod.linkSystemLibrary("sqlite3", .{});
 
     const exe = b.addExecutable(.{
         .name = "spider",

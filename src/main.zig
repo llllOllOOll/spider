@@ -141,12 +141,25 @@ fn apiMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
 const PgDriver = spider.PgDriver;
 
 const Todo = struct {
-    id: i32,
+    id: i32, // SQLite usa INTEGER (equivale a i32)
     title: []const u8,
-    completed: bool,
-    created_at: []const u8,
-    updated_at: []const u8,
+    completed: bool, // SQLite usa 0/1 para boolean
+    created_at: []const u8, // SQLite armazena como TEXT
+    updated_at: []const u8, // SQLite armazena como TEXT
 };
+
+fn sqliteTestHandler(c: *spider.Ctx) !Response {
+    // Teste básico do SQLite
+    try c.db().exec("CREATE TABLE IF NOT EXISTS test (id INTEGER PRIMARY KEY, name TEXT)");
+
+    const result = try c.db().query(
+        struct { id: i32, name: []const u8 },
+        "SELECT id, name FROM test",
+        .{},
+    );
+
+    return c.json(.{ .driver = "SQLite", .items = result, .count = result.len }, .{});
+}
 
 fn todosHandler(c: *spider.Ctx) !Response {
     const todos = try c.db().query(
@@ -176,7 +189,14 @@ fn dashboardRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const s
 }
 
 pub fn main() void {
-    var pg_driver: PgDriver = .{};
+    // Initialize SQLite connection (usaremos SQLite para teste)
+    spider.sqlite.init(std.heap.page_allocator, .{
+        .filename = "test.db",
+    }) catch {
+        std.debug.print("Failed to initialize SQLite\n", .{});
+        return;
+    };
+    defer spider.sqlite.deinit();
 
     // Initialize PostgreSQL connection
     var threaded = std.Io.Threaded.init_single_threaded;
@@ -199,7 +219,11 @@ pub fn main() void {
         .use(loggerMiddleware)
         .useAt("/api/*", apiMiddleware)
         .onError(globalErrorHandler)
-        .db(pg_driver.database())
+        // Usar SQLite para teste
+        .db(blk: {
+            var driver = spider.SqliteDriver{};
+            break :blk driver.database();
+        })
         .get("/", rootHandler)
         .get("/broken", brokenHandler)
         .get("/api/users", usersListHandler)
@@ -216,6 +240,7 @@ pub fn main() void {
         .get("/cookie", cookieHandler)
         .get("/htmx", htmxHandler)
         .get("/todos", todosHandler)
+        .get("/sqlite-test", sqliteTestHandler)
         .post("/echo-body", echoBodyHandler)
         .post("/users", createUserHandler)
         .group("/dashboard", &.{authMiddleware}, dashboardRoutes)

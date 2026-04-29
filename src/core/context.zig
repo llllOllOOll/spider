@@ -1,6 +1,7 @@
 const std = @import("std");
 const template = @import("../render/template.zig");
 const Database = @import("database.zig").Database;
+const DriverType = @import("database.zig").DriverType;
 pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 
 pub const NextFn = *const fn (*Ctx) anyerror!Response;
@@ -36,9 +37,14 @@ pub const Ctx = struct {
     params: std.StringHashMapUnmanaged([]const u8),
     body: ?[]const u8 = null,
     _db: ?*const Database = null,
+    _driver_type: DriverType = .postgresql, // default para backward compatibility
 
     pub fn db(self: *Ctx) DatabaseCtx {
-        return .{ ._db = self._db.?, ._arena = self.arena };
+        return .{
+            ._db = self._db.?,
+            ._arena = self.arena,
+            ._driver_type = self._driver_type,
+        };
     }
 
     pub fn json(self: *Ctx, value: anytype, opts: ResponseOptions) !Response {
