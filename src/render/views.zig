@@ -40,6 +40,11 @@ pub fn normalizeName(name: []const u8, buf: []u8) []const u8 {
     return buf[0..j];
 }
 
+// TODO: Name conflict — two templates in different folders can normalize to the
+// same name (e.g. features/users/views/index.html and views/users/index.html
+// both → users_index). For now the dev is responsible for avoiding conflicts.
+// Future fix: detect conflicts in buildIndex() and return an error with a clear
+// message indicating which files conflict.
 pub fn buildIndex(
     io: std.Io,
     allocator: std.mem.Allocator,
