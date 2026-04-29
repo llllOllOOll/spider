@@ -1,5 +1,5 @@
 const std = @import("std");
-const web = @import("web.zig");
+const web = @import("../spider.zig");
 
 pub fn serve(alc: std.mem.Allocator, req: *web.Request) !web.Response {
     const path = req.path;

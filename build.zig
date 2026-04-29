@@ -35,6 +35,27 @@ pub fn build(b: *std.Build) void {
     });
     mod.linkSystemLibrary("pq", .{});
 
+    const exe = b.addExecutable(.{
+        .name = "spider",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "spider", .module = mod },
+            },
+        }),
+    });
+
+    b.installArtifact(exe);
+
+    const run_step = b.step("run", "Run the app");
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_step.dependOn(&run_cmd.step);
+
+    run_cmd.step.dependOn(b.getInstallStep());
+
     _ = b.addModule("templates", .{
         .root_source_file = b.path("src/templates_stub.zig"),
     });

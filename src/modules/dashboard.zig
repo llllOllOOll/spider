@@ -1,8 +1,8 @@
 const std = @import("std");
-const web = @import("web.zig");
-const metrics = @import("metrics.zig");
+const web = @import("../spider.zig");
+const metrics = @import("../spider.zig").metrics;
 
-const dashboard_html = @embedFile("dashboard.html");
+const dashboard_html = @embedFile("modules/dashboard.html");
 
 pub fn metricsHandler(allocator: std.mem.Allocator, req: *web.Request) !web.Response {
     _ = req;

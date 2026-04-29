@@ -106,7 +106,7 @@ pub const Connection = struct {
         _ = self.req_arena.reset(.{ .retain_with_limit = RETAIN_ALLOCATED_BYTES });
     }
 
-    fn allocator(self: *Connection) std.mem.Allocator {
+    fn getAllocator(self: *Connection) std.mem.Allocator {
         return self.req_arena.allocator();
     }
 };

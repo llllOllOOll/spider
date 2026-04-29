@@ -1,5 +1,5 @@
 const std = @import("std");
-const web = @import("web.zig");
+const web = @import("../../spider.zig");
 const Request = web.Request;
 const Response = web.Response;
 const NextFn = web.NextFn;

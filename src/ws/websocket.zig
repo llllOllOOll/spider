@@ -1,6 +1,6 @@
 const std = @import("std");
 const net = std.Io.net;
-const web = @import("web.zig");
+const web = @import("../web.zig");
 
 pub const Frame = struct {
     opcode: Opcode,

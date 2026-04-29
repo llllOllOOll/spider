@@ -1,41 +1,39 @@
+//! Speed - A fast, ergonomic web framework for Zig
+//! Focused on great Developer Experience (DX) for developers coming from Go, Django, TypeScript
+
 const std = @import("std");
-pub const web = @import("web.zig");
-pub const websocket = @import("websocket.zig");
-pub const ws_hub = @import("ws_hub.zig");
-pub const template = @import("template.zig");
-pub const pg = @import("pg.zig");
-pub const env = @import("env.zig");
-pub const form = @import("form.zig");
-pub const form_parser = @import("form_parser.zig");
-const srv = @import("server.zig");
-pub const static = @import("static_handler.zig");
 
-pub const Request = web.Request;
-pub const Response = web.Response;
-pub const Method = web.Method;
-pub const Group = web.Group;
-pub const UserInfo = web.UserInfo;
-pub const Context = template.Context;
-pub const Value = template.Value;
+pub const Ctx = @import("core/context.zig").Ctx;
+pub const app = @import("core/app.zig").app;
+pub const server = @import("core/app.zig").server;
+pub const Server = @import("core/server.zig").Server;
+pub const Router = @import("routing/router.zig").Router;
+pub const Group = @import("routing/group.zig").Group;
+pub const websocket = @import("ws/websocket.zig");
+pub const Hub = @import("ws/hub.zig").Hub;
+pub const pg = @import("drivers/pg/pg.zig");
+pub const pg_pool = @import("drivers/pg/pool.zig");
+pub const auth = @import("modules/auth/auth.zig");
+pub const static = @import("modules/static.zig");
+pub const dashboard = @import("modules/dashboard.zig");
+pub const Request = @import("web.zig").Request;
+pub const Response = @import("web.zig").Response;
+pub const Method = @import("web.zig").Method;
+pub const metrics = @import("internal/metrics.zig");
+pub const template = @import("render/template.zig");
+pub const zmd = @import("render/zmd/zmd.zig");
+pub const form = @import("binding/form.zig");
+pub const form_parser = @import("binding/form_parser.zig");
 
-pub const render = web.render;
-pub const renderView = web.renderView;
-pub const chuckBerry = web.chuckBerry;
+var global_ws_hub: ?*Hub = null;
 
-pub fn renderBlock(allocator: std.mem.Allocator, view: []const u8, block_name: []const u8, data: anytype) !Response {
-    const html = try template.renderBlock(view, block_name, data, allocator);
-    return Response.html(allocator, html);
-}
-
-var global_ws_hub: ?*ws_hub.Hub = null;
-
-pub fn getWsHub() *ws_hub.Hub {
+pub fn getWsHub() *Hub {
     return global_ws_hub.?;
 }
 
 pub fn initWsHub(allocator: std.mem.Allocator, io: std.Io) !void {
-    global_ws_hub = try allocator.create(ws_hub.Hub);
-    global_ws_hub.?.* = ws_hub.Hub.init(allocator, io);
+    global_ws_hub = try allocator.create(Hub);
+    global_ws_hub.?.* = Hub.init(allocator, io);
 }
 
 pub fn deinitWsHub(allocator: std.mem.Allocator) void {
@@ -45,93 +43,3 @@ pub fn deinitWsHub(allocator: std.mem.Allocator) void {
         global_ws_hub = null;
     }
 }
-
-pub const loadEnv = env.loadEnv;
-
-pub const Spider = struct {
-    allocator: std.mem.Allocator,
-    app_ptr: *web.App,
-    io: std.Io,
-    host: []const u8,
-    port: u16,
-    static_dir: []const u8,
-
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, host: []const u8, port: u16, config: web.AppConfig) !Spider {
-        const app_ptr = try web.App.init(allocator, config);
-        return Spider{
-            .allocator = allocator,
-            .app_ptr = app_ptr,
-            .io = io,
-            .host = host,
-            .port = port,
-            .static_dir = "",
-        };
-    }
-
-    pub fn deinit(self: Spider) void {
-        self.app_ptr.deinit();
-    }
-
-    pub fn get(self: Spider, path: []const u8, handler: web.Handler) Spider {
-        self.app_ptr.get(path, handler) catch return self;
-        return self;
-    }
-
-    pub fn post(self: Spider, path: []const u8, handler: web.Handler) Spider {
-        self.app_ptr.post(path, handler) catch return self;
-        return self;
-    }
-
-    pub fn put(self: Spider, path: []const u8, handler: web.Handler) Spider {
-        self.app_ptr.put(path, handler) catch return self;
-        return self;
-    }
-
-    pub fn delete(self: Spider, path: []const u8, handler: web.Handler) Spider {
-        self.app_ptr.delete(path, handler) catch return self;
-        return self;
-    }
-
-    pub fn group(self: Spider, prefix: []const u8) web.Group {
-        return self.app_ptr.group(prefix);
-    }
-
-    pub fn groupGet(self: Spider, prefix: []const u8, path: []const u8, handler: web.Handler) Spider {
-        const full_path = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, path }) catch return self;
-        self.app_ptr.get(full_path, handler) catch {};
-        return self;
-    }
-
-    pub fn groupPost(self: Spider, prefix: []const u8, path: []const u8, handler: web.Handler) Spider {
-        const full_path = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, path }) catch return self;
-        self.app_ptr.post(full_path, handler) catch {};
-        return self;
-    }
-
-    pub fn use(self: Spider, middleware: web.MiddlewareFn) Spider {
-        self.app_ptr.use(middleware) catch return self;
-        return self;
-    }
-
-    pub fn staticDir(self: Spider, dir: []const u8) Spider {
-        var s = self;
-        s.static_dir = dir;
-        return s;
-    }
-
-    pub fn listen(self: Spider) !void {
-        var server = try srv.Server.init(
-            self.allocator,
-            self.io,
-            self.host,
-            self.port,
-            self.static_dir,
-        );
-        server.setApp(self.app_ptr);
-        defer server.deinit();
-        try server.start();
-    }
-};
-pub const auth = @import("auth.zig");
-pub const google = @import("providers/google.zig");
-pub const http_client = @import("pacman");

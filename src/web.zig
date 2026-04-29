@@ -1,8 +1,8 @@
 const std = @import("std");
-const router_mod = @import("router.zig");
-const template = @import("template.zig");
-const form = @import("form.zig");
-const zmd = @import("zmd/zmd.zig");
+const router_mod = @import("routing/router.zig");
+const template = @import("render/template.zig");
+const form = @import("binding/form.zig");
+const zmd = @import("render/zmd/zmd.zig");
 const Route = router_mod;
 
 fn convertMdBlocks(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
@@ -269,12 +269,12 @@ pub const Request = struct {
         return self.params.get(name);
     }
 
-    pub fn form(self: *Request, allocator: std.mem.Allocator) !@import("form.zig").FormData {
-        return @import("form.zig").parse(allocator, self.body);
+    pub fn form(self: *Request, allocator: std.mem.Allocator) !@import("binding/form.zig").FormData {
+        return @import("binding/form.zig").parse(allocator, self.body);
     }
 
     pub fn parseForm(self: *Request, allocator: std.mem.Allocator, comptime T: type) !T {
-        var parser = try @import("form_parser.zig").FormParser.init(allocator, self.body);
+        var parser = try @import("binding/form_parser.zig").FormParser.init(allocator, self.body);
         defer parser.deinit();
         return try parser.parse(T);
     }
@@ -554,14 +554,14 @@ pub const App = struct {
             .templates = if (config.templates) |T| convertTemplates(T) else &.{},
         };
 
-        _ = @import("metrics.zig"); // Ensure metrics are initialized
+        _ = @import("internal/metrics.zig"); // Ensure metrics are initialized
         try app.registerDashboardRoutes();
 
         return app;
     }
 
     fn registerDashboardRoutes(self: *App) !void {
-        const dashboard = @import("dashboard.zig");
+        const dashboard = @import("modules/dashboard.zig");
         try self.router.add(.get, "/_spider/metrics", dashboard.metricsHandler);
         try self.router.add(.get, "/_spider/dashboard", dashboard.dashboardHandler);
         try self.router.add(.get, "/_spider/dashboard/panel", dashboard.dashboardPanelHandler);
