@@ -350,7 +350,6 @@ pub fn main() void {
         .use(loggerMiddleware)
         .useAt("/api/*", apiMiddleware)
         .onError(globalErrorHandler)
-        // Usar SQLite para teste
         .db(blk: {
             var driver = spider.SqliteDriver{};
             break :blk driver.database();
