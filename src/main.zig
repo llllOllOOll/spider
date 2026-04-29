@@ -1,5 +1,6 @@
 const std = @import("std");
 const spider = @import("spider");
+const mysql = @import("spider").mysql;
 const Response = spider.Response;
 
 var request_count: u64 = 0;
@@ -170,6 +171,37 @@ fn todosHandler(c: *spider.Ctx) !Response {
     return c.json(.{ .todos = todos, .count = todos.len }, .{});
 }
 
+const Product = struct {
+    id: i32,
+    name: []const u8,
+    price: []const u8,
+    active: bool,
+};
+
+fn mysqlProductsHandler(c: *spider.Ctx) !spider.Response {
+    const products = try mysql.query(
+        Product,
+        c.arena,
+        "SELECT id, name, price, active FROM products",
+        .{},
+    );
+    return c.json(.{
+        .products = products,
+        .count = products.len,
+        .driver = "mysql",
+    }, .{});
+}
+
+fn envHandler(c: *spider.Ctx) !Response {
+    return c.json(.{
+        .database_url = spider.env.getOr("DATABASE_URL", "not set"),
+        .port = spider.env.getInt(u16, "PORT", 3000),
+        .debug = spider.env.getBool("DEBUG", false),
+        .jwt_secret = spider.env.getOr("JWT_SECRET", "not set"),
+        .app_name = spider.env.getOr("APP_NAME", "not set"),
+    }, .{});
+}
+
 fn globalErrorHandler(c: *spider.Ctx, err: anyerror) !Response {
     std.log.err("caught: {s}", .{@errorName(err)});
     return c.json(.{
@@ -201,6 +233,20 @@ pub fn main() void {
     // Initialize PostgreSQL connection
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
+
+    // Initialize MySQL connection
+    mysql.init(std.heap.page_allocator, io, .{
+        .host = "127.0.0.1",
+        .port = 3306,
+        .database = "spider_test",
+        .user = "root",
+        .password = "spider_root_password",
+        .pool_size = 2,
+    }) catch |err| {
+        std.debug.print("MySQL init failed: {s}\n", .{@errorName(err)});
+    };
+    defer mysql.deinit();
+
     spider.pg.init(std.heap.page_allocator, io, .{
         .host = "localhost",
         .port = 5434,
@@ -241,6 +287,8 @@ pub fn main() void {
         .get("/htmx", htmxHandler)
         .get("/todos", todosHandler)
         .get("/sqlite-test", sqliteTestHandler)
+        .get("/env", envHandler)
+        .get("/mysql", mysqlProductsHandler)
         .post("/echo-body", echoBodyHandler)
         .post("/users", createUserHandler)
         .group("/dashboard", &.{authMiddleware}, dashboardRoutes)

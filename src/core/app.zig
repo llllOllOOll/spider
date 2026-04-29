@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
+const env = @import("../internal/env.zig");
 const Ctx = @import("context.zig").Ctx;
 const Response = @import("context.zig").Response;
 const MiddlewareFn = @import("context.zig").MiddlewareFn;
@@ -260,6 +261,9 @@ pub const Server = struct {
     _driver_type: DriverType = .postgresql,
 
     pub fn init() Server {
+        env.autoLoad(std.heap.page_allocator);
+        env.checkGitignore();
+
         var self: Server = .{
             .spider_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
             .spider_gpa = .init,

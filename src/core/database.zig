@@ -15,7 +15,7 @@ pub const Database = struct {
     }
 };
 
-pub const DriverType = enum { postgresql, sqlite };
+pub const DriverType = enum { postgresql, sqlite, mysql };
 
 pub const DatabaseCtx = struct {
     _db: *const Database,
@@ -43,6 +43,10 @@ pub const DatabaseCtx = struct {
             .sqlite => {
                 const sqlite = @import("../drivers/sqlite/sqlite.zig");
                 return sqlite.query(T, self._arena, sql, params);
+            },
+            .mysql => {
+                const mysql = @import("../drivers/mysql/mysql.zig");
+                return mysql.query(T, self._arena, sql, params);
             },
         };
     }
