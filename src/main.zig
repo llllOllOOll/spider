@@ -81,10 +81,54 @@ fn createUserHandler(c: *spider.Ctx) !Response {
     }, .{ .status = .created });
 }
 
+fn loggerMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
+    std.debug.print("[{s}] {s}\n", .{ c.getMethod(), c.getPath() });
+    const res = try next(c);
+    std.debug.print("  -> {d}\n", .{@intFromEnum(res.status)});
+    return res;
+}
+
+fn authMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
+    const token = c.header("Authorization") orelse
+        return c.text("Unauthorized", .{ .status = .unauthorized });
+    _ = token;
+    return next(c);
+}
+
+fn dashHandler(c: *spider.Ctx) !Response {
+    return c.json(.{ .page = "dashboard" }, .{});
+}
+
+fn usersListHandler(c: *spider.Ctx) !Response {
+    return c.json(.{ .page = "users" }, .{});
+}
+
+fn slowMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
+    var i: usize = 0;
+    while (i < 1_000_000) : (i += 1) {}
+    return next(c);
+}
+
+fn slowHandler(c: *spider.Ctx) !spider.Response {
+    var i: usize = 0;
+    while (i < 1_000_000) : (i += 1) {}
+    return c.json(.{ .ok = true }, .{});
+}
+
+fn slowRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const spider.MiddlewareFn) void {
+    s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/", .{prefix}) catch "/slow/", middlewares, slowHandler);
+}
+
+fn dashboardRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const spider.MiddlewareFn) void {
+    s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/", .{prefix}) catch "/dashboard/", middlewares, dashHandler);
+    s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/users", .{prefix}) catch "/dashboard/users", middlewares, usersListHandler);
+}
+
 pub fn main() void {
     var server = spider.app();
     defer server.deinit();
     server
+        .use(loggerMiddleware)
         .get("/", rootHandler)
         .get("/health", healthHandler)
         .get("/echo", echoHandler)
@@ -98,6 +142,8 @@ pub fn main() void {
         .get("/redirect", redirectHandler)
         .post("/echo-body", echoBodyHandler)
         .post("/users", createUserHandler)
+        .group("/dashboard", &.{authMiddleware}, dashboardRoutes)
+        .group("/slow", &.{slowMiddleware}, slowRoutes)
         .listen(3000) catch |err| {
         std.debug.print("Server error: {}\n", .{err});
     };

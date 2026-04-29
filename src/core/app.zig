@@ -3,13 +3,49 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const Ctx = @import("context.zig").Ctx;
 const Response = @import("context.zig").Response;
+const MiddlewareFn = @import("context.zig").MiddlewareFn;
 const Router = @import("../routing/router.zig").Router;
+const Handler = @import("../routing/router.zig").Handler;
+
+// SAFETY: threadlocal is safe here because Io.Threaded uses blocking OS threads —
+// each handleConnection occupies one thread exclusively from accept to respond.
+// There are no coroutines or fibers, so no two tasks ever interleave on the same
+// thread. threadlocal-per-thread == threadlocal-per-connection in this backend.
+// WARNING: if Spider migrates to Io.Evented (io_uring with fibers), this breaks —
+// multiple tasks on the same thread would interleave and corrupt shared state.
+// Fix: store ChainState in Ctx._chain instead of threadlocal.
+threadlocal var chain_middlewares: []const MiddlewareFn = &.{};
+threadlocal var chain_handler: ?Handler = null;
+
+fn nextFn(c: *Ctx) anyerror!Response {
+    if (chain_middlewares.len == 0) {
+        return chain_handler.?(c);
+    }
+    const m = chain_middlewares[0];
+    chain_middlewares = chain_middlewares[1..];
+    return m(c, nextFn);
+}
+
+fn runChain(c: *Ctx, middlewares: []const MiddlewareFn, handler: Handler) anyerror!Response {
+    chain_middlewares = middlewares;
+    chain_handler = handler;
+    if (middlewares.len == 0) return handler(c);
+    chain_middlewares = middlewares[1..];
+    return middlewares[0](c, nextFn);
+}
+
+const RouteMiddlewareEntry = struct {
+    path: []const u8,
+    method: std.http.Method,
+    middlewares: []const MiddlewareFn,
+};
 
 const WorkerCtx = struct {
     io: Io,
     gpa: std.mem.Allocator,
     listener: *Io.net.Server,
     router: *Router,
+    server: *Server,
 };
 
 const ConnCtx = struct {
@@ -17,6 +53,7 @@ const ConnCtx = struct {
     io: Io,
     gpa: std.mem.Allocator,
     router: *Router,
+    server: *Server,
 };
 
 fn workerLoop(ctx: WorkerCtx) void {
@@ -36,6 +73,7 @@ fn workerLoop(ctx: WorkerCtx) void {
             .io = ctx.io,
             .gpa = ctx.gpa,
             .router = ctx.router,
+            .server = ctx.server,
         }}) catch |err| {
             std.debug.print("Worker {d} concurrent error: {s}\n", .{ tid, @errorName(err) });
             stream.close(ctx.io);
@@ -77,18 +115,37 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         const target = request.head.target;
         const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
 
+        // readerExpectNone invalidates head.target; dupe it first so getPath()
+        // keeps working in middlewares and handlers after body reading.
         const body: ?[]const u8 = blk: {
             const cl = request.head.content_length orelse break :blk null;
             if (cl == 0) break :blk null;
+            const target_copy = arena.dupe(u8, target) catch break :blk null;
             var body_io_buf: [4096]u8 = undefined;
             const body_reader = request.readerExpectNone(&body_io_buf);
+            request.head.target = target_copy;
             break :blk body_reader.readAlloc(arena, cl) catch null;
         };
 
         const match = ctx.router.match(request.head.method, path, arena) catch null;
         const response = if (match) |m| blk: {
             var ctx_req = Ctx{ .request = request, .arena = arena, .params = m.params, .body = body };
-            break :blk m.handler(&ctx_req) catch |err| r: {
+
+            var mw_buf: [32]MiddlewareFn = undefined;
+            var mw_count: usize = 0;
+            for (ctx.server.global_middlewares[0..ctx.server.global_middleware_count]) |mw| {
+                if (mw_count < 32) { mw_buf[mw_count] = mw; mw_count += 1; }
+            }
+            for (ctx.server.route_middlewares.items) |entry| {
+                if (entry.method == request.head.method and std.mem.eql(u8, entry.path, path)) {
+                    for (entry.middlewares) |mw| {
+                        if (mw_count < 32) { mw_buf[mw_count] = mw; mw_count += 1; }
+                    }
+                    break;
+                }
+            }
+
+            break :blk runChain(&ctx_req, mw_buf[0..mw_count], m.handler) catch |err| r: {
                 std.debug.print("Handler error: {s}\n", .{@errorName(err)});
                 break :r Response{ .status = .internal_server_error, .body = "Internal Server Error", .content_type = "text/plain" };
             };
@@ -123,6 +180,9 @@ pub const Server = struct {
     allocator: std.mem.Allocator,
     gpa: std.mem.Allocator,
     router: Router,
+    global_middlewares: [16]MiddlewareFn = undefined,
+    global_middleware_count: usize = 0,
+    route_middlewares: std.ArrayList(RouteMiddlewareEntry),
 
     pub fn init() Server {
         var self: Server = .{
@@ -131,8 +191,10 @@ pub const Server = struct {
             .allocator = undefined,
             .gpa = undefined,
             .router = Router.init(std.heap.page_allocator) catch unreachable,
+            .global_middleware_count = 0,
+            .route_middlewares = .empty,
         };
-        self.allocator = self.spider_arena.allocator();
+        self.allocator = std.heap.page_allocator;
         self.gpa = if (builtin.mode == .Debug)
             self.spider_gpa.allocator()
         else
@@ -141,9 +203,18 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Server) void {
+        self.route_middlewares.deinit(std.heap.page_allocator);
         self.router.deinit();
         _ = self.spider_gpa.deinit();
         self.spider_arena.deinit();
+    }
+
+    pub fn use(self: *Server, m: MiddlewareFn) *Server {
+        if (self.global_middleware_count < 16) {
+            self.global_middlewares[self.global_middleware_count] = m;
+            self.global_middleware_count += 1;
+        }
+        return self;
     }
 
     pub fn get(self: *Server, path: []const u8, handler: *const fn (*Ctx) anyerror!Response) *Server {
@@ -153,6 +224,33 @@ pub const Server = struct {
 
     pub fn post(self: *Server, path: []const u8, handler: *const fn (*Ctx) anyerror!Response) *Server {
         self.router.add(.POST, path, handler) catch unreachable;
+        return self;
+    }
+
+    pub fn addRoute(
+        self: *Server,
+        method: std.http.Method,
+        path: []const u8,
+        middlewares: []const MiddlewareFn,
+        handler: Handler,
+    ) void {
+        self.router.add(method, path, handler) catch {};
+        if (middlewares.len > 0) {
+            self.route_middlewares.append(std.heap.page_allocator, .{
+                .path = path,
+                .method = method,
+                .middlewares = middlewares,
+            }) catch {};
+        }
+    }
+
+    pub fn group(
+        self: *Server,
+        prefix: []const u8,
+        middlewares: []const MiddlewareFn,
+        register: *const fn (*Server, []const u8, []const MiddlewareFn) void,
+    ) *Server {
+        register(self, prefix, middlewares);
         return self;
     }
 
@@ -182,6 +280,7 @@ pub const Server = struct {
             .gpa = gpa,
             .listener = &listener,
             .router = &self.router,
+            .server = self,
         };
 
         for (threads) |*t| {
