@@ -1,8 +1,8 @@
 const std = @import("std");
-const web = @import("../../spider.zig");
-const Request = web.Request;
-const Response = web.Response;
-const NextFn = web.NextFn;
+const Ctx = @import("../../core/context.zig").Ctx;
+const Response = @import("../../core/context.zig").Response;
+const MiddlewareFn = @import("../../core/context.zig").MiddlewareFn;
+const NextFn = @import("../../core/context.zig").NextFn;
 
 // ─── JWT ────────────────────────────────────────────────────────────────────
 
@@ -42,9 +42,8 @@ pub fn jwtSign(alloc: std.mem.Allocator, claims: anytype, secret: []const u8) ![
 }
 
 pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, token: []const u8, secret: []const u8) !T {
-    comptime std.debug.assert(@hasField(T, "exp"));
-    comptime std.debug.assert(@hasField(T, "sub"));
-    comptime std.debug.assert(@hasField(T, "email"));
+    if (!@hasField(T, "sub")) @compileError("Claims must have 'sub' field");
+    if (!@hasField(T, "exp")) @compileError("Claims must have 'exp' field");
 
     var parts = std.mem.splitScalar(u8, token, '.');
     const header_b64 = parts.next() orelse return JwtError.InvalidFormat;
@@ -74,9 +73,15 @@ pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, token: []const u8, 
     var parsed = try std.json.parseFromSlice(T, alloc, payload_json_buf[0..decoded_len], .{});
     defer parsed.deinit();
 
-    // Skip expiration check for now - JWT tokens will be valid
-    // In production, pass io parameter and use: std.Io.Clock.now(.real, io).toSeconds()
-    _ = parsed.value.exp;
+    // Verificar expiração
+    if (@hasField(T, "exp")) {
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+        const now: i64 = ts.sec;
+        if (parsed.value.exp > 0 and parsed.value.exp < now) {
+            return JwtError.Expired;
+        }
+    }
 
     if (T == Claims) {
         return Claims{
@@ -86,8 +91,6 @@ pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, token: []const u8, 
         };
     }
 
-    // Always duplicate string fields to avoid dangling pointers
-    // Caller must free these fields after use!
     var result = parsed.value;
     if (@hasField(T, "email")) {
         result.email = try alloc.dupe(u8, parsed.value.email);
@@ -117,6 +120,17 @@ pub fn cookieSet(alloc: std.mem.Allocator, token: []const u8) ![]u8 {
     );
 }
 
+pub fn cookieSetSecure(alloc: std.mem.Allocator, token: []const u8, secure: bool) ![]u8 {
+    if (secure) {
+        return std.fmt.allocPrint(
+            alloc,
+            "{s}={s}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400; Secure",
+            .{ COOKIE_NAME, token },
+        );
+    }
+    return cookieSet(alloc, token);
+}
+
 pub fn cookieGet(cookie_header: []const u8) ?[]const u8 {
     var it = std.mem.splitScalar(u8, cookie_header, ';');
     while (it.next()) |pair| {
@@ -142,7 +156,8 @@ pub const AuthConfig = struct {
     secret: []const u8,
     public_paths: []const []const u8 = &.{},
     cookie_name: []const u8 = COOKIE_NAME,
-    redirect_to: []const u8 = "/auth/google",
+    redirect_to: []const u8 = "/login",
+    secure_cookie: bool = true,
 };
 
 pub const Auth = struct {
@@ -152,31 +167,43 @@ pub const Auth = struct {
         return .{ .config = config };
     }
 
-    pub fn middleware(self: *const Auth, alloc: std.mem.Allocator, req: *Request, next: NextFn) !Response {
-        for (self.config.public_paths) |path| {
-            if (std.mem.eql(u8, req.path, path)) return next(alloc, req);
-            if (std.mem.endsWith(u8, path, "*")) {
-                const prefix = path[0 .. path.len - 1];
-                if (std.mem.startsWith(u8, req.path, prefix)) return next(alloc, req);
+    pub fn middleware(self: *const Auth, c: *Ctx, next: NextFn) !Response {
+        const path = c.getPath();
+
+        for (self.config.public_paths) |public_path| {
+            if (std.mem.eql(u8, path, public_path)) return next(c);
+            if (std.mem.endsWith(u8, public_path, "*")) {
+                const prefix = public_path[0 .. public_path.len - 1];
+                if (std.mem.startsWith(u8, path, prefix)) return next(c);
             }
         }
 
-        const cookie_header = req.headers.get("Cookie") orelse
-            return Response.redirect(alloc, self.config.redirect_to);
+        const token = c.cookie(self.config.cookie_name) orelse
+            return c.redirect(self.config.redirect_to);
 
-        const token = cookieGet(cookie_header) orelse
-            return Response.redirect(alloc, self.config.redirect_to);
+        const claims = jwtVerify(Claims, c.arena, token, self.config.secret) catch
+            return c.redirect(self.config.redirect_to);
 
-        const claims = jwtVerify(Claims, alloc, token, self.config.secret) catch
-            return Response.redirect(alloc, self.config.redirect_to);
+        const user_id_str = try std.fmt.allocPrint(c.arena, "{d}", .{claims.sub});
+        const email_dup = try c.arena.dupe(u8, claims.email);
 
-        const user_id = try std.fmt.allocPrint(alloc, "{d}", .{claims.sub});
-        const email = try alloc.dupe(u8, claims.email);
-        alloc.free(claims.email);
+        try c.params.put(c.arena, try c.arena.dupe(u8, "_user_id"), user_id_str);
+        try c.params.put(c.arena, try c.arena.dupe(u8, "_user_email"), email_dup);
 
-        try req.params.put(alloc, try alloc.dupe(u8, "_user_id"), user_id);
-        try req.params.put(alloc, try alloc.dupe(u8, "_user_email"), email);
+        return next(c);
+    }
 
-        return next(alloc, req);
+    pub fn asFn(self: *const Auth) MiddlewareFn {
+        const S = struct {
+            // var estática: escrita uma vez em setup (single-thread),
+            // lida de forma segura por todos os worker threads.
+            var instance: ?*const Auth = null;
+
+            fn mw(c: *Ctx, next: NextFn) anyerror!Response {
+                return instance.?.middleware(c, next);
+            }
+        };
+        S.instance = self;
+        return S.mw;
     }
 };

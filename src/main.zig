@@ -215,6 +215,59 @@ fn brokenHandler(c: *spider.Ctx) !Response {
     return error.SomethingWentWrong;
 }
 
+var gAuth = spider.auth.Auth.init(.{
+    .secret = "test-secret-key",
+    .public_paths = &.{ "/", "/login", "/login-expired", "/health" },
+    .redirect_to = "/login",
+    .secure_cookie = false,
+});
+
+fn loginHandler(c: *spider.Ctx) !Response {
+    var ts: std.os.linux.timespec = undefined;
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
+    const now: i64 = ts.sec;
+    const token = try spider.auth.jwtSign(c.arena, .{
+        .sub = 42,
+        .email = "user@spider.dev",
+        .exp = now + 3600,
+    }, "test-secret-key");
+    const cookie = try spider.auth.cookieSet(c.arena, token);
+    // Alocar no arena — &.{...} com valor runtime é stack e morre ao retornar
+    const hdrs = try c.arena.alloc([2][]const u8, 1);
+    hdrs[0] = .{ "Set-Cookie", cookie };
+    return c.json(.{ .ok = true, .token = token }, .{ .headers = hdrs });
+}
+
+fn loginExpiredHandler(c: *spider.Ctx) !Response {
+    const token = try spider.auth.jwtSign(c.arena, .{
+        .sub = 99,
+        .email = "expired@spider.dev",
+        .exp = @as(i64, 1000000000), // 2001 — sempre expirado
+    }, "test-secret-key");
+    return c.json(.{ .ok = true, .token = token }, .{});
+}
+
+fn profileHandler(c: *spider.Ctx) !Response {
+    const user_id = c.params.get("_user_id") orelse "unknown";
+    const email = c.params.get("_user_email") orelse "unknown";
+    return c.json(.{
+        .user_id = user_id,
+        .email = email,
+        .message = "authenticated!",
+    }, .{});
+}
+
+fn logoutHandler(c: *spider.Ctx) !Response {
+    const cookie = try spider.auth.cookieClear(c.arena);
+    const hdrs = try c.arena.alloc([2][]const u8, 1);
+    hdrs[0] = .{ "Set-Cookie", cookie };
+    return c.json(.{ .ok = true }, .{ .headers = hdrs });
+}
+
+fn profileRoutes(s: *spider.Server, _: []const u8, mws: []const spider.MiddlewareFn) void {
+    s.addRoute(.GET, "/profile", mws, profileHandler);
+}
+
 fn dashboardRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const spider.MiddlewareFn) void {
     s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/", .{prefix}) catch "/dashboard/", middlewares, dashHandler);
     s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/users", .{prefix}) catch "/dashboard/users", middlewares, usersListHandler);
@@ -289,6 +342,10 @@ pub fn main() void {
         .get("/sqlite-test", sqliteTestHandler)
         .get("/env", envHandler)
         .get("/mysql", mysqlProductsHandler)
+        .get("/login", loginHandler)
+        .get("/login-expired", loginExpiredHandler)
+        .get("/logout", logoutHandler)
+        .group("/profile", &.{gAuth.asFn()}, profileRoutes)
         .post("/echo-body", echoBodyHandler)
         .post("/users", createUserHandler)
         .group("/dashboard", &.{authMiddleware}, dashboardRoutes)
