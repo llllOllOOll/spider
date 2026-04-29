@@ -832,15 +832,15 @@ fn getValueForComparison(context: *const Context, expr: []const u8) []const u8 {
 
 const EmptyTemplates = struct {};
 
-pub fn renderContext(template: []const u8, context: *Context, allocator: std.mem.Allocator) ![]u8 {
+fn renderContext(template: []const u8, context: *Context, allocator: std.mem.Allocator) ![]u8 {
     return renderTemplate(template, context, allocator, EmptyTemplates{}, null);
 }
 
-pub fn renderWithTemplates(comptime T: type, template: []const u8, context: *Context, allocator: std.mem.Allocator) ![]u8 {
+fn renderWithTemplates(comptime T: type, template: []const u8, context: *Context, allocator: std.mem.Allocator) ![]u8 {
     return renderTemplate(template, context, allocator, @as(T, undefined), null);
 }
 
-pub fn renderWith(template: []const u8, context: *Context, allocator: std.mem.Allocator, templates: anytype) ![]u8 {
+fn renderWith(template: []const u8, context: *Context, allocator: std.mem.Allocator, templates: anytype) ![]u8 {
     const final_template = if (std.mem.indexOf(u8, template, "{% extends") != null)
         try resolveExtends(template, allocator, templates)
     else
@@ -905,34 +905,30 @@ fn resolveExtends(template: []const u8, allocator: std.mem.Allocator, templates:
     return renderTemplate(parent_tmpl, &ctx, allocator, templates, &parent_blocks);
 }
 
-pub fn renderStr(template: []const u8, context: *Context) ![]u8 {
+fn renderStr(template: []const u8, context: *Context) ![]u8 {
     return renderContext(template, context, std.heap.page_allocator);
 }
 
-// Convert any scalar/string value to []const u8 for the context
-fn fieldToString(value: anytype) []const u8 {
+fn fieldToString(allocator: std.mem.Allocator, value: anytype) []const u8 {
     const T = @TypeOf(value);
     const info = @typeInfo(T);
     switch (info) {
         .int, .comptime_int => {
-            return std.fmt.allocPrint(std.heap.page_allocator, "{}", .{value}) catch @panic("alloc fail");
+            return std.fmt.allocPrint(allocator, "{}", .{value}) catch "";
         },
         .float, .comptime_float => {
-            return std.fmt.allocPrint(std.heap.page_allocator, "{}", .{value}) catch @panic("alloc fail");
+            return std.fmt.allocPrint(allocator, "{}", .{value}) catch "";
         },
         .bool => return if (value) "true" else "false",
         .pointer => |ptr| {
-            // []const u8 or []u8 — string slice
             if (ptr.size == .slice and ptr.child == u8) return value;
-            // *const u8 / [*]const u8 — treat as C string, unsupported, return empty
             return "";
         },
         .optional => {
-            if (value) |v| return fieldToString(v);
+            if (value) |v| return fieldToString(allocator, v);
             return "";
         },
         .array => |arr| {
-            // [N]u8 — string array
             if (arr.child == u8) return &value;
             return "";
         },
@@ -979,16 +975,23 @@ fn setFieldValue(allocator: std.mem.Allocator, context: *Context, name: []const 
                 try context.set(allocator, name, value);
                 return;
             }
-            // *const [N:0]u8 — string literal from anonymous struct
             if (ptr.size == .one) {
-                const child_info = @typeInfo(ptr.child);
+                const child_info = comptime @typeInfo(ptr.child);
+                // *[N]T where T is struct → treat as slice of structs
+                if (child_info == .array and comptime @typeInfo(child_info.array.child) == .@"struct") {
+                    const elem_t = child_info.array.child;
+                    const as_slice: []const elem_t = value;
+                    const list = try sliceToContextList(elem_t, as_slice, allocator);
+                    try context.setList(allocator, name, list);
+                    return;
+                }
+                // *const [N:0]u8 — string literal
                 if (child_info == .array and child_info.array.child == u8) {
                     try context.set(allocator, name, value);
                     return;
                 }
             }
-            // Fallback
-            try context.set(allocator, name, fieldToString(value));
+            try context.set(allocator, name, fieldToString(allocator, value));
         },
         .@"struct" => {
             const obj = try allocator.create(Context);
@@ -1002,7 +1005,7 @@ fn setFieldValue(allocator: std.mem.Allocator, context: *Context, name: []const 
             if (value) |v| try setFieldValue(allocator, context, name, v);
         },
         else => {
-            try context.set(allocator, name, fieldToString(value));
+            try context.set(allocator, name, fieldToString(allocator, value));
         },
     }
 }
@@ -1123,7 +1126,7 @@ pub fn renderBlock(template: []const u8, block_name: []const u8, data: anytype, 
     return renderTemplate(block_content, context, allocator, EmptyTemplates{}, &blocks);
 }
 
-pub fn renderBlockWithTemplates(
+fn renderBlockWithTemplates(
     tmpl: []const u8,
     block_name: []const u8,
     data: anytype,

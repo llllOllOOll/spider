@@ -141,6 +141,23 @@ fn apiMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
 
 const PgDriver = spider.PgDriver;
 
+const User = struct {
+    name: []const u8,
+    email: []const u8,
+};
+
+fn usersViewHandler(c: *spider.Ctx) !Response {
+    const users = [_]User{
+        .{ .name = "Alice", .email = "alice@spider.dev" },
+        .{ .name = "Bob", .email = "bob@spider.dev" },
+    };
+    return c.view("users/index", .{ .users = &users }, .{});
+}
+
+fn helloViewHandler(c: *spider.Ctx) !Response {
+    return c.view("hello", .{ .name = "Spider" }, .{});
+}
+
 const Todo = struct {
     id: i32, // SQLite usa INTEGER (equivale a i32)
     title: []const u8,
@@ -342,6 +359,8 @@ pub fn main() void {
         .get("/sqlite-test", sqliteTestHandler)
         .get("/env", envHandler)
         .get("/mysql", mysqlProductsHandler)
+        .get("/users-view", usersViewHandler)
+        .get("/hello-view", helloViewHandler)
         .get("/login", loginHandler)
         .get("/login-expired", loginExpiredHandler)
         .get("/logout", logoutHandler)

@@ -1,0 +1,12 @@
+{% block "base" %}
+<!DOCTYPE html>
+<html>
+<head><title>Spider App</title></head>
+<body>
+<nav><a href="/">Home</a> | <a href="/users">Users</a></nav>
+<main id="content">
+{% template "content" %}
+</main>
+</body>
+</html>
+{% end %}

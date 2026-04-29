@@ -4,14 +4,18 @@ const Io = std.Io;
 const env = @import("../internal/env.zig");
 const static_mod = @import("../modules/static.zig");
 pub const StaticConfig = static_mod.StaticConfig;
-const Ctx = @import("context.zig").Ctx;
-const Response = @import("context.zig").Response;
-const MiddlewareFn = @import("context.zig").MiddlewareFn;
-const ErrorHandler = @import("context.zig").ErrorHandler;
+const ctx_mod = @import("context.zig");
+const Ctx = ctx_mod.Ctx;
+const Response = ctx_mod.Response;
+const MiddlewareFn = ctx_mod.MiddlewareFn;
+const ErrorHandler = ctx_mod.ErrorHandler;
+const ViewsConfig = ctx_mod.ViewsConfig;
 const Database = @import("database.zig").Database;
 const DriverType = @import("database.zig").DriverType;
 const Router = @import("../routing/router.zig").Router;
 const Handler = @import("../routing/router.zig").Handler;
+const Config = @import("../internal/config.zig").Config;
+const default_config = @import("../internal/config.zig").default;
 
 // SAFETY: threadlocal is safe here because Io.Threaded uses blocking OS threads —
 // each handleConnection occupies one thread exclusively from accept to respond.
@@ -189,6 +193,11 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             }
         }
 
+        const views_cfg: ?ViewsConfig = if (ctx.server.config.views_dir) |vd| .{
+            .views_dir = vd,
+            .layout = ctx.server.config.layout,
+        } else null;
+
         const match = ctx.router.match(request.head.method, path, arena) catch null;
         const response = if (match) |m| blk: {
             var ctx_req = Ctx{
@@ -198,6 +207,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 .body = body,
                 ._db = if (ctx.server._db) |*d| d else null,
                 ._driver_type = ctx.server._driver_type,
+                ._views = views_cfg,
             };
 
             var route_mws: []const MiddlewareFn = &.{};
@@ -230,6 +240,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 .body = body,
                 ._db = if (ctx.server._db) |*db| db else null,
                 ._driver_type = ctx.server._driver_type,
+                ._views = views_cfg,
             };
             break :blk ctx_req.text("404 Not Found", .{ .status = .not_found }) catch
                 Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };
@@ -275,6 +286,7 @@ pub const Server = struct {
     _db: ?Database = null,
     _driver_type: DriverType = .postgresql,
     static_config: StaticConfig = .{ .dir = "./public", .prefix = "/public" },
+    config: Config = default_config,
 
     pub fn init() Server {
         env.autoLoad(std.heap.page_allocator);
@@ -425,4 +437,10 @@ pub fn server() Server {
 
 pub fn app() Server {
     return Server.init();
+}
+
+pub fn appWithConfig(config: Config) Server {
+    var s = Server.init();
+    s.config = config;
+    return s;
 }

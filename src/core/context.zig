@@ -4,6 +4,11 @@ const Database = @import("database.zig").Database;
 const DriverType = @import("database.zig").DriverType;
 pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 
+pub const ViewsConfig = struct {
+    views_dir: []const u8 = "./views",
+    layout: ?[]const u8 = "layout",
+};
+
 pub const NextFn = *const fn (*Ctx) anyerror!Response;
 pub const MiddlewareFn = *const fn (*Ctx, NextFn) anyerror!Response;
 pub const ErrorHandler = *const fn (*Ctx, anyerror) anyerror!Response;
@@ -37,7 +42,8 @@ pub const Ctx = struct {
     params: std.StringHashMapUnmanaged([]const u8),
     body: ?[]const u8 = null,
     _db: ?*const Database = null,
-    _driver_type: DriverType = .postgresql, // default para backward compatibility
+    _driver_type: DriverType = .postgresql,
+    _views: ?ViewsConfig = null,
 
     pub fn db(self: *Ctx) DatabaseCtx {
         return .{
@@ -83,6 +89,56 @@ pub const Ctx = struct {
         return Response{
             .status = opts.status,
             .body = html_body,
+            .content_type = "text/html; charset=utf-8",
+            .headers = opts.headers,
+            .cookies = opts.cookies,
+        };
+    }
+
+    pub fn view(self: *Ctx, name: []const u8, data: anytype, opts: ResponseOptions) !Response {
+        const vc = self._views orelse return error.ViewsNotConfigured;
+
+        const view_path = try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, name });
+
+        var threaded = std.Io.Threaded.init_single_threaded;
+        const io = threaded.io();
+
+        const view_content = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            view_path,
+            self.arena,
+            .limited(512 * 1024),
+        ) catch |err| {
+            if (err == error.FileNotFound) return error.TemplateNotFound;
+            return err;
+        };
+
+        const has_extends = std.mem.indexOf(u8, view_content, "{% extends") != null;
+
+        const rendered = if (has_extends) blk: {
+            const layout_name = extractExtendsName(view_content) orelse return error.InvalidTemplate;
+
+            const layout_path = try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, layout_name });
+            const layout_content = std.Io.Dir.cwd().readFileAlloc(
+                io,
+                layout_path,
+                self.arena,
+                .limited(512 * 1024),
+            ) catch |err| {
+                if (err == error.FileNotFound) return error.LayoutNotFound;
+                return err;
+            };
+
+            const combined = try std.mem.concat(self.arena, u8, &.{ layout_content, view_content });
+            const block_name = if (self.isHtmx()) "content" else "base";
+            break :blk try template.renderBlock(combined, block_name, data, self.arena);
+        } else blk: {
+            break :blk try template.render(view_content, data, self.arena);
+        };
+
+        return Response{
+            .status = opts.status,
+            .body = rendered,
             .content_type = "text/html; charset=utf-8",
             .headers = opts.headers,
             .cookies = opts.cookies,
@@ -209,3 +265,11 @@ pub const Ctx = struct {
         return @tagName(self.request.head.method);
     }
 };
+
+fn extractExtendsName(content: []const u8) ?[]const u8 {
+    const marker = "{% extends \"";
+    const start = std.mem.indexOf(u8, content, marker) orelse return null;
+    const name_start = start + marker.len;
+    const name_end = std.mem.indexOf(u8, content[name_start..], "\"") orelse return null;
+    return content[name_start .. name_start + name_end];
+}
