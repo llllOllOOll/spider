@@ -5,3 +5,6 @@ examples/
 docs/
 src/test_templates.zig
 SPIDER_AUDIT.md
+**/old_*.zig
+**/_old*.zig
+tasks.md
