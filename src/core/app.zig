@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const env = @import("../internal/env.zig");
+const static_mod = @import("../modules/static.zig");
+pub const StaticConfig = static_mod.StaticConfig;
 const Ctx = @import("context.zig").Ctx;
 const Response = @import("context.zig").Response;
 const MiddlewareFn = @import("context.zig").MiddlewareFn;
@@ -174,6 +176,19 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             break :blk body_reader.readAlloc(arena, cl) catch null;
         };
 
+        {
+            if ((static_mod.serve(ctx.io, arena, ctx.server.static_config, path) catch null)) |static_response| {
+                var extra_hdrs_buf: [2]std.http.Header = undefined;
+                extra_hdrs_buf[0] = .{ .name = "content-type", .value = static_response.content_type };
+                request.respond(static_response.body orelse "", .{
+                    .status = static_response.status,
+                    .extra_headers = extra_hdrs_buf[0..1],
+                }) catch {};
+                if (!request.head.keep_alive) break;
+                continue;
+            }
+        }
+
         const match = ctx.router.match(request.head.method, path, arena) catch null;
         const response = if (match) |m| blk: {
             var ctx_req = Ctx{
@@ -259,6 +274,7 @@ pub const Server = struct {
     error_handler: ?ErrorHandler = null,
     _db: ?Database = null,
     _driver_type: DriverType = .postgresql,
+    static_config: StaticConfig = .{ .dir = "./public", .prefix = "/public" },
 
     pub fn init() Server {
         env.autoLoad(std.heap.page_allocator);
@@ -313,6 +329,16 @@ pub const Server = struct {
     pub fn db(self: *Server, database: Database) *Server {
         self._db = database;
         self._driver_type = database.driver_type;
+        return self;
+    }
+
+    pub fn staticDir(self: *Server, dir: []const u8) *Server {
+        self.static_config = .{ .dir = dir, .prefix = "/public" };
+        return self;
+    }
+
+    pub fn staticAt(self: *Server, dir: []const u8, prefix: []const u8) *Server {
+        self.static_config = .{ .dir = dir, .prefix = prefix };
         return self;
     }
 

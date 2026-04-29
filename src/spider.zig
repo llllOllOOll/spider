@@ -15,6 +15,7 @@ pub const SqliteDriver = sqlite.SqliteDriver;
 pub const app = @import("core/app.zig").app;
 pub const server = @import("core/app.zig").server;
 pub const Server = @import("core/app.zig").Server;
+pub const StaticConfig = @import("core/app.zig").StaticConfig;
 pub const Router = @import("routing/router.zig").Router;
 pub const Group = @import("routing/group.zig").Group;
 pub const websocket = @import("ws/websocket.zig");

@@ -1,0 +1,52 @@
+info: sqlite: database opened: test.db
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+info: pg: connection established on attempt 1/5
+Registering GET route: /
+Registering GET route: /broken
+Registering GET route: /api/users
+Registering GET route: /health
+Registering GET route: /echo
+Registering GET route: /users/:id
+Registering GET route: /html
+Registering GET route: /arena
+Registering GET route: /created
+Registering GET route: /headers
+Registering GET route: /query
+Registering GET route: /useragent
+Registering GET route: /redirect
+Registering GET route: /cookie
+Registering GET route: /htmx
+Registering GET route: /todos
+Registering GET route: /sqlite-test
+Speed server starting on port 3000...
+Server listening on http://127.0.0.1:3000
+Starting 12 worker threads
+Worker 1023635 started
+Worker 1023636 started
+Worker 1023637 started
+Worker 1023638 started
+Worker 1023639 started
+Worker 1023640 started
+Worker 1023641 started
+Worker 1023642 started
+Worker 1023643 started
+Worker 1023644 started
+Worker 1023645 started
+Worker 1023646 started
+run
++- run exe spider failure
+error: process terminated with signal TERM
+failed command: /home/seven/repos/zig/web/spider/zig-out/bin/spider
+
+Build Summary: 8/10 steps succeeded (1 failed)
+run transitive failure
++- run exe spider failure
+
