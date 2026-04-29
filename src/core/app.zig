@@ -74,7 +74,8 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             break;
         };
 
-        const path = request.head.target;
+        const target = request.head.target;
+        const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
 
         const match = ctx.router.match(request.head.method, path, arena) catch null;
         const response = if (match) |m| blk: {

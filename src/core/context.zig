@@ -56,6 +56,41 @@ pub const Ctx = struct {
         };
     }
 
+    pub fn query(self: *Ctx, name: []const u8) ?[]const u8 {
+        const q = self.request.head.target;
+        const start = std.mem.indexOfScalar(u8, q, '?') orelse return null;
+        var iter = std.mem.splitScalar(u8, q[start + 1 ..], '&');
+        while (iter.next()) |pair| {
+            if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
+                if (std.mem.eql(u8, pair[0..eq], name)) {
+                    return pair[eq + 1 ..];
+                }
+            }
+        }
+        return null;
+    }
+
+    pub fn header(self: *Ctx, name: []const u8) ?[]const u8 {
+        var iter = self.request.iterateHeaders();
+        while (iter.next()) |h| {
+            if (std.ascii.eqlIgnoreCase(h.name, name)) {
+                return h.value;
+            }
+        }
+        return null;
+    }
+
+    pub fn redirect(_: *Ctx, url: []const u8) !Response {
+        return Response{
+            .status = .found,
+            .body = null,
+            .content_type = "text/plain",
+            .headers = &.{
+                .{ "Location", url },
+            },
+        };
+    }
+
     pub fn getPath(self: *Ctx) []const u8 {
         return self.request.head.target;
     }

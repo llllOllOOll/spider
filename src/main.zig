@@ -48,6 +48,20 @@ fn headersHandler(c: *spider.Ctx) !Response {
     });
 }
 
+fn queryHandler(c: *spider.Ctx) !Response {
+    const name = c.query("name") orelse "World";
+    return c.json(.{ .hello = name }, .{});
+}
+
+fn headerHandler(c: *spider.Ctx) !Response {
+    const ua = c.header("User-Agent") orelse "unknown";
+    return c.json(.{ .user_agent = ua }, .{});
+}
+
+fn redirectHandler(c: *spider.Ctx) !Response {
+    return c.redirect("/");
+}
+
 pub fn main() void {
     var server = spider.app();
     defer server.deinit();
@@ -60,6 +74,9 @@ pub fn main() void {
         .get("/arena", arenaHandler)
         .get("/created", createdHandler)
         .get("/headers", headersHandler)
+        .get("/query", queryHandler)
+        .get("/useragent", headerHandler)
+        .get("/redirect", redirectHandler)
         .listen(3000) catch |err| {
         std.debug.print("Server error: {}\n", .{err});
     };
