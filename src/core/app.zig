@@ -5,6 +5,7 @@ const Ctx = @import("context.zig").Ctx;
 const Response = @import("context.zig").Response;
 const MiddlewareFn = @import("context.zig").MiddlewareFn;
 const ErrorHandler = @import("context.zig").ErrorHandler;
+const Database = @import("database.zig").Database;
 const Router = @import("../routing/router.zig").Router;
 const Handler = @import("../routing/router.zig").Handler;
 
@@ -164,7 +165,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
 
         const match = ctx.router.match(request.head.method, path, arena) catch null;
         const response = if (match) |m| blk: {
-            var ctx_req = Ctx{ .request = request, .arena = arena, .params = m.params, .body = body };
+            var ctx_req = Ctx{ .request = request, .arena = arena, .params = m.params, .body = body, ._db = if (ctx.server._db) |*d| d else null };
 
             var route_mws: []const MiddlewareFn = &.{};
             for (ctx.server.route_middlewares.items) |entry| {
@@ -231,6 +232,7 @@ pub const Server = struct {
     path_middleware_count: usize = 0,
     route_middlewares: std.ArrayList(RouteMiddlewareEntry),
     error_handler: ?ErrorHandler = null,
+    _db: ?Database = null,
 
     pub fn init() Server {
         var self: Server = .{
@@ -276,6 +278,11 @@ pub const Server = struct {
 
     pub fn onError(self: *Server, handler: ErrorHandler) *Server {
         self.error_handler = handler;
+        return self;
+    }
+
+    pub fn db(self: *Server, database: Database) *Server {
+        self._db = database;
         return self;
     }
 

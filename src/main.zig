@@ -138,6 +138,28 @@ fn apiMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
     return next(c);
 }
 
+const MockDriver = struct {
+    fn execFn(_: *anyopaque, sql: []const u8) anyerror!void {
+        std.debug.print("[MockDriver] exec: {s}\n", .{sql});
+    }
+    fn deinitFn(_: *anyopaque) void {}
+
+    dummy: u8 = 0,
+
+    pub fn database(self: *MockDriver) spider.Database {
+        return .{
+            .ptr = self,
+            .exec_fn = execFn,
+            .deinit_fn = deinitFn,
+        };
+    }
+};
+
+fn dbHandler(c: *spider.Ctx) !Response {
+    try c.db().exec("SELECT 1");
+    return c.json(.{ .ok = true, .query = "SELECT 1" }, .{});
+}
+
 fn globalErrorHandler(c: *spider.Ctx, err: anyerror) !Response {
     std.log.err("caught: {s}", .{@errorName(err)});
     return c.json(.{
@@ -157,12 +179,15 @@ fn dashboardRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const s
 }
 
 pub fn main() void {
+    var mock_db: MockDriver = .{};
+
     var server = spider.app();
     defer server.deinit();
     server
         .use(loggerMiddleware)
         .useAt("/api/*", apiMiddleware)
         .onError(globalErrorHandler)
+        .db(mock_db.database())
         .get("/", rootHandler)
         .get("/broken", brokenHandler)
         .get("/api/users", usersListHandler)
@@ -178,6 +203,7 @@ pub fn main() void {
         .get("/redirect", redirectHandler)
         .get("/cookie", cookieHandler)
         .get("/htmx", htmxHandler)
+        .get("/db", dbHandler)
         .post("/echo-body", echoBodyHandler)
         .post("/users", createUserHandler)
         .group("/dashboard", &.{authMiddleware}, dashboardRoutes)

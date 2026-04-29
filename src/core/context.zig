@@ -1,5 +1,7 @@
 const std = @import("std");
 const template = @import("../render/template.zig");
+const Database = @import("database.zig").Database;
+pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 
 pub const NextFn = *const fn (*Ctx) anyerror!Response;
 pub const MiddlewareFn = *const fn (*Ctx, NextFn) anyerror!Response;
@@ -33,6 +35,11 @@ pub const Ctx = struct {
     arena: std.mem.Allocator,
     params: std.StringHashMapUnmanaged([]const u8),
     body: ?[]const u8 = null,
+    _db: ?*const Database = null,
+
+    pub fn db(self: *Ctx) DatabaseCtx {
+        return .{ ._db = self._db.?, ._arena = self.arena };
+    }
 
     pub fn json(self: *Ctx, value: anytype, opts: ResponseOptions) !Response {
         const body = try std.json.Stringify.valueAlloc(self.arena, value, .{});

@@ -1519,6 +1519,33 @@ fn initTestDb(allocator: std.mem.Allocator) !void {
     });
 }
 
+const Database = @import("../../core/database.zig").Database;
+
+fn pgExecFn(ptr: *anyopaque, sql: []const u8) anyerror!void {
+    _ = ptr;
+    // null-terminate the slice for libpq
+    var buf: [4096]u8 = undefined;
+    if (sql.len >= buf.len) return error.SqlTooLong;
+    @memcpy(buf[0..sql.len], sql);
+    buf[sql.len] = 0;
+    const sql_z: [:0]const u8 = buf[0..sql.len :0];
+    try execRaw(sql_z);
+}
+
+fn pgDeinitFn(_: *anyopaque) void {}
+
+pub const PgDriver = struct {
+    _dummy: u8 = 0,
+
+    pub fn database(self: *PgDriver) Database {
+        return .{
+            .ptr = self,
+            .exec_fn = pgExecFn,
+            .deinit_fn = pgDeinitFn,
+        };
+    }
+};
+
 test "queryWith - native int" {
     try initTestDb(std.testing.allocator);
     defer deinit();
