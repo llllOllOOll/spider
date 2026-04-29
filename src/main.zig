@@ -158,6 +158,10 @@ fn helloViewHandler(c: *spider.Ctx) !Response {
     return c.view("hello", .{ .name = "Spider" }, .{});
 }
 
+fn usersFeatureHandler(c: *spider.Ctx) !spider.Response {
+    return c.view("users/index", .{}, .{});
+}
+
 const Todo = struct {
     id: i32, // SQLite usa INTEGER (equivale a i32)
     title: []const u8,
@@ -361,6 +365,7 @@ pub fn main() void {
         .get("/mysql", mysqlProductsHandler)
         .get("/users-view", usersViewHandler)
         .get("/hello-view", helloViewHandler)
+        .get("/users-feature", usersFeatureHandler)
         .get("/login", loginHandler)
         .get("/login-expired", loginExpiredHandler)
         .get("/logout", logoutHandler)

@@ -1,12 +1,19 @@
 const std = @import("std");
 const template = @import("../render/template.zig");
+const views_mod = @import("../render/views.zig");
 const Database = @import("database.zig").Database;
 const DriverType = @import("database.zig").DriverType;
 pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 
+pub const ViewsMode = enum { runtime, embed };
+
 pub const ViewsConfig = struct {
     views_dir: []const u8 = "./views",
     layout: ?[]const u8 = "layout",
+    io: std.Io,
+    arena: std.mem.Allocator,
+    mode: ViewsMode = .runtime,
+    index: ?*const views_mod.ViewsIndex = null,
 };
 
 pub const NextFn = *const fn (*Ctx) anyerror!Response;
@@ -98,10 +105,14 @@ pub const Ctx = struct {
     pub fn view(self: *Ctx, name: []const u8, data: anytype, opts: ResponseOptions) !Response {
         const vc = self._views orelse return error.ViewsNotConfigured;
 
-        const view_path = try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, name });
+        if (vc.mode == .embed) return error.EmbedNotImplemented;
 
-        var threaded = std.Io.Threaded.init_single_threaded;
-        const io = threaded.io();
+        const io = vc.io;
+
+        const view_path = if (vc.index) |idx|
+            idx.get(name) orelse return error.TemplateNotFound
+        else
+            try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, name });
 
         const view_content = std.Io.Dir.cwd().readFileAlloc(
             io,
@@ -118,7 +129,11 @@ pub const Ctx = struct {
         const rendered = if (has_extends) blk: {
             const layout_name = extractExtendsName(view_content) orelse return error.InvalidTemplate;
 
-            const layout_path = try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, layout_name });
+            const layout_path = if (vc.index) |idx|
+                idx.get(layout_name) orelse return error.LayoutNotFound
+            else
+                try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, layout_name });
+
             const layout_content = std.Io.Dir.cwd().readFileAlloc(
                 io,
                 layout_path,

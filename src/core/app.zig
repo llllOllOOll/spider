@@ -16,6 +16,7 @@ const Router = @import("../routing/router.zig").Router;
 const Handler = @import("../routing/router.zig").Handler;
 const Config = @import("../internal/config.zig").Config;
 const default_config = @import("../internal/config.zig").default;
+const views_mod = @import("../render/views.zig");
 
 // SAFETY: threadlocal is safe here because Io.Threaded uses blocking OS threads —
 // each handleConnection occupies one thread exclusively from accept to respond.
@@ -193,9 +194,18 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             }
         }
 
-        const views_cfg: ?ViewsConfig = if (ctx.server.config.views_dir) |vd| .{
+        const views_idx_ptr: ?*const views_mod.ViewsIndex = if (ctx.server.views_index != null)
+            &ctx.server.views_index.?
+        else
+            null;
+
+        const views_cfg: ?ViewsConfig = if (ctx.server.config.views_dir) |vd| ViewsConfig{
             .views_dir = vd,
             .layout = ctx.server.config.layout,
+            .io = ctx.io,
+            .arena = arena,
+            .mode = .runtime,
+            .index = views_idx_ptr,
         } else null;
 
         const match = ctx.router.match(request.head.method, path, arena) catch null;
@@ -287,6 +297,7 @@ pub const Server = struct {
     _driver_type: DriverType = .postgresql,
     static_config: StaticConfig = .{ .dir = "./public", .prefix = "/public" },
     config: Config = default_config,
+    views_index: ?views_mod.ViewsIndex = null,
 
     pub fn init() Server {
         env.autoLoad(std.heap.page_allocator);
@@ -311,6 +322,7 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Server) void {
+        if (self.views_index) |*idx| idx.deinit();
         self.route_middlewares.deinit(std.heap.page_allocator);
         self.router.deinit();
         _ = self.spider_gpa.deinit();
@@ -436,11 +448,14 @@ pub fn server() Server {
 }
 
 pub fn app() Server {
-    return Server.init();
+    return appWithConfig(default_config);
 }
 
 pub fn appWithConfig(config: Config) Server {
     var s = Server.init();
     s.config = config;
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, ".") catch null;
     return s;
 }
