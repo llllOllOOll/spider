@@ -236,6 +236,17 @@ fn brokenHandler(c: *spider.Ctx) !Response {
     return error.SomethingWentWrong;
 }
 
+const googleConfig = spider.google.GoogleConfig{
+    .client_id = "test-id",
+    .client_secret = "test-secret",
+    .redirect_uri = "http://localhost:3000/auth/google/callback",
+};
+
+fn googleLoginHandler(c: *spider.Ctx) !Response {
+    const url = try spider.google.authUrl(c.arena, googleConfig);
+    return c.json(.{ .auth_url = url }, .{});
+}
+
 var gAuth = spider.auth.Auth.init(.{
     .secret = "test-secret-key",
     .public_paths = &.{ "/", "/login", "/login-expired", "/health" },
@@ -366,6 +377,7 @@ pub fn main() void {
         .get("/users-view", usersViewHandler)
         .get("/hello-view", helloViewHandler)
         .get("/users-feature", usersFeatureHandler)
+        .get("/auth/google", googleLoginHandler)
         .get("/login", loginHandler)
         .get("/login-expired", loginExpiredHandler)
         .get("/logout", logoutHandler)

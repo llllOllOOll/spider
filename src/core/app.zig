@@ -218,6 +218,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._db = if (ctx.server._db) |*d| d else null,
                 ._driver_type = ctx.server._driver_type,
                 ._views = views_cfg,
+                ._io = ctx.io,
             };
 
             var route_mws: []const MiddlewareFn = &.{};
@@ -251,6 +252,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._db = if (ctx.server._db) |*db| db else null,
                 ._driver_type = ctx.server._driver_type,
                 ._views = views_cfg,
+                ._io = ctx.io,
             };
             break :blk ctx_req.text("404 Not Found", .{ .status = .not_found }) catch
                 Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };

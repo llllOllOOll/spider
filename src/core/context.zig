@@ -51,6 +51,7 @@ pub const Ctx = struct {
     _db: ?*const Database = null,
     _driver_type: DriverType = .postgresql,
     _views: ?ViewsConfig = null,
+    _io: std.Io = undefined,
 
     pub fn db(self: *Ctx) DatabaseCtx {
         return .{
