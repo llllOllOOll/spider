@@ -1,43 +1,65 @@
 const std = @import("std");
+const template = @import("../render/template.zig");
 
-/// Context represents the HTTP request context
-/// Provides helpers for reading requests and writing responses
+pub const ResponseOptions = struct {
+    status: std.http.Status = .ok,
+    headers: []const [2][]const u8 = &.{},
+};
+
+pub const Response = struct {
+    status: std.http.Status = .ok,
+    body: ?[]const u8 = null,
+    content_type: []const u8 = "text/plain",
+    headers: []const [2][]const u8 = &.{},
+};
+
 pub const Ctx = struct {
-    // HTTP request
     request: std.http.Server.Request,
     arena: std.mem.Allocator,
+    params: std.StringHashMapUnmanaged([]const u8),
 
-    /// Send a JSON response
-    pub fn json(self: *Ctx, value: anytype) !void {
-        // Simple JSON serialization
-        var buffer: [1024]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buffer);
-        const allocator = fba.allocator();
-
-        const json_string = try std.json.Stringify.valueAlloc(allocator, value, .{});
-
-        // Send response
-        try self.request.respond(json_string, .{
-            .status = .ok,
-            .extra_headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-            },
-        });
+    pub fn json(self: *Ctx, value: anytype, opts: ResponseOptions) !Response {
+        const body = try std.json.Stringify.valueAlloc(self.arena, value, .{});
+        return Response{
+            .status = opts.status,
+            .body = body,
+            .content_type = "application/json",
+            .headers = opts.headers,
+        };
     }
 
-    /// Send a plain text response
-    pub fn text(self: *Ctx, content: []const u8) !void {
-        try self.request.respond(content, .{
-            .status = .ok,
-        });
+    pub fn text(_: *Ctx, content: []const u8, opts: ResponseOptions) !Response {
+        return Response{
+            .status = opts.status,
+            .body = content,
+            .content_type = "text/plain",
+            .headers = opts.headers,
+        };
     }
 
-    /// Get the request path
+    pub fn html(_: *Ctx, content: []const u8, opts: ResponseOptions) !Response {
+        return Response{
+            .status = opts.status,
+            .body = content,
+            .content_type = "text/html; charset=utf-8",
+            .headers = opts.headers,
+        };
+    }
+
+    pub fn render(self: *Ctx, tmpl: []const u8, data: anytype, opts: ResponseOptions) !Response {
+        const html_body = try template.render(tmpl, data, self.arena);
+        return Response{
+            .status = opts.status,
+            .body = html_body,
+            .content_type = "text/html; charset=utf-8",
+            .headers = opts.headers,
+        };
+    }
+
     pub fn getPath(self: *Ctx) []const u8 {
         return self.request.head.target;
     }
 
-    /// Get the request method
     pub fn getMethod(self: *Ctx) []const u8 {
         return @tagName(self.request.head.method);
     }

@@ -2,25 +2,21 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Ctx = @import("context.zig").Ctx;
-
-const Route = struct {
-    method: []const u8,
-    path: []const u8,
-    handler: *const fn (*Ctx) anyerror!void,
-};
+const Response = @import("context.zig").Response;
+const Router = @import("../routing/router.zig").Router;
 
 const WorkerCtx = struct {
     io: Io,
     gpa: std.mem.Allocator,
     listener: *Io.net.Server,
-    routes: []const Route,
+    router: *Router,
 };
 
 const ConnCtx = struct {
     stream: Io.net.Stream,
     io: Io,
     gpa: std.mem.Allocator,
-    routes: []const Route,
+    router: *Router,
 };
 
 fn workerLoop(ctx: WorkerCtx) void {
@@ -39,7 +35,7 @@ fn workerLoop(ctx: WorkerCtx) void {
             .stream = stream,
             .io = ctx.io,
             .gpa = ctx.gpa,
-            .routes = ctx.routes,
+            .router = ctx.router,
         }}) catch |err| {
             std.debug.print("Worker {d} concurrent error: {s}\n", .{ tid, @errorName(err) });
             stream.close(ctx.io);
@@ -52,9 +48,6 @@ fn workerLoop(ctx: WorkerCtx) void {
 
 fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
     defer ctx.stream.close(ctx.io);
-
-    var conn_arena = std.heap.ArenaAllocator.init(ctx.gpa);
-    defer conn_arena.deinit();
 
     var req_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer req_arena.deinit();
@@ -74,34 +67,42 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         _ = req_arena.reset(.{ .retain_with_limit = 8192 });
         const arena = req_arena.allocator();
 
-        const request = http.receiveHead() catch |err| {
+        var request = http.receiveHead() catch |err| {
             if (err != error.HttpConnectionClosing) {
                 std.debug.print("receiveHead error: {s}\n", .{@errorName(err)});
             }
             break;
         };
 
-        const method = @tagName(request.head.method);
         const path = request.head.target;
-        var route_found = false;
 
-        for (ctx.routes) |route| {
-            if (std.mem.eql(u8, route.method, method) and
-                std.mem.eql(u8, route.path, path))
-            {
-                var ctx_req = Ctx{ .request = request, .arena = arena };
-                route.handler(&ctx_req) catch |err| {
-                    std.debug.print("Handler error: {s}\n", .{@errorName(err)});
-                };
-                route_found = true;
-                break;
+        const match = ctx.router.match(request.head.method, path, arena) catch null;
+        const response = if (match) |m| blk: {
+            var ctx_req = Ctx{ .request = request, .arena = arena, .params = m.params };
+            break :blk m.handler(&ctx_req) catch |err| r: {
+                std.debug.print("Handler error: {s}\n", .{@errorName(err)});
+                break :r Response{ .status = .internal_server_error, .body = "Internal Server Error", .content_type = "text/plain" };
+            };
+        } else blk: {
+            var ctx_req = Ctx{ .request = request, .arena = arena, .params = .{} };
+            break :blk ctx_req.text("404 Not Found", .{ .status = .not_found }) catch
+                Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };
+        };
+
+        var extra_headers_buf: [18]std.http.Header = undefined;
+        var header_count: usize = 0;
+        extra_headers_buf[header_count] = .{ .name = "content-type", .value = response.content_type };
+        header_count += 1;
+        for (response.headers) |h| {
+            if (header_count < 18) {
+                extra_headers_buf[header_count] = .{ .name = h[0], .value = h[1] };
+                header_count += 1;
             }
         }
-
-        if (!route_found) {
-            var ctx_req = Ctx{ .request = request, .arena = arena };
-            ctx_req.text("404 Not Found") catch {};
-        }
+        request.respond(response.body orelse "", .{
+            .status = response.status,
+            .extra_headers = extra_headers_buf[0..header_count],
+        }) catch {};
 
         if (!request.head.keep_alive) break;
     }
@@ -112,7 +113,7 @@ pub const Server = struct {
     spider_gpa: std.heap.DebugAllocator(.{}),
     allocator: std.mem.Allocator,
     gpa: std.mem.Allocator,
-    routes: std.ArrayList(Route),
+    router: Router,
 
     pub fn init() Server {
         var self: Server = .{
@@ -120,7 +121,7 @@ pub const Server = struct {
             .spider_gpa = .init,
             .allocator = undefined,
             .gpa = undefined,
-            .routes = .empty,
+            .router = Router.init(std.heap.page_allocator) catch unreachable,
         };
         self.allocator = self.spider_arena.allocator();
         self.gpa = if (builtin.mode == .Debug)
@@ -131,26 +132,18 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Server) void {
-        self.routes.deinit(self.allocator);
+        self.router.deinit();
         _ = self.spider_gpa.deinit();
         self.spider_arena.deinit();
     }
 
-    pub fn get(self: *Server, path: []const u8, handler: *const fn (*Ctx) anyerror!void) *Server {
-        self.routes.append(self.allocator, .{
-            .method = "GET",
-            .path = path,
-            .handler = handler,
-        }) catch unreachable;
+    pub fn get(self: *Server, path: []const u8, handler: *const fn (*Ctx) anyerror!Response) *Server {
+        self.router.add(.GET, path, handler) catch unreachable;
         return self;
     }
 
-    pub fn post(self: *Server, path: []const u8, handler: *const fn (*Ctx) anyerror!void) *Server {
-        self.routes.append(self.allocator, .{
-            .method = "POST",
-            .path = path,
-            .handler = handler,
-        }) catch unreachable;
+    pub fn post(self: *Server, path: []const u8, handler: *const fn (*Ctx) anyerror!Response) *Server {
+        self.router.add(.POST, path, handler) catch unreachable;
         return self;
     }
 
@@ -179,7 +172,7 @@ pub const Server = struct {
             .io = io,
             .gpa = gpa,
             .listener = &listener,
-            .routes = self.routes.items,
+            .router = &self.router,
         };
 
         for (threads) |*t| {

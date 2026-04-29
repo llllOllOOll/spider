@@ -1,17 +1,15 @@
 const std = @import("std");
-const web = @import("../web.zig");
-const group = @import("group.zig");
+const Ctx = @import("../core/context.zig").Ctx;
+const Response = @import("../core/context.zig").Response;
 
-const Handler = web.Handler;
-const Method = web.Method;
-const Group = group.Group;
+pub const Handler = *const fn (*Ctx) anyerror!Response;
 
 const Node = struct {
     children: std.StringHashMap(*Node),
     param_child: ?*Node,
     param_name: ?[]const u8,
     wildcard_child: ?*Node,
-    handlers: std.EnumArray(Method, ?Handler),
+    handlers: std.EnumArray(std.http.Method, ?Handler),
     is_static_handler: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) !*Node {
@@ -21,7 +19,7 @@ const Node = struct {
             .param_child = null,
             .param_name = null,
             .wildcard_child = null,
-            .handlers = std.EnumArray(Method, ?Handler).initFill(null),
+            .handlers = std.EnumArray(std.http.Method, ?Handler).initFill(null),
             .is_static_handler = false,
         };
         return node;
@@ -40,11 +38,7 @@ fn isDynamic(path: []const u8) bool {
 
 fn toUppercase(in: []const u8, out: []u8) void {
     for (in, 0..) |c, i| {
-        if (c >= 'a' and c <= 'z') {
-            out[i] = c - 32;
-        } else {
-            out[i] = c;
-        }
+        out[i] = if (c >= 'a' and c <= 'z') c - 32 else c;
     }
 }
 
@@ -70,10 +64,6 @@ pub const Router = struct {
         self.deinitNode(self.root);
     }
 
-    pub fn group(self: *Router, prefix: []const u8) Group {
-        return Group.init(self, prefix);
-    }
-
     fn deinitNode(self: *Router, node: *Node) void {
         var child_it = node.children.iterator();
         while (child_it.next()) |entry| {
@@ -88,17 +78,15 @@ pub const Router = struct {
         self.allocator.destroy(node);
     }
 
-    pub fn add(self: *Router, method: Method, path: []const u8, handler: Handler) !void {
+    pub fn add(self: *Router, method: std.http.Method, path: []const u8, handler: Handler) !void {
         if (!isDynamic(path)) {
             const method_str = @tagName(method);
-            // Skip leading slash in path to avoid double slashes in key
             const path_stripped = if (path.len > 0 and path[0] == '/') path[1..] else path;
             const key = try self.allocator.alloc(u8, method_str.len + 1 + path_stripped.len);
             toUppercase(method_str, key[0..method_str.len]);
             key[method_str.len] = '/';
             @memcpy(key[method_str.len + 1 ..], path_stripped);
             try self.static_routes.put(key, handler);
-            std.debug.print("ROUTER: Added static route: {s}\n", .{key});
             return;
         }
 
@@ -111,7 +99,7 @@ pub const Router = struct {
                     node.param_child = try Node.init(self.allocator);
                     node.param_name = try self.allocator.dupe(u8, segment[1..]);
                 } else {
-                    std.debug.print("ROUTER: Warning: parameter conflict at segment '{s}'", .{segment});
+                    std.debug.print("ROUTER: Warning: parameter conflict at segment '{s}'\n", .{segment});
                 }
                 node = node.param_child.?;
             } else if (std.mem.eql(u8, segment, "*")) {
@@ -130,10 +118,9 @@ pub const Router = struct {
         node.handlers.set(method, handler);
     }
 
-    pub fn match(self: *Router, method: Method, path: []const u8, allocator: std.mem.Allocator) !?MatchResult {
+    pub fn match(self: *Router, method: std.http.Method, path: []const u8, allocator: std.mem.Allocator) !?MatchResult {
         var key_buf: [256]u8 = undefined;
         const method_str = @tagName(method);
-        // Skip leading slash in path to avoid double slashes in key
         const path_stripped = if (path.len > 0 and path[0] == '/') path[1..] else path;
         const key_len = method_str.len + 1 + path_stripped.len;
         if (key_len <= key_buf.len) {
@@ -141,7 +128,6 @@ pub const Router = struct {
             key_buf[method_str.len] = '/';
             @memcpy(key_buf[method_str.len + 1 .. key_len], path_stripped);
             const key = key_buf[0..key_len];
-
             if (self.static_routes.get(key)) |handler| {
                 return .{ .handler = handler, .params = .{} };
             }
