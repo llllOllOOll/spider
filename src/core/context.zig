@@ -17,6 +17,7 @@ pub const Ctx = struct {
     request: std.http.Server.Request,
     arena: std.mem.Allocator,
     params: std.StringHashMapUnmanaged([]const u8),
+    body: ?[]const u8 = null,
 
     pub fn json(self: *Ctx, value: anytype, opts: ResponseOptions) !Response {
         const body = try std.json.Stringify.valueAlloc(self.arena, value, .{});
@@ -54,6 +55,18 @@ pub const Ctx = struct {
             .content_type = "text/html; charset=utf-8",
             .headers = opts.headers,
         };
+    }
+
+    pub fn getBody(self: *Ctx) ?[]const u8 {
+        return self.body;
+    }
+
+    pub fn bodyJson(self: *Ctx, comptime T: type) !T {
+        const raw = self.body orelse return error.BodyEmpty;
+        const parsed = try std.json.parseFromSlice(T, self.arena, raw, .{
+            .ignore_unknown_fields = true,
+        });
+        return parsed.value;
     }
 
     pub fn query(self: *Ctx, name: []const u8) ?[]const u8 {

@@ -77,15 +77,23 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         const target = request.head.target;
         const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
 
+        const body: ?[]const u8 = blk: {
+            const cl = request.head.content_length orelse break :blk null;
+            if (cl == 0) break :blk null;
+            var body_io_buf: [4096]u8 = undefined;
+            const body_reader = request.readerExpectNone(&body_io_buf);
+            break :blk body_reader.readAlloc(arena, cl) catch null;
+        };
+
         const match = ctx.router.match(request.head.method, path, arena) catch null;
         const response = if (match) |m| blk: {
-            var ctx_req = Ctx{ .request = request, .arena = arena, .params = m.params };
+            var ctx_req = Ctx{ .request = request, .arena = arena, .params = m.params, .body = body };
             break :blk m.handler(&ctx_req) catch |err| r: {
                 std.debug.print("Handler error: {s}\n", .{@errorName(err)});
                 break :r Response{ .status = .internal_server_error, .body = "Internal Server Error", .content_type = "text/plain" };
             };
         } else blk: {
-            var ctx_req = Ctx{ .request = request, .arena = arena, .params = .{} };
+            var ctx_req = Ctx{ .request = request, .arena = arena, .params = .{}, .body = body };
             break :blk ctx_req.text("404 Not Found", .{ .status = .not_found }) catch
                 Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };
         };

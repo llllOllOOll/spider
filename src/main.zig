@@ -62,6 +62,25 @@ fn redirectHandler(c: *spider.Ctx) !Response {
     return c.redirect("/");
 }
 
+fn echoBodyHandler(c: *spider.Ctx) !Response {
+    const raw = c.getBody() orelse return c.text("no body", .{});
+    return c.text(raw, .{});
+}
+
+const CreateUser = struct {
+    name: []const u8,
+    email: []const u8,
+};
+
+fn createUserHandler(c: *spider.Ctx) !Response {
+    const user = try c.bodyJson(CreateUser);
+    return c.json(.{
+        .created = true,
+        .name = user.name,
+        .email = user.email,
+    }, .{ .status = .created });
+}
+
 pub fn main() void {
     var server = spider.app();
     defer server.deinit();
@@ -77,6 +96,8 @@ pub fn main() void {
         .get("/query", queryHandler)
         .get("/useragent", headerHandler)
         .get("/redirect", redirectHandler)
+        .post("/echo-body", echoBodyHandler)
+        .post("/users", createUserHandler)
         .listen(3000) catch |err| {
         std.debug.print("Server error: {}\n", .{err});
     };
