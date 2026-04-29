@@ -138,26 +138,23 @@ fn apiMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
     return next(c);
 }
 
-const MockDriver = struct {
-    fn execFn(_: *anyopaque, sql: []const u8) anyerror!void {
-        std.debug.print("[MockDriver] exec: {s}\n", .{sql});
-    }
-    fn deinitFn(_: *anyopaque) void {}
+const PgDriver = spider.PgDriver;
 
-    dummy: u8 = 0,
-
-    pub fn database(self: *MockDriver) spider.Database {
-        return .{
-            .ptr = self,
-            .exec_fn = execFn,
-            .deinit_fn = deinitFn,
-        };
-    }
+const Todo = struct {
+    id: i32,
+    title: []const u8,
+    completed: bool,
+    created_at: []const u8,
+    updated_at: []const u8,
 };
 
-fn dbHandler(c: *spider.Ctx) !Response {
-    try c.db().exec("SELECT 1");
-    return c.json(.{ .ok = true, .query = "SELECT 1" }, .{});
+fn todosHandler(c: *spider.Ctx) !Response {
+    const todos = try c.db().query(
+        Todo,
+        "SELECT id, title, completed, created_at, updated_at FROM todos LIMIT 5",
+        .{},
+    );
+    return c.json(.{ .todos = todos, .count = todos.len }, .{});
 }
 
 fn globalErrorHandler(c: *spider.Ctx, err: anyerror) !Response {
@@ -179,7 +176,22 @@ fn dashboardRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const s
 }
 
 pub fn main() void {
-    var mock_db: MockDriver = .{};
+    var pg_driver: PgDriver = .{};
+
+    // Initialize PostgreSQL connection
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    spider.pg.init(std.heap.page_allocator, io, .{
+        .host = "localhost",
+        .port = 5434,
+        .user = "spider",
+        .password = "spider",
+        .database = "spiderdb",
+    }) catch {
+        std.debug.print("Failed to initialize PostgreSQL\n", .{});
+        return;
+    };
+    defer spider.pg.deinit();
 
     var server = spider.app();
     defer server.deinit();
@@ -187,7 +199,7 @@ pub fn main() void {
         .use(loggerMiddleware)
         .useAt("/api/*", apiMiddleware)
         .onError(globalErrorHandler)
-        .db(mock_db.database())
+        .db(pg_driver.database())
         .get("/", rootHandler)
         .get("/broken", brokenHandler)
         .get("/api/users", usersListHandler)
@@ -203,7 +215,7 @@ pub fn main() void {
         .get("/redirect", redirectHandler)
         .get("/cookie", cookieHandler)
         .get("/htmx", htmxHandler)
-        .get("/db", dbHandler)
+        .get("/todos", todosHandler)
         .post("/echo-body", echoBodyHandler)
         .post("/users", createUserHandler)
         .group("/dashboard", &.{authMiddleware}, dashboardRoutes)

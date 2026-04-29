@@ -1537,9 +1537,9 @@ fn pgDeinitFn(_: *anyopaque) void {}
 pub const PgDriver = struct {
     _dummy: u8 = 0,
 
-    pub fn database(self: *PgDriver) Database {
+    pub fn database(_: *PgDriver) Database {
         return .{
-            .ptr = self,
+            .ptr = @constCast(db_pool orelse @panic("PostgreSQL not initialized")),
             .exec_fn = pgExecFn,
             .deinit_fn = pgDeinitFn,
         };
