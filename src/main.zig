@@ -103,6 +103,20 @@ fn usersListHandler(c: *spider.Ctx) !Response {
     return c.json(.{ .page = "users" }, .{});
 }
 
+fn cookieHandler(c: *spider.Ctx) !Response {
+    const session = c.cookie("session");
+    return c.json(.{
+        .existing_session = session orelse "none",
+    }, try c.withCookie("session", "abc123", .{ .max_age = 3600, .secure = false }));
+}
+
+fn htmxHandler(c: *spider.Ctx) !Response {
+    if (c.isHtmx()) {
+        return c.html("<div>Partial response for HTMX</div>", .{});
+    }
+    return c.html("<html><body><div>Full page</div></body></html>", .{});
+}
+
 fn slowMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
     var i: usize = 0;
     while (i < 1_000_000) : (i += 1) {}
@@ -119,6 +133,24 @@ fn slowRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const spider
     s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/", .{prefix}) catch "/slow/", middlewares, slowHandler);
 }
 
+fn apiMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
+    std.debug.print("[API] {s}\n", .{c.getPath()});
+    return next(c);
+}
+
+fn globalErrorHandler(c: *spider.Ctx, err: anyerror) !Response {
+    std.log.err("caught: {s}", .{@errorName(err)});
+    return c.json(.{
+        .error_name = @errorName(err),
+        .path = c.getPath(),
+    }, .{ .status = .internal_server_error });
+}
+
+fn brokenHandler(c: *spider.Ctx) !Response {
+    _ = c;
+    return error.SomethingWentWrong;
+}
+
 fn dashboardRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const spider.MiddlewareFn) void {
     s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/", .{prefix}) catch "/dashboard/", middlewares, dashHandler);
     s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/users", .{prefix}) catch "/dashboard/users", middlewares, usersListHandler);
@@ -129,7 +161,11 @@ pub fn main() void {
     defer server.deinit();
     server
         .use(loggerMiddleware)
+        .useAt("/api/*", apiMiddleware)
+        .onError(globalErrorHandler)
         .get("/", rootHandler)
+        .get("/broken", brokenHandler)
+        .get("/api/users", usersListHandler)
         .get("/health", healthHandler)
         .get("/echo", echoHandler)
         .get("/users/:id", userHandler)
@@ -140,6 +176,8 @@ pub fn main() void {
         .get("/query", queryHandler)
         .get("/useragent", headerHandler)
         .get("/redirect", redirectHandler)
+        .get("/cookie", cookieHandler)
+        .get("/htmx", htmxHandler)
         .post("/echo-body", echoBodyHandler)
         .post("/users", createUserHandler)
         .group("/dashboard", &.{authMiddleware}, dashboardRoutes)

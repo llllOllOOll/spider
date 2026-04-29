@@ -4,6 +4,7 @@ const Io = std.Io;
 const Ctx = @import("context.zig").Ctx;
 const Response = @import("context.zig").Response;
 const MiddlewareFn = @import("context.zig").MiddlewareFn;
+const ErrorHandler = @import("context.zig").ErrorHandler;
 const Router = @import("../routing/router.zig").Router;
 const Handler = @import("../routing/router.zig").Handler;
 
@@ -39,6 +40,40 @@ const RouteMiddlewareEntry = struct {
     method: std.http.Method,
     middlewares: []const MiddlewareFn,
 };
+
+const PathMiddlewareEntry = struct {
+    path: []const u8,
+    middleware: MiddlewareFn,
+};
+
+fn collectMiddlewares(
+    srv: *const Server,
+    path: []const u8,
+    route_middlewares: []const MiddlewareFn,
+    buf: []MiddlewareFn,
+) usize {
+    var count: usize = 0;
+
+    for (srv.global_middlewares[0..srv.global_middleware_count]) |m| {
+        if (count < buf.len) { buf[count] = m; count += 1; }
+    }
+
+    for (srv.path_middlewares[0..srv.path_middleware_count]) |entry| {
+        const prefix = if (std.mem.endsWith(u8, entry.path, "*"))
+            entry.path[0 .. entry.path.len - 1]
+        else
+            entry.path;
+        if (std.mem.startsWith(u8, path, prefix)) {
+            if (count < buf.len) { buf[count] = entry.middleware; count += 1; }
+        }
+    }
+
+    for (route_middlewares) |m| {
+        if (count < buf.len) { buf[count] = m; count += 1; }
+    }
+
+    return count;
+}
 
 const WorkerCtx = struct {
     io: Io,
@@ -131,22 +166,26 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         const response = if (match) |m| blk: {
             var ctx_req = Ctx{ .request = request, .arena = arena, .params = m.params, .body = body };
 
-            var mw_buf: [32]MiddlewareFn = undefined;
-            var mw_count: usize = 0;
-            for (ctx.server.global_middlewares[0..ctx.server.global_middleware_count]) |mw| {
-                if (mw_count < 32) { mw_buf[mw_count] = mw; mw_count += 1; }
-            }
+            var route_mws: []const MiddlewareFn = &.{};
             for (ctx.server.route_middlewares.items) |entry| {
                 if (entry.method == request.head.method and std.mem.eql(u8, entry.path, path)) {
-                    for (entry.middlewares) |mw| {
-                        if (mw_count < 32) { mw_buf[mw_count] = mw; mw_count += 1; }
-                    }
+                    route_mws = entry.middlewares;
                     break;
                 }
             }
 
+            var mw_buf: [64]MiddlewareFn = undefined;
+            const mw_count = collectMiddlewares(ctx.server, path, route_mws, &mw_buf);
+
             break :blk runChain(&ctx_req, mw_buf[0..mw_count], m.handler) catch |err| r: {
-                std.debug.print("Handler error: {s}\n", .{@errorName(err)});
+                if (ctx.server.error_handler) |eh| {
+                    break :r eh(&ctx_req, err) catch Response{
+                        .status = .internal_server_error,
+                        .body = "Internal Server Error",
+                        .content_type = "text/plain",
+                    };
+                }
+                std.log.err("unhandled error: {s}", .{@errorName(err)});
                 break :r Response{ .status = .internal_server_error, .body = "Internal Server Error", .content_type = "text/plain" };
             };
         } else blk: {
@@ -155,13 +194,19 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };
         };
 
-        var extra_headers_buf: [18]std.http.Header = undefined;
+        var extra_headers_buf: [32]std.http.Header = undefined;
         var header_count: usize = 0;
         extra_headers_buf[header_count] = .{ .name = "content-type", .value = response.content_type };
         header_count += 1;
         for (response.headers) |h| {
-            if (header_count < 18) {
+            if (header_count < 32) {
                 extra_headers_buf[header_count] = .{ .name = h[0], .value = h[1] };
+                header_count += 1;
+            }
+        }
+        for (response.cookies) |c| {
+            if (header_count < 32) {
+                extra_headers_buf[header_count] = .{ .name = "Set-Cookie", .value = c[1] };
                 header_count += 1;
             }
         }
@@ -182,7 +227,10 @@ pub const Server = struct {
     router: Router,
     global_middlewares: [16]MiddlewareFn = undefined,
     global_middleware_count: usize = 0,
+    path_middlewares: [32]PathMiddlewareEntry = undefined,
+    path_middleware_count: usize = 0,
     route_middlewares: std.ArrayList(RouteMiddlewareEntry),
+    error_handler: ?ErrorHandler = null,
 
     pub fn init() Server {
         var self: Server = .{
@@ -192,6 +240,7 @@ pub const Server = struct {
             .gpa = undefined,
             .router = Router.init(std.heap.page_allocator) catch unreachable,
             .global_middleware_count = 0,
+            .path_middleware_count = 0,
             .route_middlewares = .empty,
         };
         self.allocator = std.heap.page_allocator;
@@ -214,6 +263,19 @@ pub const Server = struct {
             self.global_middlewares[self.global_middleware_count] = m;
             self.global_middleware_count += 1;
         }
+        return self;
+    }
+
+    pub fn useAt(self: *Server, path: []const u8, m: MiddlewareFn) *Server {
+        if (self.path_middleware_count < 32) {
+            self.path_middlewares[self.path_middleware_count] = .{ .path = path, .middleware = m };
+            self.path_middleware_count += 1;
+        }
+        return self;
+    }
+
+    pub fn onError(self: *Server, handler: ErrorHandler) *Server {
+        self.error_handler = handler;
         return self;
     }
 

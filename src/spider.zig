@@ -4,9 +4,12 @@
 const std = @import("std");
 
 pub const Ctx = @import("core/context.zig").Ctx;
+pub const NextFn = @import("core/context.zig").NextFn;
+pub const MiddlewareFn = @import("core/context.zig").MiddlewareFn;
+pub const ErrorHandler = @import("core/context.zig").ErrorHandler;
 pub const app = @import("core/app.zig").app;
 pub const server = @import("core/app.zig").server;
-pub const Server = @import("core/server.zig").Server;
+pub const Server = @import("core/app.zig").Server;
 pub const Router = @import("routing/router.zig").Router;
 pub const Group = @import("routing/group.zig").Group;
 pub const websocket = @import("ws/websocket.zig");
