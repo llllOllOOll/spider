@@ -470,6 +470,6 @@ pub fn appWithConfig(config: Config) Server {
     s.config = config;
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
-    s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, ".") catch null;
+    s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, "src") catch null;
     return s;
 }

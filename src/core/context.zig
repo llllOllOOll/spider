@@ -108,8 +108,6 @@ pub const Ctx = struct {
     }
 
     pub fn view(self: *Ctx, name: []const u8, data: anytype, opts: ResponseOptions) !Response {
-        std.debug.print("=== c.view() called with name: {s}\n", .{name});
-
         const vc = self._views orelse return error.ViewsNotConfigured;
 
         const io = vc.io;
@@ -208,7 +206,56 @@ pub const Ctx = struct {
 
             const combined = try std.mem.concat(self.arena, u8, &.{ layout_content, view_content });
             const block_name = if (self.isHtmx()) "content" else "base";
-            break :blk try template.renderBlock(combined, block_name, data, self.arena);
+
+            // Build template entries slice for includes (runtime mode)
+            const TemplateEntry = struct { name: []const u8, content: []const u8 };
+            var entries: std.ArrayList(TemplateEntry) = .empty;
+            defer {
+                for (entries.items) |entry| {
+                    self.arena.free(entry.name);
+                    self.arena.free(entry.content);
+                }
+                entries.deinit(self.arena);
+            }
+
+            // Normalize layout_name
+            const layout_norm = blk_l: {
+                var buf2: [256]u8 = undefined;
+                var j2: usize = 0;
+                for (layout_name) |c| {
+                    buf2[j2] = if (c == '/' or c == '-') '_' else c;
+                    j2 += 1;
+                }
+                break :blk_l try self.arena.dupe(u8, buf2[0..j2]);
+            };
+            try entries.append(self.arena, .{ .name = layout_norm, .content = layout_content });
+
+            // Normalize view name
+            const view_norm = blk_v: {
+                var buf2: [256]u8 = undefined;
+                var j2: usize = 0;
+                for (name) |c| {
+                    buf2[j2] = if (c == '/' or c == '-') '_' else c;
+                    j2 += 1;
+                }
+                break :blk_v try self.arena.dupe(u8, buf2[0..j2]);
+            };
+            try entries.append(self.arena, .{ .name = view_norm, .content = view_content });
+
+            // Load all templates from index for includes
+            if (vc.index) |idx| {
+                for (idx.entries) |entry| {
+                    const content = std.Io.Dir.cwd().readFileAlloc(
+                        io,
+                        entry.path,
+                        self.arena,
+                        .limited(512 * 1024),
+                    ) catch continue;
+                    try entries.append(self.arena, .{ .name = try self.arena.dupe(u8, entry.name), .content = content });
+                }
+            }
+
+            break :blk try template.renderBlockWithTemplates(combined, block_name, data, self.arena, entries.items);
         } else blk: {
             break :blk try template.render(view_content, data, self.arena);
         };

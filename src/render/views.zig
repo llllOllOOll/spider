@@ -104,7 +104,6 @@ fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
         const file = std.fs.path.basename(after);
 
         if (dir.len == 0) {
-            // views/ na raiz — normalizar o path completo após views/
             var j: usize = 0;
             for (after) |c| {
                 if (j >= buffer.len) break;
@@ -118,9 +117,20 @@ fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
             return try std.fmt.bufPrint(buffer, "{s}", .{file});
         }
         return try std.fmt.bufPrint(buffer, "{s}_{s}", .{ dir, file });
+    } else if (std.mem.indexOf(u8, no_ext, "templates/")) |idx| {
+        const after = no_ext[idx + "templates/".len ..];
+
+        // Igual ao views/ na raiz: normalizar tudo após templates/
+        var j: usize = 0;
+        for (after) |c| {
+            if (j >= buffer.len) break;
+            buffer[j] = if (c == '/' or c == '-') '_' else c;
+            j += 1;
+        }
+        return buffer[0..j];
     }
 
-    // sem views/ — substituir / e - por _
+    // sem views/ ou templates/ — substituir / e - por _
     var j: usize = 0;
     for (no_ext) |c| {
         if (j >= buffer.len) break;
