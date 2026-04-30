@@ -11,3 +11,5 @@ tasks.md
 ARRAYLIST_ZIG_0.16.md
 seven/
 build.zig_main_for_test.zig
+.env
+AGENTS.md
