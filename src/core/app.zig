@@ -297,7 +297,7 @@ pub const Server = struct {
     error_handler: ?ErrorHandler = null,
     _db: ?Database = null,
     _driver_type: DriverType = .postgresql,
-    static_config: StaticConfig = .{ .dir = "./public", .prefix = "/public" },
+    static_config: StaticConfig = .{ .dir = "./public", .prefix = "/" },
     config: Config = default_config,
     views_index: ?views_mod.ViewsIndex = null,
 
@@ -359,7 +359,7 @@ pub const Server = struct {
     }
 
     pub fn staticDir(self: *Server, dir: []const u8) *Server {
-        self.static_config = .{ .dir = dir, .prefix = "/public" };
+        self.static_config = .{ .dir = dir, .prefix = "/" };
         return self;
     }
 

@@ -3,7 +3,7 @@ const Response = @import("../core/context.zig").Response;
 
 pub const StaticConfig = struct {
     dir: []const u8 = "./public",
-    prefix: []const u8 = "/public",
+    prefix: []const u8 = "/",
 };
 
 pub fn contentType(path: []const u8) []const u8 {
