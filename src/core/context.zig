@@ -5,6 +5,9 @@ const Database = @import("database.zig").Database;
 const DriverType = @import("database.zig").DriverType;
 pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 
+const root = @import("root");
+const has_embed = @hasDecl(root, "spider_templates");
+
 pub const ViewsMode = enum { runtime, embed };
 
 pub const ViewsConfig = struct {
@@ -104,11 +107,68 @@ pub const Ctx = struct {
     }
 
     pub fn view(self: *Ctx, name: []const u8, data: anytype, opts: ResponseOptions) !Response {
+        std.debug.print("=== c.view() called with name: {s}\n", .{name});
+
         const vc = self._views orelse return error.ViewsNotConfigured;
 
-        if (vc.mode == .embed) return error.EmbedNotImplemented;
-
         const io = vc.io;
+
+        if (has_embed) {
+            const Templates = root.spider_templates;
+
+            const view_content = blk: {
+                var buf: [256]u8 = undefined;
+                var j: usize = 0;
+                for (name) |c| {
+                    buf[j] = if (c == '/' or c == '-') '_' else c;
+                    j += 1;
+                }
+                const normalized = buf[0..j];
+                inline for (std.meta.fields(Templates)) |field| {
+                    if (std.mem.eql(u8, field.name, normalized)) {
+                        const instance: Templates = .{};
+                        break :blk @field(instance, field.name);
+                    }
+                }
+                return error.TemplateNotFound;
+            };
+
+            const has_extends = std.mem.indexOf(u8, view_content, "{% extends") != null;
+
+            const rendered_html = if (has_extends) blk: {
+                const layout_name = extractExtendsName(view_content) orelse return error.InvalidTemplate;
+
+                const layout_content = blk2: {
+                    var buf: [256]u8 = undefined;
+                    var j: usize = 0;
+                    for (layout_name) |c| {
+                        buf[j] = if (c == '/' or c == '-') '_' else c;
+                        j += 1;
+                    }
+                    const normalized = buf[0..j];
+                    inline for (std.meta.fields(Templates)) |field| {
+                        if (std.mem.eql(u8, field.name, normalized)) {
+                            const instance: Templates = .{};
+                            break :blk2 @field(instance, field.name);
+                        }
+                    }
+                    return error.LayoutNotFound;
+                };
+
+                const combined = try std.mem.concat(self.arena, u8, &.{ layout_content, view_content });
+                const block_name = if (self.isHtmx()) "content" else "base";
+                break :blk try template.renderBlock(combined, block_name, data, self.arena);
+            } else blk: {
+                break :blk try template.render(view_content, data, self.arena);
+            };
+
+            return Response{
+                .status = opts.status,
+                .body = rendered_html,
+                .content_type = "text/html; charset=utf-8",
+                .headers = opts.headers,
+            };
+        }
 
         const view_path = if (vc.index) |idx|
             idx.get(name) orelse return error.TemplateNotFound

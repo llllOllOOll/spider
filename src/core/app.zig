@@ -450,7 +450,8 @@ pub fn server() Server {
 }
 
 pub fn app() Server {
-    return appWithConfig(default_config);
+    const cfg = @import("../internal/config.zig").fromRoot();
+    return appWithConfig(cfg);
 }
 
 pub fn appWithConfig(config: Config) Server {

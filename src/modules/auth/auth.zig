@@ -9,6 +9,7 @@ const NextFn = @import("../../core/context.zig").NextFn;
 pub const Claims = struct {
     sub: i32,
     email: []const u8,
+    name: []const u8,
     exp: i64,
 };
 
@@ -87,6 +88,7 @@ pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, token: []const u8, 
         return Claims{
             .sub = parsed.value.sub,
             .email = try alloc.dupe(u8, parsed.value.email),
+            .name = try alloc.dupe(u8, parsed.value.name),
             .exp = parsed.value.exp,
         };
     }
@@ -186,9 +188,11 @@ pub const Auth = struct {
 
         const user_id_str = try std.fmt.allocPrint(c.arena, "{d}", .{claims.sub});
         const email_dup = try c.arena.dupe(u8, claims.email);
+        const name_dup = try c.arena.dupe(u8, claims.name);
 
         try c.params.put(c.arena, try c.arena.dupe(u8, "_user_id"), user_id_str);
         try c.params.put(c.arena, try c.arena.dupe(u8, "_user_email"), email_dup);
+        try c.params.put(c.arena, try c.arena.dupe(u8, "_user_name"), name_dup);
 
         return next(c);
     }

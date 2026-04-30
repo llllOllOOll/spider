@@ -17,3 +17,13 @@ pub const Config = struct {
 };
 
 pub const default = Config{};
+
+pub fn fromRoot() Config {
+    // try to read spider.config.zig via anonymous module
+    const root = @import("root");
+    if (@hasDecl(root, "spider_config")) {
+        // spider_config was registered by the dev's build.zig
+        return @import("spider_config").config;
+    }
+    return default;
+}
