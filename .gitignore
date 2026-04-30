@@ -13,3 +13,5 @@ seven/
 build.zig_main_for_test.zig
 .env
 AGENTS.md
+bench/
+src/main.zig
