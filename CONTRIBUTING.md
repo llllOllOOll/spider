@@ -371,7 +371,6 @@ These are known issues and planned improvements. Good starting points for contri
 | Platform | Windows support | high |
 | Platform | macOS CI | high |
 | Benchmarks | TechEmpower submission | medium |
-
 ---
 
 ## Questions?
