@@ -55,6 +55,7 @@ pub const Ctx = struct {
     _driver_type: DriverType = .postgresql,
     _views: ?ViewsConfig = null,
     _io: std.Io = undefined,
+    _stream: std.Io.net.Stream = undefined,
     _headers: std.StringHashMapUnmanaged([]const u8) = .{},
 
     pub fn db(self: *Ctx) DatabaseCtx {

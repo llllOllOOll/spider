@@ -60,6 +60,25 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/build_helpers.zig"),
     });
 
+    // spider-test — test server with WebSocket (not installed)
+    const test_exe = b.addExecutable(.{
+        .name = "spider-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main_ws_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "spider", .module = mod },
+            },
+        }),
+    });
+    // NÃO instalar — só usar para testes locais
+    // b.installArtifact(test_exe);
+
+    const run_test = b.addRunArtifact(test_exe);
+    const run_step = b.step("run", "Run test server");
+    run_step.dependOn(&run_test.step);
+
     // tests
     const mod_tests = b.addTest(.{
         .root_module = mod,

@@ -1,8 +1,8 @@
 const std = @import("std");
 const net = std.Io.net;
-const web = @import("../web.zig");
 
 pub const Frame = struct {
+    fin: bool,
     opcode: Opcode,
     masked: bool,
     payload: []const u8,
@@ -21,6 +21,8 @@ pub const Server = struct {
     stream: net.Stream,
     io: std.Io,
     allocator: std.mem.Allocator,
+    _read_buf: [65536]u8 = undefined,
+    _write_buf: [4096]u8 = undefined,
 
     pub fn init(stream: net.Stream, io: std.Io, allocator: std.mem.Allocator) Server {
         return .{
@@ -30,16 +32,22 @@ pub const Server = struct {
         };
     }
 
-    fn readInto(self: Server, buf: []u8) !usize {
-        const handle = self.stream.socket.handle;
-        return std.os.linux.read(handle, buf.ptr, buf.len);
+    fn readAll(self: *Server, buf: []u8) !void {
+        var sr = net.Stream.Reader.init(self.stream, self.io, &self._read_buf);
+        try sr.interface.readSliceAll(buf);
     }
 
-    pub fn handshake(self: Server, allocator: std.mem.Allocator, headers: *web.Headers) !bool {
-        const upgrade = headers.get("upgrade") orelse return false;
+    fn writeAll(self: *Server, data: []const u8) !void {
+        var sw = net.Stream.Writer.init(self.stream, self.io, &self._write_buf);
+        try sw.interface.writeAll(data);
+        try sw.interface.flush();
+    }
+
+    pub fn handshake(self: *Server, allocator: std.mem.Allocator, headers: *const std.StringHashMapUnmanaged([]const u8)) !bool {
+        const upgrade = headers.get("Upgrade") orelse headers.get("upgrade") orelse return false;
         if (!std.ascii.eqlIgnoreCase(upgrade, "websocket")) return false;
 
-        const key = headers.get("sec-websocket-key") orelse return false;
+        const key = headers.get("Sec-WebSocket-Key") orelse headers.get("sec-websocket-key") orelse return false;
 
         var accept_buf: [32]u8 = undefined;
         const accept = generateAccept(key, &accept_buf);
@@ -71,24 +79,15 @@ pub const Server = struct {
         return encoded[0..];
     }
 
-    fn writeAll(self: Server, data: []const u8) !void {
-        var remaining = data;
-        while (remaining.len > 0) {
-            const written = std.os.linux.write(self.stream.socket.handle, remaining.ptr, remaining.len);
-            if (written == 0) return error.BrokenPipe;
-            remaining = remaining[written..];
-        }
-    }
-
-    pub fn readFrame(self: Server, arena: std.mem.Allocator) !?Frame {
+    pub fn readFrame(self: *Server, arena: std.mem.Allocator) !?Frame {
         var header: [2]u8 = undefined;
-        const bytes_read = self.readInto(&header) catch |err| {
+        self.readAll(&header) catch |err| {
             if (err == error.EndOfStream) return null;
             return err;
         };
-        if (bytes_read == 0) return null;
 
         const first_byte = header[0];
+        const fin = (first_byte & 0x80) != 0;
         const opcode_val: u4 = @intCast(first_byte & 0x0F);
         const opcode: Frame.Opcode = @enumFromInt(opcode_val);
         const masked = (header[1] & 0x80) != 0;
@@ -96,27 +95,30 @@ pub const Server = struct {
 
         if (payload_len == 126) {
             var len_buf: [2]u8 = undefined;
-            _ = try self.readInto(&len_buf);
-            payload_len = @byteSwap(std.mem.readInt(u16, &len_buf, .big));
+            try self.readAll(&len_buf);
+            payload_len = std.mem.readInt(u16, &len_buf, .big);
         } else if (payload_len == 127) {
             var len_buf: [8]u8 = undefined;
-            _ = try self.readInto(&len_buf);
-            payload_len = @byteSwap(std.mem.readInt(u64, &len_buf, .big));
+            try self.readAll(&len_buf);
+            payload_len = std.mem.readInt(u64, &len_buf, .big);
         }
 
         var mask_key: [4]u8 = undefined;
         if (masked) {
-            _ = try self.readInto(&mask_key);
+            try self.readAll(&mask_key);
         }
 
         if (payload_len > 16 * 1024 * 1024) {
+            var code_buf: [2]u8 = undefined;
+            std.mem.writeInt(u16, &code_buf, 1009, .big);
+            self.writeFrame(.close, &code_buf) catch {};
             return error.MessageTooBig;
         }
 
         var payload: []u8 = undefined;
         if (payload_len > 0) {
             payload = try arena.alloc(u8, @intCast(payload_len));
-            _ = try self.readInto(payload);
+            try self.readAll(payload);
         } else {
             payload = &.{};
         }
@@ -127,50 +129,61 @@ pub const Server = struct {
             }
         }
 
-        return Frame{
+        const frame = Frame{
+            .fin = fin,
             .opcode = opcode,
             .masked = masked,
             .payload = payload,
         };
+
+        if (frame.opcode == .ping) {
+            try self.writeFrame(.pong, frame.payload);
+            return self.readFrame(arena);
+        }
+
+        if (frame.opcode == .close) {
+            try self.writeFrame(.close, frame.payload);
+            return null;
+        }
+
+        return frame;
     }
 
-    pub fn writeFrame(self: Server, opcode: Frame.Opcode, payload: []const u8) !void {
-        var header: [2]u8 = undefined;
+    pub fn writeFrame(self: *Server, opcode: Frame.Opcode, payload: []const u8) !void {
+        var header: [10]u8 = undefined;
+        var header_len: usize = 2;
         header[0] = 0x80 | @as(u8, @intFromEnum(opcode));
 
         if (payload.len < 126) {
             header[1] = @intCast(payload.len);
-            try self.writeAll(&header);
         } else if (payload.len < 65536) {
             header[1] = 126;
-            try self.writeAll(&header);
-            var len_buf: [2]u8 = undefined;
-            std.mem.writeInt(u16, &len_buf, @byteSwap(@as(u16, @intCast(payload.len))), .big);
-            try self.writeAll(&len_buf);
+            std.mem.writeInt(u16, header[2..4], @as(u16, @intCast(payload.len)), .big);
+            header_len = 4;
         } else {
             header[1] = 127;
-            try self.writeAll(&header);
-            var len_buf: [8]u8 = undefined;
-            std.mem.writeInt(u64, &len_buf, @byteSwap(payload.len), .big);
-            try self.writeAll(&len_buf);
+            std.mem.writeInt(u64, header[2..10], payload.len, .big);
+            header_len = 10;
         }
+
+        try self.writeAll(header[0..header_len]);
 
         if (payload.len > 0) {
             try self.writeAll(payload);
         }
     }
 
-    pub fn sendText(self: Server, text: []const u8) !void {
+    pub fn sendText(self: *Server, text: []const u8) !void {
         try self.writeFrame(.text, text);
     }
 
-    pub fn sendClose(self: Server, code: u16) !void {
+    pub fn sendClose(self: *Server, code: u16) !void {
         var close_frame: [2]u8 = undefined;
-        std.mem.writeInt(u16, &close_frame, @byteSwap(code), .big);
+        std.mem.writeInt(u16, &close_frame, code, .big);
         try self.writeFrame(.close, &close_frame);
     }
 
-    pub fn sendPong(self: Server, payload: []const u8) !void {
+    pub fn sendPong(self: *Server, payload: []const u8) !void {
         try self.writeFrame(.pong, payload);
     }
 };

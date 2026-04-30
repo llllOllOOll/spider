@@ -75,7 +75,7 @@ pub fn handleConnection(ctx: *ConnectionContext) error{Canceled}!void {
                 }
             }
 
-            const handshake_ok = ws.handshake(ctx.allocator, &ws_headers) catch false;
+            const handshake_ok = ws.handshake(ctx.allocator, &ws_headers.map) catch false;
             if (handshake_ok) {
                 const conn_id = ws_counter.fetchAdd(1, .monotonic);
                 const hub = spider.getWsHub();

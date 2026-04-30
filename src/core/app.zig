@@ -228,6 +228,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._driver_type = ctx.server._driver_type,
                 ._views = views_cfg,
                 ._io = ctx.io,
+                ._stream = ctx.stream,
                 ._headers = headers_map,
             };
 
@@ -263,6 +264,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._driver_type = ctx.server._driver_type,
                 ._views = views_cfg,
                 ._io = ctx.io,
+                ._stream = ctx.stream,
                 ._headers = headers_map,
             };
             break :blk ctx_req.text("404 Not Found", .{ .status = .not_found }) catch

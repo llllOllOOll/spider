@@ -5,7 +5,7 @@ pub const Hub = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     mutex: std.Io.Mutex,
-    connections: std.ArrayList(Connection),
+    connections: std.ArrayListUnmanaged(Connection) = .empty,
 
     pub const Connection = struct {
         id: u64,
@@ -50,18 +50,26 @@ pub const Hub = struct {
 
     pub fn broadcast(self: *Hub, message: []const u8) void {
         self.mutex.lock(self.io) catch return;
-        defer self.mutex.unlock(self.io);
-
-        var dead_connections: std.ArrayList(u64) = .empty;
-        defer dead_connections.deinit(self.allocator);
-
+        var snapshot: std.ArrayListUnmanaged(Connection) = .empty;
+        defer snapshot.deinit(self.allocator);
         for (self.connections.items) |conn| {
+            snapshot.append(self.allocator, conn) catch {};
+        }
+        self.mutex.unlock(self.io);
+
+        var dead: std.ArrayListUnmanaged(u64) = .empty;
+        defer dead.deinit(self.allocator);
+
+        for (snapshot.items) |conn| {
             self.sendText(conn.stream, message) catch {
-                dead_connections.append(self.allocator, conn.id) catch {};
+                dead.append(self.allocator, conn.id) catch {};
             };
         }
 
-        for (dead_connections.items) |id| {
+        if (dead.items.len == 0) return;
+        self.mutex.lock(self.io) catch return;
+        defer self.mutex.unlock(self.io);
+        for (dead.items) |id| {
             for (self.connections.items, 0..) |conn, i| {
                 if (conn.id == id) {
                     _ = self.connections.orderedRemove(i);
@@ -72,23 +80,28 @@ pub const Hub = struct {
     }
 
     fn sendText(self: *Hub, stream: net.Stream, text: []const u8) !void {
-        _ = self;
-        var header: [2]u8 = undefined;
-        header[0] = 0x81; // text frame + fin
-        header[1] = @intCast(text.len);
+        var write_buf: [4096]u8 = undefined;
+        var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
+        const writer = &sw.interface;
 
-        var header_slice: []u8 = &header;
-        while (header_slice.len > 0) {
-            const written = std.os.linux.write(stream.socket.handle, header_slice.ptr, header_slice.len);
-            if (written == 0) return error.BrokenPipe;
-            header_slice = header_slice[written..];
+        var header_buf: [10]u8 = undefined;
+        var header_len: usize = 2;
+        header_buf[0] = 0x81;
+
+        if (text.len < 126) {
+            header_buf[1] = @intCast(text.len);
+        } else if (text.len < 65536) {
+            header_buf[1] = 126;
+            std.mem.writeInt(u16, header_buf[2..4], @intCast(text.len), .big);
+            header_len = 4;
+        } else {
+            header_buf[1] = 127;
+            std.mem.writeInt(u64, header_buf[2..10], text.len, .big);
+            header_len = 10;
         }
 
-        var text_slice = text[0..];
-        while (text_slice.len > 0) {
-            const written = std.os.linux.write(stream.socket.handle, text_slice.ptr, text_slice.len);
-            if (written == 0) return error.BrokenPipe;
-            text_slice = text_slice[written..];
-        }
+        try writer.writeAll(header_buf[0..header_len]);
+        try writer.writeAll(text);
+        try writer.flush();
     }
 };
