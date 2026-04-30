@@ -15,8 +15,10 @@ const DriverType = @import("database.zig").DriverType;
 const Router = @import("../routing/router.zig").Router;
 const Handler = @import("../routing/router.zig").Handler;
 const Config = @import("../internal/config.zig").Config;
+const Env = @import("../internal/config.zig").Env;
 const default_config = @import("../internal/config.zig").default;
 const views_mod = @import("../render/views.zig");
+const livereload = @import("../modules/livereload.zig");
 
 // SAFETY: threadlocal is safe here because Io.Threaded uses blocking OS threads —
 // each handleConnection occupies one thread exclusively from accept to respond.
@@ -100,6 +102,7 @@ const WorkerCtx = struct {
     listener: *Io.net.Server,
     router: *Router,
     server: *Server,
+    env: Env,
 };
 
 const ConnCtx = struct {
@@ -108,6 +111,7 @@ const ConnCtx = struct {
     gpa: std.mem.Allocator,
     router: *Router,
     server: *Server,
+    env: Env,
 };
 
 fn workerLoop(ctx: WorkerCtx) void {
@@ -128,6 +132,7 @@ fn workerLoop(ctx: WorkerCtx) void {
             .gpa = ctx.gpa,
             .router = ctx.router,
             .server = ctx.server,
+            .env = ctx.env,
         }}) catch |err| {
             std.debug.print("Worker {d} concurrent error: {s}\n", .{ tid, @errorName(err) });
             stream.close(ctx.io);
@@ -159,12 +164,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         _ = req_arena.reset(.{ .retain_with_limit = 8192 });
         const arena = req_arena.allocator();
 
-        var request = http.receiveHead() catch |err| {
-            if (err != error.HttpConnectionClosing) {
-                std.debug.print("receiveHead error: {s}\n", .{@errorName(err)});
-            }
-            break;
-        };
+        var request = http.receiveHead() catch break;
 
         const target = request.head.target;
         const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
@@ -287,7 +287,29 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 header_count += 1;
             }
         }
-        request.respond(response.body orelse "", .{
+        var final_body = response.body orelse "";
+
+        // injetar live reload em dev
+        if (ctx.env == .development) {
+            const ct = response.content_type;
+            const is_html = std.mem.startsWith(u8, ct, "text/html");
+            if (is_html and final_body.len > 0) {
+                if (std.mem.lastIndexOf(u8, final_body, "</body>")) |idx| {
+                    final_body = std.mem.concat(arena, u8, &.{
+                        final_body[0..idx],
+                        livereload.SCRIPT,
+                        final_body[idx..],
+                    }) catch final_body;
+                } else {
+                    final_body = std.mem.concat(arena, u8, &.{
+                        final_body,
+                        livereload.SCRIPT,
+                    }) catch final_body;
+                }
+            }
+        }
+
+        request.respond(final_body, .{
             .status = response.status,
             .extra_headers = extra_headers_buf[0..header_count],
         }) catch {};
@@ -445,6 +467,7 @@ pub const Server = struct {
             .listener = &listener,
             .router = &self.router,
             .server = self,
+            .env = self.config.env,
         };
 
         for (threads) |*t| {
@@ -473,5 +496,10 @@ pub fn appWithConfig(config: Config) Server {
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
     s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, "src") catch null;
+
+    if (config.env == .development) {
+        _ = s.get("/_spider/reload", livereload.handler);
+    }
+
     return s;
 }

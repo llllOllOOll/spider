@@ -1,24 +1,23 @@
 const std = @import("std");
 const spider = @import("spider");
 const mysql = @import("spider").mysql;
-const Response = spider.Response;
 
 var request_count: u64 = 0;
 
-fn rootHandler(c: *spider.Ctx) !Response {
+fn rootHandler(c: *spider.Ctx) !spider.Response {
     request_count += 1;
     return c.json(.{ .message = "Hello from Spider!", .status = "OK", .requests = request_count }, .{});
 }
 
-fn healthHandler(c: *spider.Ctx) !Response {
+fn healthHandler(c: *spider.Ctx) !spider.Response {
     return c.json(.{ .status = "healthy", .requests_served = request_count }, .{});
 }
 
-fn echoHandler(c: *spider.Ctx) !Response {
+fn echoHandler(c: *spider.Ctx) !spider.Response {
     return c.text("Echo response: Simple and fast!", .{});
 }
 
-fn userHandler(c: *spider.Ctx) !Response {
+fn userHandler(c: *spider.Ctx) !spider.Response {
     const path = c.getPath();
     const user_id = if (std.mem.startsWith(u8, path, "/users/"))
         path["/users/".len..]
@@ -27,20 +26,20 @@ fn userHandler(c: *spider.Ctx) !Response {
     return c.json(.{ .user_id = user_id, .name = "John Doe", .email = "john@example.com" }, .{});
 }
 
-fn htmlHandler(c: *spider.Ctx) !Response {
+fn htmlHandler(c: *spider.Ctx) !spider.Response {
     return c.render("Hello {{ name }}!", .{ .name = "Spider" }, .{});
 }
 
-fn arenaHandler(c: *spider.Ctx) !Response {
+fn arenaHandler(c: *spider.Ctx) !spider.Response {
     const msg = try std.fmt.allocPrint(c.arena, "Request arena working! Thread: {d}", .{std.Thread.getCurrentId()});
     return c.json(.{ .message = msg }, .{});
 }
 
-fn createdHandler(c: *spider.Ctx) !Response {
+fn createdHandler(c: *spider.Ctx) !spider.Response {
     return c.json(.{ .id = 1, .created = true }, .{ .status = .created });
 }
 
-fn headersHandler(c: *spider.Ctx) !Response {
+fn headersHandler(c: *spider.Ctx) !spider.Response {
     return c.json(.{ .ok = true }, .{
         .headers = &.{
             .{ "X-Powered-By", "Spider" },
@@ -49,21 +48,21 @@ fn headersHandler(c: *spider.Ctx) !Response {
     });
 }
 
-fn queryHandler(c: *spider.Ctx) !Response {
+fn queryHandler(c: *spider.Ctx) !spider.Response {
     const name = c.query("name") orelse "World";
     return c.json(.{ .hello = name }, .{});
 }
 
-fn headerHandler(c: *spider.Ctx) !Response {
+fn headerHandler(c: *spider.Ctx) !spider.Response {
     const ua = c.header("User-Agent") orelse "unknown";
     return c.json(.{ .user_agent = ua }, .{});
 }
 
-fn redirectHandler(c: *spider.Ctx) !Response {
+fn redirectHandler(c: *spider.Ctx) !spider.Response {
     return c.redirect("/");
 }
 
-fn echoBodyHandler(c: *spider.Ctx) !Response {
+fn echoBodyHandler(c: *spider.Ctx) !spider.Response {
     const raw = c.getBody() orelse return c.text("no body", .{});
     return c.text(raw, .{});
 }
@@ -73,7 +72,7 @@ const CreateUser = struct {
     email: []const u8,
 };
 
-fn createUserHandler(c: *spider.Ctx) !Response {
+fn createUserHandler(c: *spider.Ctx) !spider.Response {
     const user = try c.bodyJson(CreateUser);
     return c.json(.{
         .created = true,
@@ -82,36 +81,36 @@ fn createUserHandler(c: *spider.Ctx) !Response {
     }, .{ .status = .created });
 }
 
-fn loggerMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
-    std.debug.print("[{s}] {s}\n", .{ c.getMethod(), c.getPath() });
+fn loggerMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
+    std.log.info("{s} {s}", .{ c.getMethod(), c.getPath() });
     const res = try next(c);
-    std.debug.print("  -> {d}\n", .{@intFromEnum(res.status)});
+    std.log.info("  -> {d}", .{@intFromEnum(res.status)});
     return res;
 }
 
-fn authMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
+fn authMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
     const token = c.header("Authorization") orelse
         return c.text("Unauthorized", .{ .status = .unauthorized });
     _ = token;
     return next(c);
 }
 
-fn dashHandler(c: *spider.Ctx) !Response {
+fn dashHandler(c: *spider.Ctx) !spider.Response {
     return c.json(.{ .page = "dashboard" }, .{});
 }
 
-fn usersListHandler(c: *spider.Ctx) !Response {
+fn usersListHandler(c: *spider.Ctx) !spider.Response {
     return c.json(.{ .page = "users" }, .{});
 }
 
-fn cookieHandler(c: *spider.Ctx) !Response {
+fn cookieHandler(c: *spider.Ctx) !spider.Response {
     const session = c.cookie("session");
     return c.json(.{
         .existing_session = session orelse "none",
     }, try c.withCookie("session", "abc123", .{ .max_age = 3600, .secure = false }));
 }
 
-fn htmxHandler(c: *spider.Ctx) !Response {
+fn htmxHandler(c: *spider.Ctx) !spider.Response {
     if (c.isHtmx()) {
         return c.html("<div>Partial response for HTMX</div>", .{});
     }
@@ -134,7 +133,7 @@ fn slowRoutes(s: *spider.Server, prefix: []const u8, middlewares: []const spider
     s.addRoute(.GET, std.fmt.allocPrint(s.allocator, "{s}/", .{prefix}) catch "/slow/", middlewares, slowHandler);
 }
 
-fn apiMiddleware(c: *spider.Ctx, next: spider.NextFn) !Response {
+fn apiMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
     std.debug.print("[API] {s}\n", .{c.getPath()});
     return next(c);
 }
@@ -146,7 +145,7 @@ const User = struct {
     email: []const u8,
 };
 
-fn usersViewHandler(c: *spider.Ctx) !Response {
+fn usersViewHandler(c: *spider.Ctx) !spider.Response {
     const users = [_]User{
         .{ .name = "Alice", .email = "alice@spider.dev" },
         .{ .name = "Bob", .email = "bob@spider.dev" },
@@ -154,7 +153,7 @@ fn usersViewHandler(c: *spider.Ctx) !Response {
     return c.view("users/index", .{ .users = &users }, .{});
 }
 
-fn helloViewHandler(c: *spider.Ctx) !Response {
+fn helloViewHandler(c: *spider.Ctx) !spider.Response {
     return c.view("hello", .{ .name = "Spider" }, .{});
 }
 
@@ -170,7 +169,7 @@ const Todo = struct {
     updated_at: []const u8, // SQLite armazena como TEXT
 };
 
-fn sqliteTestHandler(c: *spider.Ctx) !Response {
+fn sqliteTestHandler(c: *spider.Ctx) !spider.Response {
     // Teste básico do SQLite
     try c.db().exec("CREATE TABLE IF NOT EXISTS test (id INTEGER PRIMARY KEY, name TEXT)");
 
@@ -183,7 +182,7 @@ fn sqliteTestHandler(c: *spider.Ctx) !Response {
     return c.json(.{ .driver = "SQLite", .items = result, .count = result.len }, .{});
 }
 
-fn todosHandler(c: *spider.Ctx) !Response {
+fn todosHandler(c: *spider.Ctx) !spider.Response {
     const todos = try c.db().query(
         Todo,
         "SELECT id, title, completed, created_at, updated_at FROM todos LIMIT 5",
@@ -213,7 +212,7 @@ fn mysqlProductsHandler(c: *spider.Ctx) !spider.Response {
     }, .{});
 }
 
-fn envHandler(c: *spider.Ctx) !Response {
+fn envHandler(c: *spider.Ctx) !spider.Response {
     return c.json(.{
         .database_url = spider.env.getOr("DATABASE_URL", "not set"),
         .port = spider.env.getInt(u16, "PORT", 3000),
@@ -223,7 +222,7 @@ fn envHandler(c: *spider.Ctx) !Response {
     }, .{});
 }
 
-fn globalErrorHandler(c: *spider.Ctx, err: anyerror) !Response {
+fn globalErrorHandler(c: *spider.Ctx, err: anyerror) !spider.Response {
     std.log.err("caught: {s}", .{@errorName(err)});
     return c.json(.{
         .error_name = @errorName(err),
@@ -231,7 +230,7 @@ fn globalErrorHandler(c: *spider.Ctx, err: anyerror) !Response {
     }, .{ .status = .internal_server_error });
 }
 
-fn brokenHandler(c: *spider.Ctx) !Response {
+fn brokenHandler(c: *spider.Ctx) !spider.Response {
     _ = c;
     return error.SomethingWentWrong;
 }
@@ -242,7 +241,7 @@ const googleConfig = spider.google.GoogleConfig{
     .redirect_uri = "http://localhost:3000/auth/google/callback",
 };
 
-fn googleLoginHandler(c: *spider.Ctx) !Response {
+fn googleLoginHandler(c: *spider.Ctx) !spider.Response {
     const url = try spider.google.authUrl(c.arena, googleConfig);
     return c.json(.{ .auth_url = url }, .{});
 }
@@ -254,7 +253,7 @@ var gAuth = spider.auth.Auth.init(.{
     .secure_cookie = false,
 });
 
-fn loginHandler(c: *spider.Ctx) !Response {
+fn loginHandler(c: *spider.Ctx) !spider.Response {
     var ts: std.os.linux.timespec = undefined;
     _ = std.os.linux.clock_gettime(.REALTIME, &ts);
     const now: i64 = ts.sec;
@@ -270,7 +269,7 @@ fn loginHandler(c: *spider.Ctx) !Response {
     return c.json(.{ .ok = true, .token = token }, .{ .headers = hdrs });
 }
 
-fn loginExpiredHandler(c: *spider.Ctx) !Response {
+fn loginExpiredHandler(c: *spider.Ctx) !spider.Response {
     const token = try spider.auth.jwtSign(c.arena, .{
         .sub = 99,
         .email = "expired@spider.dev",
@@ -279,7 +278,7 @@ fn loginExpiredHandler(c: *spider.Ctx) !Response {
     return c.json(.{ .ok = true, .token = token }, .{});
 }
 
-fn profileHandler(c: *spider.Ctx) !Response {
+fn profileHandler(c: *spider.Ctx) !spider.Response {
     const user_id = c.params.get("_user_id") orelse "unknown";
     const email = c.params.get("_user_email") orelse "unknown";
     return c.json(.{
@@ -289,7 +288,7 @@ fn profileHandler(c: *spider.Ctx) !Response {
     }, .{});
 }
 
-fn logoutHandler(c: *spider.Ctx) !Response {
+fn logoutHandler(c: *spider.Ctx) !spider.Response {
     const cookie = try spider.auth.cookieClear(c.arena);
     const hdrs = try c.arena.alloc([2][]const u8, 1);
     hdrs[0] = .{ "Set-Cookie", cookie };
