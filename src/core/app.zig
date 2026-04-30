@@ -169,6 +169,15 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         const target = request.head.target;
         const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
 
+        // Capture headers before body reading — iterateHeaders() panics after readerExpectNone().
+        var headers_map: std.StringHashMapUnmanaged([]const u8) = .{};
+        {
+            var hdr_iter = request.iterateHeaders();
+            while (hdr_iter.next()) |h| {
+                headers_map.put(arena, h.name, h.value) catch {};
+            }
+        }
+
         // readerExpectNone invalidates head.target; dupe it first so getPath()
         // keeps working in middlewares and handlers after body reading.
         const body: ?[]const u8 = blk: {
@@ -219,6 +228,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._driver_type = ctx.server._driver_type,
                 ._views = views_cfg,
                 ._io = ctx.io,
+                ._headers = headers_map,
             };
 
             var route_mws: []const MiddlewareFn = &.{};
@@ -253,6 +263,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._driver_type = ctx.server._driver_type,
                 ._views = views_cfg,
                 ._io = ctx.io,
+                ._headers = headers_map,
             };
             break :blk ctx_req.text("404 Not Found", .{ .status = .not_found }) catch
                 Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };

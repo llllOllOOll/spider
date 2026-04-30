@@ -55,6 +55,7 @@ pub const Ctx = struct {
     _driver_type: DriverType = .postgresql,
     _views: ?ViewsConfig = null,
     _io: std.Io = undefined,
+    _headers: std.StringHashMapUnmanaged([]const u8) = .{},
 
     pub fn db(self: *Ctx) DatabaseCtx {
         return .{
@@ -157,7 +158,7 @@ pub const Ctx = struct {
 
                 const combined = try std.mem.concat(self.arena, u8, &.{ layout_content, view_content });
                 const block_name = if (self.isHtmx()) "content" else "base";
-                break :blk try template.renderBlock(combined, block_name, data, self.arena);
+                break :blk try template.renderBlockWithTemplates(combined, block_name, data, self.arena, Templates{});
             } else blk: {
                 break :blk try template.render(view_content, data, self.arena);
             };
@@ -231,6 +232,13 @@ pub const Ctx = struct {
             .ignore_unknown_fields = true,
         });
         return parsed.value;
+    }
+
+    pub fn parseForm(self: *Ctx, comptime T: type) !T {
+        const body = self.body orelse return error.BodyEmpty;
+        var parser = try @import("../binding/form_parser.zig").FormParser.init(self.arena, body);
+        defer parser.deinit();
+        return try parser.parse(T);
     }
 
     pub fn isHtmx(self: *Ctx) bool {
@@ -313,10 +321,10 @@ pub const Ctx = struct {
     }
 
     pub fn header(self: *Ctx, name: []const u8) ?[]const u8 {
-        var iter = self.request.iterateHeaders();
-        while (iter.next()) |h| {
-            if (std.ascii.eqlIgnoreCase(h.name, name)) {
-                return h.value;
+        var iter = self._headers.iterator();
+        while (iter.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) {
+                return entry.value_ptr.*;
             }
         }
         return null;

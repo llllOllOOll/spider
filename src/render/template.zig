@@ -1126,7 +1126,7 @@ pub fn renderBlock(template: []const u8, block_name: []const u8, data: anytype, 
     return renderTemplate(block_content, context, allocator, EmptyTemplates{}, &blocks);
 }
 
-fn renderBlockWithTemplates(
+pub fn renderBlockWithTemplates(
     tmpl: []const u8,
     block_name: []const u8,
     data: anytype,

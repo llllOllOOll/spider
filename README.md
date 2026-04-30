@@ -1,297 +1,625 @@
 # <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider
 
-Spider web framework written in Zig (tested with `0.16.0-dev.2984+`).
+Build web servers in Zig — with the ergonomics you'd expect
+from Django or Rails, and the performance you'd expect from C.
 
-📖 **Full Documentation:** https://spiderme.org
+Batteries included: PostgreSQL, SQLite, MySQL, JWT auth, Google OAuth, WebSockets, HTMX support, and a powerful template engine.
 
-## Features
-
-* **Authentication System** - JWT, cookies, Google OAuth
-* **HTTP Client** - External API requests with HTTPS
-* **PostgreSQL Client** - With connection pooling and retry logic
-* **Trie-based router** with dynamic params (`/users/:id`)
-* **WebSocket support** + hub broadcasting
-* **JSON & text responses**
-* **Connection & buffer pooling**
-* **Structured JSON logging**
-* **Metrics + built-in dashboard**
-* **Static file serving**
-* **Graceful shutdown (SIGINT/SIGTERM)
-* **Environment configuration** (.env file support)
-* **Template engine** - Embedded HTML templates**
+📖 **Full Documentation:** https://spiderme.org  
+🚀 **Starter Kit:** [SpiderStack](https://github.com/llllOllOOll/spider/tree/main/examples/spiderstack)
 
 ---
 
 ## Requirements
 
-* Zig `0.16.0-dev.2984+` (or compatible)
+- Zig `0.17.0-dev` or compatible
 
 ```bash
 zig version
+# 0.17.0-dev.93+76174e1bc
 ```
-
-> **Note for Zig 0.16.0-dev.2984+**: The following changes were made for compatibility:
-> - `ArrayList` initialization now uses `.empty` instead of `{}`
-> - `ArrayListUnmanaged` requires explicit struct fields: `{ .items = &.{}, .capacity = 0 }`
-> - `net.IpAddress.listen()` now requires a pointer: `&address` instead of `address`
-> - POST/PUT requests without `Content-Length` header are now handled gracefully (returns 400 or redirect)
 
 ---
 
-## Installation (zig fetch)
+## Installation
 
 ```bash
 zig fetch --save git+https://github.com/llllOllOOll/spider
 ```
 
-This will update your `build.zig.zon`:
+Add to your `build.zig`:
 
 ```zig
-.dependencies = .{
-    .spider = .{
-        .url = "git+https://github.com/llllOllOOll/spider#9e2b0e23b5abec169a24e647ef86d14312802487",
-        .hash = "spider-0.3.0-RIctlRG0AQBPowPNb2uPUwmAzLlfKVbjpRT9ZU6NsbNe",
-    },
-},
-```
+const spider_dep = b.dependency("spider", .{ .target = target });
+const spider_mod = spider_dep.module("spider");
 
----
+exe.root_module.addImport("spider", spider_mod);
 
-## Configure `build.zig`
-
-```zig
-const spider_dep = b.dependency("spider", .{
-    .target = target,
-});
-
-const exe = b.addExecutable(.{
-    .name = "zig_spider",
-    .root_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "spider", .module = spider_dep.module("spider") },
-        },
-    }),
-});
+// Auto-generate embedded templates (required for embed mode)
+const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));
+gen.addArg("src/");
+gen.addArg("src/embedded_templates.zig");
+exe.step.dependOn(&gen.step);
 ```
 
 ---
 
 ## Quick Start
 
-**src/main.zig**
-
 ```zig
 const std = @import("std");
 const spider = @import("spider");
 
-pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
-    const io = init.io;
+// Embed templates (one line — Spider detects automatically)
+pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
 
-    // Load environment configuration
-    spider.loadEnv(allocator, ".env") catch {};
-
-    // Initialize server with optional layout
-    const server = try spider.Spider.init(allocator, io, "127.0.0.1", 8080, .{
-        .layout = @embedFile("views/layout.html"),
-    });
+pub fn main() void {
+    var server = spider.app();
     defer server.deinit();
 
-    try server
-        .get("/", pingHandler)
-        .get("/api/data", apiHandler)
-        .listen();
+    server
+        .get("/", homeHandler)
+        .get("/users/:id", userHandler)
+        .post("/users", createUserHandler)
+        .listen(3000) catch {};
 }
 
-fn pingHandler(alc: std.mem.Allocator, _: *spider.Request) !spider.Response {
-    return spider.Response.json(alc, .{ .msg = "pong" });
+fn homeHandler(c: *spider.Ctx) !spider.Response {
+    return c.json(.{ .message = "Hello from Spider!" }, .{});
 }
 
-fn apiHandler(alc: std.mem.Allocator, _: *spider.Request) !spider.Response {
-    // Example using HTTP client
-    const http_client = spider.http_client;
-    const response = try http_client.get(
-        alc,
-        "https://jsonplaceholder.typicode.com/posts/1",
-        &.{}
-    );
-    defer alc.free(response);
-    
-    return spider.Response.json(alc, .{ .external_data = response });
+fn userHandler(c: *spider.Ctx) !spider.Response {
+    const id = c.param("id") orelse "unknown";
+    return c.json(.{ .user_id = id }, .{});
+}
+
+fn createUserHandler(c: *spider.Ctx) !spider.Response {
+    const User = struct { name: []const u8, email: []const u8 };
+    const body = try c.bodyJson(User);
+    return c.json(.{ .created = true, .name = body.name }, .{ .status = .created });
 }
 ```
-
----
-
-## Run
 
 ```bash
 zig build run
-```
-
-Open:
-
-```
-http://localhost:8080/
-```
-
-Response:
-
-```json
-{"msg":"pong"}
+# Speed server starting on port 3000...
+# Server listening on http://127.0.0.1:3000
+# Starting 12 worker threads
 ```
 
 ---
 
-## Built-in Dashboard
+## Context — `c: *spider.Ctx`
 
-Spider exposes internal metrics at:
+Every handler receives a `*spider.Ctx`. It provides everything you need — no allocators, no I/O wiring required.
 
+### Responses
+
+```zig
+// JSON
+return c.json(.{ .id = 1, .name = "Alice" }, .{});
+
+// JSON with custom status
+return c.json(.{ .error = "not found" }, .{ .status = .not_found });
+
+// JSON with custom headers
+return c.json(.{ .ok = true }, .{
+    .headers = &.{.{ "X-Powered-By", "Spider" }},
+});
+
+// Plain text
+return c.text("Hello!", .{});
+
+// HTML
+return c.html("<h1>Hello</h1>", .{});
+
+// Redirect
+return c.redirect("/dashboard");
+
+// Render template by name
+return c.view("users/index", .{ .users = users }, .{});
 ```
-http://localhost:8080/_spider/dashboard
+
+### Reading Requests
+
+```zig
+// URL parameter: /users/:id
+const id = c.param("id") orelse "unknown";
+
+// Query string: /search?q=zig
+const q = c.query("q") orelse "";
+
+// Request header
+const ua = c.header("User-Agent") orelse "";
+
+// Cookie
+const session = c.cookie("token") orelse "";
+
+// Raw body
+const raw = c.getBody() orelse "";
+
+// Parse JSON body
+const User = struct { name: []const u8, email: []const u8 };
+const user = try c.bodyJson(User);
+
+// Parse form body
+const input = try c.parseForm(FormInput);
 ```
 
-Includes:
+### Arena Allocator
 
-* Request count
-* Latency metrics
-* Active connections
-* Runtime stats
+```zig
+// Allocate freely — Spider cleans up after each request
+const msg = try std.fmt.allocPrint(c.arena, "Hello, {s}!", .{name});
+return c.json(.{ .message = msg }, .{});
+```
+
+### HTMX Detection
+
+```zig
+fn handler(c: *spider.Ctx) !spider.Response {
+    if (c.isHtmx()) {
+        // return partial HTML fragment
+        return c.view("users/_list", data, .{});
+    }
+    // return full page
+    return c.view("users/index", data, .{});
+}
+```
 
 ---
 
-## Authentication Example
+## Routing
 
-Spider provides a complete authentication system:
+```zig
+server
+    .get("/", homeHandler)
+    .post("/users", createUser)
+    .get("/users/:id", getUser)
+    .put("/users/:id", updateUser)
+    .delete("/users/:id", deleteUser);
+```
+
+### Route Groups
+
+```zig
+fn dashboardRoutes(s: *spider.Server, prefix: []const u8, mws: []const spider.MiddlewareFn) void {
+    s.addRoute(.GET, "/dashboard", mws, dashHandler);
+    s.addRoute(.GET, "/dashboard/users", mws, usersHandler);
+}
+
+server
+    .group("/dashboard", &.{authMiddleware}, dashboardRoutes)
+    .get("/login", loginHandler);
+```
+
+---
+
+## Middleware
+
+```zig
+// Global — applies to all routes
+server.use(loggerMiddleware);
+
+// By path prefix
+server.useAt("/api/*", apiMiddleware);
+
+// Per group
+server.group("/admin", &.{authMiddleware, adminMiddleware}, adminRoutes);
+
+// Global error handler
+server.onError(errorHandler);
+```
+
+### Writing Middleware
+
+```zig
+fn loggerMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
+    std.log.info("{s} {s}", .{ c.getMethod(), c.getPath() });
+    const res = try next(c);
+    std.log.info("  → {d}", .{@intFromEnum(res.status)});
+    return res;
+}
+
+fn authMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
+    const token = c.cookie("token") orelse
+        return c.redirect("/login");
+    _ = try spider.auth.jwtVerify(Claims, c.arena, token, secret);
+    return next(c);
+}
+```
+
+---
+
+## Templates
+
+Spider's template engine supports variables, loops, conditions, includes, and layout inheritance.
+
+### Template Syntax
+
+```html
+<!-- views/layout.html -->
+{% block "base" %}
+<!DOCTYPE html>
+<html>
+<body>
+  <nav>My App</nav>
+  <main>{% template "content" %}</main>
+</body>
+</html>
+{% end %}
+```
+
+```html
+<!-- views/users/index.html -->
+{% extends "layout" %}
+{% block "content" %}
+<h1>Users</h1>
+{% for user in users %}
+  <li>{{ user.name }} — {{ user.email }}</li>
+{% endfor %}
+{% end %}
+```
+
+```zig
+// Handler — just the name, Spider handles the rest
+fn usersHandler(c: *spider.Ctx) !spider.Response {
+    const users = try db.query(User, "SELECT * FROM users", .{});
+    return c.view("users/index", .{ .users = users }, .{});
+}
+```
+
+### Template Modes
+
+**Embed mode** — templates compiled into the binary (recommended for production):
+
+```zig
+// main.zig — one line
+pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
+```
+
+Spider automatically generates `embedded_templates.zig` on every `zig build`.
+
+**Runtime mode** — reads from disk (zero config, hot reload in dev):
+
+```zig
+// main.zig — nothing needed
+// Spider scans src/ and serves templates from disk
+```
+
+### Template Tags
+
+| Tag | Description |
+|-----|-------------|
+| `{{ variable }}` | Variable interpolation |
+| `{{ var \| default:"fallback" }}` | Default filter |
+| `{% if condition %}...{% endif %}` | Conditional |
+| `{% if a %}...{% elif b %}...{% else %}...{% endif %}` | If/elif/else |
+| `{% for item in list %}...{% endfor %}` | Loop |
+| `{% include "partial" %}` | Include partial |
+| `{% extends "layout" %}` | Layout inheritance |
+| `{% block "name" %}...{% end %}` | Define block |
+| `{% raw %}...{% endraw %}` | Raw content (no processing) |
+
+---
+
+## Database
+
+### PostgreSQL
+
+```zig
+// main.zig — initialize once
+try spider.pg.init(arena, io, .{
+    .host = spider.env.getOr("PG_HOST", "localhost"),
+    .port = spider.env.getInt(u16, "PG_PORT", 5432),
+    .user = spider.env.getOr("PG_USER", "spider"),
+    .password = spider.env.getOr("PG_PASSWORD", ""),
+    .database = spider.env.getOr("PG_DB", "myapp"),
+});
+defer spider.pg.deinit();
+
+// Handler — query returns []T allocated in c.arena
+fn usersHandler(c: *spider.Ctx) !spider.Response {
+    const User = struct { id: i32, name: []const u8, email: []const u8 };
+    const users = try spider.pg.query(User, c.arena,
+        "SELECT id, name, email FROM users WHERE active = $1",
+        .{true},
+    );
+    return c.json(.{ .users = users }, .{});
+}
+```
+
+### SQLite
+
+```zig
+try spider.sqlite.init(arena, .{ .path = "app.db" });
+defer spider.sqlite.deinit();
+
+const rows = try spider.sqlite.query(Row, c.arena, "SELECT * FROM todos", .{});
+```
+
+### MySQL
+
+```zig
+try spider.mysql.init(arena, io, .{
+    .host = "localhost",
+    .database = "myapp",
+    .user = "root",
+    .password = "",
+});
+defer spider.mysql.deinit();
+
+const rows = try spider.mysql.query(Row, c.arena, "SELECT * FROM products", .{});
+```
+
+---
+
+## Authentication
+
+### JWT
 
 ```zig
 const auth = spider.auth;
 
-// JWT Token
-const token = try auth.jwtSign(allocator, .{
-    .sub = user_id,
-    .email = user_email,
-    .exp = std.time.timestamp() + 3600
-}, jwt_secret);
+// Sign
+const token = try auth.jwtSign(c.arena, .{
+    .sub = user.id,
+    .email = user.email,
+    .name = user.name,
+    .exp = 9999999999,
+}, spider.env.getOr("JWT_SECRET", "changeme"));
 
-// Cookie Management
-const cookie = try auth.cookieSet(allocator, token);
+// Verify
+const Claims = struct { sub: i32, email: []const u8, name: []const u8, exp: i64 };
+const claims = try auth.jwtVerify(Claims, c.arena, token, secret);
+
+// Set cookie
+const cookie = try auth.cookieSet(c.arena, token);
+return c.json(.{ .ok = true }, .{
+    .headers = &.{.{ "Set-Cookie", cookie }},
+});
+
+// Clear cookie (logout)
+const cookie = try auth.cookieClear(c.arena);
 ```
 
-## HTTP Client Example
-
-Make external API requests easily:
+### Auth Middleware
 
 ```zig
-const http_client = spider.http_client;
+var gAuth = spider.auth.Auth.init(.{
+    .secret = spider.env.getOr("JWT_SECRET", "changeme"),
+    .public_paths = &.{ "/login", "/auth/*" },
+    .redirect_to = "/login",
+    .secure_cookie = false, // true in production
+});
 
-const response = try http_client.get(
-    allocator,
-    "https://api.example.com/data",
-    &.{.{ .name = "Authorization", .value = "Bearer token" }}
-);
+server
+    .get("/login", loginHandler)
+    .group("/dashboard", &.{gAuth.asFn()}, dashboardRoutes);
 ```
 
-## Form Data
-
-Parse form submissions with support for arrays, dot notation, and URL decoding:
+### Google OAuth
 
 ```zig
-fn handleForm(alc: std.mem.Allocator, req: *spider.Request) !spider.Response {
-    var form = try req.form(alc);
-    defer form.deinit();
+const google = spider.google;
 
-    // Simple field
-    const name = form.get("name");
+const googleConfig = google.GoogleConfig{
+    .client_id     = spider.env.getOr("GOOGLE_CLIENT_ID", ""),
+    .client_secret = spider.env.getOr("GOOGLE_CLIENT_SECRET", ""),
+    .redirect_uri  = spider.env.getOr("GOOGLE_REDIRECT_URI", ""),
+};
 
-    // Nested field (dot notation)
-    const email = form.get("user.email");
+// Redirect to Google
+fn loginHandler(c: *spider.Ctx) !spider.Response {
+    const url = try google.authUrl(c.arena, googleConfig);
+    return c.redirect(url);
+}
 
-    // Array field (items[]=a&items[]=b)
-    const tags = form.getArray("tags");
+// Handle callback
+fn callbackHandler(c: *spider.Ctx) !spider.Response {
+    const code = c.query("code") orelse return c.redirect("/login");
+    const profile = try google.fetchProfile(c, code, googleConfig);
 
-    return spider.Response.json(alc, .{ .name = name });
+    const token = try spider.auth.jwtSign(c.arena, .{
+        .sub = 0,
+        .email = profile.email,
+        .name = profile.name,
+        .exp = 9999999999,
+    }, spider.env.getOr("JWT_SECRET", "changeme"));
+
+    const cookie = try spider.auth.cookieSet(c.arena, token);
+    return spider.Response{
+        .status = .found,
+        .body = null,
+        .content_type = "text/plain",
+        .headers = blk: {
+            const h = try c.arena.alloc([2][]const u8, 2);
+            h[0] = .{ "Location", "/" };
+            h[1] = .{ "Set-Cookie", cookie };
+            break :blk h;
+        },
+    };
 }
 ```
 
-## HTMX-Aware Rendering
-
-`renderView` automatically handles HTMX requests by returning partial content:
-
-```zig
-// Full page or partial content — handled automatically
-const view = @embedFile("views/dashboard.html");
-return spider.renderView(alc, req, view, data);
-
-// For explicit block rendering:
-const html = try spider.renderBlock(alc, view, "content", data);
-return spider.Response.html(alc, html);
-```
-
-With a registered layout, `renderView`:
-- Returns full page with layout for normal requests
-- Returns only the content block for HTMX requests (when `HX-Request` header is set)
+---
 
 ## Environment Configuration
 
-Spider automatically loads `.env` files:
+Spider automatically loads `.env` files on startup with priority order:
+
+1. `.env` — base configuration
+2. `.env.development` or `.env.production` — environment-specific
+3. `.env.local` — local overrides (highest priority)
 
 ```bash
 # .env
-POSTGRES_HOST=localhost
-POSTGRES_USER=spider
-POSTGRES_PASSWORD=secret
+DATABASE_URL=postgres://localhost/myapp
+JWT_SECRET=my-secret-key
+PORT=3000
+DEBUG=true
+GOOGLE_CLIENT_ID=your-client-id
 ```
 
 ```zig
-// Uses environment variables automatically
-spider.loadEnv(allocator, ".env") catch {};
-try spider.pg.init(allocator, io, .{});
+// Access anywhere in your app
+const host = spider.env.getOr("DB_HOST", "localhost");
+const port = spider.env.getInt(u16, "PORT", 3000);
+const debug = spider.env.getBool("DEBUG", false);
+const secret = spider.env.get("JWT_SECRET"); // returns ?[]const u8
 ```
 
 ---
 
-## Development
+## Static Files
 
-```bash
-# Run all tests
-zig test .
+Spider automatically serves `./public/` at `/` — no configuration needed.
 
-# Format
-zig fmt .
+```
+public/
+├── css/
+│   └── app.css       → GET /css/app.css
+├── js/
+│   └── app.js        → GET /js/app.js
+└── logo.png          → GET /logo.png
+```
+
+Path traversal (`../../etc/passwd`) is blocked automatically.
+
+---
+
+## Configuration
+
+Create `spider.config.zig` in your project root:
+
+```zig
+const spider = @import("spider");
+
+pub const config = spider.Config{
+    .views_dir = "./views",
+    .layout = "layout",
+    .env = .development,
+};
 ```
 
 ---
+
+
 
 ## Project Structure
 
-| Module                 | Description                    |
-| ---------------------- | ------------------------------ |
-| `spider.web`           | HTTP primitives                |
-| `spider.router`        | Trie router                    |
-| `spider.websocket`     | WebSocket protocol             |
-| `spider.ws_hub`        | WS broadcasting hub            |
-| `spider.pg`            | PostgreSQL client              |
-| `spider.logger`        | JSON logger                    |
-| `spider.metrics`       | Metrics system                 |
-| `spider.auth`          | Authentication system          |
-| `spider.http_client`   | External HTTP requests         |
-| `spider.google`        | Google OAuth integration       |
-| `spider.template`      | Template engine                |
-| `spider.form`          | FormData parsing               |
+```
+src/
+├── core/
+│   ├── app.zig          — Server, routing, workers
+│   ├── context.zig      — Ctx, Response, ResponseOptions
+│   ├── pipeline.zig     — HTTP connection handling
+│   └── database.zig     — Database interface (vtable)
+├── routing/
+│   └── router.zig       — Trie router
+├── modules/
+│   ├── auth/auth.zig    — JWT, cookies, middleware
+│   └── static.zig       — Static file serving
+├── drivers/
+│   ├── pg/              — PostgreSQL driver (pure Zig wire protocol)
+│   ├── sqlite/          — SQLite driver (via libsqlite3)
+│   └── mysql/           — MySQL driver (pure Zig wire protocol)
+├── render/
+│   ├── template.zig     — Template engine
+│   └── views.zig        — Template resolver (embed + runtime)
+├── internal/
+│   ├── config.zig       — spider.Config
+│   ├── env.zig          — .env loader
+│   ├── logger.zig       — Structured logging
+│   └── metrics.zig      — Metrics
+└── providers/
+    └── google.zig       — Google OAuth
+```
 
 ---
 
-## Examples & Resources
+## API Reference
 
-* 📖 **Full Documentation**: https://spiderme.org
-* 🚀 **Demo Application**: https://spiderme.org (live demo)
-* 💬 **WebSocket Chat Demo**: https://spiderme.org/chat
-* 📊 **Metrics Dashboard**: https://spiderme.org/_spider/dashboard
-* 🔐 **Authentication Examples**: Check the `smoney` project
+### `spider.Ctx` Methods
+
+| Method | Description |
+|--------|-------------|
+| `c.json(data, opts)` | JSON response |
+| `c.text(content, opts)` | Plain text response |
+| `c.html(content, opts)` | HTML response |
+| `c.view(name, data, opts)` | Render template by name |
+| `c.render(tmpl, data, opts)` | Render template string directly |
+| `c.redirect(url)` | HTTP redirect (302) |
+| `c.param(name)` | URL parameter |
+| `c.query(name)` | Query string parameter |
+| `c.header(name)` | Request header |
+| `c.cookie(name)` | Request cookie |
+| `c.getBody()` | Raw request body |
+| `c.bodyJson(T)` | Parse JSON body into struct |
+| `c.parseForm(T)` | Parse form body into struct |
+| `c.setCookie(name, value, opts)` | Build Set-Cookie string |
+| `c.withCookie(name, value, opts)` | Build ResponseOptions with cookie |
+| `c.isHtmx()` | True if HX-Request header present |
+| `c.isBoosted()` | True if HX-Boosted header present |
+| `c.arena` | Per-request arena allocator |
+
+### `spider.ResponseOptions`
+
+```zig
+pub const ResponseOptions = struct {
+    status: std.http.Status = .ok,
+    headers: []const [2][]const u8 = &.{},
+};
+```
+
+### `spider.Server` Methods
+
+| Method | Description |
+|--------|-------------|
+| `server.get(path, handler)` | Register GET route |
+| `server.post(path, handler)` | Register POST route |
+| `server.put(path, handler)` | Register PUT route |
+| `server.delete(path, handler)` | Register DELETE route |
+| `server.use(middleware)` | Global middleware |
+| `server.useAt(path, middleware)` | Path-scoped middleware |
+| `server.group(prefix, middlewares, fn)` | Route group with middleware |
+| `server.onError(handler)` | Global error handler |
+| `server.db(driver)` | Register database driver |
+| `server.listen(port)` | Start server |
+
+---
+
+## Examples
+
+- 🚀 **[SpiderStack](examples/spiderstack/)** — Full-featured starter kit with Google OAuth, PostgreSQL, HTMX, Tailwind, and DaisyUI
+
+---
+
+## Zig Version Policy
+
+Spider tracks Zig `master` — always.
+
+We follow Zig's development branch closely, migrating ahead of each stable release. This means Spider is ready for the new version before it ships, and breaking changes are handled as they happen — not after.
+
+| Version | Status |
+|---------|--------|
+| `0.17.0-dev` | ✅ current |
+| `0.16.0` | ✅ migrated before release |
+| `0.15.0` | ✅ migrated before release |
+
+If you're on a stable Zig release and Spider doesn't compile, check the git history — the migration is usually already done.
+
+---
+
+## Author
+
+Built by **Seven** (erivan cerqueira) — follow the journey on
+[YouTube](https://www.youtube.com/@llllOllOOl) where Seven posts
+videos about Zig and Spider development.
+
+💬 Discord: `llll0ll00ll`
+
+---
 
 ## License
 

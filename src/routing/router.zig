@@ -98,7 +98,7 @@ pub const Router = struct {
                 if (node.param_child == null) {
                     node.param_child = try Node.init(self.allocator);
                     node.param_name = try self.allocator.dupe(u8, segment[1..]);
-                } else {
+                } else if (!std.mem.eql(u8, node.param_name orelse "", segment[1..])) {
                     std.debug.print("ROUTER: Warning: parameter conflict at segment '{s}'\n", .{segment});
                 }
                 node = node.param_child.?;
