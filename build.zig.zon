@@ -8,6 +8,9 @@
             .url = "git+https://github.com/llllOllOOll/pacman#fa4cfdbc2429fbf39bb569ae307ccc6ca6024f3a",
             .hash = "pacman-0.1.0-SPnstaF-AAAkk0-mLHhUVku-ICUINnnSxQ-dDvifsC_S",
         },
+        .pg = .{
+            .path = "pg.zig",
+        },
     },
     .paths = .{
         "build.zig",

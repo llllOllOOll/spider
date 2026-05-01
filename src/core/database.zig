@@ -15,7 +15,7 @@ pub const Database = struct {
     }
 };
 
-pub const DriverType = enum { postgresql, sqlite, mysql };
+pub const DriverType = enum { postgresql, mysql };
 
 pub const DatabaseCtx = struct {
     _db: *const Database,
@@ -30,19 +30,7 @@ pub const DatabaseCtx = struct {
         return switch (self._driver_type) {
             .postgresql => {
                 const pg = @import("../drivers/pg/pg.zig");
-
-                // Convert to null-terminated string for libpq
-                var sql_buf: [4096]u8 = undefined;
-                if (sql.len >= sql_buf.len) return error.SqlTooLong;
-                @memcpy(sql_buf[0..sql.len], sql);
-                sql_buf[sql.len] = 0;
-                const sql_z: [:0]const u8 = sql_buf[0..sql.len :0];
-
-                return pg.query(T, self._arena, sql_z, params);
-            },
-            .sqlite => {
-                const sqlite = @import("../drivers/sqlite/sqlite.zig");
-                return sqlite.query(T, self._arena, sql, params);
+                return pg.query(T, self._arena, sql, params);
             },
             .mysql => {
                 const mysql = @import("../drivers/mysql/mysql.zig");

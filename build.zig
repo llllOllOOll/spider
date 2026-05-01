@@ -5,6 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const pacman_dep = b.dependency("pacman", .{});
+    const pg_dep = b.dependency("pg", .{ .target = target, .optimize = optimize });
 
     const tc_env = b.addTranslateC(.{
         .root_source_file = b.path("includes/env.h"),
@@ -14,22 +15,6 @@ pub fn build(b: *std.Build) void {
     tc_env.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
     const c_env = tc_env.createModule();
 
-    const tc_pg = b.addTranslateC(.{
-        .root_source_file = b.path("includes/pg.h"),
-        .target = target,
-        .optimize = optimize,
-    });
-    tc_pg.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
-    const c_pg = tc_pg.createModule();
-
-    const tc_sqlite = b.addTranslateC(.{
-        .root_source_file = b.path("includes/sqlite.h"),
-        .target = target,
-        .optimize = optimize,
-    });
-    tc_sqlite.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
-    const c_sqlite = tc_sqlite.createModule();
-
     const mod = b.addModule("spider", .{
         .root_source_file = b.path("src/spider.zig"),
         .target = target,
@@ -38,12 +23,9 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "pacman", .module = pacman_dep.module("pacman") },
             .{ .name = "c_env", .module = c_env },
-            .{ .name = "c_pg", .module = c_pg },
-            .{ .name = "c_sqlite", .module = c_sqlite },
+            .{ .name = "pg", .module = pg_dep.module("pg") },
         },
     });
-    mod.linkSystemLibrary("pq", .{});
-    mod.linkSystemLibrary("sqlite3", .{});
 
     // generate-templates — CLI tool used by dev projects
     const gen_exe = b.addExecutable(.{
@@ -60,7 +42,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/build_helpers.zig"),
     });
 
-    // spider-dev — test server (not installed)
+    // spider-dev — test server
     const test_exe = b.addExecutable(.{
         .name = "spider-dev",
         .root_module = b.createModule(.{
@@ -72,7 +54,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    // NÃO instalar — só para testes locais
+    b.installArtifact(test_exe);
 
     const run_dev = b.addRunArtifact(test_exe);
     run_dev.step.dependOn(b.getInstallStep());
