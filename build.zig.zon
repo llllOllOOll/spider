@@ -9,7 +9,7 @@
             .hash = "pacman-0.1.0-SPnstaF-AAAkk0-mLHhUVku-ICUINnnSxQ-dDvifsC_S",
         },
         .pg = .{
-            .path = "pg.zig",
+            .path = "pg_driver_impl",
         },
     },
     .paths = .{
