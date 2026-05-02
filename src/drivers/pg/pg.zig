@@ -2,25 +2,37 @@ const std = @import("std");
 const pg_lib = @import("pg");
 const env = @import("../../internal/env.zig");
 
-/// Convert an array to PostgreSQL array literal for use with ANY() operator.
-/// Example: array(i32, &[_]i32{ 1, 2, 3 }) → "{1,2,3}"
-pub fn array(comptime T: type, values: []const T) ![]const u8 {
-    const allocator = std.heap.page_allocator;
+/// Marker type for PostgreSQL array parameters that should use ANY() pattern
+pub fn ArrayParameter(comptime T: type) type {
+    return struct {
+        values: []const T,
+        type_name: []const u8,
 
-    // Build array literal
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
+        pub fn init(values: []const T, type_name: []const u8) @This() {
+            return .{
+                .values = values,
+                .type_name = type_name,
+            };
+        }
+    };
+}
 
-    try buf.appendSlice(allocator, "{");
-    for (values, 0..) |v, i| {
-        if (i > 0) try buf.appendSlice(allocator, ",");
-        // Convert value to string
-        const val_str = try std.fmt.allocPrint(allocator, "{}", .{v});
-        defer allocator.free(val_str);
-        try buf.appendSlice(allocator, val_str);
-    }
-    try buf.appendSlice(allocator, "}");
-    return buf.toOwnedSlice(allocator);
+/// Convert an array to PostgreSQL array parameter for use with ANY() operator.
+/// Example: array(i32, &[_]i32{ 1, 2, 3 }) → ArrayParameter that will be handled as "$1::integer[]"
+pub fn array(comptime T: type, values: []const T) ArrayParameter(T) {
+    // Determine PostgreSQL type name
+    const type_name = switch (T) {
+        i16 => "smallint",
+        i32 => "integer",
+        i64 => "bigint",
+        f32 => "real",
+        f64 => "double precision",
+        bool => "boolean",
+        []const u8, []u8 => "text",
+        else => "text", // fallback
+    };
+
+    return ArrayParameter(T).init(values, type_name);
 }
 
 pub const Config = struct {
