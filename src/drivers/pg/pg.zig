@@ -2,6 +2,27 @@ const std = @import("std");
 const pg_lib = @import("pg");
 const env = @import("../../internal/env.zig");
 
+/// Convert an array to PostgreSQL array literal for use with ANY() operator.
+/// Example: array(i32, &[_]i32{ 1, 2, 3 }) → "{1,2,3}"
+pub fn array(comptime T: type, values: []const T) ![]const u8 {
+    const allocator = std.heap.page_allocator;
+
+    // Build array literal
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "{");
+    for (values, 0..) |v, i| {
+        if (i > 0) try buf.appendSlice(allocator, ",");
+        // Convert value to string
+        const val_str = try std.fmt.allocPrint(allocator, "{}", .{v});
+        defer allocator.free(val_str);
+        try buf.appendSlice(allocator, val_str);
+    }
+    try buf.appendSlice(allocator, "}");
+    return buf.toOwnedSlice(allocator);
+}
+
 pub const Config = struct {
     host: []const u8 = "localhost",
     port: u16 = 5432,
