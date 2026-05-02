@@ -1,5 +1,6 @@
 const std = @import("std");
-const template = @import("../render/template.zig");
+const template_mod = @import("../render/template.zig");
+const Template = template_mod.Template;
 const views_mod = @import("../render/views.zig");
 const Database = @import("database.zig").Database;
 const DriverType = @import("database.zig").DriverType;
@@ -98,7 +99,10 @@ pub const Ctx = struct {
     }
 
     pub fn render(self: *Ctx, tmpl: []const u8, data: anytype, opts: ResponseOptions) !Response {
-        const html_body = try template.render(tmpl, data, self.arena);
+        var tmpl_instance = try Template.init(self.arena, tmpl);
+        defer tmpl_instance.deinit();
+
+        const html_body = try tmpl_instance.render(data, self.arena);
         return Response{
             .status = opts.status,
             .body = html_body,
@@ -133,7 +137,7 @@ pub const Ctx = struct {
                 return error.TemplateNotFound;
             };
 
-            const has_extends = std.mem.indexOf(u8, view_content, "{% extends") != null;
+            const has_extends = std.mem.indexOf(u8, view_content, "extends \"") != null;
 
             const rendered_html = if (has_extends) blk: {
                 const layout_name = extractExtendsName(view_content) orelse return error.InvalidTemplate;
@@ -156,10 +160,50 @@ pub const Ctx = struct {
                 };
 
                 const combined = try std.mem.concat(self.arena, u8, &.{ layout_content, view_content });
-                const block_name = if (self.isHtmx()) "content" else "base";
-                break :blk try template.renderBlockWithTemplates(combined, block_name, data, self.arena, Templates{});
+
+                var components = std.StringHashMapUnmanaged([]const u8){};
+                defer {
+                    var iter = components.iterator();
+                    while (iter.next()) |entry| {
+                        self.arena.free(entry.key_ptr.*);
+                        self.arena.free(entry.value_ptr.*);
+                    }
+                    components.deinit(self.arena);
+                }
+
+                const embed_inst: Templates = .{};
+                inline for (std.meta.fields(Templates)) |field| {
+                    const content: []const u8 = @field(embed_inst, field.name);
+                    try components.put(self.arena, try self.arena.dupe(u8, field.name), try self.arena.dupe(u8, content));
+                }
+
+                var tmpl_instance = try Template.init(self.arena, combined);
+                defer tmpl_instance.deinit();
+                tmpl_instance.components = components;
+
+                break :blk try tmpl_instance.render(data, self.arena);
             } else blk: {
-                break :blk try template.render(view_content, data, self.arena);
+                var components = std.StringHashMapUnmanaged([]const u8){};
+                defer {
+                    var iter = components.iterator();
+                    while (iter.next()) |entry| {
+                        self.arena.free(entry.key_ptr.*);
+                        self.arena.free(entry.value_ptr.*);
+                    }
+                    components.deinit(self.arena);
+                }
+
+                const embed_inst: Templates = .{};
+                inline for (std.meta.fields(Templates)) |field| {
+                    const content: []const u8 = @field(embed_inst, field.name);
+                    try components.put(self.arena, try self.arena.dupe(u8, field.name), try self.arena.dupe(u8, content));
+                }
+
+                var tmpl_instance = try Template.init(self.arena, view_content);
+                defer tmpl_instance.deinit();
+                tmpl_instance.components = components;
+
+                break :blk try tmpl_instance.render(data, self.arena);
             };
 
             return Response{
@@ -167,6 +211,7 @@ pub const Ctx = struct {
                 .body = rendered_html,
                 .content_type = "text/html; charset=utf-8",
                 .headers = opts.headers,
+                .cookies = opts.cookies,
             };
         }
 
@@ -185,7 +230,7 @@ pub const Ctx = struct {
             return err;
         };
 
-        const has_extends = std.mem.indexOf(u8, view_content, "{% extends") != null;
+        const has_extends = std.mem.indexOf(u8, view_content, "extends \"") != null;
 
         const rendered = if (has_extends) blk: {
             const layout_name = extractExtendsName(view_content) orelse return error.InvalidTemplate;
@@ -206,20 +251,17 @@ pub const Ctx = struct {
             };
 
             const combined = try std.mem.concat(self.arena, u8, &.{ layout_content, view_content });
-            const block_name = if (self.isHtmx()) "content" else "base";
 
-            // Build template entries slice for includes (runtime mode)
-            const TemplateEntry = struct { name: []const u8, content: []const u8 };
-            var entries: std.ArrayList(TemplateEntry) = .empty;
+            var components = std.StringHashMapUnmanaged([]const u8){};
             defer {
-                for (entries.items) |entry| {
-                    self.arena.free(entry.name);
-                    self.arena.free(entry.content);
+                var iter = components.iterator();
+                while (iter.next()) |entry| {
+                    self.arena.free(entry.key_ptr.*);
+                    self.arena.free(entry.value_ptr.*);
                 }
-                entries.deinit(self.arena);
+                components.deinit(self.arena);
             }
 
-            // Normalize layout_name
             const layout_norm = blk_l: {
                 var buf2: [256]u8 = undefined;
                 var j2: usize = 0;
@@ -229,9 +271,8 @@ pub const Ctx = struct {
                 }
                 break :blk_l try self.arena.dupe(u8, buf2[0..j2]);
             };
-            try entries.append(self.arena, .{ .name = layout_norm, .content = layout_content });
+            try components.put(self.arena, layout_norm, layout_content);
 
-            // Normalize view name
             const view_norm = blk_v: {
                 var buf2: [256]u8 = undefined;
                 var j2: usize = 0;
@@ -241,9 +282,8 @@ pub const Ctx = struct {
                 }
                 break :blk_v try self.arena.dupe(u8, buf2[0..j2]);
             };
-            try entries.append(self.arena, .{ .name = view_norm, .content = view_content });
+            try components.put(self.arena, view_norm, view_content);
 
-            // Load all templates from index for includes
             if (vc.index) |idx| {
                 for (idx.entries) |entry| {
                     const content = std.Io.Dir.cwd().readFileAlloc(
@@ -252,13 +292,43 @@ pub const Ctx = struct {
                         self.arena,
                         .limited(512 * 1024),
                     ) catch continue;
-                    try entries.append(self.arena, .{ .name = try self.arena.dupe(u8, entry.name), .content = content });
+                    try components.put(self.arena, try self.arena.dupe(u8, entry.name), content);
                 }
             }
 
-            break :blk try template.renderBlockWithTemplates(combined, block_name, data, self.arena, entries.items);
+            var tmpl_instance = try Template.init(self.arena, combined);
+            defer tmpl_instance.deinit();
+            tmpl_instance.components = components;
+
+            break :blk try tmpl_instance.render(data, self.arena);
         } else blk: {
-            break :blk try template.render(view_content, data, self.arena);
+            var components = std.StringHashMapUnmanaged([]const u8){};
+            defer {
+                var iter = components.iterator();
+                while (iter.next()) |entry| {
+                    self.arena.free(entry.key_ptr.*);
+                    self.arena.free(entry.value_ptr.*);
+                }
+                components.deinit(self.arena);
+            }
+
+            if (vc.index) |idx| {
+                for (idx.entries) |entry| {
+                    const content = std.Io.Dir.cwd().readFileAlloc(
+                        io,
+                        entry.path,
+                        self.arena,
+                        .limited(512 * 1024),
+                    ) catch continue;
+                    try components.put(self.arena, try self.arena.dupe(u8, entry.name), content);
+                }
+            }
+
+            var tmpl_instance = try Template.init(self.arena, view_content);
+            defer tmpl_instance.deinit();
+            tmpl_instance.components = components;
+
+            break :blk try tmpl_instance.render(data, self.arena);
         };
 
         return Response{
@@ -269,7 +339,6 @@ pub const Ctx = struct {
             .cookies = opts.cookies,
         };
     }
-
     pub fn getBody(self: *Ctx) ?[]const u8 {
         return self.body;
     }
