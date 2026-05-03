@@ -15,4 +15,4 @@ build.zig_main_for_test.zig
 AGENTS.md
 bench/
 src/main.zig
-
+memory.md
