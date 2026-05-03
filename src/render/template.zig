@@ -235,6 +235,10 @@ const Prop = struct {
 const Node = union(enum) {
     text: []const u8,
     interpolation: []const u8,
+    interpolation_with_default: struct {
+        expr: []const u8,
+        default: []const u8,
+    },
     if_node: struct {
         condition: []const u8,
         then_body: []Node,
@@ -412,10 +416,23 @@ const Parser = struct {
             p.pos += 1;
         }
         if (p.pos >= p.template.len) return error.UnclosedInterpolation;
-        const expr = try p.alc.dupe(u8, p.template[expr_start..p.pos]);
+        const expr_raw = p.template[expr_start..p.pos];
         p.pos += 2;
 
-        return Node{ .interpolation = expr };
+        if (std.mem.indexOf(u8, expr_raw, " ?? ")) |idx| {
+            const expr = trimWhitespace(expr_raw[0..idx]);
+            const default_raw = trimWhitespace(expr_raw[idx + 4 ..]);
+            const default_val = if (default_raw.len >= 2 and default_raw[0] == '"' and default_raw[default_raw.len - 1] == '"')
+                default_raw[1 .. default_raw.len - 1]
+            else
+                default_raw;
+            return Node{ .interpolation_with_default = .{
+                .expr = try p.alc.dupe(u8, expr),
+                .default = try p.alc.dupe(u8, default_val),
+            } };
+        }
+
+        return Node{ .interpolation = try p.alc.dupe(u8, expr_raw) };
     }
 
     fn parseText(p: *Parser) !Node {
@@ -541,9 +558,23 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
                 if (std.mem.startsWith(u8, str[pos..], " }")) break;
                 pos += 1;
             }
-            const expr = try alc.dupe(u8, str[expr_start..pos]);
+            if (pos >= str.len) return error.UnclosedInterpolation;
+            const expr_raw = str[expr_start..pos];
             pos += 2;
-            try nodes.append(alc, Node{ .interpolation = expr });
+            if (std.mem.indexOf(u8, expr_raw, " ?? ")) |idx| {
+                const expr = trimWhitespace(expr_raw[0..idx]);
+                const default_raw = trimWhitespace(expr_raw[idx + 4 ..]);
+                const default_val = if (default_raw.len >= 2 and default_raw[0] == '"' and default_raw[default_raw.len - 1] == '"')
+                    default_raw[1 .. default_raw.len - 1]
+                else
+                    default_raw;
+                try nodes.append(alc, Node{ .interpolation_with_default = .{
+                    .expr = try alc.dupe(u8, expr),
+                    .default = try alc.dupe(u8, default_val),
+                } });
+            } else {
+                try nodes.append(alc, Node{ .interpolation = try alc.dupe(u8, expr_raw) });
+            }
         } else if (std.mem.startsWith(u8, remaining, "{ slot }")) {
             try nodes.append(alc, Node{ .interpolation = try alc.dupe(u8, "slot") });
             pos += "{ slot }".len;
@@ -747,6 +778,10 @@ fn freeNode(node: Node, alc: std.mem.Allocator) void {
     switch (node) {
         .text => |s| alc.free(s),
         .interpolation => |s| alc.free(s),
+        .interpolation_with_default => |iwd| {
+            alc.free(iwd.expr);
+            alc.free(iwd.default);
+        },
         .if_node => |ifn| {
             alc.free(ifn.condition);
             for (ifn.then_body) |n| freeNode(n, alc);
@@ -804,6 +839,20 @@ fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.Ar
                 }
             }
         },
+        .interpolation_with_default => |iwd| {
+            const value = resolveValue(ctx, iwd.expr);
+            if (value) |v| {
+                const str = try valueToString(v, alc);
+                defer alc.free(str);
+                if (str.len > 0 and !std.mem.eql(u8, str, "false")) {
+                    try result.appendSlice(alc, str);
+                } else {
+                    try result.appendSlice(alc, iwd.default);
+                }
+            } else {
+                try result.appendSlice(alc, iwd.default);
+            }
+        },
         .if_node => |ifn| {
             const cond = evalBool(ctx, ifn.condition);
             if (cond) {
@@ -837,7 +886,24 @@ fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.Ar
         },
         .component => |comp| {
             if (components) |comps| {
-                if (comps.get(comp.name)) |comp_template_str| {
+                // Normalize PascalCase tag to snake_case field lookup
+                var field_buf: [256]u8 = undefined;
+                var field_len: usize = 0;
+                for (comp.name, 0..) |c, i| {
+                    if (c >= 'A' and c <= 'Z') {
+                        if (i > 0) {
+                            field_buf[field_len] = '_';
+                            field_len += 1;
+                        }
+                        field_buf[field_len] = c + 32;
+                    } else {
+                        field_buf[field_len] = c;
+                    }
+                    field_len += 1;
+                }
+                const field_name = field_buf[0..field_len];
+
+                if (comps.get(field_name)) |comp_template_str| {
                     var comp_parser = Parser.init(alc, comp_template_str);
                     const comp_nodes = try comp_parser.parse();
                     defer {
@@ -961,6 +1027,46 @@ test "basic interpolation" {
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
     try std.testing.expectEqualStrings("Hello World!", result);
+}
+
+test "coalescing ?? with missing value" {
+    const alc = std.testing.allocator;
+    const template_str = "Hello { name ?? \"Guest\" }!";
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    const result = try tmpl.render(.{}, alc);
+    defer alc.free(result);
+    try std.testing.expectEqualStrings("Hello Guest!", result);
+}
+
+test "coalescing ?? with present value" {
+    const alc = std.testing.allocator;
+    const template_str = "Hello { name ?? \"Guest\" }!";
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    const result = try tmpl.render(.{ .name = "Seven" }, alc);
+    defer alc.free(result);
+    try std.testing.expectEqualStrings("Hello Seven!", result);
+}
+
+test "coalescing ?? with empty string" {
+    const alc = std.testing.allocator;
+    const template_str = "{ title ?? \"Default Title\" }";
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    const result = try tmpl.render(.{ .title = "" }, alc);
+    defer alc.free(result);
+    try std.testing.expectEqualStrings("Default Title", result);
+}
+
+test "coalescing ?? with nested field" {
+    const alc = std.testing.allocator;
+    const template_str = "{ user.name ?? \"Anonymous\" }";
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    const result = try tmpl.render(.{}, alc);
+    defer alc.free(result);
+    try std.testing.expectEqualStrings("Anonymous", result);
 }
 
 test "if true" {
