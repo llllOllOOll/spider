@@ -30,6 +30,16 @@ const Context = struct {
     pub fn get(self: *const Context, key: []const u8) ?Value {
         return self.values.get(key);
     }
+
+    pub fn clone(self: *const Context, alc: std.mem.Allocator) !Context {
+        var c = Context.init();
+        errdefer c.deinit(alc);
+        var iter = self.values.iterator();
+        while (iter.next()) |entry| {
+            try c.values.put(alc, try alc.dupe(u8, entry.key_ptr.*), try dupeValue(alc, entry.value_ptr.*));
+        }
+        return c;
+    }
 };
 
 fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
@@ -637,28 +647,48 @@ pub const Template = struct {
         var ctx = try structToContext(alc, context);
         defer ctx.deinit(alc);
 
-        var result: std.ArrayList(u8) = .empty;
-        errdefer result.deinit(alc);
-
-        for (self.nodes) |node| {
-            try renderNode(node, &ctx, alc, &result, self.components);
-        }
-
-        const content = try result.toOwnedSlice(alc);
-        defer alc.free(content);
-
-        // If layout is specified, wrap content in layout
         if (self.layout) |layout_name| {
             if (self.components) |comps| {
                 if (comps.get(layout_name)) |layout_template| {
-                    // Create layout context with slot content
-                    var layout_ctx = Context.init();
+                    var slot_bufs = std.StringHashMapUnmanaged(std.ArrayList(u8)){};
+                    defer {
+                        var iter = slot_bufs.iterator();
+                        while (iter.next()) |entry| {
+                            entry.value_ptr.*.deinit(alc);
+                            alc.free(entry.key_ptr.*);
+                        }
+                        slot_bufs.deinit(alc);
+                    }
+
+                    var cur_buf = std.ArrayList(u8).empty;
+                    var cur_key: []const u8 = "slot";
+
+                    for (self.nodes) |node| {
+                        if (node == .interpolation) {
+                            const expr = node.interpolation;
+                            if (std.mem.startsWith(u8, expr, "slot_")) {
+                                const key = try alc.dupe(u8, cur_key);
+                                try slot_bufs.put(alc, key, cur_buf);
+                                cur_key = expr;
+                                cur_buf = std.ArrayList(u8).empty;
+                                continue;
+                            }
+                        }
+                        try renderNode(node, &ctx, alc, &cur_buf, self.components);
+                    }
+                    {
+                        const key = try alc.dupe(u8, cur_key);
+                        try slot_bufs.put(alc, key, cur_buf);
+                    }
+
+                    var layout_ctx = try ctx.clone(alc);
                     defer layout_ctx.deinit(alc);
 
-                    // Set slot to the page content
-                    try layout_ctx.set(alc, "slot", Value{ .string = try alc.dupe(u8, content) });
+                    var iter = slot_bufs.iterator();
+                    while (iter.next()) |entry| {
+                        try layout_ctx.set(alc, entry.key_ptr.*, Value{ .string = try alc.dupe(u8, entry.value_ptr.*.items) });
+                    }
 
-                    // Parse and render layout
                     var layout_parser = Parser.init(alc, layout_template);
                     const layout_result = try layout_parser.parse();
                     defer {
@@ -678,7 +708,14 @@ pub const Template = struct {
             }
         }
 
-        return try alc.dupe(u8, content);
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(alc);
+
+        for (self.nodes) |node| {
+            try renderNode(node, &ctx, alc, &result, self.components);
+        }
+
+        return result.toOwnedSlice(alc);
     }
 };
 
@@ -1128,4 +1165,50 @@ test "for loop with string slice - direct capture" {
     try std.testing.expect(std.mem.indexOf(u8, result, "<li>zig</li>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "<li>htmx</li>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "<li>spider</li>") != null);
+}
+
+test "named slots" {
+    const alc = std.testing.allocator;
+
+    const layout_str =
+        \\<html>
+        \\<head><title>{ title }</title></head>
+        \\<body>
+        \\<header>{ slot_header }</header>
+        \\<nav>{ slot_sidebar }</nav>
+        \\<main>{ slot }</main>
+        \\</body>
+        \\</html>
+    ;
+
+    var components = std.StringHashMapUnmanaged([]const u8){};
+    defer {
+        var iter = components.iterator();
+        while (iter.next()) |entry| {
+            alc.free(entry.key_ptr.*);
+            alc.free(entry.value_ptr.*);
+        }
+        components.deinit(alc);
+    }
+    try components.put(alc, try alc.dupe(u8, "layout"), try alc.dupe(u8, layout_str));
+
+    const view_str =
+        \\extends "layout"
+        \\{ slot_header }
+        \\<h1>My Title</h1>
+        \\{ slot_sidebar }
+        \\<a href="/">Home</a>
+        \\<p>Content here</p>
+    ;
+
+    var tmpl = try Template.init(alc, view_str);
+    defer tmpl.deinit();
+    tmpl.components = components;
+
+    const result = try tmpl.render(.{ .title = "Test" }, alc);
+    defer alc.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "<title>Test</title>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "My Title") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Home") != null);
 }
