@@ -83,6 +83,12 @@ fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
             }
         } else if (field_info == .bool) {
             try ctx.set(alc, field.name, Value{ .boolean = value });
+        } else if (field_info == .int or field_info == .comptime_int) {
+            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
+            try ctx.set(alc, field.name, Value{ .string = str });
+        } else if (field_info == .float or field_info == .comptime_float) {
+            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
+            try ctx.set(alc, field.name, Value{ .string = str });
         }
     }
 
@@ -167,6 +173,12 @@ fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapUnman
             }
         } else if (field_info == .bool) {
             try obj.put(alc, try alc.dupe(u8, field.name), Value{ .boolean = value });
+        } else if (field_info == .int or field_info == .comptime_int) {
+            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
+            try obj.put(alc, try alc.dupe(u8, field.name), Value{ .string = str });
+        } else if (field_info == .float or field_info == .comptime_float) {
+            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
+            try obj.put(alc, try alc.dupe(u8, field.name), Value{ .string = str });
         }
     }
 
@@ -269,84 +281,7 @@ const Parser = struct {
     }
 
     fn parseComponent(p: *Parser) !Node {
-        p.pos += 1; // Skip '<'
-
-        const name_start = p.pos;
-        while (p.pos < p.template.len and p.template[p.pos] != ' ' and p.template[p.pos] != '/' and p.template[p.pos] != '>') {
-            p.pos += 1;
-        }
-        const name = try p.alc.dupe(u8, p.template[name_start..p.pos]);
-
-        var props: std.ArrayList(Prop) = .empty;
-        defer props.deinit(p.alc);
-
-        while (p.pos < p.template.len and p.template[p.pos] == ' ') p.pos += 1;
-
-        while (p.pos < p.template.len and p.template[p.pos] != '/' and p.template[p.pos] != '>') {
-            const prop_name_start = p.pos;
-            while (p.pos < p.template.len and p.template[p.pos] != '=' and p.template[p.pos] != ' ' and p.template[p.pos] != '/' and p.template[p.pos] != '>') {
-                p.pos += 1;
-            }
-            const prop_name = try p.alc.dupe(u8, p.template[prop_name_start..p.pos]);
-
-            while (p.pos < p.template.len and p.template[p.pos] == ' ') p.pos += 1;
-
-            if (p.pos < p.template.len and p.template[p.pos] == '=') {
-                p.pos += 1;
-
-                while (p.pos < p.template.len and p.template[p.pos] == ' ') p.pos += 1;
-
-                if (p.pos + 2 <= p.template.len and std.mem.eql(u8, p.template[p.pos..(p.pos + 2)], "\"{")) {
-                    p.pos += 2;
-                    const val_start = p.pos;
-                    while (p.pos < p.template.len) {
-                        if (std.mem.startsWith(u8, p.template[p.pos..], "}\"")) {
-                            break;
-                        }
-                        p.pos += 1;
-                    }
-                    const prop_value_raw = p.template[val_start..p.pos];
-                    const prop_value = trimString(prop_value_raw);
-                    p.pos += 2; // Skip '}"'
-
-                    try props.append(p.alc, Prop{ .name = prop_name, .value = try p.alc.dupe(u8, prop_value) });
-                } else {
-                    p.alc.free(prop_name);
-                }
-            } else {
-                p.alc.free(prop_name);
-            }
-
-            while (p.pos < p.template.len and p.template[p.pos] == ' ') p.pos += 1;
-        }
-
-        var self_closing = false;
-        var slot_content: ?[]const u8 = null;
-
-        if (p.pos < p.template.len and p.template[p.pos] == '/') {
-            p.pos += 1;
-            self_closing = true;
-        }
-
-        if (p.pos < p.template.len and p.template[p.pos] == '>') {
-            p.pos += 1;
-        }
-
-        if (!self_closing) {
-            const slot_start = p.pos;
-            const close_tag = try std.fmt.allocPrint(p.alc, "</{s}>", .{name});
-            defer p.alc.free(close_tag);
-
-            if (std.mem.indexOf(u8, p.template[p.pos..], close_tag)) |idx| {
-                const content = trimWhitespace(p.template[slot_start..(p.pos + idx)]);
-                if (content.len > 0) {
-                    slot_content = try p.alc.dupe(u8, content);
-                }
-                p.pos += idx + close_tag.len;
-            }
-        }
-
-        return Node{ .component = .{ .name = name, .props = try props.toOwnedSlice(p.alc), .self_closing = self_closing, .slot_content = slot_content } };
+        return parseComponentNode(p.alc, p.template, &p.pos);
     }
 
     fn parseIf(p: *Parser) !Node {
@@ -468,6 +403,95 @@ const Parser = struct {
     }
 };
 
+fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *usize) !Node {
+    pos.* += 1;
+
+    const name_start = pos.*;
+    while (pos.* < template.len and template[pos.*] != ' ' and template[pos.*] != '/' and template[pos.*] != '>') {
+        pos.* += 1;
+    }
+    const name = try alc.dupe(u8, template[name_start..pos.*]);
+
+    var props: std.ArrayList(Prop) = .empty;
+    defer props.deinit(alc);
+
+    while (pos.* < template.len and template[pos.*] == ' ') pos.* += 1;
+
+    while (pos.* < template.len and template[pos.*] != '/' and template[pos.*] != '>') {
+        const prop_name_start = pos.*;
+        while (pos.* < template.len and template[pos.*] != '=' and template[pos.*] != ' ' and template[pos.*] != '/' and template[pos.*] != '>') {
+            pos.* += 1;
+        }
+        const prop_name = try alc.dupe(u8, template[prop_name_start..pos.*]);
+
+        while (pos.* < template.len and template[pos.*] == ' ') pos.* += 1;
+
+        if (pos.* < template.len and template[pos.*] == '=') {
+            pos.* += 1;
+
+            while (pos.* < template.len and template[pos.*] == ' ') pos.* += 1;
+
+            if (pos.* < template.len and template[pos.*] == '"') {
+                pos.* += 1;
+                if (pos.* < template.len and template[pos.*] == '{') {
+                    pos.* += 1;
+                    const val_start = pos.*;
+                    while (pos.* < template.len) {
+                        if (std.mem.startsWith(u8, template[pos.*..], "}\"")) {
+                            break;
+                        }
+                        pos.* += 1;
+                    }
+                    const prop_value_raw = template[val_start..pos.*];
+                    const prop_value = trimString(prop_value_raw);
+                    pos.* += 2;
+                    try props.append(alc, Prop{ .name = prop_name, .value = try alc.dupe(u8, prop_value) });
+                } else {
+                    const val_start = pos.*;
+                    while (pos.* < template.len and template[pos.*] != '"') pos.* += 1;
+                    const prop_value = template[val_start..pos.*];
+                    pos.* += 1;
+                    try props.append(alc, Prop{ .name = prop_name, .value = try alc.dupe(u8, prop_value) });
+                }
+            } else {
+                alc.free(prop_name);
+            }
+        } else {
+            alc.free(prop_name);
+        }
+
+        while (pos.* < template.len and template[pos.*] == ' ') pos.* += 1;
+    }
+
+    var self_closing = false;
+    var slot_content: ?[]const u8 = null;
+
+    if (pos.* < template.len and template[pos.*] == '/') {
+        pos.* += 1;
+        self_closing = true;
+    }
+
+    if (pos.* < template.len and template[pos.*] == '>') {
+        pos.* += 1;
+    }
+
+    if (!self_closing) {
+        const slot_start = pos.*;
+        const close_tag = try std.fmt.allocPrint(alc, "</{s}>", .{name});
+        defer alc.free(close_tag);
+
+        if (std.mem.indexOf(u8, template[pos.*..], close_tag)) |idx| {
+            const content = trimWhitespace(template[slot_start..(pos.* + idx)]);
+            if (content.len > 0) {
+                slot_content = try alc.dupe(u8, content);
+            }
+            pos.* += idx + close_tag.len;
+        }
+    }
+
+    return Node{ .component = .{ .name = name, .props = try props.toOwnedSlice(alc), .self_closing = self_closing, .slot_content = slot_content } };
+}
+
 fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
     var nodes: std.ArrayList(Node) = .empty;
     errdefer nodes.deinit(alc);
@@ -554,6 +578,9 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             pos += 1;
             const body = try parseTextNodes(alc, body_str);
             try nodes.append(alc, Node{ .for_node = .{ .iterable = iterable, .capture = capture, .body = body } });
+        } else if (pos < str.len and str[pos] == '<' and pos + 1 < str.len and isUpperCase(str[pos + 1])) {
+            const node = try parseComponentNode(alc, str, &pos);
+            try nodes.append(alc, node);
         } else {
             const start = pos;
             while (pos < str.len) {
@@ -562,6 +589,7 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
                 if (std.mem.startsWith(u8, r, "{ slot }")) break;
                 if (std.mem.startsWith(u8, r, "if (")) break;
                 if (std.mem.startsWith(u8, r, "for (")) break;
+                if (pos < str.len and str[pos] == '<' and pos + 1 < str.len and isUpperCase(str[pos + 1])) break;
                 pos += 1;
             }
             if (pos > start) {
@@ -763,8 +791,16 @@ fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.Ar
         },
         .slot => {
             if (ctx.get("slot")) |value| {
-                if (value == .string) {
-                    try result.appendSlice(alc, value.string);
+                if (value == .string and value.string.len > 0) {
+                    var slot_parser = Parser.init(alc, value.string);
+                    const slot_result = try slot_parser.parse();
+                    defer {
+                        for (slot_result.nodes) |n| freeNode(n, alc);
+                        alc.free(slot_result.nodes);
+                    }
+                    for (slot_result.nodes) |n| {
+                        try renderNode(n, ctx, alc, result, components);
+                    }
                 }
             }
         },
