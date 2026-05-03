@@ -437,6 +437,7 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
     errdefer nodes.deinit(alc);
 
     var pos: usize = 0;
+    var brace_count: usize = undefined;
     while (pos < str.len) {
         const remaining = str[pos..];
         if (std.mem.startsWith(u8, remaining, "{ ")) {
@@ -452,12 +453,79 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
         } else if (std.mem.startsWith(u8, remaining, "{ slot }")) {
             try nodes.append(alc, Node{ .slot = {} });
             pos += "{ slot }".len;
+        } else if (std.mem.startsWith(u8, remaining, "if (")) {
+            pos += 4;
+            const cond_start = pos;
+            while (pos < str.len and str[pos] != ')') pos += 1;
+            if (pos >= str.len) return error.UnclosedParen;
+            const condition = try alc.dupe(u8, str[cond_start..pos]);
+            pos += 1;
+            while (pos < str.len and str[pos] == ' ') pos += 1;
+            if (pos >= str.len or str[pos] != '{') return error.ExpectedBrace;
+            pos += 1;
+            const then_start = pos;
+            brace_count = 1;
+            while (pos < str.len and brace_count > 0) {
+                if (str[pos] == '{') brace_count += 1 else if (str[pos] == '}') brace_count -= 1;
+                if (brace_count > 0) pos += 1;
+            }
+            if (pos >= str.len) return error.UnclosedBrace;
+            const then_str = str[then_start..pos];
+            pos += 1;
+            const then_body = try parseTextNodes(alc, then_str);
+            var else_body: ?[]Node = null;
+            while (pos < str.len and str[pos] == ' ') pos += 1;
+            if (pos + 6 <= str.len and std.mem.eql(u8, str[pos..(pos + 6)], "else {")) {
+                pos += 6;
+                const else_start = pos;
+                brace_count = 1;
+                while (pos < str.len and brace_count > 0) {
+                    if (str[pos] == '{') brace_count += 1 else if (str[pos] == '}') brace_count -= 1;
+                    if (brace_count > 0) pos += 1;
+                }
+                if (pos >= str.len) return error.UnclosedBrace;
+                const else_str = str[else_start..pos];
+                pos += 1;
+                else_body = try parseTextNodes(alc, else_str);
+            }
+            try nodes.append(alc, Node{ .if_node = .{ .condition = condition, .then_body = then_body, .else_body = else_body } });
+        } else if (std.mem.startsWith(u8, remaining, "for (")) {
+            pos += 5;
+            const iter_start = pos;
+            while (pos < str.len and str[pos] != ')') pos += 1;
+            if (pos >= str.len) return error.UnclosedParen;
+            const iterable = try alc.dupe(u8, str[iter_start..pos]);
+            pos += 1;
+            while (pos < str.len and str[pos] == ' ') pos += 1;
+            if (pos >= str.len or str[pos] != '|') return error.ExpectedCapture;
+            pos += 1;
+            const cap_start = pos;
+            while (pos < str.len and str[pos] != '|') pos += 1;
+            if (pos >= str.len) return error.UnclosedCapture;
+            const capture = try alc.dupe(u8, str[cap_start..pos]);
+            pos += 1;
+            while (pos < str.len and str[pos] == ' ') pos += 1;
+            if (pos >= str.len or str[pos] != '{') return error.ExpectedBrace;
+            pos += 1;
+            const body_start = pos;
+            brace_count = 1;
+            while (pos < str.len and brace_count > 0) {
+                if (str[pos] == '{') brace_count += 1 else if (str[pos] == '}') brace_count -= 1;
+                if (brace_count > 0) pos += 1;
+            }
+            if (pos >= str.len) return error.UnclosedBrace;
+            const body_str = str[body_start..pos];
+            pos += 1;
+            const body = try parseTextNodes(alc, body_str);
+            try nodes.append(alc, Node{ .for_node = .{ .iterable = iterable, .capture = capture, .body = body } });
         } else {
             const start = pos;
             while (pos < str.len) {
                 const r = str[pos..];
                 if (std.mem.startsWith(u8, r, "{ ")) break;
                 if (std.mem.startsWith(u8, r, "{ slot }")) break;
+                if (std.mem.startsWith(u8, r, "if (")) break;
+                if (std.mem.startsWith(u8, r, "for (")) break;
                 pos += 1;
             }
             if (pos > start) {
@@ -725,7 +793,7 @@ fn dupeValue(alc: std.mem.Allocator, value: Value) !Value {
 }
 
 fn evalBool(ctx: *Context, expr: []const u8) bool {
-    if (ctx.get(expr)) |value| {
+    if (resolveValue(ctx, expr)) |value| {
         if (value == .boolean) return value.boolean;
     }
     return false;
@@ -830,6 +898,22 @@ test "for loop with struct objects" {
     try std.testing.expectEqualStrings("Alice - alice@test.comBob - bob@test.com", result);
 }
 
+test "if inside for body" {
+    const alc = std.testing.allocator;
+
+    const Item = struct { name: []const u8 };
+    const items = &[_]Item{ .{ .name = "A" }, .{ .name = "B" } };
+
+    const template_str = "for (items) |i| { if (nonexistent) { X } else { { i.name } } }";
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+
+    const context = .{ .items = items };
+    const result = try tmpl.render(context, alc);
+    defer alc.free(result);
+    try std.testing.expectEqualStrings("AB", result);
+}
+
 test "component self-closing" {
     const alc = std.testing.allocator;
 
@@ -909,4 +993,41 @@ test "extends layout" {
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
     try std.testing.expectEqualStrings("<html><body><p>Page Content</p></body></html>", result);
+}
+
+test "if inside for with boolean field" {
+    const alc = std.testing.allocator;
+
+    const User = struct {
+        name: []const u8,
+        active: bool,
+    };
+
+    const users = &[_]User{
+        .{ .name = "Alice", .active = true },
+        .{ .name = "Bob", .active = false },
+        .{ .name = "Charlie", .active = true },
+    };
+
+    const template_str =
+        \\for (users) |user| {
+        \\    if (user.active) {
+        \\        <li class="active">{ user.name }</li>
+        \\    } else {
+        \\        <li class="inactive">{ user.name }</li>
+        \\    }
+        \\}
+    ;
+
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+
+    const result = try tmpl.render(.{ .users = users }, alc);
+    defer alc.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "class=\"active\">Alice") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "class=\"inactive\">Bob") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "class=\"active\">Charlie") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "class=\"inactive\">Alice") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "class=\"active\">Bob") == null);
 }
