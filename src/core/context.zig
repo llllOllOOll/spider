@@ -137,74 +137,27 @@ pub const Ctx = struct {
                 return error.TemplateNotFound;
             };
 
-            const has_extends = std.mem.indexOf(u8, view_content, "extends \"") != null;
-
-            const rendered_html = if (has_extends) blk: {
-                const layout_name = extractExtendsName(view_content) orelse return error.InvalidTemplate;
-
-                const layout_content = blk2: {
-                    var buf: [256]u8 = undefined;
-                    var j: usize = 0;
-                    for (layout_name) |c| {
-                        buf[j] = if (c == '/' or c == '-') '_' else c;
-                        j += 1;
-                    }
-                    const normalized = buf[0..j];
-                    inline for (std.meta.fields(Templates)) |field| {
-                        if (std.mem.eql(u8, field.name, normalized)) {
-                            const instance: Templates = .{};
-                            break :blk2 @field(instance, field.name);
-                        }
-                    }
-                    return error.LayoutNotFound;
-                };
-
-                const combined = try std.mem.concat(self.arena, u8, &.{ layout_content, view_content });
-
-                var components = std.StringHashMapUnmanaged([]const u8){};
-                defer {
-                    var iter = components.iterator();
-                    while (iter.next()) |entry| {
-                        self.arena.free(entry.key_ptr.*);
-                        self.arena.free(entry.value_ptr.*);
-                    }
-                    components.deinit(self.arena);
+            var components = std.StringHashMapUnmanaged([]const u8){};
+            defer {
+                var iter = components.iterator();
+                while (iter.next()) |entry| {
+                    self.arena.free(entry.key_ptr.*);
+                    self.arena.free(entry.value_ptr.*);
                 }
+                components.deinit(self.arena);
+            }
 
-                const embed_inst: Templates = .{};
-                inline for (std.meta.fields(Templates)) |field| {
-                    const content: []const u8 = @field(embed_inst, field.name);
-                    try components.put(self.arena, try self.arena.dupe(u8, field.name), try self.arena.dupe(u8, content));
-                }
+            const embed_inst: Templates = .{};
+            inline for (std.meta.fields(Templates)) |field| {
+                const content: []const u8 = @field(embed_inst, field.name);
+                try components.put(self.arena, try self.arena.dupe(u8, field.name), try self.arena.dupe(u8, content));
+            }
 
-                var tmpl_instance = try Template.init(self.arena, combined);
-                defer tmpl_instance.deinit();
-                tmpl_instance.components = components;
+            var tmpl_instance = try Template.init(self.arena, view_content);
+            defer tmpl_instance.deinit();
+            tmpl_instance.components = components;
 
-                break :blk try tmpl_instance.render(data, self.arena);
-            } else blk: {
-                var components = std.StringHashMapUnmanaged([]const u8){};
-                defer {
-                    var iter = components.iterator();
-                    while (iter.next()) |entry| {
-                        self.arena.free(entry.key_ptr.*);
-                        self.arena.free(entry.value_ptr.*);
-                    }
-                    components.deinit(self.arena);
-                }
-
-                const embed_inst: Templates = .{};
-                inline for (std.meta.fields(Templates)) |field| {
-                    const content: []const u8 = @field(embed_inst, field.name);
-                    try components.put(self.arena, try self.arena.dupe(u8, field.name), try self.arena.dupe(u8, content));
-                }
-
-                var tmpl_instance = try Template.init(self.arena, view_content);
-                defer tmpl_instance.deinit();
-                tmpl_instance.components = components;
-
-                break :blk try tmpl_instance.render(data, self.arena);
-            };
+            const rendered_html = try tmpl_instance.render(data, self.arena);
 
             return Response{
                 .status = opts.status,
@@ -230,106 +183,33 @@ pub const Ctx = struct {
             return err;
         };
 
-        const has_extends = std.mem.indexOf(u8, view_content, "extends \"") != null;
-
-        const rendered = if (has_extends) blk: {
-            const layout_name = extractExtendsName(view_content) orelse return error.InvalidTemplate;
-
-            const layout_path = if (vc.index) |idx|
-                idx.get(layout_name) orelse return error.LayoutNotFound
-            else
-                try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, layout_name });
-
-            const layout_content = std.Io.Dir.cwd().readFileAlloc(
-                io,
-                layout_path,
-                self.arena,
-                .limited(512 * 1024),
-            ) catch |err| {
-                if (err == error.FileNotFound) return error.LayoutNotFound;
-                return err;
-            };
-
-            const combined = try std.mem.concat(self.arena, u8, &.{ layout_content, view_content });
-
-            var components = std.StringHashMapUnmanaged([]const u8){};
-            defer {
-                var iter = components.iterator();
-                while (iter.next()) |entry| {
-                    self.arena.free(entry.key_ptr.*);
-                    self.arena.free(entry.value_ptr.*);
-                }
-                components.deinit(self.arena);
+        var components = std.StringHashMapUnmanaged([]const u8){};
+        defer {
+            var iter = components.iterator();
+            while (iter.next()) |entry| {
+                self.arena.free(entry.key_ptr.*);
+                self.arena.free(entry.value_ptr.*);
             }
+            components.deinit(self.arena);
+        }
 
-            const layout_norm = blk_l: {
-                var buf2: [256]u8 = undefined;
-                var j2: usize = 0;
-                for (layout_name) |c| {
-                    buf2[j2] = if (c == '/' or c == '-') '_' else c;
-                    j2 += 1;
-                }
-                break :blk_l try self.arena.dupe(u8, buf2[0..j2]);
-            };
-            try components.put(self.arena, layout_norm, layout_content);
-
-            const view_norm = blk_v: {
-                var buf2: [256]u8 = undefined;
-                var j2: usize = 0;
-                for (name) |c| {
-                    buf2[j2] = if (c == '/' or c == '-') '_' else c;
-                    j2 += 1;
-                }
-                break :blk_v try self.arena.dupe(u8, buf2[0..j2]);
-            };
-            try components.put(self.arena, view_norm, view_content);
-
-            if (vc.index) |idx| {
-                for (idx.entries) |entry| {
-                    const content = std.Io.Dir.cwd().readFileAlloc(
-                        io,
-                        entry.path,
-                        self.arena,
-                        .limited(512 * 1024),
-                    ) catch continue;
-                    try components.put(self.arena, try self.arena.dupe(u8, entry.name), content);
-                }
+        if (vc.index) |idx| {
+            for (idx.entries) |entry| {
+                const content = std.Io.Dir.cwd().readFileAlloc(
+                    io,
+                    entry.path,
+                    self.arena,
+                    .limited(512 * 1024),
+                ) catch continue;
+                try components.put(self.arena, try self.arena.dupe(u8, entry.name), content);
             }
+        }
 
-            var tmpl_instance = try Template.init(self.arena, combined);
-            defer tmpl_instance.deinit();
-            tmpl_instance.components = components;
+        var tmpl_instance = try Template.init(self.arena, view_content);
+        defer tmpl_instance.deinit();
+        tmpl_instance.components = components;
 
-            break :blk try tmpl_instance.render(data, self.arena);
-        } else blk: {
-            var components = std.StringHashMapUnmanaged([]const u8){};
-            defer {
-                var iter = components.iterator();
-                while (iter.next()) |entry| {
-                    self.arena.free(entry.key_ptr.*);
-                    self.arena.free(entry.value_ptr.*);
-                }
-                components.deinit(self.arena);
-            }
-
-            if (vc.index) |idx| {
-                for (idx.entries) |entry| {
-                    const content = std.Io.Dir.cwd().readFileAlloc(
-                        io,
-                        entry.path,
-                        self.arena,
-                        .limited(512 * 1024),
-                    ) catch continue;
-                    try components.put(self.arena, try self.arena.dupe(u8, entry.name), content);
-                }
-            }
-
-            var tmpl_instance = try Template.init(self.arena, view_content);
-            defer tmpl_instance.deinit();
-            tmpl_instance.components = components;
-
-            break :blk try tmpl_instance.render(data, self.arena);
-        };
+        const rendered = try tmpl_instance.render(data, self.arena);
 
         return Response{
             .status = opts.status,
@@ -466,11 +346,3 @@ pub const Ctx = struct {
         return @tagName(self.request.head.method);
     }
 };
-
-fn extractExtendsName(content: []const u8) ?[]const u8 {
-    const marker = "{% extends \"";
-    const start = std.mem.indexOf(u8, content, marker) orelse return null;
-    const name_start = start + marker.len;
-    const name_end = std.mem.indexOf(u8, content[name_start..], "\"") orelse return null;
-    return content[name_start .. name_start + name_end];
-}
