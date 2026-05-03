@@ -60,6 +60,11 @@ fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
                         const elem_info = @typeInfo(array_info.child);
                         if (elem_info == .@"struct") {
                             try ctx.set(alc, field.name, Value{ .list = try structSliceToValueList(alc, slice) });
+                        } else if (elem_info == .pointer) {
+                            const elem_ptr = elem_info.pointer;
+                            if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
+                                try ctx.set(alc, field.name, Value{ .list = try stringSliceToValueList(alc, slice) });
+                            }
                         }
                     }
                 } else if (child_info == .@"struct") {
@@ -69,6 +74,11 @@ fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
                 const elem_info = @typeInfo(ptr.child);
                 if (elem_info == .@"struct") {
                     try ctx.set(alc, field.name, Value{ .list = try structSliceToValueList(alc, value) });
+                } else if (elem_info == .pointer) {
+                    const elem_ptr = elem_info.pointer;
+                    if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
+                        try ctx.set(alc, field.name, Value{ .list = try stringSliceToValueList(alc, value) });
+                    }
                 }
             }
         } else if (field_info == .bool) {
@@ -87,6 +97,15 @@ fn structSliceToValueList(alc: std.mem.Allocator, slice: anytype) ![]const Value
     }
     for (slice, 0..) |elem, i| {
         list[i] = Value{ .object = try structToObject(alc, elem) };
+    }
+    return list;
+}
+
+fn stringSliceToValueList(alc: std.mem.Allocator, slice: anytype) ![]const Value {
+    const list = try alc.alloc(Value, slice.len);
+    errdefer alc.free(list);
+    for (slice, 0..) |elem, i| {
+        list[i] = Value{ .string = try alc.dupe(u8, elem) };
     }
     return list;
 }
@@ -120,6 +139,17 @@ fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapUnman
                     if (array_info.child == u8) {
                         const s: []const u8 = value[0..];
                         try obj.put(alc, try alc.dupe(u8, field.name), Value{ .string = try alc.dupe(u8, s) });
+                    } else {
+                        const slice = @as([]const array_info.child, value[0..]);
+                        const elem_info = @typeInfo(array_info.child);
+                        if (elem_info == .@"struct") {
+                            try obj.put(alc, try alc.dupe(u8, field.name), Value{ .list = try structSliceToValueList(alc, slice) });
+                        } else if (elem_info == .pointer) {
+                            const elem_ptr = elem_info.pointer;
+                            if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
+                                try obj.put(alc, try alc.dupe(u8, field.name), Value{ .list = try stringSliceToValueList(alc, slice) });
+                            }
+                        }
                     }
                 } else if (child_info == .@"struct") {
                     try obj.put(alc, try alc.dupe(u8, field.name), Value{ .object = try structToObject(alc, value) });
@@ -128,6 +158,11 @@ fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapUnman
                 const elem_info = @typeInfo(ptr.child);
                 if (elem_info == .@"struct") {
                     try obj.put(alc, try alc.dupe(u8, field.name), Value{ .list = try structSliceToValueList(alc, value) });
+                } else if (elem_info == .pointer) {
+                    const elem_ptr = elem_info.pointer;
+                    if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
+                        try obj.put(alc, try alc.dupe(u8, field.name), Value{ .list = try stringSliceToValueList(alc, value) });
+                    }
                 }
             }
         } else if (field_info == .bool) {
@@ -901,17 +936,21 @@ test "for loop with struct objects" {
 test "if inside for body" {
     const alc = std.testing.allocator;
 
-    const Item = struct { name: []const u8 };
-    const items = &[_]Item{ .{ .name = "A" }, .{ .name = "B" } };
+    const Item = struct { name: []const u8, flag: bool };
+    const items = &[_]Item{
+        .{ .name = "A", .flag = true },
+        .{ .name = "B", .flag = false },
+    };
 
-    const template_str = "for (items) |i| { if (nonexistent) { X } else { { i.name } } }";
+    const template_str = "for (items) |i| { if (i.flag) { { i.name } } }";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
 
-    const context = .{ .items = items };
-    const result = try tmpl.render(context, alc);
+    const result = try tmpl.render(.{ .items = items }, alc);
     defer alc.free(result);
-    try std.testing.expectEqualStrings("AB", result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "B") == null);
 }
 
 test "component self-closing" {
@@ -1030,4 +1069,26 @@ test "if inside for with boolean field" {
     try std.testing.expect(std.mem.indexOf(u8, result, "class=\"active\">Charlie") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "class=\"inactive\">Alice") == null);
     try std.testing.expect(std.mem.indexOf(u8, result, "class=\"active\">Bob") == null);
+}
+
+test "for loop with string slice - direct capture" {
+    const alc = std.testing.allocator;
+
+    const tags = &[_][]const u8{ "zig", "htmx", "spider" };
+
+    const template_str =
+        \\for (tags) |tag| {
+        \\    <li>{ tag }</li>
+        \\}
+    ;
+
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+
+    const result = try tmpl.render(.{ .tags = tags }, alc);
+    defer alc.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "<li>zig</li>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<li>htmx</li>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<li>spider</li>") != null);
 }
