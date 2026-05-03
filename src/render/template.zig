@@ -99,6 +99,26 @@ fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
         } else if (field_info == .float or field_info == .comptime_float) {
             const str = try std.fmt.allocPrint(alc, "{d}", .{value});
             try ctx.set(alc, field.name, Value{ .string = str });
+        } else if (field_info == .array) {
+            const arr = field_info.array;
+            if (arr.child != u8) {
+                const slice = @as([]const arr.child, &value);
+                const elem_info = @typeInfo(arr.child);
+                if (elem_info == .@"struct") {
+                    try ctx.set(alc, field.name, Value{ .list = try structSliceToValueList(alc, slice) });
+                } else if (elem_info == .pointer) {
+                    const elem_ptr = elem_info.pointer;
+                    if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
+                        try ctx.set(alc, field.name, Value{ .list = try stringSliceToValueList(alc, slice) });
+                    }
+                }
+            }
+        } else if (field_info == .int or field_info == .comptime_int) {
+            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
+            try ctx.set(alc, field.name, Value{ .string = str });
+        } else if (field_info == .float or field_info == .comptime_float) {
+            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
+            try ctx.set(alc, field.name, Value{ .string = str });
         }
     }
 
@@ -413,11 +433,15 @@ const Parser = struct {
     }
 };
 
+fn skipWhitespace(template: []const u8, pos: *usize) void {
+    while (pos.* < template.len and (template[pos.*] == ' ' or template[pos.*] == '\n' or template[pos.*] == '\r' or template[pos.*] == '\t')) pos.* += 1;
+}
+
 fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *usize) !Node {
     pos.* += 1;
 
     const name_start = pos.*;
-    while (pos.* < template.len and template[pos.*] != ' ' and template[pos.*] != '/' and template[pos.*] != '>') {
+    while (pos.* < template.len and template[pos.*] != ' ' and template[pos.*] != '/' and template[pos.*] != '>' and template[pos.*] != '\n') {
         pos.* += 1;
     }
     const name = try alc.dupe(u8, template[name_start..pos.*]);
@@ -425,21 +449,21 @@ fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *usize)
     var props: std.ArrayList(Prop) = .empty;
     defer props.deinit(alc);
 
-    while (pos.* < template.len and template[pos.*] == ' ') pos.* += 1;
+    skipWhitespace(template, pos);
 
     while (pos.* < template.len and template[pos.*] != '/' and template[pos.*] != '>') {
         const prop_name_start = pos.*;
-        while (pos.* < template.len and template[pos.*] != '=' and template[pos.*] != ' ' and template[pos.*] != '/' and template[pos.*] != '>') {
+        while (pos.* < template.len and template[pos.*] != '=' and template[pos.*] != ' ' and template[pos.*] != '/' and template[pos.*] != '>' and template[pos.*] != '\n' and template[pos.*] != '\r' and template[pos.*] != '\t') {
             pos.* += 1;
         }
         const prop_name = try alc.dupe(u8, template[prop_name_start..pos.*]);
 
-        while (pos.* < template.len and template[pos.*] == ' ') pos.* += 1;
+        skipWhitespace(template, pos);
 
         if (pos.* < template.len and template[pos.*] == '=') {
             pos.* += 1;
 
-            while (pos.* < template.len and template[pos.*] == ' ') pos.* += 1;
+            skipWhitespace(template, pos);
 
             if (pos.* < template.len and template[pos.*] == '"') {
                 pos.* += 1;
@@ -470,7 +494,7 @@ fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *usize)
             alc.free(prop_name);
         }
 
-        while (pos.* < template.len and template[pos.*] == ' ') pos.* += 1;
+        skipWhitespace(template, pos);
     }
 
     var self_closing = false;
@@ -825,7 +849,7 @@ fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.Ar
                     defer comp_ctx.deinit(alc);
 
                     for (comp.props) |prop| {
-                        if (ctx.get(prop.value)) |val| {
+                        if (resolveValue(ctx, prop.value)) |val| {
                             try comp_ctx.set(alc, prop.name, try dupeValue(alc, val));
                         } else {
                             try comp_ctx.set(alc, prop.name, Value{ .string = try alc.dupe(u8, prop.value) });
@@ -906,6 +930,7 @@ fn dupeValue(alc: std.mem.Allocator, value: Value) !Value {
 fn evalBool(ctx: *Context, expr: []const u8) bool {
     if (resolveValue(ctx, expr)) |value| {
         if (value == .boolean) return value.boolean;
+        if (value == .string) return value.string.len > 0 and !std.mem.eql(u8, value.string, "false");
     }
     return false;
 }
