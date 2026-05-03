@@ -886,24 +886,24 @@ fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.Ar
         },
         .component => |comp| {
             if (components) |comps| {
-                // Normalize PascalCase tag to snake_case field lookup
-                var field_buf: [256]u8 = undefined;
-                var field_len: usize = 0;
-                for (comp.name, 0..) |c, i| {
-                    if (c >= 'A' and c <= 'Z') {
-                        if (i > 0) {
-                            field_buf[field_len] = '_';
-                            field_len += 1;
+                const template_str = comps.get(comp.name) orelse brk: {
+                    var field_buf: [256]u8 = undefined;
+                    var field_len: usize = 0;
+                    for (comp.name, 0..) |c, i| {
+                        if (c >= 'A' and c <= 'Z') {
+                            if (i > 0) {
+                                field_buf[field_len] = '_';
+                                field_len += 1;
+                            }
+                            field_buf[field_len] = c + 32;
+                        } else {
+                            field_buf[field_len] = c;
                         }
-                        field_buf[field_len] = c + 32;
-                    } else {
-                        field_buf[field_len] = c;
+                        field_len += 1;
                     }
-                    field_len += 1;
-                }
-                const field_name = field_buf[0..field_len];
-
-                if (comps.get(field_name)) |comp_template_str| {
+                    break :brk comps.get(field_buf[0..field_len]);
+                };
+                if (template_str) |comp_template_str| {
                     var comp_parser = Parser.init(alc, comp_template_str);
                     const comp_nodes = try comp_parser.parse();
                     defer {
@@ -994,11 +994,92 @@ fn dupeValue(alc: std.mem.Allocator, value: Value) !Value {
 }
 
 fn evalBool(ctx: *Context, expr: []const u8) bool {
+    // Handle comparison operators
+    if (std.mem.indexOf(u8, expr, " != ")) |idx| {
+        const left = trimWhitespace(expr[0..idx]);
+        const right_raw = trimWhitespace(expr[idx + 4 ..]);
+        const right = if (right_raw.len >= 2 and right_raw[0] == '"' and right_raw[right_raw.len - 1] == '"')
+            right_raw[1 .. right_raw.len - 1]
+        else
+            right_raw;
+        return !evalCompare(ctx, left, right);
+    }
+    if (std.mem.indexOf(u8, expr, " == ")) |idx| {
+        const left = trimWhitespace(expr[0..idx]);
+        const right_raw = trimWhitespace(expr[idx + 4 ..]);
+        const right = if (right_raw.len >= 2 and right_raw[0] == '"' and right_raw[right_raw.len - 1] == '"')
+            right_raw[1 .. right_raw.len - 1]
+        else
+            right_raw;
+        return evalCompare(ctx, left, right);
+    }
+    if (std.mem.indexOf(u8, expr, " <= ")) |idx| {
+        const left = trimWhitespace(expr[0..idx]);
+        const right = trimWhitespace(expr[idx + 4 ..]);
+        return evalNumCompare(ctx, left, right, .lte);
+    }
+    if (std.mem.indexOf(u8, expr, " >= ")) |idx| {
+        const left = trimWhitespace(expr[0..idx]);
+        const right = trimWhitespace(expr[idx + 4 ..]);
+        return evalNumCompare(ctx, left, right, .gte);
+    }
+    if (std.mem.indexOf(u8, expr, " < ")) |idx| {
+        const left = trimWhitespace(expr[0..idx]);
+        const right = trimWhitespace(expr[idx + 2 ..]);
+        return evalNumCompare(ctx, left, right, .lt);
+    }
+    if (std.mem.indexOf(u8, expr, " > ")) |idx| {
+        const left = trimWhitespace(expr[0..idx]);
+        const right = trimWhitespace(expr[idx + 2 ..]);
+        return evalNumCompare(ctx, left, right, .gt);
+    }
+
+    // Simple boolean/string check
     if (resolveValue(ctx, expr)) |value| {
         if (value == .boolean) return value.boolean;
         if (value == .string) return value.string.len > 0 and !std.mem.eql(u8, value.string, "false");
     }
     return false;
+}
+
+fn evalCompare(ctx: *Context, left: []const u8, right: []const u8) bool {
+    const resolved = resolveLen(ctx, left) catch return false;
+    defer std.heap.page_allocator.free(resolved);
+    return std.mem.eql(u8, resolved, right);
+}
+
+const Cmp = enum { lt, lte, gt, gte };
+
+fn evalNumCompare(ctx: *Context, left: []const u8, right: []const u8, cmp: Cmp) bool {
+    const resolved = resolveLen(ctx, left) catch return false;
+    defer std.heap.page_allocator.free(resolved);
+    const l = resolved;
+
+    const lv = std.fmt.parseInt(i64, l, 10) catch return false;
+    const rv = std.fmt.parseInt(i64, right, 10) catch return false;
+
+    return switch (cmp) {
+        .lt => lv < rv,
+        .lte => lv <= rv,
+        .gt => lv > rv,
+        .gte => lv >= rv,
+    };
+}
+
+fn resolveLen(ctx: *const Context, expr: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, expr, ".len")) |dot_idx| {
+        const var_name = expr[0..dot_idx];
+        if (ctx.get(var_name)) |v| {
+            if (v == .list) {
+                return try std.fmt.allocPrint(std.heap.page_allocator, "{d}", .{v.list.len});
+            }
+        }
+        return try std.heap.page_allocator.dupe(u8, "0");
+    }
+    if (resolveValue(ctx, expr)) |v| {
+        return try valueToString(v, std.heap.page_allocator);
+    }
+    return try std.heap.page_allocator.dupe(u8, "");
 }
 
 fn valueToString(value: Value, alc: std.mem.Allocator) ![]const u8 {
