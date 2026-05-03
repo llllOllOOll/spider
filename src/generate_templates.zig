@@ -79,13 +79,13 @@ fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
         path;
 
     if (std.mem.indexOf(u8, no_ext, "views/")) |idx| {
-        const before = no_ext[0..idx];
         const after = no_ext[idx + "views/".len ..];
 
-        const dir = std.fs.path.basename(before);
         const file = std.fs.path.basename(after);
+        const parent_dir = std.fs.path.dirname(after) orelse "";
+        const dir = if (parent_dir.len > 0) std.fs.path.basename(parent_dir) else "";
 
-        if (std.mem.eql(u8, dir, file)) {
+        if (dir.len == 0 or std.mem.eql(u8, dir, file)) {
             return try std.fmt.bufPrint(buffer, "{s}", .{file});
         } else {
             return try std.fmt.bufPrint(buffer, "{s}_{s}", .{ dir, file });
