@@ -227,22 +227,23 @@ const Parser = struct {
 
         var layout_name: ?[]const u8 = null;
 
-        // Check for extends at the start
-        if (p.pos + 8 <= p.template.len and std.mem.startsWith(u8, p.template[p.pos..], "extends ")) {
-            p.pos += 8; // Skip "extends "
+        // Consume extends declaration if present at the start
+        if (std.mem.startsWith(u8, p.template[p.pos..], "extends ")) {
+            p.pos += 8;
 
             if (p.pos < p.template.len and p.template[p.pos] == '"') {
-                p.pos += 1; // Skip opening quote
+                p.pos += 1;
                 const name_start = p.pos;
                 while (p.pos < p.template.len and p.template[p.pos] != '"') p.pos += 1;
                 if (p.pos < p.template.len) {
                     layout_name = try p.alc.dupe(u8, p.template[name_start..p.pos]);
-                    p.pos += 1; // Skip closing quote
+                    p.pos += 1;
                 }
             }
 
-            // Skip whitespace/newlines after extends
-            while (p.pos < p.template.len and (p.template[p.pos] == ' ' or p.template[p.pos] == '\n' or p.template[p.pos] == '\r')) p.pos += 1;
+            // Skip to end of line
+            while (p.pos < p.template.len and p.template[p.pos] != '\n') p.pos += 1;
+            if (p.pos < p.template.len) p.pos += 1; // skip the newline
         }
 
         while (p.pos < p.template.len) {
