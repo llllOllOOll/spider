@@ -521,7 +521,7 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             pos += 2;
             try nodes.append(alc, Node{ .interpolation = expr });
         } else if (std.mem.startsWith(u8, remaining, "{ slot }")) {
-            try nodes.append(alc, Node{ .slot = {} });
+            try nodes.append(alc, Node{ .interpolation = try alc.dupe(u8, "slot") });
             pos += "{ slot }".len;
         } else if (std.mem.startsWith(u8, remaining, "if (")) {
             pos += 4;
@@ -757,11 +757,27 @@ fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.Ar
             try result.appendSlice(alc, text);
         },
         .interpolation => |expr| {
-            const value = resolveValue(ctx, expr);
-            if (value) |v| {
-                const str = try valueToString(v, alc);
-                try result.appendSlice(alc, str);
-                alc.free(str);
+            if (std.mem.eql(u8, expr, "slot")) {
+                if (ctx.get("slot")) |value| {
+                    if (value == .string and value.string.len > 0) {
+                        var slot_parser = Parser.init(alc, value.string);
+                        const slot_result = try slot_parser.parse();
+                        defer {
+                            for (slot_result.nodes) |n| freeNode(n, alc);
+                            alc.free(slot_result.nodes);
+                        }
+                        for (slot_result.nodes) |n| {
+                            try renderNode(n, ctx, alc, result, components);
+                        }
+                    }
+                }
+            } else {
+                const value = resolveValue(ctx, expr);
+                if (value) |v| {
+                    const str = try valueToString(v, alc);
+                    try result.appendSlice(alc, str);
+                    alc.free(str);
+                }
             }
         },
         .if_node => |ifn| {
@@ -805,7 +821,7 @@ fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.Ar
                         alc.free(comp_nodes.nodes);
                     }
 
-                    var comp_ctx = Context.init();
+                    var comp_ctx = try ctx.clone(alc);
                     defer comp_ctx.deinit(alc);
 
                     for (comp.props) |prop| {
@@ -826,21 +842,7 @@ fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.Ar
                 }
             }
         },
-        .slot => {
-            if (ctx.get("slot")) |value| {
-                if (value == .string and value.string.len > 0) {
-                    var slot_parser = Parser.init(alc, value.string);
-                    const slot_result = try slot_parser.parse();
-                    defer {
-                        for (slot_result.nodes) |n| freeNode(n, alc);
-                        alc.free(slot_result.nodes);
-                    }
-                    for (slot_result.nodes) |n| {
-                        try renderNode(n, ctx, alc, result, components);
-                    }
-                }
-            }
-        },
+        .slot => {},
     }
 }
 
@@ -1211,4 +1213,50 @@ test "named slots" {
     try std.testing.expect(std.mem.indexOf(u8, result, "<title>Test</title>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "My Title") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "Home") != null);
+}
+
+test "component slot resolves parent context" {
+    const alc = std.testing.allocator;
+
+    const card_str = "<div class=\"card\"><h2>{ title }</h2><div class=\"body\">{ slot }</div></div>";
+
+    var components = std.StringHashMapUnmanaged([]const u8){};
+    defer {
+        var iter = components.iterator();
+        while (iter.next()) |entry| {
+            alc.free(entry.key_ptr.*);
+            alc.free(entry.value_ptr.*);
+        }
+        components.deinit(alc);
+    }
+    try components.put(alc, try alc.dupe(u8, "Card"), try alc.dupe(u8, card_str));
+
+    const template_str =
+        \\<Card title="Counter">
+        \\<p>Count: { count }</p>
+        \\</Card>
+        \\<Card title="Users">
+        \\<ul>
+        \\for (users) |user| {
+        \\<li>{ user.name }</li>
+        \\}
+        \\</ul>
+        \\</Card>
+    ;
+
+    const User = struct { name: []const u8 };
+    const users = &[_]User{ .{ .name = "Alice" }, .{ .name = "Bob" } };
+
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    tmpl.components = components;
+
+    const result = try tmpl.render(.{ .count = 42, .users = users }, alc);
+    defer alc.free(result);
+
+    try std.testing.expect(std.mem.indexOf(u8, result, "<h2>Counter</h2>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<h2>Users</h2>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Count: 42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<li>Alice</li>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<li>Bob</li>") != null);
 }
