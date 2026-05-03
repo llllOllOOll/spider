@@ -113,12 +113,8 @@ fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
                     }
                 }
             }
-        } else if (field_info == .int or field_info == .comptime_int) {
-            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
-            try ctx.set(alc, field.name, Value{ .string = str });
-        } else if (field_info == .float or field_info == .comptime_float) {
-            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
-            try ctx.set(alc, field.name, Value{ .string = str });
+        } else if (field_info == .@"struct") {
+            try ctx.set(alc, field.name, Value{ .object = try structToObject(alc, value) });
         }
     }
 
@@ -209,6 +205,8 @@ fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapUnman
         } else if (field_info == .float or field_info == .comptime_float) {
             const str = try std.fmt.allocPrint(alc, "{d}", .{value});
             try obj.put(alc, try alc.dupe(u8, field.name), Value{ .string = str });
+        } else if (field_info == .@"struct") {
+            try obj.put(alc, try alc.dupe(u8, field.name), Value{ .object = try structToObject(alc, value) });
         }
     }
 
@@ -273,7 +271,6 @@ const Parser = struct {
 
         var layout_name: ?[]const u8 = null;
 
-        // Consume extends declaration if present at the start
         if (std.mem.startsWith(u8, p.template[p.pos..], "extends ")) {
             p.pos += 8;
 
@@ -287,9 +284,8 @@ const Parser = struct {
                 }
             }
 
-            // Skip to end of line
             while (p.pos < p.template.len and p.template[p.pos] != '\n') p.pos += 1;
-            if (p.pos < p.template.len) p.pos += 1; // skip the newline
+            if (p.pos < p.template.len) p.pos += 1;
         }
 
         while (p.pos < p.template.len) {
@@ -438,6 +434,19 @@ const Parser = struct {
     fn parseText(p: *Parser) !Node {
         const start = p.pos;
         while (p.pos < p.template.len) {
+            // FIX: Skip <script>...</script> blocks — do not process template syntax inside them
+            if (std.mem.startsWith(u8, p.template[p.pos..], "<script")) {
+                while (p.pos < p.template.len and p.template[p.pos] != '>') p.pos += 1;
+                if (p.pos < p.template.len) p.pos += 1;
+                while (p.pos < p.template.len) {
+                    if (std.mem.startsWith(u8, p.template[p.pos..], "</script>")) {
+                        p.pos += 9;
+                        break;
+                    }
+                    p.pos += 1;
+                }
+                continue;
+            }
             const remaining = p.template[p.pos..];
             if (std.mem.startsWith(u8, remaining, "if (")) break;
             if (std.mem.startsWith(u8, remaining, "for (")) break;
@@ -544,6 +553,16 @@ fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *usize)
 }
 
 fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
+    // FIX: If the entire content is a quoted string literal, emit it as plain text without quotes.
+    // This handles: if (x) { "some-css-class" } else { "other-class" }
+    const trimmed = trimWhitespace(str);
+    if (trimmed.len >= 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
+        const inner = trimmed[1 .. trimmed.len - 1];
+        var nodes: std.ArrayList(Node) = .empty;
+        try nodes.append(alc, Node{ .text = try alc.dupe(u8, inner) });
+        return nodes.toOwnedSlice(alc);
+    }
+
     var nodes: std.ArrayList(Node) = .empty;
     errdefer nodes.deinit(alc);
 
@@ -994,7 +1013,6 @@ fn dupeValue(alc: std.mem.Allocator, value: Value) !Value {
 }
 
 fn evalBool(ctx: *Context, expr: []const u8) bool {
-    // Handle comparison operators
     if (std.mem.indexOf(u8, expr, " != ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right_raw = trimWhitespace(expr[idx + 4 ..]);
@@ -1034,7 +1052,6 @@ fn evalBool(ctx: *Context, expr: []const u8) bool {
         return evalNumCompare(ctx, left, right, .gt);
     }
 
-    // Simple boolean/string check
     if (resolveValue(ctx, expr)) |value| {
         if (value == .boolean) return value.boolean;
         if (value == .string) return value.string.len > 0 and !std.mem.eql(u8, value.string, "false");
@@ -1103,7 +1120,6 @@ test "basic interpolation" {
     const template_str = "Hello { name }!";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const context = .{ .name = "World" };
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1155,7 +1171,6 @@ test "if true" {
     const template_str = "if (show) { <p>yes</p> }";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const context = .{ .show = true };
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1167,7 +1182,6 @@ test "if false" {
     const template_str = "if (show) { <p>yes</p> }";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const context = .{ .show = false };
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1179,7 +1193,6 @@ test "if else false" {
     const template_str = "if (x) { yes } else { no }";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const context = .{ .x = false };
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1188,14 +1201,11 @@ test "if else false" {
 
 test "for loop" {
     const alc = std.testing.allocator;
-
     const Item = struct { name: []const u8 };
     const items = &[_]Item{ .{ .name = "A" }, .{ .name = "B" } };
-
     const template_str = "for (items) |i| { { i.name } }";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const context = .{ .items = items };
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1204,17 +1214,14 @@ test "for loop" {
 
 test "for loop with struct objects" {
     const alc = std.testing.allocator;
-
     const User = struct { name: []const u8, email: []const u8 };
     const users = &[_]User{
         .{ .name = "Alice", .email = "alice@test.com" },
         .{ .name = "Bob", .email = "bob@test.com" },
     };
-
     const template_str = "for (users) |user| { { user.name } - { user.email } }";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const context = .{ .users = users };
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1223,29 +1230,23 @@ test "for loop with struct objects" {
 
 test "if inside for body" {
     const alc = std.testing.allocator;
-
     const Item = struct { name: []const u8, flag: bool };
     const items = &[_]Item{
         .{ .name = "A", .flag = true },
         .{ .name = "B", .flag = false },
     };
-
     const template_str = "for (items) |i| { if (i.flag) { { i.name } } }";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const result = try tmpl.render(.{ .items = items }, alc);
     defer alc.free(result);
-
     try std.testing.expect(std.mem.indexOf(u8, result, "A") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "B") == null);
 }
 
 test "component self-closing" {
     const alc = std.testing.allocator;
-
     const header_html = "<header>{ title }</header>";
-
     var components = std.StringHashMapUnmanaged([]const u8){};
     try components.put(alc, try alc.dupe(u8, "Header"), try alc.dupe(u8, header_html));
     defer {
@@ -1256,12 +1257,10 @@ test "component self-closing" {
         }
         components.deinit(alc);
     }
-
     const template_str = "<Header title=\"{ page_title }\" />";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
     tmpl.components = components;
-
     const context = .{ .page_title = "My Page" };
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1270,9 +1269,7 @@ test "component self-closing" {
 
 test "component with slot" {
     const alc = std.testing.allocator;
-
     const layout_html = "<div>{ slot }</div>";
-
     var components = std.StringHashMapUnmanaged([]const u8){};
     try components.put(alc, try alc.dupe(u8, "Layout"), try alc.dupe(u8, layout_html));
     defer {
@@ -1283,12 +1280,10 @@ test "component with slot" {
         }
         components.deinit(alc);
     }
-
     const template_str = "<Layout><p>Content</p></Layout>";
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
     tmpl.components = components;
-
     const context = .{};
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1297,10 +1292,8 @@ test "component with slot" {
 
 test "extends layout" {
     const alc = std.testing.allocator;
-
     const layout_html = "<html><body>{ slot }</body></html>";
     const page_html = "extends \"layout\"\n<p>Page Content</p>";
-
     var components = std.StringHashMapUnmanaged([]const u8){};
     try components.put(alc, try alc.dupe(u8, "layout"), try alc.dupe(u8, layout_html));
     defer {
@@ -1311,11 +1304,9 @@ test "extends layout" {
         }
         components.deinit(alc);
     }
-
     var tmpl = try Template.init(alc, page_html);
     defer tmpl.deinit();
     tmpl.components = components;
-
     const context = .{};
     const result = try tmpl.render(context, alc);
     defer alc.free(result);
@@ -1324,18 +1315,12 @@ test "extends layout" {
 
 test "if inside for with boolean field" {
     const alc = std.testing.allocator;
-
-    const User = struct {
-        name: []const u8,
-        active: bool,
-    };
-
+    const User = struct { name: []const u8, active: bool };
     const users = &[_]User{
         .{ .name = "Alice", .active = true },
         .{ .name = "Bob", .active = false },
         .{ .name = "Charlie", .active = true },
     };
-
     const template_str =
         \\for (users) |user| {
         \\    if (user.active) {
@@ -1345,13 +1330,10 @@ test "if inside for with boolean field" {
         \\    }
         \\}
     ;
-
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const result = try tmpl.render(.{ .users = users }, alc);
     defer alc.free(result);
-
     try std.testing.expect(std.mem.indexOf(u8, result, "class=\"active\">Alice") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "class=\"inactive\">Bob") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "class=\"active\">Charlie") != null);
@@ -1361,21 +1343,16 @@ test "if inside for with boolean field" {
 
 test "for loop with string slice - direct capture" {
     const alc = std.testing.allocator;
-
     const tags = &[_][]const u8{ "zig", "htmx", "spider" };
-
     const template_str =
         \\for (tags) |tag| {
         \\    <li>{ tag }</li>
         \\}
     ;
-
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
-
     const result = try tmpl.render(.{ .tags = tags }, alc);
     defer alc.free(result);
-
     try std.testing.expect(std.mem.indexOf(u8, result, "<li>zig</li>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "<li>htmx</li>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "<li>spider</li>") != null);
@@ -1383,7 +1360,6 @@ test "for loop with string slice - direct capture" {
 
 test "named slots" {
     const alc = std.testing.allocator;
-
     const layout_str =
         \\<html>
         \\<head><title>{ title }</title></head>
@@ -1394,7 +1370,6 @@ test "named slots" {
         \\</body>
         \\</html>
     ;
-
     var components = std.StringHashMapUnmanaged([]const u8){};
     defer {
         var iter = components.iterator();
@@ -1405,7 +1380,6 @@ test "named slots" {
         components.deinit(alc);
     }
     try components.put(alc, try alc.dupe(u8, "layout"), try alc.dupe(u8, layout_str));
-
     const view_str =
         \\extends "layout"
         \\{ slot_header }
@@ -1414,14 +1388,11 @@ test "named slots" {
         \\<a href="/">Home</a>
         \\<p>Content here</p>
     ;
-
     var tmpl = try Template.init(alc, view_str);
     defer tmpl.deinit();
     tmpl.components = components;
-
     const result = try tmpl.render(.{ .title = "Test" }, alc);
     defer alc.free(result);
-
     try std.testing.expect(std.mem.indexOf(u8, result, "<title>Test</title>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "My Title") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "Home") != null);
@@ -1429,9 +1400,7 @@ test "named slots" {
 
 test "component slot resolves parent context" {
     const alc = std.testing.allocator;
-
     const card_str = "<div class=\"card\"><h2>{ title }</h2><div class=\"body\">{ slot }</div></div>";
-
     var components = std.StringHashMapUnmanaged([]const u8){};
     defer {
         var iter = components.iterator();
@@ -1442,7 +1411,6 @@ test "component slot resolves parent context" {
         components.deinit(alc);
     }
     try components.put(alc, try alc.dupe(u8, "Card"), try alc.dupe(u8, card_str));
-
     const template_str =
         \\<Card title="Counter">
         \\<p>Count: { count }</p>
@@ -1455,20 +1423,48 @@ test "component slot resolves parent context" {
         \\</ul>
         \\</Card>
     ;
-
     const User = struct { name: []const u8 };
     const users = &[_]User{ .{ .name = "Alice" }, .{ .name = "Bob" } };
-
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
     tmpl.components = components;
-
     const result = try tmpl.render(.{ .count = 42, .users = users }, alc);
     defer alc.free(result);
-
     try std.testing.expect(std.mem.indexOf(u8, result, "<h2>Counter</h2>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "<h2>Users</h2>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "Count: 42") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "<li>Alice</li>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "<li>Bob</li>") != null);
+}
+
+test "quoted string literal in if body" {
+    const alc = std.testing.allocator;
+    const template_str =
+        \\<span class="{ if (active) { "text-green-400" } else { "text-zinc-500" } }">label</span>
+    ;
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    const result_true = try tmpl.render(.{ .active = true }, alc);
+    defer alc.free(result_true);
+    try std.testing.expect(std.mem.indexOf(u8, result_true, "text-green-400") != null);
+    const result_false = try tmpl.render(.{ .active = false }, alc);
+    defer alc.free(result_false);
+    try std.testing.expect(std.mem.indexOf(u8, result_false, "text-zinc-500") != null);
+}
+
+test "script tag content not processed as template" {
+    const alc = std.testing.allocator;
+    const template_str =
+        \\<html><head>
+        \\<script>
+        \\function appState() { return { drawerOpen: false }; }
+        \\</script>
+        \\</head><body>{ greeting }</body></html>
+    ;
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    const result = try tmpl.render(.{ .greeting = "Hello" }, alc);
+    defer alc.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "drawerOpen: false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Hello") != null);
 }
