@@ -335,18 +335,54 @@ const Parser = struct {
             if (brace_count > 0) p.pos += 1;
         }
         if (p.pos >= p.template.len) return error.UnclosedBrace;
-
         const then_str = trimWhitespace(p.template[then_start..p.pos]);
         p.pos += 1;
 
         const then_body = try parseTextNodes(p.alc, then_str);
-
         var else_body: ?[]Node = null;
-        while (p.pos < p.template.len and p.template[p.pos] == ' ') p.pos += 1;
 
-        if (p.pos + 6 <= p.template.len and std.mem.eql(u8, p.template[p.pos..(p.pos + 6)], "else {")) {
+        while (p.pos < p.template.len and (p.template[p.pos] == ' ' or p.template[p.pos] == '\n' or p.template[p.pos] == '\r')) p.pos += 1;
+
+        if (p.pos + 9 <= p.template.len and std.mem.eql(u8, p.template[p.pos..(p.pos + 9)], "else if (")) {
+            p.pos += 9;
+            const ei_cond_start = p.pos;
+            while (p.pos < p.template.len and p.template[p.pos] != ')') p.pos += 1;
+            if (p.pos >= p.template.len) return error.UnclosedParen;
+            const ei_condition = try p.alc.dupe(u8, p.template[ei_cond_start..p.pos]);
+            p.pos += 1;
+            while (p.pos < p.template.len and p.template[p.pos] == ' ') p.pos += 1;
+            if (p.pos >= p.template.len or p.template[p.pos] != '{') return error.ExpectedBrace;
+            p.pos += 1;
+            const ei_then_start = p.pos;
+            brace_count = 1;
+            while (p.pos < p.template.len and brace_count > 0) {
+                if (p.template[p.pos] == '{') brace_count += 1 else if (p.template[p.pos] == '}') brace_count -= 1;
+                if (brace_count > 0) p.pos += 1;
+            }
+            if (p.pos >= p.template.len) return error.UnclosedBrace;
+            const ei_then_str = trimWhitespace(p.template[ei_then_start..p.pos]);
+            p.pos += 1;
+            const ei_then_body = try parseTextNodes(p.alc, ei_then_str);
+            var ei_else_body: ?[]Node = null;
+            while (p.pos < p.template.len and (p.template[p.pos] == ' ' or p.template[p.pos] == '\n' or p.template[p.pos] == '\r')) p.pos += 1;
+            if (p.pos + 6 <= p.template.len and std.mem.eql(u8, p.template[p.pos..(p.pos + 6)], "else {")) {
+                p.pos += 6;
+                const ei_else_start = p.pos;
+                brace_count = 1;
+                while (p.pos < p.template.len and brace_count > 0) {
+                    if (p.template[p.pos] == '{') brace_count += 1 else if (p.template[p.pos] == '}') brace_count -= 1;
+                    if (brace_count > 0) p.pos += 1;
+                }
+                if (p.pos >= p.template.len) return error.UnclosedBrace;
+                const ei_else_str = trimWhitespace(p.template[ei_else_start..p.pos]);
+                p.pos += 1;
+                ei_else_body = try parseTextNodes(p.alc, ei_else_str);
+            }
+            var nested_nodes = try p.alc.alloc(Node, 1);
+            nested_nodes[0] = Node{ .if_node = .{ .condition = ei_condition, .then_body = ei_then_body, .else_body = ei_else_body } };
+            else_body = nested_nodes;
+        } else if (p.pos + 6 <= p.template.len and std.mem.eql(u8, p.template[p.pos..(p.pos + 6)], "else {")) {
             p.pos += 6;
-
             const else_start = p.pos;
             brace_count = 1;
             while (p.pos < p.template.len and brace_count > 0) {
@@ -354,7 +390,6 @@ const Parser = struct {
                 if (brace_count > 0) p.pos += 1;
             }
             if (p.pos >= p.template.len) return error.UnclosedBrace;
-
             const else_str = trimWhitespace(p.template[else_start..p.pos]);
             p.pos += 1;
             else_body = try parseTextNodes(p.alc, else_str);
@@ -554,7 +589,6 @@ fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *usize)
 
 fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
     // FIX: If the entire content is a quoted string literal, emit it as plain text without quotes.
-    // This handles: if (x) { "some-css-class" } else { "other-class" }
     const trimmed = trimWhitespace(str);
     if (trimmed.len >= 2 and trimmed[0] == '"' and trimmed[trimmed.len - 1] == '"') {
         const inner = trimmed[1 .. trimmed.len - 1];
@@ -618,8 +652,50 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             pos += 1;
             const then_body = try parseTextNodes(alc, then_str);
             var else_body: ?[]Node = null;
-            while (pos < str.len and str[pos] == ' ') pos += 1;
-            if (pos + 6 <= str.len and std.mem.eql(u8, str[pos..(pos + 6)], "else {")) {
+            while (pos < str.len and (str[pos] == ' ' or str[pos] == '\n' or str[pos] == '\r')) pos += 1;
+            if (pos + 9 <= str.len and std.mem.eql(u8, str[pos..(pos + 9)], "else if (")) {
+                pos += 9;
+                const ei_cond_start = pos;
+                while (pos < str.len and str[pos] != ')') pos += 1;
+                if (pos >= str.len) return error.UnclosedParen;
+                const ei_condition = try alc.dupe(u8, str[ei_cond_start..pos]);
+                pos += 1;
+                while (pos < str.len and str[pos] == ' ') pos += 1;
+                if (pos >= str.len or str[pos] != '{') return error.ExpectedBrace;
+                pos += 1;
+                const ei_then_start = pos;
+                brace_count = 1;
+                while (pos < str.len and brace_count > 0) {
+                    if (str[pos] == '{') brace_count += 1 else if (str[pos] == '}') brace_count -= 1;
+                    if (brace_count > 0) pos += 1;
+                }
+                if (pos >= str.len) return error.UnclosedBrace;
+                const ei_then_str = str[ei_then_start..pos];
+                pos += 1;
+                const ei_then_body = try parseTextNodes(alc, ei_then_str);
+                var ei_else_body: ?[]Node = null;
+                while (pos < str.len and (str[pos] == ' ' or str[pos] == '\n' or str[pos] == '\r')) pos += 1;
+                if (pos + 9 <= str.len and std.mem.eql(u8, str[pos..(pos + 9)], "else if (")) {
+                    const rest_nodes = try parseTextNodes(alc, str[pos..]);
+                    pos = str.len;
+                    ei_else_body = rest_nodes;
+                } else if (pos + 6 <= str.len and std.mem.eql(u8, str[pos..(pos + 6)], "else {")) {
+                    pos += 6;
+                    const ei_else_start = pos;
+                    brace_count = 1;
+                    while (pos < str.len and brace_count > 0) {
+                        if (str[pos] == '{') brace_count += 1 else if (str[pos] == '}') brace_count -= 1;
+                        if (brace_count > 0) pos += 1;
+                    }
+                    if (pos >= str.len) return error.UnclosedBrace;
+                    const ei_else_str = str[ei_else_start..pos];
+                    pos += 1;
+                    ei_else_body = try parseTextNodes(alc, ei_else_str);
+                }
+                var nested_nodes = try alc.alloc(Node, 1);
+                nested_nodes[0] = Node{ .if_node = .{ .condition = ei_condition, .then_body = ei_then_body, .else_body = ei_else_body } };
+                else_body = nested_nodes;
+            } else if (pos + 6 <= str.len and std.mem.eql(u8, str[pos..(pos + 6)], "else {")) {
                 pos += 6;
                 const else_start = pos;
                 brace_count = 1;
