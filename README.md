@@ -33,7 +33,17 @@ Add to your `build.zig`:
 const spider_dep = b.dependency("spider", .{ .target = target });
 const spider_mod = spider_dep.module("spider");
 
-exe.root_module.addImport("spider", spider_mod);
+const exe = b.addExecutable(.{
+    .name = "myapp",
+    .root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "spider", .module = spider_mod },
+        },
+    }),
+});
 
 // Auto-generate embedded templates (required for embed mode)
 const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));
@@ -358,35 +368,120 @@ Spider automatically generates `embedded_templates.zig` on every `zig build`.
 
 ### PostgreSQL (Pure Zig)
 
-Spider's PostgreSQL driver is **pure Zig** — no libpq dependency required.
+Spider's PostgreSQL driver is **pure Zig** — no libpq dependency required. It uses a connection pool with retry logic (5 attempts, exponential backoff) and supports parameterized queries (`$1`, `$2`, ...).
 
 ```zig
-// main.zig — initialize once
-try spider.pg.init(arena, io, .{
-    .host = spider.env.getOr("PG_HOST", "localhost"),
-    .port = spider.env.getInt(u16, "PG_PORT", 5432),
-    .user = spider.env.getOr("PG_USER", "spider"),
-    .password = spider.env.getOr("PG_PASSWORD", ""),
-    .database = spider.env.getOr("PG_DB", "myapp"),
-});
-defer spider.pg.deinit();
+const std = @import("std");
+const spider = @import("spider");
+const db = spider.pg;
 
-// Handler — query returns []T allocated in c.arena
-fn usersHandler(c: *spider.Ctx) !spider.Response {
-    const User = struct { id: i32, name: []const u8, email: []const u8 };
-    const users = try spider.pg.query(User, c.arena,
+pub fn main(init: std.process.Init) !void {
+    const arena: std.mem.Allocator = init.arena.allocator();
+    const io = init.io;
+
+    // Initialize — reads env vars with fallback defaults
+    try db.init(arena, io, .{
+        .host = spider.env.getOr("PG_HOST", "localhost"),
+        .port = spider.env.getInt(u16, "PG_PORT", 5432),
+        .user = spider.env.getOr("PG_USER", "spider"),
+        .password = spider.env.getOr("PG_PASSWORD", "spider"),
+        .database = spider.env.getOr("PG_DB", "myapp"),
+    });
+    defer db.deinit();
+
+    var server = spider.app();
+    defer server.deinit();
+
+    server
+        .get("/users", listUsers)
+        .get("/users/:id", getUser)
+        .post("/users", createUser)
+        .listen(3000) catch {};
+}
+```
+
+#### Queries
+
+`db.query(T, arena, sql, params)` returns `[]T` for structs, `i32` for counts, `void` for INSERT/UPDATE/DELETE.
+
+```zig
+const User = struct { id: i32, name: []const u8, email: []const u8 };
+
+// SELECT — returns []User allocated in c.arena
+fn listUsers(c: *spider.Ctx) !spider.Response {
+    const users = try db.query(User, c.arena,
         "SELECT id, name, email FROM users WHERE active = $1",
         .{true},
     );
-    return c.json(.{ .users = users }, .{});
+    return c.json(users, .{});
 }
 
-// ANY() optimization with array() helper
-const ids = [_]i32{ 1, 2, 3 };
-const rows = try spider.pg.query(Row, c.arena,
-    "SELECT * FROM users WHERE id = ANY($1)",
-    .{spider.pg.array(ids)},
+// SELECT one row — returns ?User
+fn getUser(c: *spider.Ctx) !spider.Response {
+    const id = try std.fmt.parseInt(i32, c.param("id") orelse "0", 10);
+    const user = try db.queryOne(User, c.arena,
+        "SELECT id, name, email FROM users WHERE id = $1",
+        .{id},
+    ) orelse return c.json(.{ .error = "not found" }, .{ .status = .not_found });
+    return c.json(user, .{});
+}
+
+// COUNT — returns i32
+fn countUsers(c: *spider.Ctx) !spider.Response {
+    const count = try db.query(i32, c.arena, "SELECT COUNT(*) FROM users", .{});
+    return c.json(.{ .count = count }, .{});
+}
+
+// INSERT — void
+fn createUser(c: *spider.Ctx) !spider.Response {
+    const Input = struct { name: []const u8, email: []const u8 };
+    const body = try c.bodyJson(Input);
+    try db.query(void, c.arena,
+        "INSERT INTO users (name, email) VALUES ($1, $2)",
+        .{ body.name, body.email },
+    );
+    return c.json(.{ .created = true }, .{ .status = .created });
+}
+```
+
+#### ANY() with array()
+
+```zig
+fn batchUsers(c: *spider.Ctx) !spider.Response {
+    const ids = [_]i32{ 1, 2, 3 };
+    const rows = try db.query(User, c.arena,
+        "SELECT id, name, email FROM users WHERE id = ANY($1)",
+        .{db.array(i32, &ids)},
+    );
+    return c.json(rows, .{});
+}
+```
+
+#### Transactions
+
+```zig
+fn transferHandler(c: *spider.Ctx) !spider.Response {
+    var tx = try db.begin();
+    defer tx.rollback();
+
+    try tx.query(void, c.arena, "UPDATE accounts SET balance = balance - $1 WHERE id = $2", .{ amount, from_id });
+    try tx.query(void, c.arena, "UPDATE accounts SET balance = balance + $1 WHERE id = $2", .{ amount, to_id });
+    try tx.commit();
+
+    return c.json(.{ .ok = true }, .{});
+}
+```
+
+#### Raw SQL (no params)
+
+```zig
+// Execute multiple statements separated by ';'
+try db.queryExecute(void, c.arena,
+    "CREATE TEMP TABLE foo (id int); INSERT INTO foo VALUES (1)"
 );
+
+// Raw query returning rows
+const rows = try db.queryExecute(User, c.arena, "SELECT * FROM users");
 ```
 
 ### SQLite
@@ -670,8 +765,24 @@ pub const ResponseOptions = struct {
 | `server.useAt(path, middleware)` | Path-scoped middleware |
 | `server.group(prefix, middlewares, fn)` | Route group with middleware |
 | `server.onError(handler)` | Global error handler |
-| `server.db(driver)` | Register database driver |
 | `server.listen(port)` | Start server |
+
+### `spider.pg` Methods (aliased as `const db = spider.pg`)
+
+| Method | Description |
+|--------|-------------|
+| `db.init(allocator, io, config)` | Initialize pool (DbConfig with optional overrides) |
+| `db.deinit()` | Shutdown pool |
+| `db.query(T, arena, sql, params)` | Parameterized query → `[]T`, `i32`, or `void` |
+| `db.queryOne(T, arena, sql, params)` | Parameterized query → `?T` (single row) |
+| `db.queryExecute(T, arena, sql)` | Raw SQL without params |
+| `db.queryOneExecute(T, arena, sql)` | Raw SQL single row |
+| `db.array(T, values)` | Create array param for `ANY($1)` |
+| `db.begin()` | Start transaction → `Transaction` |
+| `db.Transaction.query(T, arena, sql, params)` | Query inside transaction |
+| `db.Transaction.queryOne(T, arena, sql, params)` | Single row inside transaction |
+| `db.Transaction.commit()` | Commit transaction |
+| `db.Transaction.rollback()` | Rollback transaction |
 
 ---
 
