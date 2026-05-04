@@ -1,0 +1,20 @@
+.{
+    .name = .pg,
+    .paths = .{""},
+    .version = "0.0.0",
+    .fingerprint = 0xbd309ff281fb9f5a,
+    .dependencies = .{
+        .buffer = .{
+            .url = "https://github.com/karlseguin/buffer.zig/archive/a0de50267550666dc126051f672a8f0b55c44083.tar.gz",
+            .hash = "N-V-__8AAEGLAACZXqfn1yrAh1MKBAy7tUw-fQIEFU9bopsi",
+        },
+        .metrics = .{
+            .url = "git+https://github.com/karlseguin/metrics.zig#6de29b83a750a06c438d268543e0e3c3c1b309da",
+            .hash = "metrics-0.0.0-W7G4eIegAQD4XxA9Co7Atbw59u_2zvxYf406AZuoAHPM",
+        },
+        .translate_c = .{
+            .url = "git+https://codeberg.org/ziglang/translate-c#57c559cf581b1fcad90494eda219f98abeb155ce",
+            .hash = "translate_c-0.0.0-Q_BUWlX1BgCD1wo6uo97prlp9VJ4gxAjwN_vZ7nsSjGN",
+        },
+    },
+}
