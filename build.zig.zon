@@ -19,5 +19,6 @@
         "lib.zig",
         "includes",
         "README.md",
+        "pg_driver_impl",
     },
 }
