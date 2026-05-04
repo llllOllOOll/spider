@@ -440,7 +440,15 @@ pub const Server = struct {
         return self;
     }
 
-    pub fn listen(self: *Server, port: u16) !void {
+    pub const ListenOptions = struct {
+        port: ?u16 = null,
+        host: ?[]const u8 = null,
+    };
+
+    pub fn listen(self: *Server, options: ListenOptions) !void {
+        const port = options.port orelse self.config.port;
+        const host = options.host orelse self.config.host;
+
         std.debug.print("Speed server starting on port {d}...\n", .{port});
 
         const gpa = std.heap.smp_allocator;
@@ -449,11 +457,11 @@ pub const Server = struct {
         defer threaded.deinit();
         const io = threaded.io();
 
-        const address = try Io.net.IpAddress.parse("127.0.0.1", port);
+        const address = try Io.net.IpAddress.parse(host, port);
         var listener = try address.listen(io, .{ .reuse_address = true });
         defer listener.deinit(io);
 
-        std.debug.print("Server listening on http://127.0.0.1:{d}\n", .{port});
+        std.debug.print("Server listening on http://{s}:{d}\n", .{ host, port });
 
         const cpu_count = std.Thread.getCpuCount() catch 2;
         std.debug.print("Starting {d} worker threads\n", .{cpu_count});

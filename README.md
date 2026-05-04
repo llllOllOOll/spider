@@ -71,7 +71,7 @@ pub fn main() void {
         .get("/", homeHandler)
         .get("/users/:id", userHandler)
         .post("/users", createUserHandler)
-        .listen(3000) catch {};
+        .listen(.{ .port = 3000 }) catch {};
 }
 
 fn homeHandler(c: *spider.Ctx) !spider.Response {
@@ -95,6 +95,15 @@ zig build run
 # Speed server starting on port 3000...
 # Server listening on http://127.0.0.1:3000
 # Starting 12 worker threads
+```
+
+`listen` accepts both `port` and `host` — any field not set falls back to the values in `spider.config.zig`:
+
+```zig
+.listen(.{ .port = 8080 })                          // override port only
+.listen(.{ .host = "0.0.0.0" })                     // override host only
+.listen(.{ .port = 8080, .host = "0.0.0.0" })       // override both
+.listen(.{})                                         // use config values
 ```
 
 ---
@@ -439,7 +448,7 @@ pub fn main(init: std.process.Init) !void {
         .get("/users", listUsers)
         .get("/users/:id", getUser)
         .post("/users", createUser)
-        .listen(3000) catch {};
+        .listen(.{ .port = 3000 }) catch {};
 }
 ```
 
@@ -808,7 +817,7 @@ pub const ResponseOptions = struct {
 | `server.useAt(path, middleware)` | Path-scoped middleware |
 | `server.group(prefix, middlewares, fn)` | Route group with middleware |
 | `server.onError(handler)` | Global error handler |
-| `server.listen(port)` | Start server |
+| `server.listen(.{ .port = p, .host = h })` | Start server (`port` and `host` fall back to config) |
 
 ### `spider.pg` Methods (aliased as `const db = spider.pg`)
 

@@ -17,6 +17,7 @@ pub const app = @import("core/app.zig").app;
 pub const appWithConfig = @import("core/app.zig").appWithConfig;
 pub const server = @import("core/app.zig").server;
 pub const Server = @import("core/app.zig").Server;
+pub const ListenOptions = @import("core/app.zig").Server.ListenOptions;
 pub const StaticConfig = @import("core/app.zig").StaticConfig;
 pub const Router = @import("routing/router.zig").Router;
 pub const Group = @import("routing/group.zig").Group;
