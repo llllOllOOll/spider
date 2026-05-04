@@ -16,3 +16,4 @@ AGENTS.md
 bench/
 src/main.zig
 memory.md
+demos/
