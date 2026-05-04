@@ -5,6 +5,7 @@ const views_mod = @import("../render/views.zig");
 const Database = @import("database.zig").Database;
 const DriverType = @import("database.zig").DriverType;
 pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
+const zmd = @import("../render/zmd/zmd.zig");
 
 const root = @import("root");
 const has_embed = @hasDecl(root, "spider_templates");
@@ -120,6 +121,7 @@ pub const Ctx = struct {
         if (has_embed) {
             const Templates = root.spider_templates;
 
+            // First, try to find the template in EmbeddedTemplates
             const view_content = blk: {
                 var buf: [256]u8 = undefined;
                 var j: usize = 0;
@@ -136,6 +138,19 @@ pub const Ctx = struct {
                 }
                 return error.TemplateNotFound;
             };
+
+            // Check for -- doc signature - if present, convert and return directly (no template processing)
+            if (std.mem.startsWith(u8, view_content, "-- doc")) {
+                const md_body = view_content["-- doc".len..];
+                const md_html = try zmd.parse(self.arena, md_body, zmd.Formatters{});
+                return Response{
+                    .status = opts.status,
+                    .body = md_html,
+                    .content_type = "text/html; charset=utf-8",
+                    .headers = opts.headers,
+                    .cookies = opts.cookies,
+                };
+            }
 
             var components = std.StringHashMapUnmanaged([]const u8){};
             defer {
@@ -182,6 +197,19 @@ pub const Ctx = struct {
             if (err == error.FileNotFound) return error.TemplateNotFound;
             return err;
         };
+
+        // Check for -- doc signature - if present, convert and return directly (no template processing)
+        if (std.mem.startsWith(u8, view_content, "-- doc")) {
+            const md_body = view_content["-- doc".len..];
+            const md_html = try zmd.parse(self.arena, md_body, zmd.Formatters{});
+            return Response{
+                .status = opts.status,
+                .body = md_html,
+                .content_type = "text/html; charset=utf-8",
+                .headers = opts.headers,
+                .cookies = opts.cookies,
+            };
+        }
 
         var components = std.StringHashMapUnmanaged([]const u8){};
         defer {
