@@ -116,8 +116,11 @@ return c.html("<h1>Hello</h1>", .{});
 // Redirect
 return c.redirect("/dashboard");
 
-// Render template by name
+// Render template by name (auto-detects .html/.md extension)
 return c.view("users/index", .{ .users = users }, .{});
+
+// Render template string directly
+return c.render("Hello {{ name }}!", .{ .name = "World" }, .{});
 ```
 
 ### Reading Requests
@@ -233,7 +236,7 @@ fn authMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
 
 ## Templates
 
-Spider's template engine supports variables, loops, conditions, includes, and layout inheritance.
+Spider's template engine uses an **AST parser** with support for variables, loops, conditions, includes, layout inheritance, **components**, and **Markdown**.
 
 ### Template Syntax
 
@@ -269,6 +272,51 @@ fn usersHandler(c: *spider.Ctx) !spider.Response {
 }
 ```
 
+### Components (PascalCase)
+
+Create reusable components with PascalCase naming:
+
+```html
+<!-- views/components/UserInfo.html -->
+<div class="user-card">
+  <h3>{{ name }}</h3>
+  <p>{{ email }}</p>
+  {% slot "content" %}{% end %}
+</div>
+```
+
+```html
+<!-- Usage in another template -->
+<UserInfo name="Alice" email="alice@spider.dev">
+  {% slot "content" %}
+    <p>Extra content here</p>
+  {% end %}
+</UserInfo>
+```
+
+### Markdown Support
+
+Spider auto-detects Markdown files via `--doc` signature in frontmatter:
+
+```markdown
+<!-- views/docs/api.md -->
+--doc
+title: API Documentation
+layout: docs_layout
+--
+
+# API Reference
+
+Welcome to the API docs...
+```
+
+```zig
+// Handler — auto-detects .md extension
+return c.view("docs/api", .{}, .{});
+```
+
+### Template Modes
+
 ### Template Modes
 
 **Embed mode** — templates compiled into the binary (recommended for production):
@@ -293,6 +341,7 @@ Spider automatically generates `embedded_templates.zig` on every `zig build`.
 |-----|-------------|
 | `{{ variable }}` | Variable interpolation |
 | `{{ var \| default:"fallback" }}` | Default filter |
+| `{{ var ?? "fallback" }}` | Coalescing operator |
 | `{% if condition %}...{% endif %}` | Conditional |
 | `{% if a %}...{% elif b %}...{% else %}...{% endif %}` | If/elif/else |
 | `{% for item in list %}...{% endfor %}` | Loop |
@@ -300,12 +349,16 @@ Spider automatically generates `embedded_templates.zig` on every `zig build`.
 | `{% extends "layout" %}` | Layout inheritance |
 | `{% block "name" %}...{% end %}` | Define block |
 | `{% raw %}...{% endraw %}` | Raw content (no processing) |
+| `<ComponentName prop="value">` | PascalCase component |
+| `{% slot "name" %}...{% end %}` | Named slots |
 
 ---
 
 ## Database
 
-### PostgreSQL
+### PostgreSQL (Pure Zig)
+
+Spider's PostgreSQL driver is **pure Zig** — no libpq dependency required.
 
 ```zig
 // main.zig — initialize once
@@ -327,6 +380,13 @@ fn usersHandler(c: *spider.Ctx) !spider.Response {
     );
     return c.json(.{ .users = users }, .{});
 }
+
+// ANY() optimization with array() helper
+const ids = [_]i32{ 1, 2, 3 };
+const rows = try spider.pg.query(Row, c.arena,
+    "SELECT * FROM users WHERE id = ANY($1)",
+    .{spider.pg.array(ids)},
+);
 ```
 
 ### SQLite
@@ -488,17 +548,32 @@ Path traversal (`../../etc/passwd`) is blocked automatically.
 
 ---
 
+## Live Reload
+
+Spider auto-injects WebSocket live reload in development mode:
+
+```zig
+// main.zig
+pub const spider_config = spider.Config{
+    .env = .development, // enables live reload
+};
+```
+
+When you save a template or static file, the browser refreshes automatically. No configuration needed — just run `zig build run` in dev mode.
+
+---
+
 ## Configuration
 
-Create `spider.config.zig` in your project root:
+Create `spider.config.zig` or use `spider_config` in your `main.zig`:
 
 ```zig
 const spider = @import("spider");
 
-pub const config = spider.Config{
+pub const spider_config = spider.Config{
     .views_dir = "./views",
     .layout = "layout",
-    .env = .development,
+    .env = .development, // enables live reload
 };
 ```
 
@@ -513,27 +588,38 @@ src/
 ├── core/
 │   ├── app.zig          — Server, routing, workers
 │   ├── context.zig      — Ctx, Response, ResponseOptions
-│   ├── pipeline.zig     — HTTP connection handling
 │   └── database.zig     — Database interface (vtable)
 ├── routing/
-│   └── router.zig       — Trie router
+│   ├── router.zig       — Trie router
+│   └── group.zig        — Route groups
 ├── modules/
 │   ├── auth/auth.zig    — JWT, cookies, middleware
-│   └── static.zig       — Static file serving
+│   ├── static.zig       — Static file serving
+│   ├── dashboard.zig    — Built-in metrics dashboard
+│   └── livereload.zig   — Live reload (dev mode)
 ├── drivers/
-│   ├── pg/              — PostgreSQL driver (pure Zig wire protocol)
-│   ├── sqlite/          — SQLite driver (via libsqlite3)
+│   ├── pg/pg.zig        — PostgreSQL driver (pure Zig wire protocol)
+│   ├── sqlite/sqlite.zig— SQLite driver (via libsqlite3)
 │   └── mysql/           — MySQL driver (pure Zig wire protocol)
 ├── render/
-│   ├── template.zig     — Template engine
-│   └── views.zig        — Template resolver (embed + runtime)
+│   ├── template.zig     — Template engine (AST parser, components, slots)
+│   ├── views.zig        — Template resolver (embed + runtime)
+│   └── zmd/             — Markdown support
 ├── internal/
 │   ├── config.zig       — spider.Config
 │   ├── env.zig          — .env loader
 │   ├── logger.zig       — Structured logging
-│   └── metrics.zig      — Metrics
-└── providers/
-    └── google.zig       — Google OAuth
+│   ├── metrics.zig      — Metrics
+│   └── buffer_pool.zig  — Buffer pooling
+├── ws/
+│   ├── websocket.zig    — WebSocket protocol (RFC 6455)
+│   └── hub.zig          — Broadcast hub
+├── binding/
+│   ├── form.zig         — Form data parsing
+│   └── form_parser.zig  — Typed form binding
+├── providers/
+│   └── google.zig       — Google OAuth
+└── features/            — Built-in features (demos, examples)
 ```
 
 ---

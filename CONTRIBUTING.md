@@ -39,27 +39,37 @@ Spider is organized in clear layers. Each layer has a single responsibility and 
 │           src/core/                      │
 │  app.zig       — Server, workers         │
 │  context.zig   — Ctx, Response           │
-│  pipeline.zig  — HTTP connection loop    │
 │  database.zig  — Database vtable         │
 └──────────────────┬──────────────────────┘
                    │
-        ┌──────────┼──────────┐
-        │          │          │
+         ┌──────────┼──────────┐
+         │          │          │
 ┌───────▼──┐ ┌─────▼────┐ ┌──▼───────────┐
 │ routing/ │ │ modules/ │ │   drivers/   │
-│ router   │ │ auth     │ │ pg/sqlite/   │
-│ trie     │ │ static   │ │ mysql        │
-└──────────┘ └──────────┘ └──────────────┘
+│ router   │ │ auth     │ │ pg (pure Zig)│
+│ group    │ │ static   │ │ sqlite       │
+└──────────┘ │ livereload│ │ mysql        │
+              └──────────┘ └──────────────┘
                    │
-        ┌──────────┼──────────┐
-        │          │          │
+         ┌──────────┼──────────┐
+         │          │          │
 ┌───────▼──┐ ┌─────▼────┐ ┌──▼───────────┐
 │ render/  │ │internal/ │ │ providers/   │
 │ template │ │ env      │ │ google oauth │
-│ views    │ │ config   │ │              │
-└──────────┘ │ logger   │ └──────────────┘
-             │ metrics  │
-             └──────────┘
+│ views    │ │ config   │ └──────────────┘
+│ zmd/     │ │ logger   │
+└──────────┘ │ metrics  │
+              │ buffer   │
+              └──────────┘
+         ┌──────────┐
+         │ ws/       │
+         │ websocket│
+         │ hub       │
+         └──────────┘
+         ┌──────────┐
+         │ binding/  │
+         │ form      │
+         └──────────┘
 ```
 
 ### Request lifecycle
@@ -171,31 +181,30 @@ The field name normalization algorithm: strip extension, replace `/` and `-` wit
 spider/
 ├── src/
 │   ├── spider.zig              — public API, all re-exports
+│   ├── build_helpers.zig       — build support functions
 │   ├── core/
 │   │   ├── app.zig             — Server struct, workers, listen()
 │   │   ├── context.zig         — Ctx, Response, ResponseOptions
-│   │   ├── pipeline.zig        — handleConnection, HTTP loop
 │   │   └── database.zig        — Database vtable + DatabaseCtx
 │   ├── routing/
-│   │   ├── router.zig          — trie router (new, no web.zig dep)
-│   │   ├── group.zig           — route groups
+│   │   ├── router.zig          — trie router
+│   │   └── group.zig           — route groups
 │   ├── modules/
 │   │   ├── auth/auth.zig       — JWT, HMAC-SHA256, cookies, middleware
 │   │   ├── static.zig          — static file serving from ./public/
-│   │   └── dashboard.zig       — built-in metrics dashboard
+│   │   ├── dashboard.zig       — built-in metrics dashboard
+│   │   └── livereload.zig      — live reload (dev mode)
 │   ├── drivers/
-│   │   ├── pg/                 — PostgreSQL, pure Zig wire protocol
-│   │   │   ├── pg.zig
-│   │   │   └── pool.zig
-│   │   ├── sqlite/             — SQLite via libsqlite3 C FFI
-│   │   ├── mysql/              — MySQL, pure Zig wire protocol
-│   │   │   ├── mysql.zig
-│   │   │   ├── connection.zig
-│   │   │   ├── protocol.zig
-│   │   │   └── types.zig
-│   │   └── odbc/               — future: multi-db via unixODBC
+│   │   ├── pg/pg.zig           — PostgreSQL, pure Zig wire protocol
+│   │   ├── sqlite/sqlite.zig   — SQLite via libsqlite3 C FFI
+│   │   └── mysql/              — MySQL, pure Zig wire protocol
+│   │       ├── mysql.zig
+│   │       ├── connection.zig
+│   │       ├── mysql_complex.zig
+│   │       ├── protocol.zig
+│   │       └── types.zig
 │   ├── render/
-│   │   ├── template.zig        — template engine (83+ tests)
+│   │   ├── template.zig        — template engine (AST parser, components, slots)
 │   │   ├── views.zig           — template index, disk scan
 │   │   └── zmd/                — Markdown support
 │   ├── internal/
@@ -205,23 +214,16 @@ spider/
 │   │   ├── metrics.zig         — request metrics
 │   │   └── buffer_pool.zig     — buffer pooling
 │   ├── ws/
-│   │   ├── websocket.zig       — WebSocket protocol
+│   │   ├── websocket.zig       — WebSocket protocol (RFC 6455)
 │   │   └── hub.zig             — broadcast hub
 │   ├── binding/
 │   │   ├── form.zig            — form data parsing
 │   │   └── form_parser.zig     — typed form binding
 │   ├── providers/
-│   │   └── google.zig          — Google OAuth via pacman HTTP client
+│   │   └── google.zig          — Google OAuth via HTTP client
+│   ├── features/               — built-in features (demos)
 │   ├── generate_templates.zig  — CLI tool: scans src/, generates embed file
-│   ├── web.zig                 — Spider antigo (legacy, não remover ainda)
 │   └── main.zig                — Spider's own test server
-├── seven/                      — isolated POCs and experiments
-│   ├── src/
-│   │   ├── main_embed.zig      — embed mode POC
-│   │   ├── main_runtime.zig    — runtime mode POC
-│   │   ├── main_compare.zig    — proves embed == runtime byte-for-byte
-│   │   └── lib.zig             — simulates Spider internals
-│   └── build.zig
 ├── examples/
 │   └── spiderstack/            — full production starter kit
 │       ├── src/
@@ -229,10 +231,6 @@ spider/
 │       │   ├── features/       — auth, games, movies, todo, home
 │       │   └── core/           — middleware, i18n, db migrations
 │       └── build.zig
-├── includes/                   — C headers for FFI
-│   ├── pg.h
-│   ├── sqlite.h
-│   └── env.h
 └── build.zig
 ```
 
@@ -245,13 +243,12 @@ spider/
 - Zig `0.17.0-dev` (master branch)
 - PostgreSQL (for pg driver tests)
 - SQLite3 (system library)
-- libpq (PostgreSQL C client)
 
 ### Arch Linux (primary platform)
 
 ```bash
 # Dependencies
-sudo pacman -S postgresql sqlite libpq
+sudo pacman -S postgresql sqlite
 
 # Clone
 git clone https://github.com/llllOllOOll/spider
@@ -271,7 +268,7 @@ zig build test
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install postgresql-client libpq-dev libsqlite3-dev
+sudo apt install postgresql libsqlite3-dev
 zig build
 ```
 
@@ -302,7 +299,8 @@ Spider is developed and tested exclusively on **Arch Linux**. The following plat
 Known issues:
 - `c.setenv()` / `c.getenv()` in `env.zig` use POSIX C functions — Windows has `_putenv_s` / `getenv` with different signatures
 - `std.Io.Threaded` behavior on Windows may differ
-- `libpq` and `libsqlite3` linking on Windows needs testing and documentation
+- `libsqlite3` linking on Windows needs testing and documentation
+- PostgreSQL driver is pure Zig — no `libpq` needed
 - Path separators in `generate_templates.zig` and `views.zig` use `/` — Windows uses `\`
 
 **What we need:**
@@ -314,7 +312,8 @@ Known issues:
 
 Known issues:
 - `c.setenv()` should work on macOS (POSIX) but untested
-- `libpq` and `libsqlite3` are available via Homebrew but linking is untested
+- `libsqlite3` is available via Homebrew but linking is untested
+- PostgreSQL driver is pure Zig — no `libpq` needed
 - `epoll` is Linux-only — `Io.Threaded` uses `kqueue` on macOS via Zig stdlib, should work
 
 **What we need:**
@@ -349,7 +348,7 @@ fix: correct header iteration after body read
 feat: add c.db() method to Ctx
 docs: update README with new template syntax
 [windows] fix: setenv compatibility
-[macos] fix: libpq linking with Homebrew
+[macos] fix: sqlite3 linking with Homebrew
 ```
 
 ---
@@ -365,12 +364,14 @@ These are known issues and planned improvements. Good starting points for contri
 | `drivers/mysql/` | `query()` parameter binding (`$1`, `?`) not implemented | high |
 | `drivers/mysql/` | `caching_sha2_password` auth (MySQL 8 default) not implemented | high |
 | `ws/hub.zig` | Race conditions not fully analyzed | high |
-| `drivers/odbc/` | ODBC driver for multi-database support | low |
 | Templates | Conflict detection: two templates normalizing to same name | medium |
 | Templates | Embed mode: `{% include %}` with runtime fallback | low |
+| Templates | Component props: support complex expressions | medium |
+| `render/zmd/` | Full Markdown feature parity with CommonMark | medium |
 | Platform | Windows support | high |
 | Platform | macOS CI | high |
 | Benchmarks | TechEmpower submission | medium |
+| `drivers/pg/` | Connection pool metrics and tuning | low |
 ---
 
 ## Questions?
