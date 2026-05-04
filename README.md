@@ -130,7 +130,7 @@ return c.redirect("/dashboard");
 return c.view("users/index", .{ .users = users }, .{});
 
 // Render template string directly
-return c.render("Hello {{ name }}!", .{ .name = "World" }, .{});
+return c.render("Hello { name }!", .{ .name = "World" }, .{});
 ```
 
 ### Reading Requests
@@ -252,26 +252,23 @@ Spider's template engine uses an **AST parser** with support for variables, loop
 
 ```html
 <!-- views/layout.html -->
-{% block "base" %}
 <!DOCTYPE html>
 <html>
 <body>
-  <nav>My App</nav>
-  <main>{% template "content" %}</main>
+<nav>My App</nav>
+<main>{ slot }</main>
 </body>
 </html>
-{% end %}
 ```
 
 ```html
 <!-- views/users/index.html -->
-{% extends "layout" %}
-{% block "content" %}
+extends "layout"
+
 <h1>Users</h1>
-{% for user in users %}
-  <li>{{ user.name }} — {{ user.email }}</li>
-{% endfor %}
-{% end %}
+for (users) |user| {
+  <li>{ user.name } — { user.email }</li>
+}
 ```
 
 ```zig
@@ -282,6 +279,39 @@ fn usersHandler(c: *spider.Ctx) !spider.Response {
 }
 ```
 
+### Conditionals
+
+```html
+if (user.active) {
+  <span class="badge">Active</span>
+} else {
+  <span class="badge muted">Inactive</span>
+}
+
+// else if chains
+if (role == "admin") {
+  <li>Admin Panel</li>
+} else if (role == "moderator") {
+  <li>Moderator Tools</li>
+} else {
+  <li>Standard User</li>
+}
+```
+
+### Coalescing (defaults)
+
+```html
+<p>Hello, { name ?? "Guest" }</p>
+```
+
+### List length
+
+```html
+if (users.len > 0) {
+  <p>{ users.len } users found</p>
+}
+```
+
 ### Components (PascalCase)
 
 Create reusable components with PascalCase naming:
@@ -289,19 +319,36 @@ Create reusable components with PascalCase naming:
 ```html
 <!-- views/components/UserInfo.html -->
 <div class="user-card">
-  <h3>{{ name }}</h3>
-  <p>{{ email }}</p>
-  {% slot "content" %}{% end %}
+<h3>{ name }</h3>
+<p>{ email }</p>
+{ slot }
 </div>
 ```
 
 ```html
 <!-- Usage in another template -->
 <UserInfo name="Alice" email="alice@spider.dev">
-  {% slot "content" %}
-    <p>Extra content here</p>
-  {% end %}
+  <p>Extra content here</p>
 </UserInfo>
+
+<!-- Self-closing (no slot content) -->
+<UserInfo name="Bob" email="bob@spider.dev" />
+```
+
+### Named Slots
+
+```html
+<!-- views/components/PageLayout.html -->
+<header>{ slot_header }</header>
+<main>{ slot }</main>
+<aside>{ slot_sidebar }</aside>
+
+<!-- Usage -->
+<PageLayout>
+  <h1 slot="header">Dashboard</h1>
+  <p>Welcome back!</p>
+  <nav slot="sidebar">...</nav>
+</PageLayout>
 ```
 
 ### Markdown Support
@@ -327,8 +374,6 @@ return c.view("docs/api", .{}, .{});
 
 ### Template Modes
 
-### Template Modes
-
 **Embed mode** — templates compiled into the binary (recommended for production):
 
 ```zig
@@ -349,18 +394,16 @@ Spider automatically generates `embedded_templates.zig` on every `zig build`.
 
 | Tag | Description |
 |-----|-------------|
-| `{{ variable }}` | Variable interpolation |
-| `{{ var \| default:"fallback" }}` | Default filter |
-| `{{ var ?? "fallback" }}` | Coalescing operator |
-| `{% if condition %}...{% endif %}` | Conditional |
-| `{% if a %}...{% elif b %}...{% else %}...{% endif %}` | If/elif/else |
-| `{% for item in list %}...{% endfor %}` | Loop |
-| `{% include "partial" %}` | Include partial |
-| `{% extends "layout" %}` | Layout inheritance |
-| `{% block "name" %}...{% end %}` | Define block |
-| `{% raw %}...{% endraw %}` | Raw content (no processing) |
-| `<ComponentName prop="value">` | PascalCase component |
-| `{% slot "name" %}...{% end %}` | Named slots |
+| `{ variable }` | Variable interpolation |
+| `{ variable ?? "default" }` | Coalescing operator (default value) |
+| `if (condition) { ... }` | Conditional |
+| `if (a) { ... } else if (b) { ... } else { ... }` | If / else if / else |
+| `for (items) \|item\| { ... }` | Loop with capture |
+| `extends "layout"` | Layout inheritance (top of file) |
+| `<ComponentName prop="value">` | PascalCase component (with slot) |
+| `<ComponentName prop="value" />` | Self-closing component |
+| `{ slot }` | Default slot content |
+| `{ slot_name }` | Named slot content |
 
 ---
 
