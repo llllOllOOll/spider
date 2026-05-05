@@ -3,12 +3,7 @@
     .version = "0.1.0",
     .fingerprint = {{fingerprint}},
     .minimum_zig_version = "0.17.0-dev.93+76174e1bc",
-    .dependencies = .{
-        .spider = .{
-            .url = "git+https://github.com/llllOllOOll/spider#7e2ab202be5a5539bbf1c44b4fd88c1c3af627f3",
-            .hash = "spider-0.4.0-P7cGrmxtCwDMzaYfk_2cW-rz7-cR4-3G2-ctwPh9Zcw7",
-        },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",

@@ -9,6 +9,18 @@ const layout_html_tmpl = @embedFile("templates/layout.html.template");
 const home_index_tmpl = @embedFile("templates/home_index.html.template");
 const home_controller_tmpl = @embedFile("templates/home_controller.zig.template");
 
+fn runZigFetch(io: std.Io, app_name: []const u8) !void {
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "zig", "fetch", "--save=spider", "git+https://github.com/llllOllOOll/spider#main" },
+        .cwd = .{ .path = app_name },
+    });
+    const term = try child.wait(io);
+    switch (term) {
+        .exited => |code| if (code != 0) return error.ZigFetchFailed,
+        else => return error.ZigFetchFailed,
+    }
+}
+
 fn runZigInit(io: std.Io, app_name: []const u8) !void {
     var child = try std.process.spawn(io, .{
         .argv = &.{ "zig", "init", "-m" },
@@ -97,6 +109,9 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void
         try writeFile(io, project_dir, path, content);
         std.debug.print("  create  {s}/{s}\n", .{ app_name, path });
     }
+
+    std.debug.print("Fetching spider from main...\n", .{});
+    try runZigFetch(io, app_name);
 
     std.debug.print("\nDone! Next steps:\n", .{});
     std.debug.print("  cd {s}\n", .{app_name});
