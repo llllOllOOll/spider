@@ -59,6 +59,7 @@ pub const Ctx = struct {
     _io: std.Io = undefined,
     _stream: std.Io.net.Stream = undefined,
     _headers: std.StringHashMapUnmanaged([]const u8) = .{},
+    _last_template: ?[]const u8 = null,
 
     pub fn db(self: *Ctx) DatabaseCtx {
         return .{
@@ -136,6 +137,7 @@ pub const Ctx = struct {
                         break :blk @field(instance, field.name);
                     }
                 }
+                self._last_template = name;
                 return error.TemplateNotFound;
             };
 
@@ -184,7 +186,10 @@ pub const Ctx = struct {
         }
 
         const view_path = if (vc.index) |idx|
-            idx.get(name) orelse return error.TemplateNotFound
+            idx.get(name) orelse {
+                self._last_template = name;
+                return error.TemplateNotFound;
+            }
         else
             try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, name });
 
@@ -194,7 +199,10 @@ pub const Ctx = struct {
             self.arena,
             .limited(512 * 1024),
         ) catch |err| {
-            if (err == error.FileNotFound) return error.TemplateNotFound;
+            if (err == error.FileNotFound) {
+                self._last_template = name;
+                return error.TemplateNotFound;
+            }
             return err;
         };
 
