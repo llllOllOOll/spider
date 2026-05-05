@@ -273,7 +273,6 @@ Spider's template engine uses an **AST parser** with support for variables, loop
 ```html
 <!-- views/users/index.html -->
 extends "layout"
-
 <h1>Users</h1>
 for (users) |user| {
   <li>{ user.name } — { user.email }</li>
@@ -296,7 +295,6 @@ if (user.active) {
 } else {
   <span class="badge muted">Inactive</span>
 }
-
 // else if chains
 if (role == "admin") {
   <li>Admin Panel</li>
@@ -339,7 +337,6 @@ Create reusable components with PascalCase naming:
 <UserInfo name="Alice" email="alice@spider.dev">
   <p>Extra content here</p>
 </UserInfo>
-
 <!-- Self-closing (no slot content) -->
 <UserInfo name="Bob" email="bob@spider.dev" />
 ```
@@ -351,7 +348,6 @@ Create reusable components with PascalCase naming:
 <header>{ slot_header }</header>
 <main>{ slot }</main>
 <aside>{ slot_sidebar }</aside>
-
 <!-- Usage -->
 <PageLayout>
   <h1 slot="header">Dashboard</h1>
@@ -370,9 +366,7 @@ Spider auto-detects Markdown files via `--doc` signature in frontmatter:
 title: API Documentation
 layout: docs_layout
 --
-
 # API Reference
-
 Welcome to the API docs...
 ```
 
@@ -381,23 +375,117 @@ Welcome to the API docs...
 return c.view("docs/api", .{}, .{});
 ```
 
+---
+
 ### Template Modes
+
+Spider has two template modes. Both produce **byte-identical output** — the only difference is when templates are loaded.
 
 **Embed mode** — templates compiled into the binary (recommended for production):
 
 ```zig
-// main.zig — one line
+// root.zig or main.zig — one line enables embed mode
 pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
 ```
 
-Spider automatically generates `embedded_templates.zig` on every `zig build`.
+Spider automatically generates `embedded_templates.zig` on every `zig build` by scanning `src/` recursively for `.html` and `.md` files.
 
-**Runtime mode** — reads from disk (zero config, hot reload in dev):
+**Runtime mode** — reads from disk at request time (useful in development):
 
 ```zig
-// main.zig — nothing needed
-// Spider scans src/ and serves templates from disk
+// main.zig — nothing needed, just don't declare spider_templates
+// Spider scans views_dir and serves templates from disk
 ```
+
+Detection uses `@hasDecl(@import("root"), "spider_templates")` — same pattern as `std_options` in the Zig stdlib.
+
+#### Runtime mode requires spider.config.zig
+
+Without `spider.config.zig`, Spider uses `views_dir = "./views"` as default. This almost never matches the actual project structure and causes `TemplateNotFound` errors.
+
+**Always create `spider.config.zig` in the project root when using runtime mode:**
+
+```zig
+const spider = @import("spider");
+
+pub const config = spider.Config{
+    .views_dir = "./src",   // point to where your .html/.md files live
+    .layout = "layout",
+    .env = .development,
+    .port = 3000,
+    .host = "0.0.0.0",
+};
+```
+
+Spider prints warnings to help diagnose issues:
+
+```
+[spider] WARNING: views_dir "./views" not found.
+[spider]          Templates will not load in runtime mode.
+[spider]          Check your spider.config.zig -> views_dir setting.
+
+[spider] WARNING: No templates found in "./views".
+[spider]          Make sure your .html/.md files are inside views_dir.
+[spider]          Check your spider.config.zig -> views_dir setting.
+
+[spider] runtime templates: 5 loaded from "./src"
+```
+
+#### Template name normalization
+
+Both modes apply the same normalization rules. The name passed to `c.view()` is normalized identically:
+
+| File path (relative to views_dir) | Normalized name | Call with |
+|---|---|---|
+| `views/bills/index.html` | `bills_index` | `c.view("bills/index", ...)` |
+| `views/home/index.html` | `home_index` | `c.view("home/index", ...)` |
+| `shared/templates/layout.html` | `layout` | layout (auto, via config) |
+| `shared/templates/Card.html` | `Card` | `c.view("Card", ...)` |
+| `shared/templates/site-nav.html` | `site_nav` | `<SiteNav />` in templates |
+
+Rules: strip extension → use segment after `views/` or `templates/` → replace `/` and `-` with `_`.
+
+**Common mistake:** calling `c.view("index", ...)` when the file is at `views/bills/index.html`. The correct call is `c.view("bills/index", ...)` which normalizes to `bills_index`.
+
+#### Embed mode in Docker
+
+In embed mode, templates are inside the binary — no files needed at runtime:
+
+```dockerfile
+FROM <zig-image>:master AS builder
+WORKDIR /app
+COPY . .
+RUN zig build -Doptimize=ReleaseSmall
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=builder /app/zig-out/bin/<app> /app/<app>
+COPY --from=builder /app/public /app/public
+EXPOSE 3000
+CMD ["./<app>"]
+```
+
+#### Runtime mode in Docker
+
+In runtime mode, templates must be copied into the container:
+
+```dockerfile
+FROM <zig-image>:master AS builder
+WORKDIR /app
+COPY . .
+RUN zig build -Doptimize=ReleaseSmall
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=builder /app/zig-out/bin/<app> /app/<app>
+COPY --from=builder /app/public /app/public
+COPY --from=builder /app/src /app/src
+COPY --from=builder /app/spider.config.zig /app/spider.config.zig
+EXPOSE 3000
+CMD ["./<app>"]
+```
+
+---
 
 ### Template Tags
 
@@ -413,8 +501,6 @@ Spider automatically generates `embedded_templates.zig` on every `zig build`.
 | `<ComponentName prop="value" />` | Self-closing component |
 | `{ slot }` | Default slot content |
 | `{ slot_name }` | Named slot content |
-
----
 
 ## Database
 
