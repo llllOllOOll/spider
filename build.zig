@@ -27,14 +27,20 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Default spider_config fallback for projects without spider.config.zig
     const default_cfg = b.addWriteFiles();
     const default_cfg_file = default_cfg.add("spider_config.zig",
         \\const spider = @import("spider");
+        \\pub const is_default = true;
         \\pub const config = spider.Config{};
     );
-    mod.addAnonymousImport("spider_config", .{
+    const default_cfg_mod = b.createModule(.{
         .root_source_file = default_cfg_file,
+        .imports = &.{
+            .{ .name = "spider", .module = mod },
+        },
     });
+    mod.addImport("spider_config", default_cfg_mod);
 
     // generate-templates — CLI tool used by dev projects
     const gen_exe = b.addExecutable(.{
@@ -50,6 +56,17 @@ pub fn build(b: *std.Build) void {
     _ = b.addModule("spider_build", .{
         .root_source_file = b.path("src/build_helpers.zig"),
     });
+
+    // spider CLI — `spider new <app_name>`
+    const cli_exe = b.addExecutable(.{
+        .name = "spider",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(cli_exe);
 
     // spider-dev — test server
     const test_exe = b.addExecutable(.{

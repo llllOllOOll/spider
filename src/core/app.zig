@@ -498,8 +498,7 @@ pub fn app() Server {
     // match the project structure (e.g. views_dir="./views").
     // Uses @import("root") same as fromRoot() — resolves to the user's main.zig,
     // not Spider's internal root.zig.
-    const root = @import("root");
-    if (!@hasDecl(root, "spider_config")) {
+    if (@hasDecl(@import("spider_config"), "is_default")) {
         std.debug.print(
             "[spider] WARNING: No spider.config.zig found.\n" ++
                 "[spider]          Running with defaults: views_dir=\"./views\", port=3000, env=development.\n" ++
@@ -518,7 +517,8 @@ pub fn appWithConfig(config: Config) Server {
     s.config = config;
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
-    s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, "src") catch null;
+    const views_dir = config.views_dir orelse "src";
+    s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, views_dir) catch null;
 
     if (config.env == .development) {
         _ = s.get("/_spider/reload", livereload.handler);

@@ -1,0 +1,24 @@
+const std = @import("std");
+const spider = @import("spider");
+const home = @import("features/home/controller.zig");
+
+pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
+
+pub fn main(init: std.process.Init) !void {
+    _ = init;
+
+    var server = spider.app();
+    defer server.deinit();
+
+    server
+        .get("/", home.index)
+        .onError(errorHandler)
+        .listen(.{ .port = 3000, .host = "0.0.0.0" }) catch |err| return err;
+}
+
+fn errorHandler(c: *spider.Ctx, err: anyerror) !spider.Response {
+    return switch (err) {
+        error.TemplateNotFound => c.text("Template not found", .{ .status = .not_found }),
+        else => c.text(@errorName(err), .{ .status = .internal_server_error }),
+    };
+}
