@@ -29,7 +29,7 @@ pub const ViewsIndex = struct {
     }
 };
 
-// "auth/login" → "auth_login", "layout" → "layout"
+// "auth/login" -> "auth_login", "layout" -> "layout"
 pub fn normalizeName(name: []const u8, buf: []u8) []const u8 {
     var j: usize = 0;
     for (name) |c| {
@@ -40,9 +40,9 @@ pub fn normalizeName(name: []const u8, buf: []u8) []const u8 {
     return buf[0..j];
 }
 
-// TODO: Name conflict — two templates in different folders can normalize to the
+// TODO: Name conflict -- two templates in different folders can normalize to the
 // same name (e.g. features/users/views/index.html and views/users/index.html
-// both → users_index). For now the dev is responsible for avoiding conflicts.
+// both -> users_index). For now the dev is responsible for avoiding conflicts.
 // Future fix: detect conflicts in buildIndex() and return an error with a clear
 // message indicating which files conflict.
 pub fn buildIndex(
@@ -53,12 +53,21 @@ pub fn buildIndex(
     var entries: std.ArrayList(TemplateEntry) = .empty;
 
     const cwd = std.Io.Dir.cwd();
-    var dir = cwd.openDir(io, root_dir, .{ .iterate = true }) catch
+    var dir = cwd.openDir(io, root_dir, .{ .iterate = true }) catch {
+        std.debug.print(
+            "[spider] WARNING: views_dir \"{s}\" not found.\n" ++
+                "[spider]          Templates will not load in runtime mode.\n" ++
+                "[spider]          Check your spider.config.zig -> views_dir setting.\n",
+            .{root_dir},
+        );
         return ViewsIndex{ .entries = &.{}, .allocator = allocator };
+    };
     defer dir.close(io);
 
     var walker = try dir.walk(allocator);
     defer walker.deinit();
+
+    var template_count: usize = 0;
 
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
@@ -79,6 +88,21 @@ pub fn buildIndex(
             .name = try allocator.dupe(u8, name),
             .path = full_path,
         });
+        template_count += 1;
+    }
+
+    if (template_count == 0) {
+        std.debug.print(
+            "[spider] WARNING: No templates found in \"{s}\".\n" ++
+                "[spider]          Make sure your .html/.md files are inside views_dir.\n" ++
+                "[spider]          Check your spider.config.zig -> views_dir setting.\n",
+            .{root_dir},
+        );
+    } else {
+        std.debug.print(
+            "[spider] runtime templates: {d} loaded from \"{s}\"\n",
+            .{ template_count, root_dir },
+        );
     }
 
     return ViewsIndex{
@@ -87,7 +111,6 @@ pub fn buildIndex(
     };
 }
 
-// Mesmo algoritmo do generate-templates, com suporte a views/ na raiz
 fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
     const no_ext = if (std.mem.endsWith(u8, path, ".html"))
         path[0 .. path.len - 5]
@@ -120,7 +143,6 @@ fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
     } else if (std.mem.indexOf(u8, no_ext, "templates/")) |idx| {
         const after = no_ext[idx + "templates/".len ..];
 
-        // Igual ao views/ na raiz: normalizar tudo após templates/
         var j: usize = 0;
         for (after) |c| {
             if (j >= buffer.len) break;
@@ -130,7 +152,6 @@ fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
         return buffer[0..j];
     }
 
-    // sem views/ ou templates/ — substituir / e - por _
     var j: usize = 0;
     for (no_ext) |c| {
         if (j >= buffer.len) break;

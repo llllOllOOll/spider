@@ -287,27 +287,27 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 header_count += 1;
             }
         }
-        var final_body = response.body orelse "";
+        const final_body = response.body orelse "";
 
         // injetar live reload em dev
-        if (ctx.env == .development) {
-            const ct = response.content_type;
-            const is_html = std.mem.startsWith(u8, ct, "text/html");
-            if (is_html and final_body.len > 0) {
-                if (std.mem.lastIndexOf(u8, final_body, "</body>")) |idx| {
-                    final_body = std.mem.concat(arena, u8, &.{
-                        final_body[0..idx],
-                        livereload.SCRIPT,
-                        final_body[idx..],
-                    }) catch final_body;
-                } else {
-                    final_body = std.mem.concat(arena, u8, &.{
-                        final_body,
-                        livereload.SCRIPT,
-                    }) catch final_body;
-                }
-            }
-        }
+        // if (ctx.env == .development) {
+        //     const ct = response.content_type;
+        //     const is_html = std.mem.startsWith(u8, ct, "text/html");
+        //     if (is_html and final_body.len > 0) {
+        //         if (std.mem.lastIndexOf(u8, final_body, "</body>")) |idx| {
+        //             final_body = std.mem.concat(arena, u8, &.{
+        //                 final_body[0..idx],
+        //                 livereload.SCRIPT,
+        //                 final_body[idx..],
+        //             }) catch final_body;
+        //         } else {
+        //             final_body = std.mem.concat(arena, u8, &.{
+        //                 final_body,
+        //                 livereload.SCRIPT,
+        //             }) catch final_body;
+        //         }
+        //     }
+        // }
 
         request.respond(final_body, .{
             .status = response.status,
@@ -494,6 +494,21 @@ pub fn server() Server {
 }
 
 pub fn app() Server {
+    // Warning: without spider.config.zig, Spider runs with defaults that may not
+    // match the project structure (e.g. views_dir="./views").
+    // Uses @import("root") same as fromRoot() — resolves to the user's main.zig,
+    // not Spider's internal root.zig.
+    const root = @import("root");
+    if (!@hasDecl(root, "spider_config")) {
+        std.debug.print(
+            "[spider] WARNING: No spider.config.zig found.\n" ++
+                "[spider]          Running with defaults: views_dir=\"./views\", port=3000, env=development.\n" ++
+                "[spider]          Runtime template loading may not work without it.\n" ++
+                "[spider]          Create spider.config.zig in your project root to customize.\n",
+            .{},
+        );
+    }
+
     const cfg = @import("../internal/config.zig").fromRoot();
     return appWithConfig(cfg);
 }
