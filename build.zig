@@ -27,6 +27,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const default_cfg = b.addWriteFiles();
+    const default_cfg_file = default_cfg.add("spider_config.zig",
+        \\const spider = @import("spider");
+        \\pub const config = spider.Config{};
+    );
+    mod.addAnonymousImport("spider_config", .{
+        .root_source_file = default_cfg_file,
+    });
+
     // generate-templates — CLI tool used by dev projects
     const gen_exe = b.addExecutable(.{
         .name = "generate-templates",
