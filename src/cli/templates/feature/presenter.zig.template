@@ -1,0 +1,27 @@
+const std = @import("std");
+const spider = @import("spider");
+const model = @import("model.zig");
+
+pub const {{Feature}}Row = struct {
+    id: i64,
+    name: []const u8,
+};
+
+pub const {{Feature}}ListContext = struct {
+    {{plural}}: []{{Feature}}Row,
+    page_title: []const u8,
+};
+
+pub fn build{{Feature}}ListContext(
+    alloc: std.mem.Allocator,
+    {{plural}}: []const model.{{Feature}},
+) !{{Feature}}ListContext {
+    var rows = try std.ArrayList({{Feature}}Row).initCapacity(alloc, {{plural}}.len);
+    for ({{plural}}) |item| {
+        try rows.append(alloc, {{Feature}}Row{ .id = item.id, .name = item.name });
+    }
+    return {{Feature}}ListContext{
+        .{{plural}} = rows.items,
+        .page_title = "{{plural}}",
+    };
+}

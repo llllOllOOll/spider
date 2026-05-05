@@ -1,0 +1,27 @@
+const std = @import("std");
+const spider = @import("spider");
+const db = spider.pg;
+const model = @import("model.zig");
+
+pub fn findAll(alloc: std.mem.Allocator) ![]model.{{Feature}} {
+    const sql = "SELECT id, name FROM {{plural}} ORDER BY id DESC";
+    return try db.query(model.{{Feature}}, alloc, sql, .{});
+}
+pub fn findById(alloc: std.mem.Allocator, id: i64) !?model.{{Feature}} {
+    const sql = "SELECT id, name FROM {{plural}} WHERE id = $1 LIMIT 1";
+    return try db.queryOne(model.{{Feature}}, alloc, sql, .{id});
+}
+pub fn create(alloc: std.mem.Allocator, input: model.CreateInput) !?model.{{Feature}} {
+    const sql = "INSERT INTO {{plural}} (name) VALUES ($1) RETURNING id, name";
+    return try db.queryOne(model.{{Feature}}, alloc, sql, .{input.name});
+}
+pub fn update(alloc: std.mem.Allocator, id: i64, updates: model.UpdateInput) !?model.{{Feature}} {
+    const current = try findById(alloc, id) orelse return null;
+    const new_name = updates.name orelse current.name;
+    const sql = "UPDATE {{plural}} SET name = $1 WHERE id = $2 RETURNING id, name";
+    return try db.queryOne(model.{{Feature}}, alloc, sql, .{ new_name, id });
+}
+pub fn delete(alloc: std.mem.Allocator, id: i64) !void {
+    const sql = "DELETE FROM {{plural}} WHERE id = $1";
+    _ = try db.query(void, alloc, sql, .{id});
+}

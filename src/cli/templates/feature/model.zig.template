@@ -1,0 +1,10 @@
+pub const {{Feature}} = struct {
+    id: i64,
+    name: []const u8,
+};
+pub const CreateInput = struct {
+    name: []const u8,
+};
+pub const UpdateInput = struct {
+    name: ?[]const u8 = null,
+};

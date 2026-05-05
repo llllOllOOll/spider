@@ -1,0 +1,15 @@
+extends "layout"
+
+<div style="max-width: 800px; margin: 0 auto; padding: 2rem;">
+  <h1>{{plural}}</h1>
+
+  if ({{plural}}.len == 0) {
+    <p>No {{plural}} found.</p>
+  }
+
+  for ({{plural}}) |item| {
+    <div style="padding: 1rem; border: 1px solid #333; border-radius: 8px; margin-bottom: 0.75rem;">
+      <p>{ item.name }</p>
+    </div>
+  }
+</div>

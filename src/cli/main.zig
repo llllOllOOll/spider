@@ -1,12 +1,14 @@
 const std = @import("std");
 const new = @import("new.zig");
+const generate = @import("generate.zig");
 
 const usage =
     \\Spider CLI — spiderme.org
     \\
     \\Usage:
-    \\  spider new <app_name>    Create a new Spider project
-    \\  spider help              Show this help
+    \\  spider new <app_name>          Create a new Spider project
+    \\  spider generate <subcommand>   Generate code (feature)
+    \\  spider help                    Show this help
     \\
 ;
 
@@ -28,6 +30,12 @@ pub fn main(init: std.process.Init) !void {
             return error.MissingAppName;
         };
         try new.run(io, allocator, app_name);
+    } else if (std.mem.eql(u8, command, "generate")) {
+        const subcommand = args.next() orelse {
+            std.debug.print("Usage: spider generate <subcommand>\n", .{});
+            return;
+        };
+        try generate.run(io, allocator, subcommand, &args);
     } else if (std.mem.eql(u8, command, "help")) {
         std.debug.print("{s}", .{usage});
     } else {
