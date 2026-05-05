@@ -1,0 +1,7 @@
+zig-out/
+zig-cache/
+zig-pkg/
+.env
+.env.local
+.env.development
+.env.production

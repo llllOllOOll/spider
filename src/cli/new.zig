@@ -8,6 +8,10 @@ const main_zig_tmpl = @embedFile("templates/main.zig.template");
 const layout_html_tmpl = @embedFile("templates/layout.html.template");
 const home_index_tmpl = @embedFile("templates/home_index.html.template");
 const home_controller_tmpl = @embedFile("templates/home_controller.zig.template");
+const dockerfile_tmpl = @embedFile("templates/Dockerfile.template");
+const docker_compose_tmpl = @embedFile("templates/docker-compose.yml.template");
+const env_example_tmpl = @embedFile("templates/.env.example.template");
+const gitignore_tmpl = @embedFile("templates/.gitignore.template");
 
 fn runZigFetch(io: std.Io, app_name: []const u8) !void {
     var child = try std.process.spawn(io, .{
@@ -99,6 +103,10 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void
         .{ "src/shared/templates/layout.html", layout_html_tmpl },
         .{ "src/features/home/views/index.html", home_index_tmpl },
         .{ "src/features/home/controller.zig", home_controller_tmpl },
+        .{ "Dockerfile", dockerfile_tmpl },
+        .{ "docker-compose.yml", docker_compose_tmpl },
+        .{ ".env.example", env_example_tmpl },
+        .{ ".gitignore", gitignore_tmpl },
     };
 
     inline for (files) |f| {

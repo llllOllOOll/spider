@@ -1,0 +1,11 @@
+FROM llllollooll/zig:master AS builder
+WORKDIR /app
+COPY . .
+RUN zig build -Doptimize=ReleaseSmall
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=builder /app/zig-out/bin/{{app_name}} /app/{{app_name}}
+COPY --from=builder /app/public /app/public
+EXPOSE 3000
+CMD ["./{{app_name}}"]
