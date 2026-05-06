@@ -483,6 +483,7 @@ const Parser = struct {
                 continue;
             }
             if (std.mem.startsWith(u8, p.template[p.pos..], "{{")) {
+                if (p.pos > start) break;
                 p.pos += 2;
                 const raw_start = p.pos;
                 while (p.pos < p.template.len) {
@@ -491,10 +492,10 @@ const Parser = struct {
                 }
                 const raw = p.template[raw_start..p.pos];
                 if (p.pos < p.template.len) p.pos += 2;
-                const literal = try p.alc.alloc(u8, 2 + raw.len + 2);
-                @memcpy(literal[0..2], "{{");
-                @memcpy(literal[2..][0..raw.len], raw);
-                @memcpy(literal[2 + raw.len ..][0..2], "}}");
+                const literal = try p.alc.alloc(u8, 1 + raw.len + 1);
+                @memcpy(literal[0..1], "{");
+                @memcpy(literal[1..][0..raw.len], raw);
+                @memcpy(literal[1 + raw.len ..][0..1], "}");
                 return Node{ .text = literal };
             }
             const remaining = p.template[p.pos..];
@@ -628,10 +629,10 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             }
             const raw = str[raw_start..pos];
             if (pos < str.len) pos += 2;
-            const literal = try alc.alloc(u8, 2 + raw.len + 2);
-            @memcpy(literal[0..2], "{{");
-            @memcpy(literal[2..][0..raw.len], raw);
-            @memcpy(literal[2 + raw.len ..][0..2], "}}");
+            const literal = try alc.alloc(u8, 1 + raw.len + 1);
+            @memcpy(literal[0..1], "{");
+            @memcpy(literal[1..][0..raw.len], raw);
+            @memcpy(literal[1 + raw.len ..][0..1], "}");
             try nodes.append(alc, Node{ .text = literal });
             continue;
         }
@@ -1584,7 +1585,7 @@ test "double braces passthrough - single expression" {
     const result = try tmpl.render(.{ .name = "World" }, alc);
     defer alc.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "Hello World") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "{{dark}}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{dark}") != null);
 }
 
 test "double braces passthrough - alpine x-data" {
@@ -1594,6 +1595,6 @@ test "double braces passthrough - alpine x-data" {
     defer tmpl.deinit();
     const result = try tmpl.render(.{ .slot = "content" }, alc);
     defer alc.free(result);
-    try std.testing.expect(std.mem.indexOf(u8, result, "{{open: false}}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{open: false}") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "content") != null);
 }
