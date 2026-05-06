@@ -10,6 +10,8 @@ pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const io = init.io;
+    _ = allocator;
+    _ = io;
 
     // Uncomment to enable PostgreSQL (reads from .env automatically)
     // try db.init(allocator, io, .{});

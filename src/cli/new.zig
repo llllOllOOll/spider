@@ -1,4 +1,6 @@
 const std = @import("std");
+const downloader = @import("downloader.zig");
+const chmod = @import("chmod.zig");
 
 // Embedded templates
 const build_zig_tmpl = @embedFile("templates/build.zig.template");
@@ -15,6 +17,16 @@ const gitignore_tmpl = @embedFile("templates/.gitignore.template");
 const core_mod_tmpl = @embedFile("templates/core_mod.zig.template");
 const features_mod_tmpl = @embedFile("templates/features_mod.zig.template");
 const home_mod_tmpl = @embedFile("templates/home_mod.zig.template");
+const styles_css_tmpl = @embedFile("templates/styles.css.template");
+
+fn getTailwindUrl() []const u8 {
+    const os = @import("builtin").os.tag;
+    const arch = @import("builtin").cpu.arch;
+    if (os == .macos and arch == .aarch64) return "https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-macos-arm64";
+    if (os == .macos) return "https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-macos-x64";
+    if (arch == .aarch64) return "https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-linux-arm64";
+    return "https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-linux-x64";
+}
 
 fn runZigFetch(io: std.Io, app_name: []const u8) !void {
     var child = try std.process.spawn(io, .{
@@ -87,10 +99,28 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void
         return err;
     };
 
+    errdefer {
+        std.debug.print("  Cleaning up {s}/...\n", .{app_name});
+        cwd.deleteTree(io, app_name) catch {};
+    }
+
     try runZigInit(io, app_name);
 
     var project_dir = try cwd.openDir(io, app_name, .{});
     defer project_dir.close(io);
+
+    project_dir.createDirPath(io, "bin") catch {};
+    project_dir.createDirPath(io, "public/js") catch {};
+    project_dir.createDirPath(io, "public/css") catch {};
+
+    try downloader.download(io, allocator, getTailwindUrl(), project_dir, "bin/tailwindcss");
+    try downloader.download(io, allocator, "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs", project_dir, "bin/daisyui.mjs");
+    try downloader.download(io, allocator, "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs", project_dir, "bin/daisyui-theme.mjs");
+    try downloader.download(io, allocator, "https://cdn.jsdelivr.net/npm/alpinejs@latest/dist/cdn.min.js", project_dir, "public/js/alpine.min.js");
+
+    const tailwind_path = try std.fmt.allocPrint(allocator, "{s}/bin/tailwindcss", .{app_name});
+    defer allocator.free(tailwind_path);
+    try chmod.makeExecutable(io, tailwind_path);
 
     const fingerprint = try readFingerprint(io, allocator, project_dir);
     defer allocator.free(fingerprint);
@@ -102,6 +132,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void
         .{ "build.zig.zon", build_zon_tmpl },
         .{ "spider.config.zig", spider_config_tmpl },
         .{ "src/main.zig", main_zig_tmpl },
+        .{ "src/styles.css", styles_css_tmpl },
         .{ "src/embedded_templates.zig", "// Generated file - DO NOT EDIT MANUALLY\npub const EmbeddedTemplates = struct {};\n" },
         .{ "src/core/mod.zig", core_mod_tmpl },
         .{ "src/features/mod.zig", features_mod_tmpl },
@@ -123,6 +154,17 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void
         try writeFile(io, project_dir, path, content);
         std.debug.print("  create  {s}/{s}\n", .{ app_name, path });
     }
+
+    var css_child = try std.process.spawn(io, .{
+        .argv = &.{ "./bin/tailwindcss", "-i", "src/styles.css", "-o", "public/css/app.css" },
+        .cwd = .{ .path = app_name },
+    });
+    const css_term = try css_child.wait(io);
+    switch (css_term) {
+        .exited => |code| if (code != 0) return error.TailwindCompileFailed,
+        else => return error.TailwindCompileFailed,
+    }
+    std.debug.print("  CSS compiled → public/css/app.css\n", .{});
 
     std.debug.print("Fetching spider from main...\n", .{});
     try runZigFetch(io, app_name);
