@@ -68,12 +68,13 @@ fn getEnvInt(key: []const u8, default: u16) u16 {
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, overrides: DbConfig) !void {
     db_allocator = allocator;
+    env.autoLoad(allocator);
 
-    const host = overrides.host orelse getEnv("POSTGRES_HOST", "localhost");
-    const port = overrides.port orelse getEnvInt("POSTGRES_PORT", 5432);
-    const user = overrides.user orelse getEnv("POSTGRES_USER", "spider");
-    const password = overrides.password orelse getEnv("POSTGRES_PASSWORD", "spider");
-    const database = overrides.database orelse getEnv("POSTGRES_DB", "spider_db");
+    const host = overrides.host orelse getEnv("PG_HOST", "localhost");
+    const port = overrides.port orelse getEnvInt("PG_PORT", 5432);
+    const user = overrides.user orelse getEnv("PG_USER", "spider");
+    const password = overrides.password orelse getEnv("PG_PASSWORD", "spider");
+    const database = overrides.database orelse getEnv("PG_DB", "spider_db");
     const pool_size: u16 = @intCast(overrides.pool_size orelse 10);
 
     const opts = pg_lib.Pool.Opts{
