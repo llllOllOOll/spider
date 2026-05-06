@@ -7,8 +7,7 @@ pub fn build(b: *std.Build) void {
     const spider_dep = b.dependency("spider", .{ .target = target });
     const spider_mod = spider_dep.module("spider");
 
-    // Register spider.config.zig if present — uses b.createModule so
-    // spider.config.zig can @import("spider") without circular imports
+    // Register spider.config.zig
     const config_exists = blk: {
         std.Io.Dir.cwd().access(b.graph.io, "spider.config.zig", .{}) catch break :blk false;
         break :blk true;
@@ -23,17 +22,39 @@ pub fn build(b: *std.Build) void {
         spider_mod.addImport("spider_config", spider_config_mod);
     }
 
+    // ── core ──────────────────────────────────────────────────────────
+    const core_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/mod.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "spider", .module = spider_mod },
+        },
+    });
+
+    // ── features ──────────────────────────────────────────────────────
+    const features_mod = b.createModule(.{
+        .root_source_file = b.path("src/features/mod.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "spider", .module = spider_mod },
+            .{ .name = "core", .module = core_mod },
+        },
+    });
+
+    // ── Executable ────────────────────────────────────────────────────
     const exe = b.addExecutable(.{
         .name = "{{app_name}}",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "spider", .module = spider_mod },
-            },
         }),
     });
+
+    exe.root_module.addImport("spider", spider_mod);
+    exe.root_module.addImport("core", core_mod);
+    exe.root_module.addImport("features", features_mod);
+
     b.installArtifact(exe);
 
     const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));
@@ -47,4 +68,9 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    const unit_tests = b.addTest(.{ .root_module = exe.root_module });
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
 }

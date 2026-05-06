@@ -1,0 +1,55 @@
+const std = @import("std");
+const spider = @import("spider");
+const db = spider.pg;
+
+const Migration = struct {
+    version: [:0]const u8,
+    sql_file: []const u8,
+};
+
+const MIGRATIONS = [_]Migration{
+    {{entry}}
+};
+
+fn extractUpSection(sql_file: []const u8) []const u8 {
+    const up_marker = "-- migrate:up\n";
+    const down_marker = "-- migrate:down";
+    const start = std.mem.indexOf(u8, sql_file, up_marker) orelse return "";
+    const content_start = start + up_marker.len;
+    const end = std.mem.indexOf(u8, sql_file[content_start..], down_marker) orelse
+        return sql_file[content_start..];
+    return sql_file[content_start .. content_start + end];
+}
+
+pub fn run(alloc: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try db.queryExecute(void, a,
+        "CREATE TABLE IF NOT EXISTS schema_migrations (" ++
+        "version VARCHAR(255) NOT NULL PRIMARY KEY, " ++
+        "ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+    );
+
+    for (MIGRATIONS) |migration| {
+        const MigrationCheck = struct { count: i32 };
+        const checks = try db.query(
+            MigrationCheck, a,
+            "SELECT COUNT(*) as count FROM schema_migrations WHERE version = $1",
+            .{migration.version},
+        );
+        if (checks.len == 0 or checks[0].count == 0) {
+            const up_sql = extractUpSection(migration.sql_file);
+            if (up_sql.len > 0 and std.mem.trim(u8, up_sql, " \n\r\t").len > 0) {
+                const sql_z = try a.dupeZ(u8, up_sql);
+                try db.queryExecute(void, a, sql_z);
+                std.debug.print("MIGRATION: ran {s}\n", .{migration.version});
+            }
+            try db.query(void, a,
+                "INSERT INTO schema_migrations (version) VALUES ($1)",
+                .{migration.version},
+            );
+        }
+    }
+}

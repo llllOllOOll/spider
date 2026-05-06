@@ -1,7 +1,8 @@
 const std = @import("std");
 const spider = @import("spider");
+const features = @import("features");
 const Response = spider.Response;
-const home = @import("features/home/controller.zig");
+const home = features.home;
 
 pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
 

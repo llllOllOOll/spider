@@ -12,6 +12,9 @@ const dockerfile_tmpl = @embedFile("templates/Dockerfile.template");
 const docker_compose_tmpl = @embedFile("templates/docker-compose.yml.template");
 const env_example_tmpl = @embedFile("templates/.env.example.template");
 const gitignore_tmpl = @embedFile("templates/.gitignore.template");
+const core_mod_tmpl = @embedFile("templates/core_mod.zig.template");
+const features_mod_tmpl = @embedFile("templates/features_mod.zig.template");
+const home_mod_tmpl = @embedFile("templates/home_mod.zig.template");
 
 fn runZigFetch(io: std.Io, app_name: []const u8) !void {
     var child = try std.process.spawn(io, .{
@@ -100,6 +103,9 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void
         .{ "spider.config.zig", spider_config_tmpl },
         .{ "src/main.zig", main_zig_tmpl },
         .{ "src/embedded_templates.zig", "// Generated file - DO NOT EDIT MANUALLY\npub const EmbeddedTemplates = struct {};\n" },
+        .{ "src/core/mod.zig", core_mod_tmpl },
+        .{ "src/features/mod.zig", features_mod_tmpl },
+        .{ "src/features/home/mod.zig", home_mod_tmpl },
         .{ "src/shared/templates/layout.html", layout_html_tmpl },
         .{ "src/features/home/views/index.html", home_index_tmpl },
         .{ "src/features/home/controller.zig", home_controller_tmpl },

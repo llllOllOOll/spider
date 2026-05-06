@@ -3,25 +3,29 @@ const spider = @import("spider");
 const model = @import("model.zig");
 const repository = @import("repository.zig");
 const presenter = @import("presenter.zig");
+const Response = spider.Response;
 
-pub fn index(c: *spider.Ctx) !spider.Response {
+pub fn index(c: *spider.Ctx) !Response {
     const items = try repository.findAll(c.arena);
     const context = try presenter.build{{Feature}}ListContext(c.arena, items);
     return c.view("{{plural}}/index", context, .{});
 }
-pub fn create(c: *spider.Ctx) !spider.Response {
+
+pub fn create(c: *spider.Ctx) !Response {
     const input = try c.parseForm(model.CreateInput);
     _ = try repository.create(c.arena, input);
     return c.redirect("/{{plural}}");
 }
-pub fn update(c: *spider.Ctx) !spider.Response {
+
+pub fn update(c: *spider.Ctx) !Response {
     const id_str = c.params.get("id") orelse return error.MissingParam;
     const id = try std.fmt.parseInt(i64, id_str, 10);
     const updates = try c.parseForm(model.UpdateInput);
     _ = try repository.update(c.arena, id, updates);
     return c.redirect("/{{plural}}");
 }
-pub fn delete(c: *spider.Ctx) !spider.Response {
+
+pub fn delete(c: *spider.Ctx) !Response {
     const id_str = c.params.get("id") orelse return error.MissingParam;
     const id = try std.fmt.parseInt(i64, id_str, 10);
     try repository.delete(c.arena, id);
