@@ -482,6 +482,21 @@ const Parser = struct {
                 }
                 continue;
             }
+            if (std.mem.startsWith(u8, p.template[p.pos..], "{{")) {
+                p.pos += 2;
+                const raw_start = p.pos;
+                while (p.pos < p.template.len) {
+                    if (std.mem.startsWith(u8, p.template[p.pos..], "}}")) break;
+                    p.pos += 1;
+                }
+                const raw = p.template[raw_start..p.pos];
+                if (p.pos < p.template.len) p.pos += 2;
+                const literal = try p.alc.alloc(u8, 2 + raw.len + 2);
+                @memcpy(literal[0..2], "{{");
+                @memcpy(literal[2..][0..raw.len], raw);
+                @memcpy(literal[2 + raw.len ..][0..2], "}}");
+                return Node{ .text = literal };
+            }
             const remaining = p.template[p.pos..];
             if (std.mem.startsWith(u8, remaining, "if (")) break;
             if (std.mem.startsWith(u8, remaining, "for (")) break;
@@ -604,6 +619,22 @@ fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
     var brace_count: usize = undefined;
     while (pos < str.len) {
         const remaining = str[pos..];
+        if (std.mem.startsWith(u8, remaining, "{{")) {
+            pos += 2;
+            const raw_start = pos;
+            while (pos < str.len) {
+                if (std.mem.startsWith(u8, str[pos..], "}}")) break;
+                pos += 1;
+            }
+            const raw = str[raw_start..pos];
+            if (pos < str.len) pos += 2;
+            const literal = try alc.alloc(u8, 2 + raw.len + 2);
+            @memcpy(literal[0..2], "{{");
+            @memcpy(literal[2..][0..raw.len], raw);
+            @memcpy(literal[2 + raw.len ..][0..2], "}}");
+            try nodes.append(alc, Node{ .text = literal });
+            continue;
+        }
         if (std.mem.startsWith(u8, remaining, "{ ")) {
             pos += 2;
             const expr_start = pos;
@@ -1543,4 +1574,26 @@ test "script tag content not processed as template" {
     defer alc.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "drawerOpen: false") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "Hello") != null);
+}
+
+test "double braces passthrough - single expression" {
+    const alc = std.testing.allocator;
+    const template_str = "Hello { name }, mode: {{dark}}";
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    const result = try tmpl.render(.{ .name = "World" }, alc);
+    defer alc.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "Hello World") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{{dark}}") != null);
+}
+
+test "double braces passthrough - alpine x-data" {
+    const alc = std.testing.allocator;
+    const template_str = "<div x-data=\"{{open: false}}\">{ slot }</div>";
+    var tmpl = try Template.init(alc, template_str);
+    defer tmpl.deinit();
+    const result = try tmpl.render(.{ .slot = "content" }, alc);
+    defer alc.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "{{open: false}}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "content") != null);
 }
