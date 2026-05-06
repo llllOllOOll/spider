@@ -3,11 +3,17 @@ const spider = @import("spider");
 const features = @import("features");
 const Response = spider.Response;
 const home = features.home;
+// const db = spider.pg;
 
 pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
 
 pub fn main(init: std.process.Init) !void {
-    _ = init;
+    const allocator = init.arena.allocator();
+    const io = init.io;
+
+    // Uncomment to enable PostgreSQL (reads from .env automatically)
+    // try db.init(allocator, io, .{});
+    // defer db.deinit();
 
     var server = spider.app();
     defer server.deinit();
