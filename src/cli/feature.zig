@@ -3,6 +3,7 @@ const template_engine = @import("template_engine.zig");
 const fs_utils = @import("fs_utils.zig");
 const mod_updater = @import("mod_updater.zig");
 const migration_updater = @import("migration_updater.zig");
+const routes_updater = @import("routes_updater.zig");
 
 // Embedded templates
 const mod_tmpl = @embedFile("templates/feature/mod.zig.template");
@@ -98,9 +99,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8) !void 
     try mod_updater.updateFeaturesMod(io, allocator, features_dir, feature);
     std.debug.print("  update  src/features/mod.zig\n", .{});
 
-    std.debug.print("\nDone! Add these routes to src/main.zig:\n", .{});
-    std.debug.print("  .get(\"/{s}\", {s}.controller.index)\n", .{ plural, feature });
-    std.debug.print("  .post(\"/{s}/create\", {s}.controller.create)\n", .{ plural, feature });
-    std.debug.print("  .post(\"/{s}/:id/update\", {s}.controller.update)\n", .{ plural, feature });
-    std.debug.print("  .post(\"/{s}/:id/delete\", {s}.controller.delete)\n", .{ plural, feature });
+    try routes_updater.updateMainZig(io, allocator, root_dir, feature, plural);
+    std.debug.print("  update  src/main.zig\n", .{});
+
+    std.debug.print("\nDone!\n", .{});
 }
