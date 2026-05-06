@@ -1,6 +1,7 @@
 const std = @import("std");
 const new = @import("new.zig");
 const generate = @import("generate.zig");
+const migrate = @import("migrate.zig");
 
 const usage =
     \\Spider CLI — spiderme.org
@@ -8,6 +9,7 @@ const usage =
     \\Usage:
     \\  spider new <app_name>          Create a new Spider project
     \\  spider generate <subcommand>   Generate code (feature)
+    \\  spider migrate                 Run pending database migrations
     \\  spider help                    Show this help
     \\
 ;
@@ -36,6 +38,8 @@ pub fn main(init: std.process.Init) !void {
             return;
         };
         try generate.run(io, allocator, subcommand, &args);
+    } else if (std.mem.eql(u8, command, "migrate")) {
+        try migrate.run(io, allocator);
     } else if (std.mem.eql(u8, command, "help")) {
         std.debug.print("{s}", .{usage});
     } else {
