@@ -6,6 +6,7 @@
     <title>{ title ?? "{{app_name}}" }</title>
     <link rel="stylesheet" href="/css/app.css">
     <script defer src="/js/alpine.min.js"></script>
+    <script src="/js/htmx.min.js"></script>
 </head>
 <body>
     { slot }

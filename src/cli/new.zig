@@ -117,6 +117,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void
     try downloader.download(io, allocator, "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs", project_dir, "bin/daisyui.mjs");
     try downloader.download(io, allocator, "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs", project_dir, "bin/daisyui-theme.mjs");
     try downloader.download(io, allocator, "https://cdn.jsdelivr.net/npm/alpinejs@latest/dist/cdn.min.js", project_dir, "public/js/alpine.min.js");
+    try downloader.download(io, allocator, "https://unpkg.com/htmx.org@latest/dist/htmx.min.js", project_dir, "public/js/htmx.min.js");
 
     const tailwind_path = try std.fmt.allocPrint(allocator, "{s}/bin/tailwindcss", .{app_name});
     defer allocator.free(tailwind_path);
