@@ -40,17 +40,19 @@ pub fn normalizeName(name: []const u8, buf: []u8) []const u8 {
     return buf[0..j];
 }
 
-// TODO: Name conflict -- two templates in different folders can normalize to the
-// same name (e.g. features/users/views/index.html and views/users/index.html
-// both -> users_index). For now the dev is responsible for avoiding conflicts.
-// Future fix: detect conflicts in buildIndex() and return an error with a clear
-// message indicating which files conflict.
 pub fn buildIndex(
     io: std.Io,
     allocator: std.mem.Allocator,
     root_dir: []const u8,
 ) !ViewsIndex {
     var entries: std.ArrayList(TemplateEntry) = .empty;
+
+    // Maps normalized name -> path of the first file that claimed that name.
+    // Used to detect two templates in different folders that normalize to the
+    // same name (e.g. features/users/views/index.html and views/users/index.html
+    // both -> users_index). Keys are owned by `entries`, not the map.
+    var seen: std.StringHashMapUnmanaged([]const u8) = .empty;
+    defer seen.deinit(allocator);
 
     const cwd = std.Io.Dir.cwd();
     var dir = cwd.openDir(io, root_dir, .{ .iterate = true }) catch {
@@ -78,14 +80,30 @@ pub fn buildIndex(
         const name = generateFieldName(entry.path, &name_buf) catch continue;
         if (name.len == 0) continue;
 
+        const owned_name = try allocator.dupe(u8, name);
         const full_path = try std.fmt.allocPrint(
             allocator,
             "{s}/{s}",
             .{ root_dir, entry.path },
         );
 
+        const gop = try seen.getOrPut(allocator, owned_name);
+        if (gop.found_existing) {
+            std.debug.print(
+                "[spider] WARNING: template name conflict: \"{s}\"\n" ++
+                    "[spider]          first:   {s}\n" ++
+                    "[spider]          ignored: {s}\n" ++
+                    "[spider]          Rename one of the files so c.view() lookups are unambiguous.\n",
+                .{ owned_name, gop.value_ptr.*, full_path },
+            );
+            allocator.free(owned_name);
+            allocator.free(full_path);
+            continue;
+        }
+        gop.value_ptr.* = full_path;
+
         try entries.append(allocator, .{
-            .name = try allocator.dupe(u8, name),
+            .name = owned_name,
             .path = full_path,
         });
         template_count += 1;
