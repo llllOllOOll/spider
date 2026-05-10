@@ -187,3 +187,11 @@ pub const Server = struct {
         try self.writeFrame(.pong, payload);
     }
 };
+
+// RFC 6455 §1.3 worked example: the canonical handshake vector. If this
+// breaks, real WebSocket clients will refuse to upgrade.
+test "generateAccept matches RFC 6455 vector" {
+    var out: [32]u8 = undefined;
+    const acc = Server.generateAccept("dGhlIHNhbXBsZSBub25jZQ==", &out);
+    try std.testing.expectEqualStrings("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", acc);
+}

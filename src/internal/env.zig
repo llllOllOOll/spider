@@ -110,6 +110,28 @@ fn stripQuotes(s: []const u8) []const u8 {
     return s;
 }
 
+const testing = std.testing;
+
+test "stripQuotes strips matching double quotes" {
+    try testing.expectEqualStrings("value", stripQuotes("\"value\""));
+}
+
+test "stripQuotes strips matching single quotes" {
+    try testing.expectEqualStrings("value", stripQuotes("'value'"));
+}
+
+test "stripQuotes leaves unquoted input untouched" {
+    try testing.expectEqualStrings("value", stripQuotes("value"));
+}
+
+test "stripQuotes leaves mismatched quote pairs untouched" {
+    try testing.expectEqualStrings("\"value'", stripQuotes("\"value'"));
+}
+
+test "stripQuotes leaves single-character input untouched" {
+    try testing.expectEqualStrings("\"", stripQuotes("\""));
+}
+
 pub fn checkGitignore() void {
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();

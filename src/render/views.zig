@@ -178,3 +178,69 @@ fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
     }
     return buffer[0..j];
 }
+
+const testing = std.testing;
+
+test "normalizeName replaces slashes with underscores" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("auth_login", normalizeName("auth/login", &buf));
+}
+
+test "normalizeName replaces dashes with underscores" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("site_nav", normalizeName("site-nav", &buf));
+}
+
+test "normalizeName leaves simple names untouched" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("layout", normalizeName("layout", &buf));
+}
+
+test "normalizeName truncates at buffer length" {
+    var buf: [4]u8 = undefined;
+    try testing.expectEqualStrings("auth", normalizeName("auth/login", &buf));
+}
+
+// Cases below mirror the normalization table in README.md ("Template name
+// normalization"). If you change generateFieldName, update both.
+test "generateFieldName: views/ at root collapses dir into name" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("bills_index", try generateFieldName("views/bills/index.html", &buf));
+}
+
+test "generateFieldName: nested feature views become dir_file" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("auth_login", try generateFieldName("features/auth/views/login.html", &buf));
+}
+
+test "generateFieldName: shared/templates/layout keeps bare name" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("layout", try generateFieldName("shared/templates/layout.html", &buf));
+}
+
+test "generateFieldName: shared/templates preserves PascalCase" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("Card", try generateFieldName("shared/templates/Card.html", &buf));
+}
+
+test "generateFieldName: shared/templates replaces dashes" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("site_nav", try generateFieldName("shared/templates/site-nav.html", &buf));
+}
+
+test "generateFieldName: .md extension handled like .html" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("docs_api", try generateFieldName("views/docs/api.md", &buf));
+}
+
+// The conflict scenario documented in buildIndex: two paths in different
+// folders both normalize to "users_index". This is the case the new warning
+// in buildIndex is meant to catch.
+test "generateFieldName: views/users/index and features/users/views/index collide" {
+    var a_buf: [64]u8 = undefined;
+    var b_buf: [64]u8 = undefined;
+    const a = try generateFieldName("views/users/index.html", &a_buf);
+    const b = try generateFieldName("features/users/views/index.html", &b_buf);
+    try testing.expectEqualStrings("users_index", a);
+    try testing.expectEqualStrings("users_index", b);
+}
