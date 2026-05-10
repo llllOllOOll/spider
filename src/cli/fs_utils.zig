@@ -18,7 +18,7 @@ pub fn findProjectRoot(io: std.Io) !std.Io.Dir {
 }
 
 pub fn writeFile(io: std.Io, dir: std.Io.Dir, path: []const u8, content: []const u8) !void {
-    if (std.fs.path.dirname(path)) |parent| {
+    if (std.Io.Dir.path.dirname(path)) |parent| {
         dir.createDirPath(io, parent) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };

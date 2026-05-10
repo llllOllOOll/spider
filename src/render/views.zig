@@ -123,8 +123,8 @@ fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
         const before = no_ext[0..idx];
         const after = no_ext[idx + "views/".len ..];
 
-        const dir = std.fs.path.basename(before);
-        const file = std.fs.path.basename(after);
+        const dir = std.Io.Dir.path.basename(before);
+        const file = std.Io.Dir.path.basename(after);
 
         if (dir.len == 0) {
             var j: usize = 0;

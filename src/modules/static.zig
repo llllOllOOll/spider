@@ -7,7 +7,7 @@ pub const StaticConfig = struct {
 };
 
 pub fn contentType(path: []const u8) []const u8 {
-    const ext = std.fs.path.extension(path);
+    const ext = std.Io.Dir.path.extension(path);
     if (std.mem.eql(u8, ext, ".html")) return "text/html; charset=utf-8";
     if (std.mem.eql(u8, ext, ".css")) return "text/css";
     if (std.mem.eql(u8, ext, ".js")) return "application/javascript";

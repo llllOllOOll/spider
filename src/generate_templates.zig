@@ -59,9 +59,9 @@ fn generateFieldName(path: []const u8, buffer: []u8) ![]const u8 {
 
     if (std.mem.indexOf(u8, no_ext, "views/")) |idx| {
         const after = no_ext[idx + "views/".len ..];
-        const file = std.fs.path.basename(after);
+        const file = std.Io.Dir.path.basename(after);
         const before = no_ext[0..idx];
-        const dir = std.fs.path.basename(before);
+        const dir = std.Io.Dir.path.basename(before);
 
         if (dir.len == 0) {
             // Normalize full path after views/ — bills/index → bills_index
