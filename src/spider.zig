@@ -57,6 +57,7 @@ pub const jwks = @import("providers/jwks.zig");
 pub const clerk = @import("providers/clerk.zig");
 pub const keycloak = @import("providers/keycloak.zig");
 pub const http_client = @import("pacman");
+pub const http_client_mtls = @import("core/http_client_mtls.zig");
 
 var global_ws_hub: ?*Hub = null;
 
@@ -100,4 +101,5 @@ test {
     _ = @import("render/template_test.zig");
     _ = @import("core/context_test.zig");
     _ = @import("core/app_test.zig");
+    _ = @import("core/http_client_mtls.zig");
 }
