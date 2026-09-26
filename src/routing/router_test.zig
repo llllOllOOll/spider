@@ -1,0 +1,175 @@
+const std = @import("std");
+const router_mod = @import("router.zig");
+const Router = router_mod.Router;
+const Route = router_mod.Route;
+const Group = @import("group.zig").Group;
+const ctx_mod = @import("../core/context.zig");
+const Ctx = ctx_mod.Ctx;
+const Response = ctx_mod.Response;
+const NextFn = ctx_mod.NextFn;
+const MiddlewareFn = ctx_mod.MiddlewareFn;
+const rbac = @import("../modules/rbac.zig");
+
+fn h1(c: *Ctx) anyerror!Response {
+    return c.text("h1", .{});
+}
+fn h2(c: *Ctx) anyerror!Response {
+    return c.text("h2", .{});
+}
+fn mwA(c: *Ctx, next: NextFn) anyerror!Response {
+    return next(c);
+}
+fn mwB(c: *Ctx, next: NextFn) anyerror!Response {
+    return next(c);
+}
+
+const mws_a = [_]MiddlewareFn{mwA};
+const mws_ab = [_]MiddlewareFn{ mwA, mwB };
+
+fn expectMws(expected: []const MiddlewareFn, actual: []const MiddlewareFn) !void {
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |e, a| try std.testing.expect(e == a);
+}
+
+test "router: static route match carries its middlewares" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/admin", .{ .handler = h1, .middlewares = &mws_a });
+    const m = (try r.match(.GET, "/admin", arena.allocator())).?;
+    try std.testing.expect(m.handler == h1);
+    try expectMws(&mws_a, m.middlewares);
+}
+
+test "router: :param route match carries its middlewares" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/items/:id", .{ .handler = h1, .middlewares = &mws_ab });
+    const m = (try r.match(.GET, "/items/42", arena.allocator())).?;
+    try expectMws(&mws_ab, m.middlewares);
+    try std.testing.expectEqualStrings("42", m.params.get("id").?);
+}
+
+test "router: wildcard route match carries its middlewares" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/files/*", .{ .handler = h1, .middlewares = &mws_a });
+    const m = (try r.match(.GET, "/files/a.pdf", arena.allocator())).?;
+    try expectMws(&mws_a, m.middlewares);
+}
+
+test "router: middlewares are per method on the same path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/items/:id", .{ .handler = h1 });
+    try r.addRoute(.POST, "/items/:id", .{ .handler = h2, .middlewares = &mws_a });
+
+    const g = (try r.match(.GET, "/items/1", arena.allocator())).?;
+    try std.testing.expectEqual(@as(usize, 0), g.middlewares.len);
+    const p = (try r.match(.POST, "/items/1", arena.allocator())).?;
+    try std.testing.expect(p.handler == h2);
+    try expectMws(&mws_a, p.middlewares);
+}
+
+test "router: static sibling does not inherit dynamic route middlewares" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/users/new", .{ .handler = h1 });
+    try r.addRoute(.GET, "/users/:id", .{ .handler = h2, .middlewares = &mws_a });
+
+    const s = (try r.match(.GET, "/users/new", arena.allocator())).?;
+    try std.testing.expect(s.handler == h1);
+    try std.testing.expectEqual(@as(usize, 0), s.middlewares.len);
+    const d = (try r.match(.GET, "/users/7", arena.allocator())).?;
+    try std.testing.expect(d.handler == h2);
+    try expectMws(&mws_a, d.middlewares);
+}
+
+test "router: add() keeps working and registers no middlewares" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.add(.GET, "/plain/:id", h1);
+    const m = (try r.match(.GET, "/plain/1", arena.allocator())).?;
+    try std.testing.expectEqual(@as(usize, 0), m.middlewares.len);
+}
+
+test "router: re-registering a static route replaces it without leaking" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/x", .{ .handler = h1 });
+    try r.addRoute(.GET, "/x", .{ .handler = h2, .middlewares = &mws_a });
+    const m = (try r.match(.GET, "/x", arena.allocator())).?;
+    try std.testing.expect(m.handler == h2);
+    try expectMws(&mws_a, m.middlewares);
+}
+
+const Collected = struct {
+    count: usize = 0,
+    with_mws: usize = 0,
+};
+
+fn collect(c: *Collected, _: std.http.Method, _: []const u8, route: Route) void {
+    c.count += 1;
+    if (route.middlewares.len > 0) c.with_mws += 1;
+}
+
+test "router: forEach exposes middlewares so mount() can carry them over" {
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/a", .{ .handler = h1, .middlewares = &mws_a });
+    try r.addRoute(.GET, "/b/:id", .{ .handler = h1, .middlewares = &mws_a });
+    try r.addRoute(.GET, "/c", .{ .handler = h1 });
+
+    var c: Collected = .{};
+    r.forEach(std.testing.allocator, &c, collect);
+    try std.testing.expectEqual(@as(usize, 3), c.count);
+    try std.testing.expectEqual(@as(usize, 2), c.with_mws);
+}
+
+test "rbac.routeMiddlewares: empty config -> no middlewares" {
+    try std.testing.expectEqual(@as(usize, 0), rbac.routeMiddlewares(.{}).len);
+    try std.testing.expectEqual(@as(usize, 0), rbac.routeMiddlewares(.{ .roles = &[_][]const u8{} }).len);
+}
+
+test "rbac.routeMiddlewares: roles and org_roles each add one middleware" {
+    const admin = &[_][]const u8{"admin"};
+    try std.testing.expectEqual(@as(usize, 1), rbac.routeMiddlewares(.{ .roles = admin }).len);
+    try std.testing.expectEqual(@as(usize, 1), rbac.routeMiddlewares(.{ .org_roles = admin }).len);
+    try std.testing.expectEqual(@as(usize, 2), rbac.routeMiddlewares(.{ .roles = admin, .org_roles = admin }).len);
+}
+
+test "Group: routes with RBAC config carry middlewares in the group router" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var g = Group.init("/api");
+    _ = g
+        .get("/items/:id", h1, .{ .roles = &[_][]const u8{"admin"} })
+        .post("/items", h2, .{});
+
+    const m = (try g.router.match(.GET, "/api/items/5", arena.allocator())).?;
+    try std.testing.expectEqual(@as(usize, 1), m.middlewares.len);
+    const p = (try g.router.match(.POST, "/api/items", arena.allocator())).?;
+    try std.testing.expectEqual(@as(usize, 0), p.middlewares.len);
+}

@@ -1,15 +1,26 @@
 const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const Response = @import("../core/context.zig").Response;
+const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 
 pub const Handler = *const fn (*Ctx) anyerror!Response;
+
+/// A registered endpoint: the handler plus the middlewares that belong to
+/// that exact route (e.g. RBAC from `.{ .roles = ... }`). Stored in the
+/// router itself so a match on `/items/:id` carries its own middlewares —
+/// looking them up afterwards by comparing the request path against the
+/// registered pattern can never match a dynamic route.
+pub const Route = struct {
+    handler: Handler,
+    middlewares: []const MiddlewareFn = &.{},
+};
 
 const Node = struct {
     children: std.StringHashMap(*Node),
     param_child: ?*Node,
     param_name: ?[]const u8,
     wildcard_child: ?*Node,
-    handlers: std.EnumArray(std.http.Method, ?Handler),
+    handlers: std.EnumArray(std.http.Method, ?Route),
     is_static_handler: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) !*Node {
@@ -19,7 +30,7 @@ const Node = struct {
             .param_child = null,
             .param_name = null,
             .wildcard_child = null,
-            .handlers = std.EnumArray(std.http.Method, ?Handler).initFill(null),
+            .handlers = std.EnumArray(std.http.Method, ?Route).initFill(null),
             .is_static_handler = false,
         };
         return node;
@@ -29,6 +40,8 @@ const Node = struct {
 pub const MatchResult = struct {
     handler: Handler,
     params: std.StringHashMapUnmanaged([]const u8),
+    /// Middlewares registered for the matched route only (see `Route`).
+    middlewares: []const MiddlewareFn = &.{},
 };
 
 fn isDynamic(path: []const u8) bool {
@@ -45,13 +58,13 @@ fn toUppercase(in: []const u8, out: []u8) void {
 pub const Router = struct {
     root: *Node,
     allocator: std.mem.Allocator,
-    static_routes: std.StringHashMap(Handler),
+    static_routes: std.StringHashMap(Route),
 
     pub fn init(allocator: std.mem.Allocator) !Router {
         return .{
             .root = try Node.init(allocator),
             .allocator = allocator,
-            .static_routes = std.StringHashMap(Handler).init(allocator),
+            .static_routes = std.StringHashMap(Route).init(allocator),
         };
     }
 
@@ -80,6 +93,10 @@ pub const Router = struct {
     }
 
     pub fn add(self: *Router, method: std.http.Method, path: []const u8, handler: Handler) !void {
+        return self.addRoute(method, path, .{ .handler = handler });
+    }
+
+    pub fn addRoute(self: *Router, method: std.http.Method, path: []const u8, route: Route) !void {
         if (!isDynamic(path)) {
             const method_str = @tagName(method);
             const path_stripped = if (path.len > 0 and path[0] == '/') path[1..] else path;
@@ -87,7 +104,9 @@ pub const Router = struct {
             toUppercase(method_str, key[0..method_str.len]);
             key[method_str.len] = '/';
             @memcpy(key[method_str.len + 1 ..], path_stripped);
-            try self.static_routes.put(key, handler);
+            const gop = try self.static_routes.getOrPut(key);
+            if (gop.found_existing) self.allocator.free(key);
+            gop.value_ptr.* = route;
             return;
         }
 
@@ -117,17 +136,17 @@ pub const Router = struct {
                 node = node.children.get(segment).?;
             }
         }
-        node.handlers.set(method, handler);
+        node.handlers.set(method, route);
     }
 
-    pub fn forEach(self: *Router, allocator: std.mem.Allocator, context: anytype, comptime callback: fn (@TypeOf(context), std.http.Method, []const u8, Handler) void) void {
+    pub fn forEach(self: *Router, allocator: std.mem.Allocator, context: anytype, comptime callback: fn (@TypeOf(context), std.http.Method, []const u8, Route) void) void {
         var static_it = self.static_routes.iterator();
         while (static_it.next()) |entry| {
             const key = entry.key_ptr.*;
-            const handler = entry.value_ptr.*;
+            const route = entry.value_ptr.*;
             const slash = std.mem.indexOfScalar(u8, key, '/') orelse continue;
             const method = std.meta.stringToEnum(std.http.Method, key[0..slash]) orelse continue;
-            callback(context, method, key[slash + 1 ..], handler);
+            callback(context, method, key[slash + 1 ..], route);
         }
 
         var path_buf: std.ArrayList(u8) = .empty;
@@ -135,10 +154,10 @@ pub const Router = struct {
         forEachNode(self.root, &path_buf, allocator, context, callback);
     }
 
-    fn forEachNode(node: *Node, path_buf: *std.ArrayList(u8), allocator: std.mem.Allocator, context: anytype, comptime callback: fn (@TypeOf(context), std.http.Method, []const u8, Handler) void) void {
+    fn forEachNode(node: *Node, path_buf: *std.ArrayList(u8), allocator: std.mem.Allocator, context: anytype, comptime callback: fn (@TypeOf(context), std.http.Method, []const u8, Route) void) void {
         inline for (std.meta.tags(std.http.Method)) |method| {
-            if (node.handlers.get(method)) |h| {
-                callback(context, method, path_buf.items, h);
+            if (node.handlers.get(method)) |r| {
+                callback(context, method, path_buf.items, r);
             }
         }
 
@@ -189,8 +208,8 @@ pub const Router = struct {
             key_buf[method_str.len] = '/';
             @memcpy(key_buf[method_str.len + 1 .. key_len], path_stripped);
             const key = key_buf[0..key_len];
-            if (self.static_routes.get(key)) |handler| {
-                return .{ .handler = handler, .params = .{} };
+            if (self.static_routes.get(key)) |route| {
+                return .{ .handler = route.handler, .params = .{}, .middlewares = route.middlewares };
             }
         }
 
@@ -220,11 +239,10 @@ pub const Router = struct {
                 return null;
             }
         }
-        const handler = node.handlers.get(method);
-        if (handler == null) {
+        const route = node.handlers.get(method) orelse {
             params.deinit(allocator);
             return null;
-        }
-        return .{ .handler = handler.?, .params = params };
+        };
+        return .{ .handler = route.handler, .params = params, .middlewares = route.middlewares };
     }
 };

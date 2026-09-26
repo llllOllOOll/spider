@@ -19,6 +19,7 @@ const ViewsConfig = ctx_mod.ViewsConfig;
 const Database = @import("database.zig").Database;
 const Router = @import("../routing/router.zig").Router;
 const Handler = @import("../routing/router.zig").Handler;
+const Route = @import("../routing/router.zig").Route;
 const Group = @import("../routing/group.zig").Group;
 const Config = @import("../internal/config.zig").Config;
 const Env = @import("../internal/config.zig").Env;
@@ -31,6 +32,7 @@ const Ws = @import("../ws/ws.zig").Ws;
 const sse_mod = @import("../ws/sse.zig");
 const Sse = sse_mod.Sse;
 const websocket = @import("../ws/websocket.zig");
+const rbac = @import("../modules/rbac.zig");
 
 const WsRouteHub = struct {
     handler: Handler,
@@ -57,12 +59,6 @@ fn runChain(c: *Ctx, middlewares: []const MiddlewareFn, handler: Handler) anyerr
     chain_middlewares = middlewares[1..];
     return middlewares[0](c, nextFn);
 }
-
-const RouteMiddlewareEntry = struct {
-    path: []const u8,
-    method: std.http.Method,
-    middlewares: []const MiddlewareFn,
-};
 
 const PathMiddlewareEntry = struct {
     path: []const u8,
@@ -123,7 +119,6 @@ const WorkerCtx = struct {
     sse_hub: ?*Hub,
     global_middlewares: []const MiddlewareFn,
     path_middlewares: []const PathMiddlewareEntry,
-    route_middlewares: []const RouteMiddlewareEntry,
 };
 
 const ConnCtx = struct {
@@ -141,7 +136,6 @@ const ConnCtx = struct {
     sse_hub: ?*Hub,
     global_middlewares: []const MiddlewareFn,
     path_middlewares: []const PathMiddlewareEntry,
-    route_middlewares: []const RouteMiddlewareEntry,
 };
 
 fn workerLoop(wctx: WorkerCtx) void {
@@ -168,7 +162,6 @@ fn workerLoop(wctx: WorkerCtx) void {
             .sse_hub = wctx.sse_hub,
             .global_middlewares = wctx.global_middlewares,
             .path_middlewares = wctx.path_middlewares,
-            .route_middlewares = wctx.route_middlewares,
         }}) catch |err| {
             std.log.err("worker concurrent error: {s}", .{@errorName(err)});
             stream.close(wctx.io);
@@ -268,16 +261,8 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._sse_hub = ctx.sse_hub,
             };
 
-            var route_mws: []const MiddlewareFn = &.{};
-            for (ctx.route_middlewares) |entry| {
-                if (entry.method == request.head.method and std.mem.eql(u8, entry.path, path)) {
-                    route_mws = entry.middlewares;
-                    break;
-                }
-            }
-
             var mw_buf: [64]MiddlewareFn = undefined;
-            const mw_count = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, route_mws, &mw_buf);
+            const mw_count = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, m.middlewares, &mw_buf);
 
             break :blk runChain(&ctx_req, mw_buf[0..mw_count], m.handler) catch |err| r: {
                 if (ctx.error_handler) |eh| {
@@ -600,7 +585,6 @@ pub fn Server(comptime T: type) type {
         global_middleware_count: usize = 0,
         path_middlewares: [32]PathMiddlewareEntry = undefined,
         path_middleware_count: usize = 0,
-        route_middlewares: std.ArrayList(RouteMiddlewareEntry),
         error_handler: ?ErrorHandler = null,
         _db: ?Database = null,
         static_config: StaticConfig = .{ .dir = "./public", .prefix = "/" },
@@ -624,7 +608,6 @@ pub fn Server(comptime T: type) type {
                 .decorations = undefined,
                 .global_middleware_count = 0,
                 .path_middleware_count = 0,
-                .route_middlewares = .empty,
             };
             self.allocator = std.heap.page_allocator;
             self.gpa = if (builtin.mode == .Debug)
@@ -642,7 +625,6 @@ pub fn Server(comptime T: type) type {
                 if (e.thread) |t| t.join();
             }
             if (self.views_index) |*idx| idx.deinit();
-            self.route_middlewares.deinit(std.heap.page_allocator);
             self.router.deinit();
             for (self.ws_route_hubs.items) |*rh| {
                 rh.threaded.deinit();
@@ -705,27 +687,10 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.add(.GET, path, H) catch unreachable;
-            if (comptime (@hasField(@TypeOf(config), "roles") and config.roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireRoles(config.roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .GET,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
-            if (comptime (@hasField(@TypeOf(config), "org_roles") and config.org_roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireOrgRoles(config.org_roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .GET,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
+            self.router.addRoute(.GET, path, .{
+                .handler = H,
+                .middlewares = comptime rbac.routeMiddlewares(config),
+            }) catch unreachable;
             return self;
         }
 
@@ -736,27 +701,10 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.add(.POST, path, H) catch unreachable;
-            if (comptime (@hasField(@TypeOf(config), "roles") and config.roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireRoles(config.roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .POST,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
-            if (comptime (@hasField(@TypeOf(config), "org_roles") and config.org_roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireOrgRoles(config.org_roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .POST,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
+            self.router.addRoute(.POST, path, .{
+                .handler = H,
+                .middlewares = comptime rbac.routeMiddlewares(config),
+            }) catch unreachable;
             return self;
         }
 
@@ -767,27 +715,10 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.add(.PUT, path, H) catch unreachable;
-            if (comptime (@hasField(@TypeOf(config), "roles") and config.roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireRoles(config.roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .PUT,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
-            if (comptime (@hasField(@TypeOf(config), "org_roles") and config.org_roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireOrgRoles(config.org_roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .PUT,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
+            self.router.addRoute(.PUT, path, .{
+                .handler = H,
+                .middlewares = comptime rbac.routeMiddlewares(config),
+            }) catch unreachable;
             return self;
         }
 
@@ -798,27 +729,10 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.add(.DELETE, path, H) catch unreachable;
-            if (comptime (@hasField(@TypeOf(config), "roles") and config.roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireRoles(config.roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .DELETE,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
-            if (comptime (@hasField(@TypeOf(config), "org_roles") and config.org_roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireOrgRoles(config.org_roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .DELETE,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
+            self.router.addRoute(.DELETE, path, .{
+                .handler = H,
+                .middlewares = comptime rbac.routeMiddlewares(config),
+            }) catch unreachable;
             return self;
         }
 
@@ -829,27 +743,10 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.add(.PATCH, path, H) catch unreachable;
-            if (comptime (@hasField(@TypeOf(config), "roles") and config.roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireRoles(config.roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .PATCH,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
-            if (comptime (@hasField(@TypeOf(config), "org_roles") and config.org_roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireOrgRoles(config.org_roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .PATCH,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
+            self.router.addRoute(.PATCH, path, .{
+                .handler = H,
+                .middlewares = comptime rbac.routeMiddlewares(config),
+            }) catch unreachable;
             return self;
         }
 
@@ -860,27 +757,10 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.add(.HEAD, path, H) catch unreachable;
-            if (comptime (@hasField(@TypeOf(config), "roles") and config.roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireRoles(config.roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .HEAD,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
-            if (comptime (@hasField(@TypeOf(config), "org_roles") and config.org_roles.len > 0)) {
-                const rbac_mw = @import("../modules/rbac.zig").requireOrgRoles(config.org_roles);
-                const mw_slice = std.heap.page_allocator.alloc(MiddlewareFn, 1) catch unreachable;
-                mw_slice[0] = rbac_mw;
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = .HEAD,
-                    .middlewares = mw_slice,
-                }) catch {};
-            }
+            self.router.addRoute(.HEAD, path, .{
+                .handler = H,
+                .middlewares = comptime rbac.routeMiddlewares(config),
+            }) catch unreachable;
             return self;
         }
 
@@ -996,14 +876,7 @@ pub fn Server(comptime T: type) type {
             middlewares: []const MiddlewareFn,
             handler: Handler,
         ) void {
-            self.router.add(method, path, handler) catch {};
-            if (middlewares.len > 0) {
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = path,
-                    .method = method,
-                    .middlewares = middlewares,
-                }) catch {};
-            }
+            self.router.addRoute(method, path, .{ .handler = handler, .middlewares = middlewares }) catch {};
         }
 
         pub fn group(
@@ -1018,8 +891,8 @@ pub fn Server(comptime T: type) type {
 
         pub fn mount(self: *Self, child: Group) *Self {
             child.router.forEach(std.heap.page_allocator, self, struct {
-                fn cb(s: *Self, method: std.http.Method, path: []const u8, handler: Handler) void {
-                    s.router.add(method, path, handler) catch {};
+                fn cb(s: *Self, method: std.http.Method, path: []const u8, route: Route) void {
+                    s.router.addRoute(method, path, route) catch {};
                 }
             }.cb);
 
@@ -1036,14 +909,6 @@ pub fn Server(comptime T: type) type {
                     .middleware = entry.middleware,
                 };
                 self.path_middleware_count += 1;
-            }
-
-            for (child.route_middlewares.items) |entry| {
-                self.route_middlewares.append(std.heap.page_allocator, .{
-                    .path = entry.path,
-                    .method = entry.method,
-                    .middlewares = entry.middlewares,
-                }) catch {};
             }
 
             // The SSE route itself was already wrapped into a plain Handler
@@ -1108,7 +973,6 @@ pub fn Server(comptime T: type) type {
                 .sse_hub = if (self.sse_hub) |*h| h else null,
                 .global_middlewares = self.global_middlewares[0..self.global_middleware_count],
                 .path_middlewares = self.path_middlewares[0..self.path_middleware_count],
-                .route_middlewares = self.route_middlewares.items,
             };
 
             for (threads) |*t| {
@@ -1176,7 +1040,6 @@ pub fn Server(comptime T: type) type {
                 .sse_hub = if (self.sse_hub) |*h| h else null,
                 .global_middlewares = self.global_middlewares[0..self.global_middleware_count],
                 .path_middlewares = self.path_middlewares[0..self.path_middleware_count],
-                .route_middlewares = self.route_middlewares.items,
             };
 
             workerLoop(worker_ctx);

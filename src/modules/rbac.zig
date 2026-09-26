@@ -5,6 +5,24 @@ const Response = spider.Response;
 const NextFn = spider.NextFn;
 const MiddlewareFn = spider.MiddlewareFn;
 
+/// Middlewares de RBAC para um config de rota (`.{ .roles = ..., .org_roles = ... }`),
+/// resolvidos em comptime. Quando os dois campos estão presentes, os DOIS
+/// precisam passar (cada um vira um middleware na cadeia).
+pub fn routeMiddlewares(comptime config: anytype) []const MiddlewareFn {
+    const C = @TypeOf(config);
+    const S = struct {
+        const list: []const MiddlewareFn = blk: {
+            var out: []const MiddlewareFn = &.{};
+            if (@hasField(C, "roles") and config.roles.len > 0)
+                out = out ++ &[_]MiddlewareFn{requireRoles(config.roles)};
+            if (@hasField(C, "org_roles") and config.org_roles.len > 0)
+                out = out ++ &[_]MiddlewareFn{requireOrgRoles(config.org_roles)};
+            break :blk out;
+        };
+    };
+    return S.list;
+}
+
 /// Retorna um middleware que verifica se o usuário tem pelo menos uma das roles.
 /// Deve ser executado DEPOIS do middleware de autenticação (jwks/keycloak).
 pub fn requireRoles(comptime roles: []const []const u8) MiddlewareFn {

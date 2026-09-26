@@ -191,6 +191,24 @@ pub fn build(b: *std.Build) void {
         test_zio_backend_step.dependOn(&run_zio_backend_test.step);
     }
 
+    // test-e2e — real-socket tests against Server.listen() (threaded
+    // backend). Has side effects (binds TCP listeners), so it's a separate
+    // step from `test`.
+    const e2e_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("e2e_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "spider", .module = mod },
+            },
+        }),
+    });
+    const run_e2e_test = b.addRunArtifact(e2e_test);
+    run_e2e_test.has_side_effects = true;
+    const test_e2e_step = b.step("test-e2e", "Run end-to-end tests against a real listening Server");
+    test_e2e_step.dependOn(&run_e2e_test.step);
+
     // test-pg — pg wrapper integration tests (requires PostgreSQL)
     const pg_lib_mod = pg_dep.module("pg");
 
