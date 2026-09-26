@@ -477,3 +477,216 @@ test "truncated request body -> 400, not a misleading BodyEmpty" {
     try std.testing.expect(std.mem.startsWith(u8, raw, "HTTP/1.1 400"));
     try std.testing.expect(std.mem.indexOf(u8, raw, "Could not read request body") != null);
 }
+
+// ── connection deadlines and the accept loop ───────────────────────────
+// Dedicated apps: one with very short deadlines, one left at the defaults
+// for the fd-exhaustion test (which would take the shared app down if the
+// accept loop still died).
+
+const short_ms: u32 = 300;
+/// Client-side guard: if the server hasn't closed the connection by then,
+/// the deadline didn't fire.
+const guard_ms: u32 = 3000;
+
+fn fast(c: *spider.Ctx) !spider.Response {
+    return c.text("fast", .{});
+}
+
+fn slowHandler(c: *spider.Ctx) !spider.Response {
+    std.Io.sleep(c._io, .fromMilliseconds(1000), .real) catch {};
+    return c.text("slow", .{});
+}
+
+fn bodyLen(c: *spider.Ctx) !spider.Response {
+    const len = if (c.body) |b| b.len else 0;
+    return c.text(try std.fmt.allocPrint(c.arena, "{d}", .{len}), .{});
+}
+
+fn runDeadlineApp(port: u16) void {
+    var s = spider.appWithConfig(.{
+        .views_dir = null,
+        .static_dir = null,
+        .keepalive_timeout_ms = short_ms,
+        .header_timeout_ms = short_ms,
+        .body_timeout_ms = short_ms,
+    });
+    s.get("/fast", fast, .{})
+        .get("/slow", slowHandler, .{})
+        .post("/len", bodyLen, .{})
+        .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("deadline app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn runPlainApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null });
+    s.get("/fast", fast, .{}).listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("plain app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+var deadline_port: ?u16 = null;
+fn deadlineAppPort(io: std.Io) !u16 {
+    try app_once_mutex.lock(io);
+    defer app_once_mutex.unlock(io);
+    if (deadline_port) |p| return p;
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runDeadlineApp, .{port})).detach();
+    try waitForPort(io, port);
+    deadline_port = port;
+    return port;
+}
+
+const Read = struct { bytes: []const u8, ms: i64, closed_by_server: bool };
+
+fn guardThread(io: std.Io, fd: std.posix.fd_t, fired: *std.atomic.Value(bool), done: *std.atomic.Value(bool)) void {
+    var waited: u32 = 0;
+    while (waited < guard_ms and !done.load(.acquire)) : (waited += 20) {
+        std.Io.sleep(io, .fromMilliseconds(20), .real) catch {};
+    }
+    if (!done.load(.acquire)) {
+        fired.store(true, .release);
+        _ = std.c.shutdown(fd, std.c.SHUT.RDWR);
+    }
+}
+
+/// Reads until the server closes the connection, or until the guard gives
+/// up after `guard_ms` (then closed_by_server = false).
+fn readUntilClose(io: std.Io, arena: std.mem.Allocator, stream: std.Io.net.Stream) !Read {
+    var fired: std.atomic.Value(bool) = .init(false);
+    var done: std.atomic.Value(bool) = .init(false);
+    const t = try std.Thread.spawn(.{}, guardThread, .{ io, stream.socket.handle, &fired, &done });
+    const start = std.Io.Clock.now(.awake, io);
+    var rbuf: [4096]u8 = undefined;
+    var r = stream.reader(io, &rbuf);
+    const bytes: []const u8 = r.interface.allocRemaining(arena, .limited(64 * 1024)) catch "";
+    const ms = @divTrunc(std.Io.Clock.now(.awake, io).nanoseconds - start.nanoseconds, std.time.ns_per_ms);
+    done.store(true, .release);
+    t.join();
+    return .{ .bytes = bytes, .ms = @intCast(ms), .closed_by_server = !fired.load(.acquire) };
+}
+
+fn connectTo(io: std.Io, port: u16) !std.Io.net.Stream {
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
+    return address.connect(io, .{ .mode = .stream });
+}
+
+fn send(io: std.Io, stream: std.Io.net.Stream, bytes: []const u8) !void {
+    var wbuf: [512]u8 = undefined;
+    var w = stream.writer(io, &wbuf);
+    try w.interface.writeAll(bytes);
+    try w.interface.flush();
+}
+
+test "deadline: a connection that never sends anything is closed" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(r.closed_by_server);
+    try std.testing.expectEqual(@as(usize, 0), r.bytes.len);
+}
+
+test "deadline: a request head that never finishes (slowloris) is closed" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    try send(io, stream, "GET /fast HTTP/1.1\r\nHost: x\r\n");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(r.closed_by_server);
+    try std.testing.expectEqual(@as(usize, 0), r.bytes.len);
+}
+
+test "deadline: a body that stops arriving gets 400 and the connection closed" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    try send(io, stream, "POST /len HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(r.closed_by_server);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 400"));
+}
+
+test "deadline: a slow but steady body is not cut" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    try send(io, stream, "POST /len HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Length: 8\r\n\r\n");
+    // 8 bytes, one every 150 ms: 1.2 s in total, each gap below the 300 ms deadline.
+    for (0..8) |_| {
+        std.Io.sleep(io, .fromMilliseconds(150), .real) catch {};
+        try send(io, stream, "x");
+    }
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 200"));
+    try std.testing.expect(std.mem.endsWith(u8, r.bytes, "\r\n\r\n8"));
+}
+
+test "deadline: a handler slower than every deadline still answers" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const res = try request(env.io(), env.arena.allocator(), try deadlineAppPort(env.io()), "/slow", .{});
+    try std.testing.expectEqual(@as(u16, 200), res.status);
+    try std.testing.expectEqualStrings("slow", res.body);
+}
+
+test "deadline: an idle keep-alive connection is closed after its response" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    try send(io, stream, "GET /fast HTTP/1.1\r\nHost: x\r\n\r\n");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(r.closed_by_server);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 200"));
+    try std.testing.expect(std.mem.endsWith(u8, r.bytes, "fast"));
+}
+
+test "accept loop: running out of file descriptors does not stop the server" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runPlainApp, .{port})).detach();
+    try waitForPort(io, port);
+
+    // Leave this process exactly one free descriptor, spend it on a client
+    // socket: the server's accept() for that connection then fails with
+    // EMFILE (ProcessFdQuotaExceeded).
+    const saved = try std.posix.getrlimit(.NOFILE);
+    const probe = std.c.open("/dev/null", .{});
+    try std.testing.expect(probe >= 0);
+    _ = std.c.close(probe);
+    try std.posix.setrlimit(.NOFILE, .{ .cur = @intCast(probe + 48), .max = saved.max });
+    var dummies: [64]std.c.fd_t = undefined;
+    var n: usize = 0;
+    while (n < dummies.len) : (n += 1) {
+        const fd = std.c.open("/dev/null", .{});
+        if (fd < 0) break;
+        dummies[n] = fd;
+    }
+    n -= 1;
+    _ = std.c.close(dummies[n]);
+    const pending = connectTo(io, port);
+    std.Io.sleep(io, .fromMilliseconds(300), .real) catch {};
+    for (dummies[0..n]) |fd| _ = std.c.close(fd);
+    try std.posix.setrlimit(.NOFILE, saved);
+
+    const stream = try pending;
+    defer stream.close(io);
+    try send(io, stream, "GET /fast HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 200"));
+
+    const res = try request(io, env.arena.allocator(), port, "/fast", .{});
+    try std.testing.expectEqual(@as(u16, 200), res.status);
+}

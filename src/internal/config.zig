@@ -14,6 +14,20 @@ pub const Config = struct {
     static_dir: ?[]const u8 = "./public",
     env: Env = .development,
     workers: ?usize = null,
+    /// Connection deadlines (ms, 0 = off), enforced by the connection
+    /// watchdog so idle or stalled clients can't hold file descriptors
+    /// forever. None applies while a handler runs, so SSE/WebSocket streams
+    /// and slow handlers are unaffected.
+    ///
+    /// Waiting for the next request on a connection (the first one too).
+    /// Keep it above the idle timeout of a reverse proxy in front (Go's
+    /// default is 90 s), so the proxy, not the app, closes idle upstreams.
+    keepalive_timeout_ms: u32 = 120_000,
+    /// From the first byte of a request to its complete head (slowloris).
+    header_timeout_ms: u32 = 30_000,
+    /// Longest silence while receiving a request body; restarts on every
+    /// chunk, so a slow but steady upload is never cut.
+    body_timeout_ms: u32 = 60_000,
 };
 
 pub const default = Config{};

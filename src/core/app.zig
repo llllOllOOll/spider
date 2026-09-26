@@ -32,6 +32,8 @@ const Ws = @import("../ws/ws.zig").Ws;
 const sse_mod = @import("../ws/sse.zig");
 const Sse = sse_mod.Sse;
 const websocket = @import("../ws/websocket.zig");
+const Watchdog = @import("watchdog.zig").Watchdog;
+const watchdog_mod = @import("watchdog.zig");
 const rbac = @import("../modules/rbac.zig");
 
 const WsRouteHub = struct {
@@ -114,6 +116,7 @@ const WorkerCtx = struct {
     sse_hub: ?*Hub,
     global_middlewares: []const MiddlewareFn,
     path_middlewares: []const PathMiddlewareEntry,
+    watchdog: *Watchdog,
 };
 
 const ConnCtx = struct {
@@ -131,16 +134,38 @@ const ConnCtx = struct {
     sse_hub: ?*Hub,
     global_middlewares: []const MiddlewareFn,
     path_middlewares: []const PathMiddlewareEntry,
+    watchdog: *Watchdog,
 };
 
 fn workerLoop(wctx: WorkerCtx) void {
     var group: std.Io.Group = .init;
+    var failures: u32 = 0;
 
     while (true) {
-        const stream = wctx.listener.accept(wctx.io) catch |err| {
-            std.log.err("worker accept error: {s}", .{@errorName(err)});
-            break;
+        const stream = wctx.listener.accept(wctx.io) catch |err| switch (err) {
+            // Shutdown: the only way out. Any other accept error leaves the
+            // listener usable, and leaving the loop used to stop the server
+            // for good while the process stayed up (one EMFILE burst was
+            // enough on zio, which has a single accept loop).
+            error.Canceled, error.SocketNotListening => break,
+            error.ConnectionAborted, error.WouldBlock => continue,
+            else => {
+                failures += 1;
+                if (failures == 1 or failures % 100 == 0) {
+                    std.log.warn("accept failed ({s}, {d} in a row); still serving, retrying", .{ @errorName(err), failures });
+                }
+                // Out of descriptors/memory tends to last a moment: back off
+                // (10 ms doubling to 1 s) instead of spinning on it, while the
+                // connection deadlines free descriptors.
+                const backoff_ms: i64 = @min(1000, @as(i64, 10) << @intCast(@min(failures - 1, 7)));
+                std.Io.sleep(wctx.io, .fromMilliseconds(backoff_ms), .real) catch break;
+                continue;
+            },
         };
+        if (failures > 0) {
+            std.log.info("accept recovered after {d} failed attempts", .{failures});
+            failures = 0;
+        }
 
         group.concurrent(wctx.io, handleConnection, .{ConnCtx{
             .stream = stream,
@@ -157,6 +182,7 @@ fn workerLoop(wctx: WorkerCtx) void {
             .sse_hub = wctx.sse_hub,
             .global_middlewares = wctx.global_middlewares,
             .path_middlewares = wctx.path_middlewares,
+            .watchdog = wctx.watchdog,
         }}) catch |err| {
             std.log.err("worker concurrent error: {s}", .{@errorName(err)});
             stream.close(wctx.io);
@@ -232,8 +258,30 @@ fn respondToError(error_handler: ?ErrorHandler, c: *Ctx, err: anyerror) Response
     return c.text(message, .{ .status = status }) catch Response{ .status = status, .body = message, .content_type = "text/plain" };
 }
 
+/// Reads exactly `len` body bytes, re-arming the body deadline after every
+/// read that makes progress: it bounds silence, not total upload time.
+fn readBody(r: *Io.Reader, arena: std.mem.Allocator, len: u64, watch: *Watchdog.Entry, timeout_ms: u32) ![]u8 {
+    const buf = try arena.alloc(u8, @intCast(len));
+    var got: usize = 0;
+    while (got < buf.len) {
+        watch.arm(timeout_ms);
+        const avail = try r.peekGreedy(1);
+        const n = @min(avail.len, buf.len - got);
+        @memcpy(buf[got..][0..n], avail[0..n]);
+        r.toss(n);
+        got += n;
+    }
+    watch.disarm();
+    return buf;
+}
+
 fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
     defer ctx.stream.close(ctx.io);
+    // Registered after the close defer, so it is unregistered before the
+    // socket is closed (see watchdog.zig on fd reuse).
+    var watch: Watchdog.Entry = .{ .fd = ctx.stream.socket.handle };
+    ctx.watchdog.add(&watch);
+    defer ctx.watchdog.remove(&watch);
 
     var req_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer req_arena.deinit();
@@ -253,7 +301,14 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         _ = req_arena.reset(.{ .retain_with_limit = 8192 });
         const arena = req_arena.allocator();
 
+        // Idle until the next request starts (keep-alive, or the first one),
+        // then a separate, shorter budget for the rest of the head. No
+        // deadline while the handler runs (SSE/WebSocket streams live there).
+        watch.arm(ctx.config.keepalive_timeout_ms);
+        stream_reader.interface.fill(1) catch break;
+        watch.arm(ctx.config.header_timeout_ms);
         var request = http.receiveHead() catch break;
+        watch.disarm();
 
         const target = request.head.target;
         const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
@@ -281,7 +336,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             var body_io_buf: [4096]u8 = undefined;
             const body_reader = request.readerExpectNone(&body_io_buf);
             request.head.target = target_copy;
-            break :blk body_reader.readAlloc(arena, cl) catch |err| {
+            break :blk readBody(body_reader, arena, cl, &watch, ctx.config.body_timeout_ms) catch |err| {
                 body_error = err;
                 break :blk null;
             };
@@ -1016,6 +1071,18 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// One watchdog thread per listening server, only when some
+        /// connection deadline is enabled (see Config.*_timeout_ms).
+        fn startWatchdog(self: *Self, watchdog: *Watchdog, io: Io) void {
+            const timeouts = [_]u32{ self.config.keepalive_timeout_ms, self.config.header_timeout_ms, self.config.body_timeout_ms };
+            if (std.mem.allEqual(u32, &timeouts, 0)) return;
+            const t = std.Thread.spawn(.{}, Watchdog.run, .{ watchdog, io, watchdog_mod.tickFor(&timeouts) }) catch |err| {
+                std.log.warn("connection deadlines disabled: watchdog thread not started ({s})", .{@errorName(err)});
+                return;
+            };
+            t.detach();
+        }
+
         pub fn listen(self: *Self, options: ListenOptions) !void {
             if (comptime build_options.io_backend == .zio) {
                 return self.listenZio(options);
@@ -1041,6 +1108,9 @@ pub fn Server(comptime T: type) type {
             defer listener.deinit(io);
 
             std.log.info("Server listening on http://{s}:{d}", .{ host, port });
+
+            var watchdog: Watchdog = .{};
+            self.startWatchdog(&watchdog, io);
 
             for (self.interval_threads.items) |*entry| {
                 entry.io = io;
@@ -1069,6 +1139,7 @@ pub fn Server(comptime T: type) type {
                 .sse_hub = if (self.sse_hub) |*h| h else null,
                 .global_middlewares = self.global_middlewares[0..self.global_middleware_count],
                 .path_middlewares = self.path_middlewares[0..self.path_middleware_count],
+                .watchdog = &watchdog,
             };
 
             for (threads) |*t| {
@@ -1114,6 +1185,9 @@ pub fn Server(comptime T: type) type {
 
             std.log.info("Server listening on http://{s}:{d} (io_backend=zio)", .{ host, port });
 
+            var watchdog: Watchdog = .{};
+            self.startWatchdog(&watchdog, io);
+
             for (self.interval_threads.items) |*entry| {
                 entry.io = io;
                 entry.thread = std.Thread.spawn(.{}, intervalLoop, .{entry}) catch continue;
@@ -1136,6 +1210,7 @@ pub fn Server(comptime T: type) type {
                 .sse_hub = if (self.sse_hub) |*h| h else null,
                 .global_middlewares = self.global_middlewares[0..self.global_middleware_count],
                 .path_middlewares = self.path_middlewares[0..self.path_middleware_count],
+                .watchdog = &watchdog,
             };
 
             workerLoop(worker_ctx);

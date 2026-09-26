@@ -1280,6 +1280,12 @@ pub const config = spider.Config{
     .static_dir = "./public",
     .env = .development,
     .workers = null, // defaults to CPU count
+    // Connection deadlines (ms, 0 = off) — idle/stalled clients can't hold
+    // file descriptors forever. Never applied while a handler runs, so SSE,
+    // WebSocket and slow handlers are unaffected.
+    .keepalive_timeout_ms = 120_000, // waiting for the next request
+    .header_timeout_ms = 30_000, // first byte -> complete request head
+    .body_timeout_ms = 60_000, // longest silence while receiving a body
 };
 ```
 
