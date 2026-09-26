@@ -882,3 +882,54 @@ test "route meta reaches the handler (c.route())" {
     const p = try request(env.io(), a, port, "/meta/public", .{});
     try std.testing.expectEqualStrings("public=true quiet_log=false allow_http=false org_roles=0", p.body);
 }
+
+// ── mountFeatures on a real server: boot() at listen, jobs run ─────────
+
+var e2e_booted: std.atomic.Value(bool) = .init(false);
+var e2e_ticks: std.atomic.Value(u32) = .init(0);
+
+fn e2eTick(_: *spider.Hub) void {
+    _ = e2e_ticks.fetchAdd(1, .monotonic);
+}
+
+const e2e_features = struct {
+    pub const widgets = struct {
+        pub const routes = struct {
+            pub fn build() spider.Group {
+                var g = spider.Group.init("/widgets");
+                _ = g.get("/:id", typed_w, .{});
+                return g;
+            }
+        };
+        pub const jobs = .{spider.every(100, e2eTick)};
+        pub fn boot(b: spider.Boot) !void {
+            _ = b;
+            e2e_booted.store(true, .release);
+        }
+    };
+};
+
+fn typed_w(id: spider.Path(i64, "id"), c: *spider.Ctx) !spider.Response {
+    return c.text(try std.fmt.allocPrint(c.arena, "widget:{d}", .{id.value}), .{});
+}
+
+fn runFeaturesApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null });
+    s.mountFeatures(e2e_features).listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("features app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+test "mountFeatures: routes served, boot() ran before serving, jobs tick" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runFeaturesApp, .{port})).detach();
+    try waitForPort(io, port);
+    try std.testing.expect(e2e_booted.load(.acquire));
+    const res = try request(io, env.arena.allocator(), port, "/widgets/9", .{});
+    try std.testing.expectEqualStrings("widget:9", res.body);
+    std.Io.sleep(io, .fromMilliseconds(600), .real) catch {};
+    try std.testing.expect(e2e_ticks.load(.monotonic) >= 2);
+}

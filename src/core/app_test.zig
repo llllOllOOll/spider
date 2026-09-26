@@ -236,3 +236,72 @@ test "loose-type decoration handler (buildWrapper) is unaffected by the extracto
     try std.testing.expectEqual(std.http.Status.ok, resp.status);
     try std.testing.expectEqualStrings("hi-deco", resp.body.?);
 }
+
+// ── mountFeatures / mountFeature ─────────────────────────────────────────
+
+const Group = @import("../routing/group.zig").Group;
+const Hub = @import("../ws/hub.zig").Hub;
+
+fn featOk(c: *Ctx) anyerror!Response {
+    return c.text("feat", .{});
+}
+
+fn featTick(_: *Hub) void {}
+
+var feat_booted: bool = false;
+
+const feats = struct {
+    pub const alpha = struct {
+        pub const routes = struct {
+            pub fn build() Group {
+                var g = Group.init("/alpha");
+                _ = g.get("", featOk, .{});
+                return g;
+            }
+            pub fn buildWebhook() Group {
+                var g = Group.init("/alpha-hook");
+                _ = g.post("", featOk, .{ .public = true });
+                return g;
+            }
+            // Not mounted: takes a parameter / isn't a function.
+            pub fn helper(x: u8) u8 {
+                return x;
+            }
+            pub const not_a_fn = 3;
+        };
+        pub const jobs = .{app_mod.every(60_000, featTick)};
+        pub fn boot(_: app_mod.Boot) !void {
+            feat_booted = true;
+        }
+    };
+    pub const beta = struct {}; // a feature with nothing to register
+    pub const constant = 42; // not a namespace: skipped
+};
+
+test "mountFeatures: mounts routes.*() groups, registers jobs and boot hooks" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.mountFeatures(feats);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect((try s.router.match(.GET, "/alpha", a)) != null);
+    const hook = (try s.router.match(.POST, "/alpha-hook", a)).?;
+    try std.testing.expect(hook.meta.public);
+    try std.testing.expectEqual(@as(usize, 1), s.interval_threads.items.len);
+    try std.testing.expectEqual(@as(u64, 60_000), s.interval_threads.items[0].ms);
+    try std.testing.expectEqual(@as(usize, 1), s.boot_hooks.items.len);
+    try std.testing.expect(!feat_booted); // boot runs in listen(), not at registration
+    try s.boot_hooks.items[0](.{ .allocator = std.testing.allocator, .io = undefined });
+    try std.testing.expect(feat_booted);
+}
+
+test "mountFeature: one feature at a time" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.mountFeature(feats.beta).mountFeature(feats.alpha);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expect((try s.router.match(.GET, "/alpha", arena.allocator())) != null);
+}

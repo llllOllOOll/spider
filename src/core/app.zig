@@ -584,7 +584,6 @@ fn buildWrapper(comptime handler: anytype, comptime T: type) Handler {
     return W.call;
 }
 
-
 fn buildWsWrapper(comptime handler: fn (*Ws) anyerror!void) Handler {
     const W = struct {
         pub fn call(ctx: *Ctx) anyerror!Response {
@@ -614,6 +613,26 @@ fn buildWsWrapper(comptime handler: fn (*Ws) anyerror!void) Handler {
         }
     };
     return W.call;
+}
+
+/// Passed to a feature's `boot()` (see Server.mountFeatures).
+pub const Boot = struct {
+    /// Thread-safe, lives for the whole process.
+    allocator: std.mem.Allocator,
+    /// The server's Io.
+    io: Io,
+};
+pub const BootFn = *const fn (Boot) anyerror!void;
+
+/// A periodic task a feature declares: `pub const jobs = .{spider.every(60_000, retryLoop)};`
+/// Runs on its own thread every `every_ms` with the SSE hub (like sseInterval).
+pub const Job = struct {
+    every_ms: u64,
+    run: *const fn (*Hub) void,
+};
+
+pub fn every(every_ms: u64, run: *const fn (*Hub) void) Job {
+    return .{ .every_ms = every_ms, .run = run };
 }
 
 const IntervalEntry = struct {
@@ -665,6 +684,8 @@ pub fn Server(comptime T: type) type {
         sse_heartbeat_ms: ?u64 = null,
         sse_sweep_ms: ?u64 = null,
         interval_threads: std.ArrayListUnmanaged(IntervalEntry) = .empty,
+        /// Features' boot() hooks, run by listen() before the first accept.
+        boot_hooks: std.ArrayListUnmanaged(BootFn) = .empty,
 
         pub fn init() Self {
             env.autoLoad(std.heap.page_allocator);
@@ -980,6 +1001,65 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers every feature of an app's `features` module: for each
+        /// `pub const <name>` that is a namespace, see mountFeature().
+        /// Features are visited in declaration order; route matching doesn't
+        /// depend on registration order.
+        pub fn mountFeatures(self: *Self, comptime features: type) *Self {
+            inline for (@typeInfo(features).@"struct".decl_names) |name| {
+                const F = @field(features, name);
+                if (@TypeOf(F) == type and @typeInfo(F) == .@"struct") _ = self.mountFeature(F);
+            }
+            return self;
+        }
+
+        /// Registers one feature namespace (usually its mod.zig):
+        ///   - `routes`: every `pub fn` with no parameters returning
+        ///     `spider.Group` is mounted (e.g. build(), buildWebhook()).
+        ///   - `jobs`: a tuple of `spider.every(ms, fn (*spider.Hub) void)`.
+        ///   - `boot`: `pub fn boot(b: spider.Boot) !void`, run by listen()
+        ///     before the first connection (not when only listing routes).
+        /// Anything else in the namespace is ignored. `mount()` stays for
+        /// groups that live elsewhere.
+        pub fn mountFeature(self: *Self, comptime F: type) *Self {
+            if (@hasDecl(F, "routes") and @TypeOf(F.routes) == type and @typeInfo(F.routes) == .@"struct") {
+                inline for (@typeInfo(F.routes).@"struct".decl_names) |fname| {
+                    const f = @field(F.routes, fname);
+                    const FT = @TypeOf(f);
+                    if (comptime @typeInfo(FT) == .@"fn") {
+                        const info = @typeInfo(FT).@"fn";
+                        if (comptime info.param_types.len == 0 and info.return_type == Group) _ = self.mount(f());
+                    }
+                }
+            }
+            if (@hasDecl(F, "jobs")) {
+                inline for (F.jobs) |job| {
+                    const j: Job = job;
+                    self.ensureSseHub();
+                    self.interval_threads.append(std.heap.smp_allocator, .{
+                        .hub = if (self.sse_hub) |*h| h else unreachable,
+                        .ms = j.every_ms,
+                        .callback = j.run,
+                        .io = undefined,
+                    }) catch |err| std.log.err("job not scheduled: {s}", .{@errorName(err)});
+                }
+            }
+            if (@hasDecl(F, "boot")) {
+                self.boot_hooks.append(std.heap.smp_allocator, F.boot) catch |err|
+                    std.log.err("boot hook not registered: {s}", .{@errorName(err)});
+            }
+            return self;
+        }
+
+        fn runBootHooks(self: *Self, io: Io) !void {
+            for (self.boot_hooks.items) |hook| {
+                hook(.{ .allocator = std.heap.smp_allocator, .io = io }) catch |err| {
+                    std.log.err("feature boot() failed: {s}", .{@errorName(err)});
+                    return err;
+                };
+            }
+        }
+
         pub fn mount(self: *Self, child: Group) *Self {
             const MountCtx = struct { s: *Self, use: []const MiddlewareFn };
             const mctx: MountCtx = .{ .s = self, .use = child.use_middlewares[0..child.use_count] };
@@ -1063,6 +1143,7 @@ pub fn Server(comptime T: type) type {
             var watchdog: Watchdog = .{};
             self.startWatchdog(&watchdog, io);
             self.bindHubs(io);
+            try self.runBootHooks(io);
 
             for (self.interval_threads.items) |*entry| {
                 entry.io = io;
@@ -1140,6 +1221,7 @@ pub fn Server(comptime T: type) type {
             var watchdog: Watchdog = .{};
             self.startWatchdog(&watchdog, io);
             self.bindHubs(io);
+            try self.runBootHooks(io);
 
             for (self.interval_threads.items) |*entry| {
                 entry.io = io;

@@ -25,6 +25,10 @@ pub const appWithConfig = @import("core/app.zig").appWithConfig;
 const server = @import("core/app.zig").server;
 pub const Server = @import("core/app.zig").Server;
 pub const ListenOptions = @import("core/app.zig").ListenOptions;
+/// Feature registration (Server.mountFeatures): periodic jobs and boot hooks.
+pub const Job = @import("core/app.zig").Job;
+pub const every = @import("core/app.zig").every;
+pub const Boot = @import("core/app.zig").Boot;
 pub const StaticConfig = @import("core/app.zig").StaticConfig;
 pub const Router = @import("routing/router.zig").Router;
 pub const Group = @import("routing/group.zig").Group;
