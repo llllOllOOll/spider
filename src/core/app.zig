@@ -1114,7 +1114,71 @@ pub fn Server(comptime T: type) type {
             t.detach();
         }
 
+        /// The route table: method, path, access and flags, sorted by path.
+        /// Printed by listen() instead of serving when SPIDER_ROUTES is set
+        /// (what `spider routes` does).
+        pub fn writeRoutes(self: *Self, w: *std.Io.Writer) !void {
+            const Entry = struct { method: std.http.Method, path: []const u8, route: Route };
+            const Collect = struct {
+                list: *std.ArrayListUnmanaged(Entry),
+                fn cb(c: @This(), method: std.http.Method, path: []const u8, route: Route) void {
+                    const p = if (path.len > 0 and path[0] == '/')
+                        std.heap.page_allocator.dupe(u8, path) catch return
+                    else
+                        std.fmt.allocPrint(std.heap.page_allocator, "/{s}", .{path}) catch return;
+                    c.list.append(std.heap.page_allocator, .{ .method = method, .path = p, .route = route }) catch return;
+                }
+            };
+            var list: std.ArrayListUnmanaged(Entry) = .empty;
+            defer {
+                for (list.items) |e| std.heap.page_allocator.free(e.path);
+                list.deinit(std.heap.page_allocator);
+            }
+            self.router.forEach(std.heap.page_allocator, Collect{ .list = &list }, Collect.cb);
+            std.mem.sort(Entry, list.items, {}, struct {
+                fn lt(_: void, a: Entry, b: Entry) bool {
+                    const o = std.mem.order(u8, a.path, b.path);
+                    if (o != .eq) return o == .lt;
+                    return @intFromEnum(a.method) < @intFromEnum(b.method);
+                }
+            }.lt);
+            for (list.items) |e| {
+                const m = e.route.meta;
+                try w.print("{s: <7} {s: <48} ", .{ @tagName(e.method), e.path });
+                if (m.public) {
+                    try w.writeAll("public");
+                } else if (m.org_roles.len > 0 or m.roles.len > 0) {
+                    if (m.org_roles.len > 0) try writeList(w, "org:", m.org_roles);
+                    if (m.roles.len > 0) try writeList(w, if (m.org_roles.len > 0) " roles:" else "roles:", m.roles);
+                } else {
+                    try w.writeAll("-");
+                }
+                if (m.quiet_log) try w.writeAll("  quiet_log");
+                if (m.allow_http) try w.writeAll("  allow_http");
+                try w.writeAll("\n");
+            }
+            try w.print("{d} routes", .{list.items.len});
+            if (self.router.duplicates > 0) try w.print(", {d} registered twice (see the warnings above)", .{self.router.duplicates});
+            try w.writeAll("\n");
+        }
+
+        fn writeList(w: *std.Io.Writer, label: []const u8, items: []const []const u8) !void {
+            try w.writeAll(label);
+            for (items, 0..) |r, i| {
+                if (i > 0) try w.writeAll(",");
+                try w.writeAll(r);
+            }
+        }
+
         pub fn listen(self: *Self, options: ListenOptions) !void {
+            if (env.get("SPIDER_ROUTES") != null) {
+                var threaded = std.Io.Threaded.init_single_threaded;
+                var buf: [4096]u8 = undefined;
+                var out = std.Io.File.stdout().writer(threaded.io(), &buf);
+                try self.writeRoutes(&out.interface);
+                try out.interface.flush();
+                return;
+            }
             if (comptime build_options.io_backend == .zio) {
                 return self.listenZio(options);
             }

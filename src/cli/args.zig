@@ -12,6 +12,7 @@ pub const Command = enum {
     new,
     generate,
     migrate,
+    routes,
     install,
     update,
     self_update,
@@ -25,6 +26,7 @@ pub const Command = enum {
             .{ "generate", .generate },
             .{ "g", .generate },
             .{ "migrate", .migrate },
+            .{ "routes", .routes },
             .{ "install", .install },
             .{ "update", .update },
             .{ "self-update", .self_update },
@@ -114,6 +116,7 @@ pub const overview =
     \\  new <app_name>        Create a new Spider project
     \\  generate, g           Generate code: feature <name>, auth
     \\  migrate               Run pending database migrations
+    \\  routes                List the app's routes (method, path, access, flags)
     \\  install               Download frontend assets (tailwindcss, alpine, htmx, icons)
     \\  update                Update the spider dependency in this project
     \\  self-update           Update the spider CLI itself
@@ -159,6 +162,16 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\"-- migrate:up" part), in order. Reads the database from .env:
         \\SQLITE_PATH for SQLite, PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/PG_DB for
         \\PostgreSQL. Run it from the project root.
+        \\
+        ,
+        .routes =>
+        \\Usage: spider routes
+        \\
+        \\Build and start the app with SPIDER_ROUTES=1 (`zig build run`): it prints
+        \\every route — method, path, access (public / org: / roles: / -) and flags
+        \\(quiet_log, allow_http) — and exits before listening. The app's startup
+        \\code runs up to listen() (e.g. it connects to the database); features'
+        \\boot() hooks don't run.
         \\
         ,
         .install =>

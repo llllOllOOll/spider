@@ -73,6 +73,20 @@ pub fn main(init: std.process.Init) !void {
             try generate.run(io, allocator, rest[0], &it);
         },
         .migrate => try migrate.run(io, allocator),
+        .routes => {
+            // The app lists its own routes: listen() prints them and returns
+            // when SPIDER_ROUTES is set.
+            try init.environ_map.put("SPIDER_ROUTES", "1");
+            var child = try std.process.spawn(io, .{
+                .argv = &.{ "zig", "build", "run" },
+                .environ_map = init.environ_map,
+            });
+            const term = try child.wait(io);
+            switch (term) {
+                .exited => |code| if (code != 0) std.process.exit(code),
+                else => std.process.exit(1),
+            }
+        },
         .update => try update.run(io),
         .self_update => try self_update.run(io),
         .install => try install.run(io, allocator, std.Io.Dir.cwd()),

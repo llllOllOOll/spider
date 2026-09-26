@@ -305,3 +305,25 @@ test "mountFeature: one feature at a time" {
     defer arena.deinit();
     try std.testing.expect((try s.router.match(.GET, "/alpha", arena.allocator())) != null);
 }
+
+test "writeRoutes: sorted table with access and flags; duplicates counted" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s
+        .get("/b", featOk, .{ .org_roles = &.{ "admin", "sindico" } })
+        .get("/a", featOk, .{ .public = true, .quiet_log = true, .allow_http = true })
+        .post("/a", featOk, .{})
+        .get("/c/:id", featOk, .{ .roles = &.{"staff"} })
+        .get("/b", featOk, .{ .org_roles = &.{"admin"} }); // registered twice
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try s.writeRoutes(&w);
+    const out = w.buffered();
+    const expected =
+        "GET     /a                                               public  quiet_log  allow_http\n" ++
+        "POST    /a                                               -\n" ++
+        "GET     /b                                               org:admin\n" ++
+        "GET     /c/:id                                           roles:staff\n" ++
+        "4 routes, 1 registered twice (see the warnings above)\n";
+    try std.testing.expectEqualStrings(expected, out);
+}

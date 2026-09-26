@@ -79,6 +79,9 @@ fn toUppercase(in: []const u8, out: []u8) void {
 pub const Router = struct {
     root: *Node,
     allocator: std.mem.Allocator,
+    /// Registrations of a method+path that already had a route (the later
+    /// one wins, as it always did; now it's logged).
+    duplicates: usize = 0,
     static_routes: std.StringHashMap(Route),
 
     pub fn init(allocator: std.mem.Allocator) !Router {
@@ -126,7 +129,10 @@ pub const Router = struct {
             key[method_str.len] = '/';
             @memcpy(key[method_str.len + 1 ..], path_stripped);
             const gop = try self.static_routes.getOrPut(key);
-            if (gop.found_existing) self.allocator.free(key);
+            if (gop.found_existing) {
+                self.allocator.free(key);
+                self.warnDuplicate(method, path);
+            }
             gop.value_ptr.* = route;
             return;
         }
@@ -157,7 +163,13 @@ pub const Router = struct {
                 node = node.children.get(segment).?;
             }
         }
+        if (node.handlers.get(method) != null) self.warnDuplicate(method, path);
         node.handlers.set(method, route);
+    }
+
+    fn warnDuplicate(self: *Router, method: std.http.Method, path: []const u8) void {
+        self.duplicates += 1;
+        std.log.warn("route {s} {s} registered twice; the later registration wins", .{ @tagName(method), path });
     }
 
     pub fn forEach(self: *Router, allocator: std.mem.Allocator, context: anytype, comptime callback: fn (@TypeOf(context), std.http.Method, []const u8, Route) void) void {
