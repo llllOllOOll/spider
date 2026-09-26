@@ -21,6 +21,11 @@ const JwkEntry = struct {
 pub const JwksConfig = struct {
     jwks_url: []const u8,
     issuer: ?[]const u8 = null,
+    /// The client this app accepts tokens for. A token passes when it was
+    /// issued to it (`azp`) or is addressed to it (`aud` is it, or a list
+    /// containing it); anything else — e.g. a token some other client of the
+    /// same realm obtained for the user — fails with error.InvalidAudience.
+    /// null skips the check (then any client of the issuer can log users in).
     audience: ?[]const u8 = null,
     cookie_name: []const u8 = "__session",
     login_path: []const u8 = "/login",
@@ -219,6 +224,8 @@ pub const JwksAuth = struct {
             email: ?[]const u8 = null,
             name: ?[]const u8 = null,
             realm_access: ?RealmAccess = null,
+            aud: ?std.json.Value = null,
+            azp: ?[]const u8 = null,
         };
 
         const parsed = try std.json.parseFromSlice(RawClaims, allocator, payload_buf[0..payload_len], .{ .ignore_unknown_fields = true });
@@ -227,6 +234,9 @@ pub const JwksAuth = struct {
         if (self.config.issuer) |expected_iss| {
             const actual_iss = parsed.value.iss orelse return error.MissingIssuer;
             if (!std.mem.eql(u8, actual_iss, expected_iss)) return error.InvalidIssuer;
+        }
+        if (self.config.audience) |expected| {
+            if (!issuedFor(expected, parsed.value.aud, parsed.value.azp)) return error.InvalidAudience;
         }
 
         return Claims{
@@ -272,7 +282,7 @@ pub const JwksAuth = struct {
 
         const token = extractToken(c, self.config.cookie_name) orelse {
             if (self.config.api_mode) {
-                return c.json(.{ .@"error" = "unauthorized", .@"message" = "Bearer token required" }, .{ .status = .unauthorized });
+                return c.json(.{ .@"error" = "unauthorized", .message = "Bearer token required" }, .{ .status = .unauthorized });
             }
             return redirect(c, self.config.login_path);
         };
@@ -282,17 +292,18 @@ pub const JwksAuth = struct {
             error.UnknownKey,
             error.InvalidIssuer,
             error.MissingIssuer,
+            error.InvalidAudience,
             error.UnsupportedKeySize,
             error.InvalidSignature,
             => {
                 if (self.config.api_mode) {
-                    return c.json(.{ .@"error" = "unauthorized", .@"message" = @errorName(err) }, .{ .status = .unauthorized });
+                    return c.json(.{ .@"error" = "unauthorized", .message = @errorName(err) }, .{ .status = .unauthorized });
                 }
                 return c.text(@errorName(err), .{ .status = .unauthorized });
             },
             else => |e| {
                 if (self.config.api_mode) {
-                    return c.json(.{ .@"error" = "unauthorized", .@"message" = @errorName(e) }, .{ .status = .unauthorized });
+                    return c.json(.{ .@"error" = "unauthorized", .message = @errorName(e) }, .{ .status = .unauthorized });
                 }
                 return c.text(@errorName(e), .{ .status = .unauthorized });
             },
@@ -304,7 +315,7 @@ pub const JwksAuth = struct {
         ));
         if (claims.exp < now_sec) {
             if (self.config.api_mode) {
-                return c.json(.{ .@"error" = "unauthorized", .@"message" = "Token expired" }, .{ .status = .unauthorized });
+                return c.json(.{ .@"error" = "unauthorized", .message = "Token expired" }, .{ .status = .unauthorized });
             }
             if (self.config.refresh_path) |rpath| {
                 // HTMX and SSE requests must receive 401 — a 302 on HTMX loses the
@@ -462,6 +473,37 @@ fn verifyRsaSha256(sig_b64url: []const u8, msg: []const u8, n_b64url: []const u8
     try b64.Decoder.decode(e_buf, e_b64url);
 
     try verifyRsaSha256Raw(sig_buf[0..sig_len], msg, n_buf[0..n_len], e_buf[0..e_len]);
+}
+
+/// OIDC client check: issued to `client` (azp), or addressed to it (aud as
+/// a string or as a list).
+fn issuedFor(client: []const u8, aud: ?std.json.Value, azp: ?[]const u8) bool {
+    if (azp) |p| if (std.mem.eql(u8, p, client)) return true;
+    const a = aud orelse return false;
+    switch (a) {
+        .string => |s| return std.mem.eql(u8, s, client),
+        .array => |list| for (list.items) |item| {
+            if (item == .string and std.mem.eql(u8, item.string, client)) return true;
+        },
+        else => {},
+    }
+    return false;
+}
+
+test "issuedFor: azp or aud must name the client" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const list = try std.json.parseFromSliceLeaky(std.json.Value, a, "[\"account\",\"app\"]", .{});
+    const other = try std.json.parseFromSliceLeaky(std.json.Value, a, "[\"account\"]", .{});
+    try t.expect(issuedFor("app", .{ .string = "account" }, "app"));
+    try t.expect(issuedFor("app", .{ .string = "app" }, "gateway"));
+    try t.expect(issuedFor("app", list, "gateway"));
+    try t.expect(!issuedFor("app", other, "admin-cli"));
+    try t.expect(!issuedFor("app", .{ .string = "account" }, "admin-cli"));
+    try t.expect(!issuedFor("app", null, null));
+    try t.expect(!issuedFor("app", .{ .integer = 1 }, null));
 }
 
 fn verifyRsaSha256Raw(sig: []const u8, msg: []const u8, n: []const u8, e: []const u8) !void {

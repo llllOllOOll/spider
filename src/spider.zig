@@ -117,4 +117,5 @@ test {
     _ = @import("internal/logfmt.zig");
     _ = @import("modules/logger.zig");
     _ = @import("core/http_client_mtls.zig");
+    _ = @import("providers/jwks.zig");
 }

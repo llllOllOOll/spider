@@ -71,15 +71,24 @@ fn issuer(alc: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(alc, "http://127.0.0.1:{d}/realms/{s}", .{ idp_port, realm });
 }
 
-/// Builds a signed JWT. `extra_json` is spliced into the payload object
-/// (e.g. `,"organizations":{...}`).
+/// Builds a signed JWT issued to this app's client (like a real Keycloak
+/// access token: `aud` "account", `azp` the client). `extra_json` is spliced
+/// into the payload object (e.g. `,"organizations":{...}`).
 fn makeJwt(alc: std.mem.Allocator, exp: i64, extra_json: []const u8) ![]const u8 {
     return makeJwtKid(alc, "k1", exp, extra_json);
 }
 
+const own_client = ",\"aud\":\"account\",\"azp\":\"spider-app\"";
+
 fn makeJwtKid(alc: std.mem.Allocator, kid: []const u8, exp: i64, extra_json: []const u8) ![]const u8 {
+    return makeJwtFull(alc, kid, exp, try std.fmt.allocPrint(alc, "{s}{s}", .{ own_client, extra_json }));
+}
+
+/// Like makeJwtKid, without the default aud/azp: `claims_json` says who the
+/// token was issued to.
+fn makeJwtFull(alc: std.mem.Allocator, kid: []const u8, exp: i64, claims_json: []const u8) ![]const u8 {
     const header = try std.fmt.allocPrint(alc, "{{\"alg\":\"RS256\",\"typ\":\"JWT\",\"kid\":\"{s}\"}}", .{kid});
-    const payload = try std.fmt.allocPrint(alc, "{{\"sub\":\"user-1\",\"email\":\"u@test\",\"iss\":\"{s}\",\"exp\":{d}{s}}}", .{ try issuer(alc), exp, extra_json });
+    const payload = try std.fmt.allocPrint(alc, "{{\"sub\":\"user-1\",\"email\":\"u@test\",\"iss\":\"{s}\",\"exp\":{d}{s}}}", .{ try issuer(alc), exp, claims_json });
 
     const h_enc = try alc.alloc(u8, b64.Encoder.calcSize(header.len));
     _ = b64.Encoder.encode(h_enc, header);
@@ -423,6 +432,30 @@ test "jwks: valid token passes, bad signature and no token do not" {
     const none = try e.get("/tickets", &.{});
     try std.testing.expectEqual(@as(u16, 302), none.status);
     try std.testing.expectEqualStrings("/auth/login", none.header("Location").?);
+}
+
+test "jwks: a token issued to another client of the realm is rejected" {
+    var e = try Env.init();
+    defer e.deinit();
+    const Case = struct { claims: []const u8, status: u16 };
+    const cases = [_]Case{
+        // Another client (e.g. admin-cli, a partner app) of the same realm.
+        .{ .claims = ",\"aud\":\"account\",\"azp\":\"admin-cli\"", .status = 401 },
+        // No client information at all.
+        .{ .claims = "", .status = 401 },
+        .{ .claims = ",\"aud\":[\"account\",\"other-api\"],\"azp\":\"other-app\"", .status = 401 },
+        // Issued to this app, or to another client FOR this app (audience).
+        .{ .claims = own_client, .status = 200 },
+        .{ .claims = ",\"aud\":\"spider-app\",\"azp\":\"gateway\"", .status = 200 },
+        .{ .claims = ",\"aud\":[\"account\",\"spider-app\"],\"azp\":\"gateway\"", .status = 200 },
+    };
+    for (cases) |c| {
+        const jwt = try makeJwtFull(e.alc(), "k1", far_future, c.claims);
+        const cookie = try std.fmt.allocPrint(e.alc(), "Cookie: __session={s}", .{jwt});
+        const status = (try e.get("/tickets", &.{cookie})).status;
+        if (status != c.status) std.debug.print("\nclaims {s}: expected {d}, got {d}\n", .{ c.claims, c.status, status });
+        try std.testing.expectEqual(c.status, status);
+    }
 }
 
 test "jwks + active_org_cookie: org_roles only count in the selected org" {

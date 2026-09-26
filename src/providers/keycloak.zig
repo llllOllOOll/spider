@@ -29,6 +29,10 @@ pub const KeycloakConfig = struct {
     /// callback is rejected (redirected back to `login_path`).
     verify_state: bool = true,
     state_cookie_name: []const u8 = "__oauth_state",
+    /// Client whose tokens are accepted (see JwksConfig.audience); defaults
+    /// to `client_id`, so a token another client of the realm obtained for
+    /// the user (admin-cli, a partner app) is rejected.
+    audience: ?[]const u8 = null,
 };
 
 pub const AuthorizeEndpoint = enum {
@@ -67,6 +71,7 @@ pub const Keycloak = struct {
         const jwks_auth = try JwksAuth.init(allocator, io, .{
             .jwks_url = jwks_url,
             .issuer = issuer,
+            .audience = config.audience orelse config.client_id,
             .login_path = config.login_path,
             .after_callback_path = config.after_callback_path,
             .auth_skip_paths = config.auth_skip_paths,
