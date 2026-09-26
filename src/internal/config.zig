@@ -28,6 +28,11 @@ pub const Config = struct {
     /// Longest silence while receiving a request body; restarts on every
     /// chunk, so a slow but steady upload is never cut.
     body_timeout_ms: u32 = 60_000,
+    /// Longest a server push to an SSE/WebSocket client may stay blocked
+    /// (its socket buffer full: the client stopped reading). The connection
+    /// is then closed, so the client reconnects instead of silently missing
+    /// events, and a stuck client can't hold up delivery to everyone else.
+    stream_write_timeout_ms: u32 = 10_000,
 };
 
 pub const default = Config{};

@@ -416,6 +416,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._ws_hub = matched_hub,
                 ._sse_hub = ctx.sse_hub,
                 ._request_id = request_id,
+                ._watch = &watch,
             };
 
             var mw_buf: [64]MiddlewareFn = undefined;
@@ -438,6 +439,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._ws_hub = null,
                 ._sse_hub = ctx.sse_hub,
                 ._request_id = request_id,
+                ._watch = &watch,
             };
             var mw_buf_404: [64]MiddlewareFn = undefined;
             const mw_count_404 = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, &.{}, &mw_buf_404);
@@ -677,7 +679,7 @@ fn buildWsWrapper(comptime handler: fn (*Ws) anyerror!void) Handler {
             var rand_buf: [8]u8 = undefined;
             std.Io.random(ctx._io, &rand_buf);
             const conn_id = std.mem.readInt(u64, &rand_buf, .little);
-            try hub.add(.{ .id = conn_id, .stream = ctx._stream });
+            try hub.add(.{ .id = conn_id, .stream = ctx._stream, .watch = ctx._watch });
             defer hub.remove(conn_id);
 
             var ws = Ws{
@@ -740,6 +742,10 @@ pub fn Server(comptime T: type) type {
         ws_route_hubs: std.ArrayListUnmanaged(WsRouteHub) = .empty,
         sse_hub: ?Hub = null,
         sse_threaded: ?std.Io.Threaded = null,
+        /// Requested via sseHeartbeat()/sseSweep(); started by listen() once
+        /// the hub runs on the server's Io (see bindHubs).
+        sse_heartbeat_ms: ?u64 = null,
+        sse_sweep_ms: ?u64 = null,
         interval_threads: std.ArrayListUnmanaged(IntervalEntry) = .empty,
 
         pub fn init() Self {
@@ -953,18 +959,9 @@ pub fn Server(comptime T: type) type {
         // safe to call from .sse(), .sseInterval(), and mount() (when a
         // mounted Group has SSE routes of its own).
         //
-        // Uses a real, dedicated Io.Threaded — not .init_single_threaded,
-        // which is a static stub (.allocator = .failing, .concurrent_limit
-        // = .nothing) documented as never coordinating real concurrency.
-        // The Hub's mutex/sleep/timestamp calls ARE exercised concurrently
-        // for real (one call path per live SSE connection, each running
-        // under the main server's Io), so they need an Io whose Mutex is
-        // actually safe to contend on from multiple threads. This instance
-        // never calls .async()/.concurrent() (Hub only uses blocking sync
-        // primitives), so a real Io.Threaded here spawns no extra worker
-        // threads in practice — it's decoupled from whichever io_backend
-        // the main Server.listen() uses, which is fine: SSE's own
-        // synchronization doesn't need to match it.
+        // The dedicated Io.Threaded only serves calls made before listen()
+        // (e.g. an emit during setup); listen() switches the hub to the
+        // server's own Io (bindHubs) before the first connection.
         fn ensureSseHub(self: *Self) void {
             if (self.sse_hub == null) {
                 self.sse_threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{});
@@ -991,8 +988,7 @@ pub fn Server(comptime T: type) type {
         /// own `catch {}` above.
         pub fn sseHeartbeat(self: *Self, interval_ms: ?u64) *Self {
             self.ensureSseHub();
-            if (self.sse_hub) |*hub| hub.startHeartbeat(interval_ms) catch |err|
-                std.log.err("SSE heartbeat not started: {s}", .{@errorName(err)});
+            self.sse_heartbeat_ms = interval_ms orelse Hub.default_heartbeat_ms;
             return self;
         }
 
@@ -1002,9 +998,30 @@ pub fn Server(comptime T: type) type {
         /// indefinitely. `interval_ms` null uses Hub.default_sweep_ms (60s).
         pub fn sseSweep(self: *Self, interval_ms: ?u64) *Self {
             self.ensureSseHub();
-            if (self.sse_hub) |*hub| hub.startSweep(interval_ms) catch |err|
-                std.log.err("SSE sweep not started: {s}", .{@errorName(err)});
+            self.sse_sweep_ms = interval_ms orelse Hub.default_sweep_ms;
             return self;
+        }
+
+        /// Puts every hub on the server's Io before the first connection.
+        /// Hub writes used to go through their own Io.Threaded: on the zio
+        /// backend the sockets are non-blocking, so a client with a full
+        /// buffer made the write fail with EAGAIN — a panic in Debug, a
+        /// silently dropped client in release builds. Heartbeat/sweep start
+        /// only now, so no hub mutex is ever shared by two Io implementations.
+        fn bindHubs(self: *Self, io: Io) void {
+            const write_ms = self.config.stream_write_timeout_ms;
+            if (self.sse_hub) |*hub| {
+                hub.io = io;
+                hub.write_timeout_ms = write_ms;
+                if (self.sse_heartbeat_ms) |ms| hub.startHeartbeat(ms) catch |err|
+                    std.log.err("SSE heartbeat not started: {s}", .{@errorName(err)});
+                if (self.sse_sweep_ms) |ms| hub.startSweep(ms) catch |err|
+                    std.log.err("SSE sweep not started: {s}", .{@errorName(err)});
+            }
+            for (self.ws_route_hubs.items) |rh| {
+                rh.hub.io = io;
+                rh.hub.write_timeout_ms = write_ms;
+            }
         }
 
         pub fn sse(self: *Self, path: []const u8, comptime handler: fn (*Sse) anyerror!void) *Self {
@@ -1074,7 +1091,7 @@ pub fn Server(comptime T: type) type {
         /// One watchdog thread per listening server, only when some
         /// connection deadline is enabled (see Config.*_timeout_ms).
         fn startWatchdog(self: *Self, watchdog: *Watchdog, io: Io) void {
-            const timeouts = [_]u32{ self.config.keepalive_timeout_ms, self.config.header_timeout_ms, self.config.body_timeout_ms };
+            const timeouts = [_]u32{ self.config.keepalive_timeout_ms, self.config.header_timeout_ms, self.config.body_timeout_ms, self.config.stream_write_timeout_ms };
             if (std.mem.allEqual(u32, &timeouts, 0)) return;
             const t = std.Thread.spawn(.{}, Watchdog.run, .{ watchdog, io, watchdog_mod.tickFor(&timeouts) }) catch |err| {
                 std.log.warn("connection deadlines disabled: watchdog thread not started ({s})", .{@errorName(err)});
@@ -1111,6 +1128,7 @@ pub fn Server(comptime T: type) type {
 
             var watchdog: Watchdog = .{};
             self.startWatchdog(&watchdog, io);
+            self.bindHubs(io);
 
             for (self.interval_threads.items) |*entry| {
                 entry.io = io;
@@ -1187,6 +1205,7 @@ pub fn Server(comptime T: type) type {
 
             var watchdog: Watchdog = .{};
             self.startWatchdog(&watchdog, io);
+            self.bindHubs(io);
 
             for (self.interval_threads.items) |*entry| {
                 entry.io = io;

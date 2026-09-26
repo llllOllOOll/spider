@@ -690,3 +690,95 @@ test "accept loop: running out of file descriptors does not stop the server" {
     const res = try request(io, env.arena.allocator(), port, "/fast", .{});
     try std.testing.expectEqual(@as(u16, 200), res.status);
 }
+
+// ── SSE: a client that stops reading ────────────────────────────────────
+
+const big_frame_len = 64 * 1024;
+const big_frame: [big_frame_len]u8 = @splat('x');
+const big_emits = 400; // ~25 MB: far more than the socket buffers of one client
+
+fn sseJoinAll(sse: *spider.Sse) !void {
+    try sse.join("all");
+    sse.wait();
+}
+
+fn emitBig(c: *spider.Ctx) !spider.Response {
+    c.sseHub().broadcastToChannel("all", &big_frame);
+    return c.text("ok", .{});
+}
+
+fn runSseApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null, .stream_write_timeout_ms = 500 });
+    s.sse("/events", sseJoinAll)
+        .post("/emit", emitBig, .{})
+        .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("sse app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn countBytes(io: std.Io, stream: std.Io.net.Stream, total: *std.atomic.Value(usize)) void {
+    var rbuf: [64 * 1024]u8 = undefined;
+    var chunk: [64 * 1024]u8 = undefined;
+    var r = stream.reader(io, &rbuf);
+    while (true) {
+        const n = r.interface.readSliceShort(&chunk) catch break;
+        if (n == 0) break;
+        _ = total.fetchAdd(n, .monotonic);
+    }
+}
+
+fn emitter(io: std.Io, port: u16, done: *std.atomic.Value(usize)) void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+    for (0..big_emits) |_| {
+        _ = arena.reset(.retain_capacity);
+        _ = request(io, arena.allocator(), port, "/emit", .{ .method = "POST", .body = "" }) catch return;
+        _ = done.fetchAdd(1, .monotonic);
+    }
+}
+
+test "sse: a client that stops reading is dropped; the others keep receiving" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runSseApp, .{port})).detach();
+    try waitForPort(io, port);
+
+    const stalled = try connectTo(io, port);
+    defer stalled.close(io);
+    try send(io, stalled, "GET /events HTTP/1.1\r\nHost: x\r\n\r\n");
+    const reader = try connectTo(io, port);
+    defer reader.close(io);
+    try send(io, reader, "GET /events HTTP/1.1\r\nHost: x\r\n\r\n");
+    var received: std.atomic.Value(usize) = .init(0);
+    const counter = try std.Thread.spawn(.{}, countBytes, .{ io, reader, &received });
+    // Stop the counter before `reader` is closed (it would read a closed fd).
+    defer {
+        _ = std.c.shutdown(reader.socket.handle, std.c.SHUT.RDWR);
+        counter.join();
+    }
+    std.Io.sleep(io, .fromMilliseconds(300), .real) catch {};
+
+    var emitted: std.atomic.Value(usize) = .init(0);
+    const emitting = try std.Thread.spawn(.{}, emitter, .{ io, port, &emitted });
+
+    // Every emit must complete and the reading client must get every frame,
+    // however long the stalled client stays stuck.
+    var waited: u32 = 0;
+    while (waited < 20_000) : (waited += 100) {
+        if (emitted.load(.monotonic) == big_emits and received.load(.monotonic) >= big_emits * big_frame_len) break;
+        std.Io.sleep(io, .fromMilliseconds(100), .real) catch {};
+    }
+    if (emitted.load(.monotonic) != big_emits or received.load(.monotonic) < big_emits * big_frame_len) {
+        emitting.detach(); // stuck on the server; can't be joined
+        std.debug.print("\nemitted {d}/{d}, reader got {d} of {d} bytes\n", .{ emitted.load(.monotonic), big_emits, received.load(.monotonic), big_emits * big_frame_len });
+        return error.TestUnexpectedResult;
+    }
+    emitting.join();
+
+    // And the stalled one was closed by the server, so its EventSource
+    // would reconnect instead of hanging on a dead stream.
+    const r = try readUntilClose(io, env.arena.allocator(), stalled);
+    try std.testing.expect(r.closed_by_server);
+}

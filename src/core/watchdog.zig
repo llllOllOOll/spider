@@ -11,7 +11,9 @@
 //! recv on Io.Threaded, the epoll wait on zio) with end-of-stream, and the
 //! connection loop closes the socket through its normal path. The write
 //! side stays open, so the server can still answer (e.g. 400 for a body
-//! that stopped arriving).
+//! that stopped arriving). A write deadline (armWrite, used for pushes to
+//! SSE/WebSocket clients) shuts down both sides instead: the blocked write
+//! fails and the stream's handler wakes up and ends.
 //!
 //! fd reuse: an Entry is removed (under `lock`) before its socket is
 //! closed, and the sweep shuts sockets down while holding `lock`, so it can
@@ -27,12 +29,21 @@ pub const Watchdog = struct {
         fd: std.posix.fd_t,
         /// Monotonic ns after which the socket is shut down; 0 = no deadline.
         deadline: std.atomic.Value(i64) = .init(0),
+        /// shutdown() `how` for the armed deadline (SHUT.RD or SHUT.RDWR).
+        how: std.atomic.Value(i32) = .init(std.c.SHUT.RD),
         prev: ?*Entry = null,
         next: ?*Entry = null,
 
         /// Shut the connection down if it is still in this phase `ms` from
         /// now. 0 disarms.
         pub fn arm(e: *Entry, ms: u32) void {
+            e.how.store(std.c.SHUT.RD, .release);
+            e.deadline.store(if (ms == 0) 0 else monotonicNs() + @as(i64, ms) * std.time.ns_per_ms, .release);
+        }
+
+        /// Like arm(), for a write: on expiry both directions are shut down.
+        pub fn armWrite(e: *Entry, ms: u32) void {
+            e.how.store(std.c.SHUT.RDWR, .release);
             e.deadline.store(if (ms == 0) 0 else monotonicNs() + @as(i64, ms) * std.time.ns_per_ms, .release);
         }
 
@@ -74,7 +85,7 @@ pub const Watchdog = struct {
             const d = e.deadline.load(.acquire);
             if (d == 0 or now < d) continue;
             e.deadline.store(0, .release);
-            _ = std.c.shutdown(e.fd, std.c.SHUT.RD);
+            _ = std.c.shutdown(e.fd, e.how.load(.acquire));
             n += 1;
         }
         return n;

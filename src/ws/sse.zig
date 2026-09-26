@@ -193,6 +193,7 @@ pub fn buildHandler(comptime handler: fn (*Sse) anyerror!void) Handler {
                 .id = conn_id,
                 .stream = ctx._stream,
                 .type = .sse,
+                .watch = ctx._watch,
             });
             defer hub.remove(conn_id);
 

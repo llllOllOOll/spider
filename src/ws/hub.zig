@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const net = std.Io.net;
+const Watchdog = @import("../core/watchdog.zig").Watchdog;
 
 pub const Hub = struct {
     allocator: std.mem.Allocator,
@@ -18,6 +19,12 @@ pub const Hub = struct {
     sweep_thread: ?std.Thread = null,
     sweep_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
+    /// Longest one write to a client may block (its socket buffer full:
+    /// it stopped reading) before the connection is dropped. 0 = unbounded.
+    /// Server.listen() sets it from Config.stream_write_timeout_ms; only
+    /// connections registered with a `watch` entry are bounded.
+    write_timeout_ms: u32 = 0,
+
     pub const default_heartbeat_ms: u64 = 30_000;
     pub const default_sweep_ms: u64 = 60_000;
     pub const default_retry_ms: u64 = 3_000;
@@ -32,6 +39,8 @@ pub const Hub = struct {
         namespace: []const u8 = "",
         type: enum { ws, sse } = .ws,
         last_activity: ?std.Io.Timestamp = null,
+        /// The connection's watchdog entry, used to bound hub writes.
+        watch: ?*Watchdog.Entry = null,
     };
 
     /// Heap-allocated (stable address) so a broadcast/heartbeat/sweep
@@ -273,7 +282,40 @@ pub const Hub = struct {
         slot.io_mutex.lock(self.io) catch return error.LockFailed;
         defer slot.io_mutex.unlock(self.io);
         if (slot.closed.load(.acquire)) return error.AlreadyClosed;
+        // A client that stopped reading would block this write forever
+        // (and every broadcast behind it): past write_timeout_ms the
+        // watchdog shuts the socket down and the write fails.
+        if (slot.conn.watch) |w| if (self.write_timeout_ms != 0) w.armWrite(self.write_timeout_ms);
+        defer if (slot.conn.watch) |w| w.disarm();
         return @call(.auto, writeFn, .{ self, slot.conn.stream } ++ args);
+    }
+
+    /// A write to this connection failed (or timed out): unregister it AND
+    /// shut its socket down. Unregistering alone left the client connected
+    /// to a stream that never got another event — its handler kept waiting
+    /// on the open socket, so the browser never reconnected. The shutdown
+    /// wakes that handler; handleConnection then closes the fd as usual.
+    /// Only done while the slot isn't closed yet, under its io_mutex: the
+    /// handler's own remove() sets `closed` before the fd can be closed, so
+    /// the descriptor shut down here is still this connection's.
+    pub fn drop(self: *Hub, conn_id: u64) void {
+        const slot = blk: {
+            self.mutex.lock(self.io) catch return;
+            defer self.mutex.unlock(self.io);
+            for (self.connections.items) |slot| {
+                if (slot.conn.id == conn_id) {
+                    _ = slot.refs.fetchAdd(1, .monotonic);
+                    break :blk slot;
+                }
+            }
+            return;
+        };
+        defer self.releaseSlot(slot);
+        if (slot.io_mutex.lock(self.io)) |_| {
+            if (!slot.closed.load(.acquire)) _ = std.c.shutdown(slot.conn.stream.socket.handle, std.c.SHUT.RDWR);
+            slot.io_mutex.unlock(self.io);
+        } else |_| {}
+        self.remove(conn_id);
     }
 
     /// Adds `slot` to a broadcast/heartbeat/sweep snapshot, taking a
@@ -302,7 +344,7 @@ pub const Hub = struct {
                 .sse => self.writeToSlot(slot, sendSse, .{ "message", message }),
             };
             failed catch |err| {
-                if (err != error.AlreadyClosed) self.remove(slot.conn.id);
+                if (err != error.AlreadyClosed) self.drop(slot.conn.id);
             };
             self.releaseSlot(slot);
         }
@@ -406,7 +448,7 @@ pub const Hub = struct {
 
         for (snapshot.items) |slot| {
             self.writeToSlot(slot, sendSse, .{ event, data }) catch |err| {
-                if (err != error.AlreadyClosed) self.remove(slot.conn.id);
+                if (err != error.AlreadyClosed) self.drop(slot.conn.id);
             };
             self.releaseSlot(slot);
         }
@@ -425,7 +467,7 @@ pub const Hub = struct {
 
         for (snapshot.items) |slot| {
             self.writeToSlot(slot, sendSseWithId, .{ id, event, data }) catch |err| {
-                if (err != error.AlreadyClosed) self.remove(slot.conn.id);
+                if (err != error.AlreadyClosed) self.drop(slot.conn.id);
             };
             self.releaseSlot(slot);
         }
@@ -460,7 +502,7 @@ pub const Hub = struct {
                 .sse => self.writeToSlot(slot, sendSse, .{ "message", message }),
             };
             failed catch |err| {
-                if (err != error.AlreadyClosed) self.remove(slot.conn.id);
+                if (err != error.AlreadyClosed) self.drop(slot.conn.id);
             };
             self.releaseSlot(slot);
         }
@@ -537,7 +579,7 @@ pub const Hub = struct {
     // caller — heartbeat/sweep discovering a dead connection isn't a
     // different case from a client disconnecting normally.
     fn pruneDead(self: *Hub, dead_ids: []const u64) void {
-        for (dead_ids) |id| self.remove(id);
+        for (dead_ids) |id| self.drop(id);
     }
 
     fn touchActivity(self: *Hub, touched_ids: []const u64, ts: std.Io.Timestamp) void {

@@ -6,6 +6,7 @@ const Database = @import("database.zig").Database;
 pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 const zmd = @import("../render/zmd/zmd.zig");
 const Hub = @import("../ws/hub.zig").Hub;
+const Watchdog = @import("watchdog.zig").Watchdog;
 
 const root = @import("root");
 pub const has_embed = @hasDecl(root, "spider_templates");
@@ -72,6 +73,9 @@ pub const Ctx = struct {
     _chain_handler: ?*const fn (*Ctx) anyerror!Response = null,
     /// Correlation id for this request (see requestId()).
     _request_id: []const u8 = "",
+    /// This connection's watchdog entry (deadlines), for SSE/WebSocket
+    /// streams to bound their writes. Null outside Server.listen().
+    _watch: ?*Watchdog.Entry = null,
     /// Human-readable detail for the error the handler/extractor returned.
     _error_detail: ?[]const u8 = null,
 
