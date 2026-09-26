@@ -12,6 +12,7 @@ const structToContext = ctx_mod.structToContext;
 const dupeValue = ctx_mod.dupeValue;
 const Parser = parser_mod.Parser;
 const renderNode = renderer_mod.renderNode;
+const RenderState = renderer_mod.RenderState;
 
 fn isRootTemplate(template_str: []const u8) bool {
     return std.mem.indexOf(u8, template_str, "<html") != null;
@@ -135,6 +136,9 @@ pub const Template = struct {
         var ctx = try structToContext(alc, context);
         defer ctx.deinit(alc);
 
+        var state = RenderState.init(self.components);
+        defer state.deinit(alc);
+
         if (self.layout) |layout_name| {
             if (self.components) |comps| {
                 if (comps.get(layout_name)) |layout_template| {
@@ -162,7 +166,7 @@ pub const Template = struct {
                                 continue;
                             }
                         }
-                        try renderNode(node, &ctx, alc, &cur_buf, self.components);
+                        try renderNode(node, &ctx, alc, &cur_buf, &state);
                     }
                     {
                         const key = try alc.dupe(u8, cur_key);
@@ -188,7 +192,7 @@ pub const Template = struct {
                     defer layout_result_bytes.deinit(alc);
 
                     for (layout_result.nodes) |n| {
-                        try renderNode(n, &layout_ctx, alc, &layout_result_bytes, self.components);
+                        try renderNode(n, &layout_ctx, alc, &layout_result_bytes, &state);
                     }
 
                     return layout_result_bytes.toOwnedSlice(alc);
@@ -200,7 +204,7 @@ pub const Template = struct {
         errdefer result.deinit(alc);
 
         for (self.nodes) |node| {
-            try renderNode(node, &ctx, alc, &result, self.components);
+            try renderNode(node, &ctx, alc, &result, &state);
         }
 
         return result.toOwnedSlice(alc);
@@ -229,11 +233,14 @@ pub const Template = struct {
         var comp_ctx = try structToContext(alc, context);
         defer comp_ctx.deinit(alc);
 
+        var state = RenderState.init(self.components);
+        defer state.deinit(alc);
+
         var result: std.ArrayList(u8) = .empty;
         errdefer result.deinit(alc);
 
         for (comp_nodes.nodes) |n| {
-            try renderNode(n, &comp_ctx, alc, &result, self.components);
+            try renderNode(n, &comp_ctx, alc, &result, &state);
         }
 
         return result.toOwnedSlice(alc);

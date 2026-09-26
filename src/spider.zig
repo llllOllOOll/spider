@@ -45,6 +45,7 @@ pub const dbgResponse = @import("middlewares/dbg_response.zig").middleware;
 pub const metrics = @import("internal/metrics.zig");
 pub const env = @import("internal/env.zig");
 pub const template = @import("render/template.zig");
+pub const template_max_component_depth = @import("render/renderer.zig").max_component_depth;
 pub const ast = @import("render/ast.zig");
 pub const zmd = @import("render/zmd/zmd.zig");
 pub const form = @import("binding/form.zig");
@@ -99,6 +100,7 @@ test {
     _ = @import("modules/push.zig");
     _ = @import("render/zmd/zmd.zig");
     _ = @import("render/template_test.zig");
+    _ = @import("render/template_safety_test.zig");
     _ = @import("core/context_test.zig");
     _ = @import("core/app_test.zig");
     _ = @import("routing/router_test.zig");

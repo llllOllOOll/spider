@@ -26,6 +26,35 @@ fn slowHandler(c: *spider.Ctx) !spider.Response {
     return c.text("slow-done", .{});
 }
 
+/// Renders a chain of `depth` nested components (C0 > C1 > ... > leaf).
+fn renderChain(c: *spider.Ctx, depth: usize, self_recursive: bool) !spider.Response {
+    var comps: std.StringHashMapUnmanaged([]const u8) = .{};
+    if (self_recursive) {
+        try comps.put(c.arena, "Loop", "<div><Loop /></div>");
+    } else {
+        for (0..depth) |i| {
+            const name = try std.fmt.allocPrint(c.arena, "C{d}", .{i});
+            const body = if (i + 1 < depth)
+                try std.fmt.allocPrint(c.arena, "<div><C{d} /></div>", .{i + 1})
+            else
+                "leaf";
+            try comps.put(c.arena, name, body);
+        }
+    }
+    var tmpl = try spider.Template.init(c.arena, if (self_recursive) "<Loop />" else "<C0 />");
+    tmpl.components = comps;
+    const out = try tmpl.render(.{}, c.arena);
+    return c.html(out, .{});
+}
+
+fn deepHandler(c: *spider.Ctx) !spider.Response {
+    return renderChain(c, spider.template_max_component_depth, false);
+}
+
+fn recursiveHandler(c: *spider.Ctx) !spider.Response {
+    return renderChain(c, 0, true);
+}
+
 fn testErrorHandler(c: *spider.Ctx, err: anyerror) !spider.Response {
     _ = c;
     return spider.Response{
@@ -53,6 +82,8 @@ fn runServer(port: u16) void {
     server
         .get("/instant", instantHandler, .{})
         .get("/slow", slowHandler, .{})
+        .get("/deep", deepHandler, .{})
+        .get("/recursive", recursiveHandler, .{})
         .onError(testErrorHandler)
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
         std.log.err("test server listen() failed: {s}", .{@errorName(err)});
@@ -156,4 +187,45 @@ test "zio backend: concurrent HTTP requests are handled correctly and concurrent
     // serialized behind a single accept()/handle() loop. Generous headroom
     // for CI/dev-machine scheduling jitter.
     try std.testing.expect(elapsed_ms < (CONCURRENCY * SLOW_MS) / 2);
+}
+
+test "zio backend: max-depth component nesting fits the coroutine stack, self-recursion is a 500 not a crash" {
+    const gpa = std.testing.allocator;
+
+    var client_threaded: std.Io.Threaded = .init(gpa, .{});
+    defer client_threaded.deinit();
+    const client_io = client_threaded.io();
+
+    const port = try reserveEphemeralPort(client_io);
+    const server_thread = try std.Thread.spawn(.{}, runServer, .{port});
+    server_thread.detach();
+    std.Io.sleep(client_io, .fromMilliseconds(300), .real) catch {};
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    {
+        const url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/deep", .{port});
+        var res = try pacman.get(client_io, arena, url, .{ .timeout_ms = 5000 });
+        defer res.deinit();
+        try std.testing.expectEqual(std.http.Status.ok, res.status);
+        try std.testing.expect(std.mem.indexOf(u8, res.body_text, "leaf") != null);
+    }
+    {
+        // Before the depth limit this aborted the whole process with
+        // "Coroutine stack overflow!" (the Orbitx BottomNavGatekeeper incident).
+        const url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/recursive", .{port});
+        var res = try pacman.get(client_io, arena, url, .{ .timeout_ms = 5000 });
+        defer res.deinit();
+        try std.testing.expectEqual(std.http.Status.internal_server_error, res.status);
+        try std.testing.expectEqualStrings("ComponentDepthExceeded", res.body_text);
+    }
+    {
+        // Server is still alive and serving.
+        const url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/instant", .{port});
+        var res = try pacman.get(client_io, arena, url, .{ .timeout_ms = 5000 });
+        defer res.deinit();
+        try std.testing.expectEqual(std.http.Status.ok, res.status);
+    }
 }

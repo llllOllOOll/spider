@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ast = @import("ast.zig");
 const ctx_mod = @import("context.zig");
 const parser_mod = @import("parser.zig");
@@ -11,7 +12,89 @@ const dupeValue = ctx_mod.dupeValue;
 const Parser = parser_mod.Parser;
 const trimWhitespace = parser_mod.trimWhitespace;
 
-pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.ArrayList(u8), components: ?std.StringHashMapUnmanaged([]const u8)) !void {
+/// Deepest allowed component nesting. Real layouts stay far below this; the
+/// limit exists so a component that (directly or indirectly) includes itself
+/// fails with `error.ComponentDepthExceeded` instead of overflowing the stack
+/// and taking the whole process down (small coroutine stacks under zio hit
+/// that fast).
+pub const max_component_depth: usize = 32;
+
+/// Per-render state threaded through renderNode.
+pub const RenderState = struct {
+    components: ?std.StringHashMapUnmanaged([]const u8),
+    /// Component name -> parsed body, so a component used N times in one
+    /// render (e.g. inside a `for`) is parsed once, not N times.
+    parsed: std.StringHashMapUnmanaged([]Node) = .{},
+    /// Components currently being rendered, outermost first (for the error log).
+    stack: [max_component_depth][]const u8 = undefined,
+    depth: usize = 0,
+
+    pub fn init(components: ?std.StringHashMapUnmanaged([]const u8)) RenderState {
+        return .{ .components = components };
+    }
+
+    pub fn deinit(self: *RenderState, alc: std.mem.Allocator) void {
+        var it = self.parsed.iterator();
+        while (it.next()) |entry| {
+            for (entry.value_ptr.*) |n| freeNode(n, alc);
+            alc.free(entry.value_ptr.*);
+            alc.free(entry.key_ptr.*);
+        }
+        self.parsed.deinit(alc);
+    }
+
+    /// Parsed body of component `name`, or null when it isn't registered.
+    fn componentNodes(self: *RenderState, alc: std.mem.Allocator, name: []const u8) !?[]Node {
+        if (self.parsed.get(name)) |nodes| return nodes;
+        const comps = self.components orelse return null;
+        const template_str = comps.get(name) orelse blk: {
+            // PascalCase -> snake_case fallback ("UserCard" -> "user_card").
+            var field_buf: [256]u8 = undefined;
+            var field_len: usize = 0;
+            for (name, 0..) |ch, i| {
+                if (field_len + 2 > field_buf.len) break :blk null;
+                if (ch >= 'A' and ch <= 'Z') {
+                    if (i > 0) {
+                        field_buf[field_len] = '_';
+                        field_len += 1;
+                    }
+                    field_buf[field_len] = ch + 32;
+                } else {
+                    field_buf[field_len] = ch;
+                }
+                field_len += 1;
+            }
+            break :blk comps.get(field_buf[0..field_len]);
+        } orelse return null;
+
+        var comp_parser = Parser.init(alc, template_str);
+        const parsed = try comp_parser.parse();
+        errdefer {
+            for (parsed.nodes) |n| freeNode(n, alc);
+            alc.free(parsed.nodes);
+        }
+        const key = try alc.dupe(u8, name);
+        errdefer alc.free(key);
+        try self.parsed.put(alc, key, parsed.nodes);
+        return parsed.nodes;
+    }
+
+    fn logDepthExceeded(self: *RenderState, next: []const u8) void {
+        var buf: [1024]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        for (self.stack[0..self.depth]) |n| w.print("{s} > ", .{n}) catch break;
+        w.print("{s}", .{next}) catch {};
+        // warn under `zig test` only: the test runner fails any test that logs
+        // at err level, and the tests trigger this on purpose.
+        const log = if (builtin.is_test) std.log.warn else std.log.err;
+        log(
+            "[spider] template: component nesting deeper than {d} (a component probably includes itself): {s}",
+            .{ max_component_depth, w.buffered() },
+        );
+    }
+};
+
+pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *std.ArrayList(u8), state: *RenderState) anyerror!void {
     switch (node) {
         .text => |text| {
             try result.appendSlice(alc, text);
@@ -49,9 +132,9 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
         .if_node => |ifn| {
             const cond = evalBool(ctx, ifn.condition, alc);
             if (cond) {
-                for (ifn.then_body) |n| try renderNode(n, ctx, alc, result, components);
+                for (ifn.then_body) |n| try renderNode(n, ctx, alc, result, state);
             } else if (ifn.else_body) |eb| {
-                for (eb) |n| try renderNode(n, ctx, alc, result, components);
+                for (eb) |n| try renderNode(n, ctx, alc, result, state);
             }
         },
         .for_node => |fnn| {
@@ -75,67 +158,49 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                         var loop_obj = std.StringHashMapUnmanaged(Value){};
                         try loop_obj.put(alc, try alc.dupe(u8, "index"), Value{ .string = try std.fmt.allocPrint(alc, "{d}", .{idx}) });
                         try loop_ctx.set(alc, "loop", Value{ .object = loop_obj });
-                        for (fnn.body) |n| try renderNode(n, &loop_ctx, alc, result, components);
+                        for (fnn.body) |n| try renderNode(n, &loop_ctx, alc, result, state);
                     }
                 }
             }
         },
         .component => |comp| {
-            if (components) |comps| {
-                const template_str = comps.get(comp.name) orelse brk: {
-                    var field_buf: [256]u8 = undefined;
-                    var field_len: usize = 0;
-                    for (comp.name, 0..) |c, i| {
-                        if (c >= 'A' and c <= 'Z') {
-                            if (i > 0) {
-                                field_buf[field_len] = '_';
-                                field_len += 1;
-                            }
-                            field_buf[field_len] = c + 32;
-                        } else {
-                            field_buf[field_len] = c;
-                        }
-                        field_len += 1;
-                    }
-                    break :brk comps.get(field_buf[0..field_len]);
-                };
-                if (template_str) |comp_template_str| {
-                    var comp_parser = Parser.init(alc, comp_template_str);
-                    const comp_nodes = try comp_parser.parse();
-                    defer {
-                        for (comp_nodes.nodes) |n| freeNode(n, alc);
-                        alc.free(comp_nodes.nodes);
-                    }
+            const comp_nodes = (try state.componentNodes(alc, comp.name)) orelse return;
 
-                    var comp_ctx = try ctx.clone(alc);
-                    defer comp_ctx.deinit(alc);
+            if (state.depth >= max_component_depth) {
+                state.logDepthExceeded(comp.name);
+                return error.ComponentDepthExceeded;
+            }
+            state.stack[state.depth] = comp.name;
+            state.depth += 1;
+            defer state.depth -= 1;
 
-                    for (comp.props) |prop| {
-                        if (resolveValue(ctx, prop.value)) |val| {
-                            try comp_ctx.set(alc, prop.name, try dupeValue(alc, val));
-                        } else {
-                            try comp_ctx.set(alc, prop.name, Value{ .string = try alc.dupe(u8, prop.value) });
-                        }
-                    }
+            var comp_ctx = try ctx.clone(alc);
+            defer comp_ctx.deinit(alc);
 
-                    if (comp.slot_content) |sc| {
-                        var slot_parser = Parser.init(alc, sc);
-                        const slot_result = try slot_parser.parse();
-                        defer {
-                            for (slot_result.nodes) |n| freeNode(n, alc);
-                            alc.free(slot_result.nodes);
-                        }
-                        var slot_buf = std.ArrayList(u8).empty;
-                        for (slot_result.nodes) |n| {
-                            try renderNode(n, &comp_ctx, alc, &slot_buf, components);
-                        }
-                        try comp_ctx.set(alc, "slot", Value{ .string = try slot_buf.toOwnedSlice(alc) });
-                    }
-
-                    for (comp_nodes.nodes) |n| {
-                        try renderNode(n, &comp_ctx, alc, result, components);
-                    }
+            for (comp.props) |prop| {
+                if (resolveValue(ctx, prop.value)) |val| {
+                    try comp_ctx.set(alc, prop.name, try dupeValue(alc, val));
+                } else {
+                    try comp_ctx.set(alc, prop.name, Value{ .string = try alc.dupe(u8, prop.value) });
                 }
+            }
+
+            if (comp.slot_content) |sc| {
+                var slot_parser = Parser.init(alc, sc);
+                const slot_result = try slot_parser.parse();
+                defer {
+                    for (slot_result.nodes) |n| freeNode(n, alc);
+                    alc.free(slot_result.nodes);
+                }
+                var slot_buf = std.ArrayList(u8).empty;
+                for (slot_result.nodes) |n| {
+                    try renderNode(n, &comp_ctx, alc, &slot_buf, state);
+                }
+                try comp_ctx.set(alc, "slot", Value{ .string = try slot_buf.toOwnedSlice(alc) });
+            }
+
+            for (comp_nodes) |n| {
+                try renderNode(n, &comp_ctx, alc, result, state);
             }
         },
         .slot => {},

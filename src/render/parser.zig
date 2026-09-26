@@ -66,6 +66,40 @@ fn tryParseCall(alc: std.mem.Allocator, expr: []const u8) !?Node {
     } };
 }
 
+/// Index just past the "-->" closing the HTML comment that starts at `start`
+/// (which must point at "<!--"), or `str.len` when it is never closed —
+/// browsers also treat an unterminated comment as running to the end.
+pub fn commentEnd(str: []const u8, start: usize) usize {
+    const body = start + "<!--".len;
+    if (body > str.len) return str.len;
+    const close = std.mem.indexOfPos(u8, str, body, "-->") orelse return str.len;
+    return close + "-->".len;
+}
+
+/// Given `start` just past a block's opening '{', returns the index of the
+/// matching '}' or null. HTML comments are skipped, so braces inside
+/// `<!-- ... -->` don't unbalance if/for bodies.
+fn findBlockEnd(str: []const u8, start: usize) ?usize {
+    var i = start;
+    var depth: usize = 1;
+    while (i < str.len) {
+        if (std.mem.startsWith(u8, str[i..], "<!--")) {
+            i = commentEnd(str, i);
+            continue;
+        }
+        switch (str[i]) {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if (depth == 0) return i;
+            },
+            else => {},
+        }
+        i += 1;
+    }
+    return null;
+}
+
 fn trimString(s: []const u8) []const u8 {
     var start: usize = 0;
     var end: usize = s.len;
@@ -184,12 +218,7 @@ pub const Parser = struct {
         p.pos += 1;
 
         const body_start = p.pos;
-        var brace_count: usize = 1;
-        while (p.pos < p.template.len and brace_count > 0) {
-            if (p.template[p.pos] == '{') brace_count += 1 else if (p.template[p.pos] == '}') brace_count -= 1;
-            if (brace_count > 0) p.pos += 1;
-        }
-        if (p.pos >= p.template.len) return error.UnclosedBrace;
+        p.pos = findBlockEnd(p.template, body_start) orelse return error.UnclosedBrace;
 
         const body_str = trimWhitespace(p.template[body_start..p.pos]);
         p.pos += 1;
@@ -268,6 +297,11 @@ pub const Parser = struct {
                     p.raw_skip_close = null;
                     continue;
                 }
+            } else if (std.mem.startsWith(u8, p.template[p.pos..], "<!--")) {
+                // Verbatim, never template-processed (see parseTextNodes).
+                if (p.pos > start) break;
+                p.pos = commentEnd(p.template, p.pos);
+                return Node{ .text = try p.alc.dupe(u8, p.template[start..p.pos]) };
             } else if (std.mem.startsWith(u8, p.template[p.pos..], "<script")) {
                 p.raw_skip_close = "</script>";
             } else if (std.mem.startsWith(u8, p.template[p.pos..], "<style")) {
@@ -419,12 +453,7 @@ pub fn parseIfNode(alc: std.mem.Allocator, str: []const u8, pos: *usize) ParseEr
     pos.* += 1; // skip '{'
 
     const then_start = pos.*;
-    var brace_count: usize = 1;
-    while (pos.* < str.len and brace_count > 0) {
-        if (str[pos.*] == '{') brace_count += 1 else if (str[pos.*] == '}') brace_count -= 1;
-        if (brace_count > 0) pos.* += 1;
-    }
-    if (pos.* >= str.len) return error.UnclosedBrace;
+    pos.* = findBlockEnd(str, then_start) orelse return error.UnclosedBrace;
     const then_body = try parseTextNodes(alc, trimWhitespace(str[then_start..pos.*]));
     pos.* += 1; // skip '}'
 
@@ -440,12 +469,7 @@ pub fn parseIfNode(alc: std.mem.Allocator, str: []const u8, pos: *usize) ParseEr
     } else if (pos.* + 6 <= str.len and std.mem.eql(u8, str[pos.* .. pos.* + 6], "else {")) {
         pos.* += 6; // skip "else {"
         const else_start = pos.*;
-        brace_count = 1;
-        while (pos.* < str.len and brace_count > 0) {
-            if (str[pos.*] == '{') brace_count += 1 else if (str[pos.*] == '}') brace_count -= 1;
-            if (brace_count > 0) pos.* += 1;
-        }
-        if (pos.* >= str.len) return error.UnclosedBrace;
+        pos.* = findBlockEnd(str, else_start) orelse return error.UnclosedBrace;
         const else_str = trimWhitespace(str[else_start..pos.*]);
         pos.* += 1; // skip '}'
         else_body = try parseTextNodes(alc, else_str);
@@ -468,7 +492,6 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
     errdefer nodes.deinit(alc);
 
     var pos: usize = 0;
-    var brace_count: usize = undefined;
     // Same rationale as Parser.raw_skip_close (see parseText): <script>/
     // <style> bodies are raw, but their opening tag's own attributes still
     // go through normal interpolation handling. This is a plain local var
@@ -493,6 +516,15 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             }
         }
         const remaining = str[pos..];
+        // HTML comments are emitted verbatim and never template-processed:
+        // a component tag mentioned in a comment must not become a real
+        // include (a component documenting itself recursed forever).
+        if (raw_skip_close == null and std.mem.startsWith(u8, remaining, "<!--")) {
+            const end = commentEnd(str, pos);
+            try nodes.append(alc, Node{ .text = try alc.dupe(u8, str[pos..end]) });
+            pos = end;
+            continue;
+        }
         if (std.mem.startsWith(u8, remaining, "{{")) {
             pos += 2;
             const raw_start = pos;
@@ -567,12 +599,7 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             if (pos >= str.len or str[pos] != '{') return error.ExpectedBrace;
             pos += 1;
             const body_start = pos;
-            brace_count = 1;
-            while (pos < str.len and brace_count > 0) {
-                if (str[pos] == '{') brace_count += 1 else if (str[pos] == '}') brace_count -= 1;
-                if (brace_count > 0) pos += 1;
-            }
-            if (pos >= str.len) return error.UnclosedBrace;
+            pos = findBlockEnd(str, body_start) orelse return error.UnclosedBrace;
             const body_str = str[body_start..pos];
             pos += 1;
             const body = try parseTextNodes(alc, body_str);
@@ -598,7 +625,8 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
                 // like "\n  <script>...{ x }...</script>" scanned straight past
                 // the tag and the JS body got interpolated.
                 if (pos > start and raw_skip_close == null and
-                    (std.mem.startsWith(u8, r, "<script") or std.mem.startsWith(u8, r, "<style"))) break;
+                    (std.mem.startsWith(u8, r, "<script") or std.mem.startsWith(u8, r, "<style") or
+                        std.mem.startsWith(u8, r, "<!--"))) break;
                 if (std.mem.startsWith(u8, r, "{{")) break;
                 if (std.mem.startsWith(u8, r, "{ ")) break;
                 if (std.mem.startsWith(u8, r, "{ slot }")) break;
