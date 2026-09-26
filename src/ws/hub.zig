@@ -8,6 +8,10 @@ pub const Hub = struct {
     mutex: std.Io.Mutex,
     connections: std.ArrayListUnmanaged(*ConnectionSlot) = .empty,
     channel_history: std.StringHashMapUnmanaged(ChannelHistory) = .empty,
+    /// Hub-wide event id counter (guarded by `mutex`). Global rather than per
+    /// channel so one connection subscribed to several channels still gets a
+    /// single, unambiguous Last-Event-ID to resume from.
+    next_event_id: u64 = 1,
 
     heartbeat_thread: ?std.Thread = null,
     heartbeat_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -58,6 +62,23 @@ pub const Hub = struct {
         io_mutex: std.Io.Mutex = .init,
         closed: std.atomic.Value(bool) = .init(false),
         refs: std.atomic.Value(usize) = .init(1),
+        /// Channels added with subscribe() on top of `conn.channel` (owned,
+        /// hub allocator; guarded by the Hub's `mutex`).
+        extra_channels: std.ArrayListUnmanaged([]const u8) = .empty,
+
+        fn inChannel(slot: *const ConnectionSlot, channel: []const u8) bool {
+            if (std.mem.eql(u8, slot.conn.channel, channel)) return true;
+            for (slot.extra_channels.items) |ch| {
+                if (std.mem.eql(u8, ch, channel)) return true;
+            }
+            return false;
+        }
+
+        fn clearExtra(slot: *ConnectionSlot, allocator: std.mem.Allocator) void {
+            for (slot.extra_channels.items) |ch| allocator.free(ch);
+            slot.extra_channels.deinit(allocator);
+            slot.extra_channels = .empty;
+        }
     };
 
     pub const HistoryEntry = struct {
@@ -68,7 +89,6 @@ pub const Hub = struct {
     };
 
     const ChannelHistory = struct {
-        next_id: u64 = 1,
         entries: std.ArrayListUnmanaged(HistoryEntry) = .empty,
 
         fn deinit(self: *ChannelHistory, allocator: std.mem.Allocator) void {
@@ -120,15 +140,46 @@ pub const Hub = struct {
         try self.connections.append(self.allocator, slot);
     }
 
+    /// Moves the connection to `channel`, dropping every other subscription.
     pub fn updateChannel(self: *Hub, conn_id: u64, channel: []const u8) !void {
         self.mutex.lock(self.io) catch return error.LockFailed;
         defer self.mutex.unlock(self.io);
         for (self.connections.items) |slot| {
             if (slot.conn.id == conn_id) {
                 slot.conn.channel = channel;
+                slot.clearExtra(self.allocator);
                 return;
             }
         }
+    }
+
+    /// Adds `channel` to the connection's subscriptions, keeping the ones it
+    /// already has — one SSE connection can then serve several channels
+    /// (e.g. "condo:X" + "user:Y") instead of the browser opening one
+    /// EventSource per channel. No-op if already subscribed.
+    pub fn addChannel(self: *Hub, conn_id: u64, channel: []const u8) !void {
+        self.mutex.lock(self.io) catch return error.LockFailed;
+        defer self.mutex.unlock(self.io);
+        for (self.connections.items) |slot| {
+            if (slot.conn.id != conn_id) continue;
+            if (slot.inChannel(channel)) return;
+            const owned = try self.allocator.dupe(u8, channel);
+            errdefer self.allocator.free(owned);
+            try slot.extra_channels.append(self.allocator, owned);
+            return;
+        }
+        return error.UnknownConnection;
+    }
+
+    /// Number of live connections subscribed to `channel`.
+    pub fn channelCount(self: *Hub, channel: []const u8) usize {
+        self.mutex.lock(self.io) catch return 0;
+        defer self.mutex.unlock(self.io);
+        var n: usize = 0;
+        for (self.connections.items) |slot| {
+            if (slot.inChannel(channel)) n += 1;
+        }
+        return n;
     }
 
     /// Removes the connection from the list (so no future broadcast/
@@ -184,8 +235,29 @@ pub const Hub = struct {
     /// it once too, for the connections list's own original reference.
     fn releaseSlot(self: *Hub, slot: *ConnectionSlot) void {
         if (slot.refs.fetchSub(1, .release) == 1) {
+            slot.clearExtra(self.allocator);
             self.allocator.destroy(slot);
         }
+    }
+
+    /// Writes to ONE registered connection under its io_mutex, so a direct
+    /// write (Sse.send, replay) can never interleave its bytes with a
+    /// concurrent Hub broadcast/heartbeat to the same socket.
+    /// error.UnknownConnection when `conn_id` isn't registered.
+    pub fn writeToConn(self: *Hub, conn_id: u64, comptime writeFn: anytype, args: anytype) !void {
+        const slot = blk: {
+            self.mutex.lock(self.io) catch return error.LockFailed;
+            defer self.mutex.unlock(self.io);
+            for (self.connections.items) |slot| {
+                if (slot.conn.id == conn_id) {
+                    _ = slot.refs.fetchAdd(1, .monotonic);
+                    break :blk slot;
+                }
+            }
+            return error.UnknownConnection;
+        };
+        defer self.releaseSlot(slot);
+        return self.writeToSlot(slot, writeFn, args);
     }
 
     /// Runs `writeFn(self, slot.conn.stream, ...args)` while holding
@@ -255,7 +327,7 @@ pub const Hub = struct {
         self.broadcastToChannelEvent(channel, id, event, json);
     }
 
-    /// Assigns the next id for `channel` (per-channel counter) and appends
+    /// Assigns the next hub-wide event id and appends
     /// the event to its replay buffer, pruning anything past
     /// history_max_entries or history_max_age_ms. Only emitTo()/notifyUser()
     /// go through here — emit()/broadcast() aren't channel-scoped, so there's
@@ -271,8 +343,8 @@ pub const Hub = struct {
             gop.value_ptr.* = .{};
         }
         const hist = gop.value_ptr;
-        const id = hist.next_id;
-        hist.next_id += 1;
+        const id = self.next_event_id;
+        self.next_event_id += 1;
 
         const ts = self.now();
         try hist.entries.append(self.allocator, .{
@@ -345,7 +417,7 @@ pub const Hub = struct {
         var snapshot: std.ArrayListUnmanaged(*ConnectionSlot) = .empty;
         defer snapshot.deinit(self.allocator);
         for (self.connections.items) |slot| {
-            if (slot.conn.type == .sse and std.mem.eql(u8, slot.conn.channel, channel)) {
+            if (slot.conn.type == .sse and slot.inChannel(channel)) {
                 self.snapshotAppend(&snapshot, slot);
             }
         }
@@ -376,7 +448,7 @@ pub const Hub = struct {
         var snapshot: std.ArrayListUnmanaged(*ConnectionSlot) = .empty;
         defer snapshot.deinit(self.allocator);
         for (self.connections.items) |slot| {
-            if (std.mem.eql(u8, slot.conn.channel, channel)) {
+            if (slot.inChannel(channel)) {
                 self.snapshotAppend(&snapshot, slot);
             }
         }
@@ -394,7 +466,7 @@ pub const Hub = struct {
         }
     }
 
-    fn sendSse(self: *Hub, stream: net.Stream, event: []const u8, data: []const u8) !void {
+    pub fn sendSse(self: *Hub, stream: net.Stream, event: []const u8, data: []const u8) !void {
         var write_buf: [4096]u8 = undefined;
         var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
         const writer = &sw.interface;
@@ -406,7 +478,7 @@ pub const Hub = struct {
         try writer.flush();
     }
 
-    fn sendSseWithId(self: *Hub, stream: net.Stream, id: u64, event: []const u8, data: []const u8) !void {
+    pub fn sendSseWithId(self: *Hub, stream: net.Stream, id: u64, event: []const u8, data: []const u8) !void {
         var write_buf: [4096]u8 = undefined;
         var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
         const writer = &sw.interface;
@@ -1192,4 +1264,128 @@ test "Hub: recordHistory prunes past history_max_entries" {
     try testing.expectEqual(@as(usize, 50), entries.len);
     try testing.expectEqual(@as(u64, 6), entries[0].id);
     try testing.expectEqual(@as(u64, 55), entries[entries.len - 1].id);
+}
+
+// ── Multiple channels per connection ────────────────────────────────────
+
+fn readExact(io: std.Io, sock: net.Socket, comptime n: usize) ![n]u8 {
+    var buf: [n]u8 = undefined;
+    var read_buf: [512]u8 = undefined;
+    var reader = net.Stream.Reader.init(.{ .socket = sock }, io, &read_buf);
+    try reader.interface.readSliceAll(&buf);
+    return buf;
+}
+
+test "Hub: addChannel makes one connection receive emitTo on every subscribed channel" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const sockets = try makeSocketPair();
+    defer sockets[1].close(io);
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+
+    try hub.add(.{ .id = 1, .stream = .{ .socket = sockets[0] }, .channel = "condo:1", .type = .sse });
+    try hub.addChannel(1, "user:9");
+
+    hub.emitTo("condo:1", "a", .{ .k = 1 });
+    hub.emitTo("user:9", "b", .{ .k = 1 });
+    hub.emitTo("other", "c", .{ .k = 1 });
+
+    const expected = "id: 1\nevent: a\ndata: {\"k\":1}\n\nid: 2\nevent: b\ndata: {\"k\":1}\n\n";
+    const got = try readExact(io, sockets[1], expected.len);
+    try testing.expectEqualStrings(expected, &got);
+}
+
+test "Hub: addChannel is idempotent and channelCount counts each connection once" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const s1 = try makeSocketPair();
+    defer s1[1].close(io);
+    const s2 = try makeSocketPair();
+    defer s2[1].close(io);
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+
+    try hub.add(.{ .id = 1, .stream = .{ .socket = s1[0] }, .channel = "a", .type = .sse });
+    try hub.add(.{ .id = 2, .stream = .{ .socket = s2[0] }, .type = .sse });
+    try hub.addChannel(1, "b");
+    try hub.addChannel(1, "b");
+    try hub.addChannel(1, "a");
+    try hub.addChannel(2, "b");
+
+    try testing.expectEqual(@as(usize, 1), hub.channelCount("a"));
+    try testing.expectEqual(@as(usize, 2), hub.channelCount("b"));
+    try testing.expectEqual(@as(usize, 0), hub.channelCount("c"));
+    try testing.expectError(error.UnknownConnection, hub.addChannel(99, "x"));
+}
+
+test "Hub: updateChannel (join) drops the extra subscriptions" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const sockets = try makeSocketPair();
+    defer sockets[1].close(io);
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+
+    try hub.add(.{ .id = 1, .stream = .{ .socket = sockets[0] }, .channel = "a", .type = .sse });
+    try hub.addChannel(1, "b");
+    try hub.updateChannel(1, "c");
+    try testing.expectEqual(@as(usize, 0), hub.channelCount("a"));
+    try testing.expectEqual(@as(usize, 0), hub.channelCount("b"));
+    try testing.expectEqual(@as(usize, 1), hub.channelCount("c"));
+}
+
+test "Hub: remove frees extra subscriptions (no leak)" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const sockets = try makeSocketPair();
+    defer sockets[0].close(io);
+    defer sockets[1].close(io);
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+
+    try hub.add(.{ .id = 1, .stream = .{ .socket = sockets[0] }, .type = .sse });
+    try hub.addChannel(1, "x");
+    try hub.addChannel(1, "y");
+    hub.remove(1);
+    try testing.expectEqual(@as(usize, 0), hub.channelCount("x"));
+}
+
+test "Hub: event ids are hub-wide, increasing across channels" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+
+    hub.emitTo("a", "e1", .{ .k = 1 });
+    hub.emitTo("b", "e2", .{ .k = 1 });
+    hub.emitTo("a", "e3", .{ .k = 1 });
+
+    const a = try hub.historySince(testing.allocator, "a", 0);
+    defer {
+        for (a) |e| {
+            testing.allocator.free(e.event);
+            testing.allocator.free(e.data);
+        }
+        testing.allocator.free(a);
+    }
+    const b = try hub.historySince(testing.allocator, "b", 0);
+    defer {
+        for (b) |e| {
+            testing.allocator.free(e.event);
+            testing.allocator.free(e.data);
+        }
+        testing.allocator.free(b);
+    }
+    try testing.expectEqual(@as(u64, 1), a[0].id);
+    try testing.expectEqual(@as(u64, 3), a[1].id);
+    try testing.expectEqual(@as(u64, 2), b[0].id);
+}
+
+test "Hub: writeToConn on an unknown connection is an error, not a write" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+    try testing.expectError(error.UnknownConnection, hub.writeToConn(42, Hub.sendSse, .{ "x", "{}" }));
 }

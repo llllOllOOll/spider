@@ -353,6 +353,7 @@ test "org rbac: no active org keeps any-org behavior" {
 
 test {
     _ = @import("e2e/keycloak_test.zig");
+    _ = @import("e2e/sse_test.zig");
 }
 
 // ── middleware chain isolation ──────────────────────────────────────────

@@ -19,16 +19,17 @@ pub const Sse = struct {
     pub fn send(self: *Sse, event: []const u8, data: anytype) !void {
         const json = try std.json.Stringify.valueAlloc(self.arena, data, .{});
         defer self.arena.free(json);
+        try self.writeFrame(Hub.sendSse, .{ event, json });
+    }
 
-        var write_buf: [4096]u8 = undefined;
-        var sw = net.Stream.Writer.init(self._stream, self.io, &write_buf);
-        const writer = &sw.interface;
-        try writer.writeAll("event: ");
-        try writer.writeAll(event);
-        try writer.writeAll("\ndata: ");
-        try writer.writeAll(json);
-        try writer.writeAll("\n\n");
-        try writer.flush();
+    /// Writes through the Hub's per-connection lock when this connection is
+    /// registered (so it can't interleave with a concurrent emitTo/heartbeat
+    /// on the same socket); falls back to a direct write otherwise.
+    fn writeFrame(self: *Sse, comptime writeFn: anytype, args: anytype) !void {
+        self._hub.writeToConn(self._conn_id, writeFn, args) catch |err| switch (err) {
+            error.UnknownConnection => return @call(.auto, writeFn, .{ self._hub, self._stream } ++ args),
+            else => return err,
+        };
     }
 
     /// Sends "retry: {ms}\n\n" — tells the client's EventSource how long to
@@ -37,8 +38,12 @@ pub const Sse = struct {
     /// than once (e.g. to change it mid-connection); the client applies
     /// whatever the most recently received retry: field said.
     pub fn setRetry(self: *Sse, ms: u64) !void {
+        try self.writeFrame(writeRetry, .{ms});
+    }
+
+    fn writeRetry(hub: *Hub, stream: net.Stream, ms: u64) !void {
         var write_buf: [64]u8 = undefined;
-        var sw = net.Stream.Writer.init(self._stream, self.io, &write_buf);
+        var sw = net.Stream.Writer.init(stream, hub.io, &write_buf);
         const writer = &sw.interface;
         try writer.print("retry: {d}\n\n", .{ms});
         try writer.flush();
@@ -62,6 +67,34 @@ pub const Sse = struct {
         for (entries) |e| {
             try self.sendRaw(e.id, e.event, e.data);
         }
+    }
+
+    /// Adds `channel` to this connection's subscriptions, keeping the ones it
+    /// already has (unlike join(), which replaces them). Lets one EventSource
+    /// carry several channels — browsers cap HTTP/1.1 connections per origin
+    /// at 6, so one EventSource per channel per tab runs out after a few tabs.
+    pub fn subscribe(self: *Sse, channel: []const u8) !void {
+        try self._hub.addChannel(self._conn_id, channel);
+        if (self.channel.len == 0) self.channel = channel;
+    }
+
+    /// subscribe() to every channel, then replay what the client missed
+    /// across all of them (Last-Event-ID is hub-wide, so one id covers every
+    /// channel), in the original emit order.
+    pub fn subscribeWithReplay(self: *Sse, channels: []const []const u8) !void {
+        for (channels) |ch| try self.subscribe(ch);
+        const last_id = self.lastEventId() orelse return;
+
+        var all: std.ArrayListUnmanaged(Hub.HistoryEntry) = .empty;
+        for (channels) |ch| {
+            try all.appendSlice(self.arena, try self._hub.historySince(self.arena, ch, last_id));
+        }
+        std.mem.sort(Hub.HistoryEntry, all.items, {}, struct {
+            fn lt(_: void, a: Hub.HistoryEntry, b: Hub.HistoryEntry) bool {
+                return a.id < b.id;
+            }
+        }.lt);
+        for (all.items) |e| try self.sendRaw(e.id, e.event, e.data);
     }
 
     pub fn joinUser(self: *Sse, user_id: u64) !void {
@@ -119,16 +152,7 @@ pub const Sse = struct {
     /// joinWithReplay() to resend history entries verbatim (already-recorded
     /// event/data strings, not re-serialized).
     fn sendRaw(self: *Sse, id: u64, event: []const u8, data: []const u8) !void {
-        var write_buf: [4096]u8 = undefined;
-        var sw = net.Stream.Writer.init(self._stream, self.io, &write_buf);
-        const writer = &sw.interface;
-        try writer.print("id: {d}\n", .{id});
-        try writer.writeAll("event: ");
-        try writer.writeAll(event);
-        try writer.writeAll("\ndata: ");
-        try writer.writeAll(data);
-        try writer.writeAll("\n\n");
-        try writer.flush();
+        try self.writeFrame(Hub.sendSseWithId, .{ id, event, data });
     }
 
     pub fn wait(self: *Sse) void {
@@ -610,4 +634,82 @@ test "Sse: joinWithReplay without a Last-Event-ID header just joins, no replay" 
 
     // Nothing should have been sent — confirm without blocking forever.
     try (net.Stream{ .socket = sockets[0] }).shutdown(io, .send);
+}
+
+// ── subscribe / subscribeWithReplay ─────────────────────────────────────
+
+test "Sse: subscribe keeps previous channels, join replaces them" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const sockets = try makeSocketPair();
+    defer sockets[1].close(io);
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+    try hub.add(.{ .id = 1, .stream = .{ .socket = sockets[0] }, .type = .sse });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var sse = Sse{ ._stream = .{ .socket = sockets[0] }, ._hub = &hub, ._conn_id = 1, .arena = arena.allocator(), .io = io };
+
+    try sse.subscribe("condo:1");
+    try sse.subscribe("user:2");
+    try testing.expectEqual(@as(usize, 1), hub.channelCount("condo:1"));
+    try testing.expectEqual(@as(usize, 1), hub.channelCount("user:2"));
+
+    try sse.join("only");
+    try testing.expectEqual(@as(usize, 0), hub.channelCount("condo:1"));
+    try testing.expectEqual(@as(usize, 0), hub.channelCount("user:2"));
+    try testing.expectEqual(@as(usize, 1), hub.channelCount("only"));
+}
+
+test "Sse: subscribeWithReplay replays missed events from all channels in emit order" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+
+    hub.emitTo("condo:1", "c1", .{ .k = 1 }); // id 1 (client already saw it)
+    hub.emitTo("user:2", "u1", .{ .k = 1 }); // id 2
+    hub.emitTo("other", "x", .{ .k = 1 }); // id 3, not subscribed
+    hub.emitTo("condo:1", "c2", .{ .k = 1 }); // id 4
+
+    const sockets = try makeSocketPair();
+    defer sockets[1].close(io);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var headers: std.StringHashMapUnmanaged([]const u8) = .{};
+    try headers.put(arena.allocator(), "Last-Event-ID", "1");
+    try hub.add(.{ .id = 1, .stream = .{ .socket = sockets[0] }, .type = .sse });
+    var sse = Sse{ ._stream = .{ .socket = sockets[0] }, ._hub = &hub, ._conn_id = 1, .headers = headers, .arena = arena.allocator(), .io = io };
+
+    try sse.subscribeWithReplay(&.{ "condo:1", "user:2" });
+
+    const expected = "id: 2\nevent: u1\ndata: {\"k\":1}\n\nid: 4\nevent: c2\ndata: {\"k\":1}\n\n";
+    var buf: [expected.len]u8 = undefined;
+    var read_buf: [256]u8 = undefined;
+    var reader = net.Stream.Reader.init(.{ .socket = sockets[1] }, io, &read_buf);
+    try reader.interface.readSliceAll(&buf);
+    try testing.expectEqualStrings(expected, &buf);
+}
+
+test "Sse: setRetry and send go through the hub lock when registered" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const sockets = try makeSocketPair();
+    defer sockets[1].close(io);
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+    try hub.add(.{ .id = 7, .stream = .{ .socket = sockets[0] }, .type = .sse });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var sse = Sse{ ._stream = .{ .socket = sockets[0] }, ._hub = &hub, ._conn_id = 7, .arena = arena.allocator(), .io = io };
+
+    try sse.setRetry(1500);
+    try sse.send("hi", .{ .a = 1 });
+    const expected = "retry: 1500\n\nevent: hi\ndata: {\"a\":1}\n\n";
+    var buf: [expected.len]u8 = undefined;
+    var read_buf: [256]u8 = undefined;
+    var reader = net.Stream.Reader.init(.{ .socket = sockets[1] }, io, &read_buf);
+    try reader.interface.readSliceAll(&buf);
+    try testing.expectEqualStrings(expected, &buf);
 }
