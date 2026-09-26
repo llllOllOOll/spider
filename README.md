@@ -471,6 +471,22 @@ return c.view("docs/api", .{}, .{});
 | `{ slot }` | Default slot content |
 | `{ slot_name }` | Named slot content |
 
+#### HTML escaping
+
+`{ variable }` is HTML-escaped (`& < > " '`), in text and in attribute
+values alike, so data from users can't inject markup or break out of an
+attribute. What is emitted verbatim is the template's own markup: slots,
+literal component props (`<Badge label="A &amp; B" />`), helper calls, and
+values your code explicitly marks as trusted with `spider.RawHtml`:
+
+```zig
+// Only for markup your code built (or already escaped) — never user input.
+return c.view("page", .{ .qr = spider.RawHtml{ .html = svg } }, .{});
+```
+
+`RawHtml` also works as an optional (`?RawHtml`) and inside structs and
+slices. `<script>`/`<style>` bodies are never interpolated.
+
 ### Template Modes
 
 Spider has two template modes. Both produce **byte-identical output** — the only difference is when templates are loaded.

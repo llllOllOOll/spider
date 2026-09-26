@@ -178,7 +178,7 @@ pub const Template = struct {
 
                     var iter = slot_bufs.iterator();
                     while (iter.next()) |entry| {
-                        try layout_ctx.set(alc, entry.key_ptr.*, Value{ .string = try alc.dupe(u8, entry.value_ptr.*.items) });
+                        try layout_ctx.set(alc, entry.key_ptr.*, Value{ .html = try alc.dupe(u8, entry.value_ptr.*.items) });
                     }
 
                     var layout_parser = Parser.init(alc, layout_template);

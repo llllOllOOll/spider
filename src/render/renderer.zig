@@ -100,20 +100,7 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             try result.appendSlice(alc, text);
         },
         .interpolation => |expr| {
-            if (std.mem.eql(u8, expr, "slot")) {
-                if (ctx.get("slot")) |value| {
-                    if (value == .string and value.string.len > 0) {
-                        try result.appendSlice(alc, value.string);
-                    }
-                }
-            } else {
-                const value = resolveValue(ctx, expr);
-                if (value) |v| {
-                    const str = try valueToString(v, alc);
-                    try result.appendSlice(alc, str);
-                    alc.free(str);
-                }
-            }
+            if (resolveValue(ctx, expr)) |v| try appendValue(alc, result, v);
         },
         .interpolation_with_default => |iwd| {
             const value = resolveValue(ctx, iwd.expr);
@@ -121,7 +108,7 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 const str = try valueToString(v, alc);
                 defer alc.free(str);
                 if (str.len > 0 and !std.mem.eql(u8, str, "false")) {
-                    try result.appendSlice(alc, str);
+                    try appendValue(alc, result, v);
                 } else {
                     try result.appendSlice(alc, iwd.default);
                 }
@@ -145,6 +132,7 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                         defer loop_ctx.deinit(alc);
                         switch (elem) {
                             .string => try loop_ctx.set(alc, fnn.capture, Value{ .string = try alc.dupe(u8, elem.string) }),
+                            .html => try loop_ctx.set(alc, fnn.capture, Value{ .html = try alc.dupe(u8, elem.html) }),
                             .object => {
                                 var obj_copy = std.StringHashMapUnmanaged(Value){};
                                 var iter = elem.object.iterator();
@@ -181,7 +169,8 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 if (resolveValue(ctx, prop.value)) |val| {
                     try comp_ctx.set(alc, prop.name, try dupeValue(alc, val));
                 } else {
-                    try comp_ctx.set(alc, prop.name, Value{ .string = try alc.dupe(u8, prop.value) });
+                    // A literal prop is template source, like the markup around it.
+                    try comp_ctx.set(alc, prop.name, Value{ .html = try alc.dupe(u8, prop.value) });
                 }
             }
 
@@ -196,7 +185,7 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 for (slot_result.nodes) |n| {
                     try renderNode(n, &comp_ctx, alc, &slot_buf, state);
                 }
-                try comp_ctx.set(alc, "slot", Value{ .string = try slot_buf.toOwnedSlice(alc) });
+                try comp_ctx.set(alc, "slot", Value{ .html = try slot_buf.toOwnedSlice(alc) });
             }
 
             for (comp_nodes) |n| {
@@ -336,6 +325,7 @@ fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) bool {
     if (resolveValue(ctx, expr)) |value| {
         if (value == .boolean) return value.boolean;
         if (value == .string) return value.string.len > 0 and !std.mem.eql(u8, value.string, "false");
+        if (value == .html) return value.html.len > 0 and !std.mem.eql(u8, value.html, "false");
     }
     return false;
 }
@@ -379,8 +369,8 @@ fn resolveLen(ctx: *const Context, expr: []const u8, alc: std.mem.Allocator) ![]
             if (v == .list) {
                 return try std.fmt.allocPrint(alc, "{d}", .{v.list.len});
             }
-            if (v == .string) {
-                return try std.fmt.allocPrint(alc, "{d}", .{v.string.len});
+            if (v == .string or v == .html) {
+                return try std.fmt.allocPrint(alc, "{d}", .{if (v == .string) v.string.len else v.html.len});
             }
         }
         return try alc.dupe(u8, "0");
@@ -391,9 +381,40 @@ fn resolveLen(ctx: *const Context, expr: []const u8, alc: std.mem.Allocator) ![]
     return try alc.dupe(u8, "");
 }
 
+/// Output of `{ expr }`: strings are HTML-escaped; `.html` (RawHtml, slots,
+/// literal props) is trusted markup and goes out verbatim.
+fn appendValue(alc: std.mem.Allocator, result: *std.ArrayList(u8), value: Value) !void {
+    switch (value) {
+        .string => |s| try appendEscaped(alc, result, s),
+        .html => |s| try result.appendSlice(alc, s),
+        .boolean => |b| try result.appendSlice(alc, if (b) "true" else "false"),
+        else => {},
+    }
+}
+
+/// Escapes the five characters that matter in HTML text and in quoted
+/// attribute values (single or double quotes).
+pub fn appendEscaped(alc: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
+    var start: usize = 0;
+    for (s, 0..) |ch, i| {
+        const entity: []const u8 = switch (ch) {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\'' => "&#39;",
+            else => continue,
+        };
+        try result.appendSlice(alc, s[start..i]);
+        try result.appendSlice(alc, entity);
+        start = i + 1;
+    }
+    try result.appendSlice(alc, s[start..]);
+}
+
 fn valueToString(value: Value, alc: std.mem.Allocator) ![]const u8 {
     switch (value) {
-        .string => |s| return try alc.dupe(u8, s),
+        .string, .html => |s| return try alc.dupe(u8, s),
         .boolean => |b| return if (b) try alc.dupe(u8, "true") else try alc.dupe(u8, "false"),
         else => return try alc.dupe(u8, ""),
     }

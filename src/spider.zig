@@ -4,6 +4,8 @@
 const std = @import("std");
 
 pub const Template = @import("render/template.zig").Template;
+/// Trusted markup for templates: `{ expr }` escapes everything else.
+pub const RawHtml = @import("render/context.zig").RawHtml;
 pub const Ctx = @import("core/context.zig").Ctx;
 pub const NextFn = @import("core/context.zig").NextFn;
 pub const MiddlewareFn = @import("core/context.zig").MiddlewareFn;

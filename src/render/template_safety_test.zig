@@ -232,3 +232,81 @@ test "renderFragment: self-including fragment fails with an error" {
     tmpl.components = comps.map;
     try t.expectError(error.ComponentDepthExceeded, tmpl.renderFragment("Frag", .{}, t.allocator));
 }
+
+// ── HTML escaping ───────────────────────────────────────────────────────
+// `{ expr }` escapes by default; only values the app marks as RawHtml, and
+// the template's own markup (slots, literal props), are emitted verbatim.
+
+const RawHtml = @import("context.zig").RawHtml;
+
+test "escape: interpolated text is HTML-escaped" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps, "<p>{ name }</p>", .{ .name = "<script>alert(1)</script> & 'x'" }, "<p>&lt;script&gt;alert(1)&lt;/script&gt; &amp; &#39;x&#39;</p>");
+}
+
+test "escape: a value cannot break out of a quoted attribute" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps, "<a href=\"{ url }\">x</a>", .{ .url = "\" onmouseover=\"alert(1)" }, "<a href=\"&quot; onmouseover=&quot;alert(1)\">x</a>");
+}
+
+test "escape: interpolation with a default escapes the value" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps, "{ name ?? \"-\" }", .{ .name = "<b>" }, "&lt;b&gt;");
+}
+
+test "escape: loop items and nested fields are escaped" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    const Item = struct { title: []const u8 };
+    const items = [_]Item{ .{ .title = "<i>a</i>" }, .{ .title = "b&c" } };
+    try expectRender(&comps, "for (items) |it| {<li>{ it.title }</li>}", .{ .items = @as([]const Item, &items) }, "<li>&lt;i&gt;a&lt;/i&gt;</li><li>b&amp;c</li>");
+}
+
+test "escape: RawHtml is emitted verbatim, also optional and inside structs" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    const Row = struct { body: RawHtml };
+    try expectRender(&comps, "{ a }|{ b }|{ row.body }", .{
+        .a = RawHtml{ .html = "<b>a</b>" },
+        .b = @as(?RawHtml, .{ .html = "<i>b</i>" }),
+        .row = Row{ .body = .{ .html = "<u>c</u>" } },
+    }, "<b>a</b>|<i>b</i>|<u>c</u>");
+}
+
+test "escape: component slot content is not escaped twice" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("Card", "<div class=\"card\">{ slot }</div>");
+    try expectRender(&comps, "<Card><b>{ name }</b></Card>", .{ .name = "<x>" }, "<div class=\"card\"><b>&lt;x&gt;</b></div>");
+}
+
+test "escape: expression props are escaped once, literal props stay template markup" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("Badge", "<span title=\"{ label }\">{ text }</span>");
+    try expectRender(&comps, "<Badge label=\"A &amp; B\" text=\"{ name }\" />", .{ .name = "x < y & z" }, "<span title=\"A &amp; B\">x &lt; y &amp; z</span>");
+}
+
+test "escape: nested component props pass the raw value down, escaped only at output" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("Inner", "<i>{ v }</i>");
+    try comps.add("Outer", "<Inner v=\"{ w }\" />");
+    try expectRender(&comps, "<Outer w=\"{ name }\" />", .{ .name = "a&b" }, "<i>a&amp;b</i>");
+}
+
+test "escape: comparisons see the raw value, not the escaped one" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps, "if (name == \"a&b\") {yes} else {no}", .{ .name = "a&b" }, "yes");
+}
+
+test "escape: layout slots carry rendered HTML verbatim" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("layout", "<main>{ slot }</main><aside>{ slot_side }</aside>");
+    try expectRender(&comps, "extends \"layout\"\n<p>{ a }</p>{ slot_side }<em>{ b }</em>", .{ .a = "<1>", .b = "<2>" }, "<main><p>&lt;1&gt;</p></main><aside><em>&lt;2&gt;</em></aside>");
+}

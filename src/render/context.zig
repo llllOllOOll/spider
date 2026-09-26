@@ -1,7 +1,17 @@
 const std = @import("std");
 
+/// Trusted HTML for a template: `{ expr }` escapes every string except a
+/// RawHtml, which is emitted verbatim. Wrap only markup your code built
+/// itself (or already escaped), never user input.
+///
+///   return c.view("page", .{ .body = spider.RawHtml{ .html = rendered } }, .{});
+pub const RawHtml = struct { html: []const u8 };
+
 pub const Value = union(enum) {
     string: []const u8,
+    /// Markup emitted verbatim by `{ expr }`: RawHtml values, slots and
+    /// literal component props (which are template source, not data).
+    html: []const u8,
     boolean: bool,
     list: []const Value,
     object: std.StringHashMapUnmanaged(Value),
@@ -62,7 +72,11 @@ pub fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
         const value = @field(data, field_name);
         const field_info = @typeInfo(@TypeOf(value));
 
-        if (field_info == .pointer) {
+        if (@TypeOf(value) == RawHtml) {
+            try ctx.set(alc, field_name, Value{ .html = try alc.dupe(u8, value.html) });
+        } else if (@TypeOf(value) == ?RawHtml) {
+            if (value) |v| try ctx.set(alc, field_name, Value{ .html = try alc.dupe(u8, v.html) });
+        } else if (field_info == .pointer) {
             const ptr = field_info.pointer;
             if (ptr.child == u8 and ptr.size == .slice) {
                 try ctx.set(alc, field_name, Value{ .string = try alc.dupe(u8, value) });
@@ -154,7 +168,10 @@ fn structSliceToValueList(alc: std.mem.Allocator, slice: anytype) ![]const Value
         alc.free(list);
     }
     for (slice, 0..) |elem, i| {
-        list[i] = Value{ .object = try structToObject(alc, elem) };
+        list[i] = if (@TypeOf(elem) == RawHtml)
+            Value{ .html = try alc.dupe(u8, elem.html) }
+        else
+            Value{ .object = try structToObject(alc, elem) };
     }
     return list;
 }
@@ -186,7 +203,11 @@ pub fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapU
         const value = @field(data, field_name);
         const field_info = @typeInfo(@TypeOf(value));
 
-        if (field_info == .pointer) {
+        if (@TypeOf(value) == RawHtml) {
+            try obj.put(alc, try alc.dupe(u8, field_name), Value{ .html = try alc.dupe(u8, value.html) });
+        } else if (@TypeOf(value) == ?RawHtml) {
+            if (value) |v| try obj.put(alc, try alc.dupe(u8, field_name), Value{ .html = try alc.dupe(u8, v.html) });
+        } else if (field_info == .pointer) {
             const ptr = field_info.pointer;
             if (ptr.child == u8 and ptr.size == .slice) {
                 try obj.put(alc, try alc.dupe(u8, field_name), Value{ .string = try alc.dupe(u8, value) });
@@ -259,7 +280,7 @@ pub fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapU
 
 pub fn freeValue(alc: std.mem.Allocator, value: Value) void {
     switch (value) {
-        .string => |s| alc.free(s),
+        .string, .html => |s| alc.free(s),
         .list => |list| {
             for (list) |v| freeValue(alc, v);
             alc.free(list);
@@ -279,6 +300,7 @@ pub fn freeValue(alc: std.mem.Allocator, value: Value) void {
 pub fn dupeValue(alc: std.mem.Allocator, value: Value) !Value {
     return switch (value) {
         .string => |s| Value{ .string = try alc.dupe(u8, s) },
+        .html => |s| Value{ .html = try alc.dupe(u8, s) },
         .boolean => |b| Value{ .boolean = b },
         .list => |list| {
             const new_list = try alc.alloc(Value, list.len);
