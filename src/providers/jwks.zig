@@ -4,6 +4,7 @@ const Ctx = @import("../core/context.zig").Ctx;
 const Response = @import("../core/context.zig").Response;
 const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 const NextFn = @import("../core/context.zig").NextFn;
+const url_util = @import("../internal/url.zig");
 
 const rsa = std.crypto.Certificate.rsa;
 const b64 = std.base64.url_safe_no_pad;
@@ -251,7 +252,9 @@ pub const JwksAuth = struct {
                 // from each connection. The client JS handles the redirect centrally.
                 const is_sse = std.mem.eql(u8, c.header("Accept") orelse "", "text/event-stream");
                 if (c.isHtmx() or is_sse) return c.text("Token expired", .{ .status = .unauthorized });
-                const refresh_url = try std.fmt.allocPrint(c.arena, "{s}?next={s}", .{ rpath, path });
+                // Full target (path + query), encoded as ONE value so e.g.
+                // "/tickets?tab=x&page=2" survives the round-trip intact.
+                const refresh_url = try std.fmt.allocPrint(c.arena, "{s}?next={s}", .{ rpath, try url_util.encodeQueryValue(c.arena, full_path) });
                 return redirect(c, refresh_url);
             }
             return c.text("Token expired", .{ .status = .unauthorized });

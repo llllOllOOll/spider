@@ -330,3 +330,7 @@ test "org rbac: no active org keeps any-org behavior" {
     defer env.deinit();
     try expectStatus(200, &env, "/r/org/1", .{ .headers = &.{"X-Test-Orgs: orgA=admin,orgB=resident"} });
 }
+
+test {
+    _ = @import("e2e/keycloak_test.zig");
+}
