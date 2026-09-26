@@ -58,6 +58,8 @@
         "lib.zig",
         "includes",
         "README.md",
+        "AGENTS.md",
+        "llms.txt",
         "modules",
     },
 }

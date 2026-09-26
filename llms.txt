@@ -1,0 +1,116 @@
+# Spider
+
+> Web framework for Zig 0.17.0-dev. `const spider = @import("spider");` Handlers are
+> `fn (c: *spider.Ctx) !spider.Response`. Per-request memory is `c.arena`. Templates
+> escape `{ expr }` by default. This file lists the public API with signatures; the
+> source of truth is `src/spider.zig`. Agent guide: `AGENTS.md`.
+
+## Minimal app
+
+```zig
+const std = @import("std");
+const spider = @import("spider");
+
+fn hello(c: *spider.Ctx) !spider.Response {
+    const name = c.query("name") orelse "world";
+    return c.json(.{ .hello = name }, .{});
+}
+
+fn item(c: *spider.Ctx) !spider.Response {
+    const id = c.params.get("id") orelse return error.NotFound; // "/items/:id"
+    return c.text(id, .{});
+}
+
+pub fn main(init: std.process.Init) !void {
+    _ = init;
+    var server = spider.app(.{});
+    defer server.deinit();
+    try server
+        .use(spider.logger)
+        .get("/", hello, .{})
+        .get("/items/:id", item, .{ .roles = &.{"admin"} })
+        .listen(.{ .port = 3000 });
+}
+```
+
+## Build wiring (a consumer's build.zig)
+
+```zig
+const spider_dep = b.dependency("spider", .{ .target = target, .pg = true }); // .sqlite / .r2 / .qrcode likewise
+const spider_mod = spider_dep.module("spider");
+spider_mod.addImport("spider_config", b.createModule(.{
+    .root_source_file = b.path("spider.config.zig"),
+    .imports = &.{.{ .name = "spider", .module = spider_mod }}, // the config imports spider
+}));
+exe.root_module.addImport("spider", spider_mod);
+```
+Without `.pg = true` etc., `spider.pg` fails with "no module named 'spider_pg'". Without the `spider_config` import, `spider.config.zig` is ignored. `-Dio_backend=zio` selects the fiber backend (default `threaded`). First build fetches deps (network). `spider new` generates all of this.
+
+## Server — `spider.app(decorations) / spider.appWithConfig(spider.Config)`
+
+- Routes: `get|post|put|delete|patch|head(path, handler, comptime .{ .roles = []const []const u8, .org_roles = ... })` → `*Server`, chainable. The third argument is required (`.{}` for none). Every builder method returns `*Server`: chain them, or write `_ = server.use(mw);` as a statement. Paths: `/a/:id`, trailing `/*` wildcard.
+- Handler forms: `fn(*Ctx) !Response`; with extractors `fn(id: spider.Path(i64, "id"), f: spider.Form(T), c: *Ctx)` (any order, bad input → 400); with decorations `fn(*Ctx, Dep)` where `Dep` is a field type of the struct passed to `spider.app(.{ ... })`.
+- Middleware: `use(fn(*Ctx, NextFn) anyerror!Response)`, `useAt(path_prefix, mw)` (`"/admin/*"`).
+- `onError(fn(*Ctx, anyerror) !Response)`; default mapping `spider.statusForError(err)` (NotFound 404, Forbidden 403, Unauthorized 401, bind/parse errors 400, pg constraint errors 409/422/503...).
+- `mount(spider.Group)`, `group(...)`, `staticDir(dir)`, `staticAt(dir, prefix)`, `health(path, handler)`, `db(spider.Database)`.
+- Streams: `sse(path, fn(*Sse) anyerror!void)`, `sseInterval(ms, fn(*Hub) void)`, `sseHeartbeat(?ms)`, `sseSweep(?ms)`, `ws(path, fn(*Ws) anyerror!void)`, `wsInterval(path, ms, fn(*Hub) void)`.
+- `listen(.{ .port = ?u16, .host = ?[]const u8 }) !void` — blocks. `deinit()`.
+
+## spider.Config (spider.config.zig: `pub const config = spider.Config{ ... }`)
+
+`port: u16 = 3000`, `host = "127.0.0.1"`, `views_dir: ?[]const u8 = "./views"` (null → `"src"`), `layout: ?[]const u8 = "layout"`, `env: .development|.production|.testing`, `keepalive_timeout_ms: u32 = 120_000`, `header_timeout_ms = 30_000`, `body_timeout_ms = 60_000`, `stream_write_timeout_ms = 10_000` (0 = off). `static_dir` and `workers` exist but are not read today (static files come from `./public`).
+
+## spider.Group
+
+`Group.init(prefix)`; `get|post|put|delete(path, handler: spider.Handler-compatible fn(*Ctx) !Response, comptime .{ .roles, .org_roles })`; `sse(path, fn(*Sse))`; `useAt(suffix, mw)`. No `patch/head/ws/use`, and group handlers can't use extractors/decorations (plain `fn(*Ctx)` only). Mount with `server.mount(g)`.
+
+## Ctx — request
+
+- `c.params.get(name) ?[]const u8` (path params; also `_auth_*` set by auth middleware), `query(name) ?[]const u8`, `header(name) ?[]const u8`, `cookie(name) ?[]const u8`, `getPath()`, `getMethod()`, `peerAddress() ?[]const u8`, `requestId() []const u8`.
+- Body: `getBody() ?[]const u8`, `bodyJson(comptime T) !T`, `parseForm(comptime T) !T` (urlencoded or multipart), `parseMultipart() !spider.MultipartData`.
+- htmx: `isHtmx()`, `isBoosted()`, `requestKind()`, `wantsJson()`.
+- Auth/RBAC: `hasRole(role)`, `hasOrgRole(role)`, `hasActiveOrgRole(role)`, `activeOrgId() ?[]const u8`, `setActiveOrg(id) !void`, `isOrgMember(id)`, `getOrgByRole(role) ?[]const u8`, `orgRoleIn(roles, ?org)`.
+- Errors: `setErrorDetail(msg)` / `errorDetail()` (detail for onError / default error body).
+- Hubs: `sseHub() *Hub`, `wsHub() *Hub`. `db() spider.DatabaseCtx` only has `exec(sql)`; use `spider.pg`/`spider.sqlite` for queries.
+
+## Ctx — responses (all `!spider.Response`)
+
+`json(value, opts)`, `text(str, opts)`, `html(str, opts)`, `redirect(url)`, `view(name, data, opts)` (e.g. `"home/index"` → `src/features/home/views/index.html`), `viewFragment(template, component, data, opts)`, `render(template_string, data, opts)`.
+`opts: .{ .status = std.http.Status = .ok, .headers = []const [2][]const u8, .cookies = []const [2][]const u8 }`.
+Cookies: `withCookie(name, value, spider.CookieOptions-like .{ .http_only, .secure, .same_site, .path, .max_age }) !ResponseOptions`, `setCookie(name, value, opts) ![]const u8` (Set-Cookie string). Direct: `spider.Response{ .status, .body, .content_type, .headers, .cookies }`. In Zig, a JSON key named `error` is written `.{ .@"error" = "..." }`.
+
+## Templates (`.html`)
+
+`{ x }`, `{ a.b }`, `{ list[0].x }`, `{ x ?? "default" }` — HTML-escaped. `if (cond) { ... } else if (...) { ... } else { ... }` with `==`, `!=` (right side is a literal), `<`, `<=`, `>`, `>=`, `and`, `or`, `!x`, `items.len`. `for (items) |it| { ... }` (+ `loop.index`). `extends "layout"` on line 1, then `{ slot }` / `{ slot_name }` in the layout. Components: PascalCase files, `<Card title="{ t.title }" size="sm">children</Card>`, `{ slot }` inside. Trusted markup from Zig: `spider.RawHtml{ .html = s }` (also `?RawHtml`, inside structs/slices). `<script>`/`<style>` bodies are not interpolated. Data: a struct literal; strings, ints, floats, bools, optionals, nested structs and slices of structs. A view file starting with `-- doc` is rendered as Markdown (no template processing).
+
+## Postgres — `spider.pg`
+
+Needs `.pg = true` on the dependency. `init(allocator, io, .{ .host, .port, .database, .user, .password, .pool_size, .mapping = .fail|.warn })` (unset fields read `PG_HOST`, `PG_PORT`, `PG_DB`, `PG_USER`, `PG_PASSWORD`), `deinit()`.
+- `query(comptime T, arena, sql, params_tuple) ![]T` (`T = void` for statements), `queryOne(T, arena, sql, params) !?T`, `queryExecute(T, arena, sql)` (no params; `void` allows several `;`-separated statements), `queryOneExecute(T, arena, sql) !?T`. Params are `$1..$n`, bound, never interpolated. Struct fields map to column names; `?T` for nullable columns.
+- Transactions: `var tx = try pg.begin(); defer tx.rollback(); try tx.query(void, arena, sql, params); try tx.commit();` or `pg.transaction(...)`. `pg.exec("BEGIN")` is refused (`error.UseBeginForTransactions`).
+- Errors: typed `pg.DbError` (`UniqueViolation`, `ForeignKeyViolation`, `NotNullViolation`, `CheckViolation`, ...), details via `pg.lastError() ?pg.ErrorInfo`.
+- Deprecated: `exec`, `execRaw`, `queryWith`, `queryOneWith`, `queryRaw`, `queryRow`, `queryAs`, `queryOneAs`.
+
+## SQLite — `spider.sqlite`
+
+Needs `.sqlite = true` on the dependency. `init(allocator, io, .{ .path = ?[]const u8 (null → env SQLITE_PATH, else "db.sqlite"), .size = 5 })`, `deinit()`, `query(T, arena, sql, params)`, `queryOne`, `queryExecute`, `begin()` → transaction (`commit`/`rollback`). Params are `?`.
+
+## SSE / WebSocket
+
+- `Sse`: `join(channel) !void`, `joinWithReplay(channel)`, `subscribe(channel)`, `subscribeWithReplay(channels)`, `joinUser(u64)`, `send(event, data_anytype) !void` (JSON), `setRetry(ms)`, `lastEventId() ?u64`, `param(key)`, `header(name)`, `cookie(name)`, `wait()` (block until the client disconnects).
+- `Hub` (`c.sseHub()`): `emitTo(channel, event, data)` (JSON, recorded for replay), `emit(event, data)`, `notifyUser(u64, event, data)`, `broadcast(msg)`, `broadcastToChannel(channel, msg)`, `broadcastToChannelFmt(channel, fmt, args)`, `count()`, `channelCount(channel)`.
+- `Ws`: `next() !?Message`, `send(text)`, `join(channel)`, `joinUser(u64)`, `broadcast(text)`, `broadcastTo(channel, text)`, `param(key)`.
+
+## Auth
+
+- `spider.keycloak.Keycloak.init(allocator, io, .{ .base_url, .realm, .client_id, .client_secret, .redirect_uri, .login_path, .after_callback_path, .auth_skip_paths, .refresh_path, .active_org_cookie, .audience })`; `.middleware()`, `.loginHandler()`, `.callbackHandler()`, `.refreshHandler()`, `.authorize(c, .{ .endpoint = .auth|.registrations, .payload, .idp_hint })`. Sets `_auth_sub`, `_auth_email`, `_auth_name`, realm/org roles as `c.params`.
+- `spider.jwks.JwksAuth` (generic JWKS/RS256: `.jwks_url`, `.issuer`, `.audience`, `.cookie_name`, `.api_mode`, ...), `spider.google`, `spider.clerk`, `spider.auth` (HS256 JWT).
+- `spider.rbac.requireRoles(roles)`, `requireOrgRoles(roles)` middlewares (same as route `.roles` / `.org_roles`).
+
+## Other modules
+
+`spider.env`: `get(key) ?[]const u8`, `getOr(key, default)`, `getInt(T, key, default)`, `getBool(key, default)` (`.env`, `.env.<SPIDER_ENV>`, `.env.local` load on first use).
+`spider.logger` / `spider.loggerWith(.{ .quiet_paths = &.{"/up"} })` request logging; `spider.logFn` (timestamped `std_options.logFn`); `spider.gzip`.
+`spider.r2.R2`: `initFromEnv(io)`, `put(c, key, body, content_type)`, `get(c, key)`, `delete`, `head`, `copyObject`.
+`spider.push` (Web Push/VAPID), `spider.qrcode`, `spider.http_client` (HTTP client), `spider.http_client_mtls`, `spider.health`, `spider.metrics`, `spider.zmd` (markdown).
+Internal/unstable (don't build on): `spider.ast`, `spider.form_parser`, `spider.template_max_component_depth`. Dead: `spider.dashboard`.
