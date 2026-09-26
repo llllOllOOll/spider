@@ -147,3 +147,14 @@ test "rbac.routeMiddlewares: roles + org_roles route needs both" {
     try std.testing.expect(try allows(mws[0], &both));
     try std.testing.expect(try allows(mws[1], &both));
 }
+
+test "Ctx.isOrgMember" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = try makeCtx(arena.allocator(), &.{}, &two_orgs);
+    try std.testing.expect(c.isOrgMember("orgA"));
+    try std.testing.expect(c.isOrgMember("orgB"));
+    try std.testing.expect(!c.isOrgMember("orgZ"));
+    var none = Ctx{ .request = undefined, .arena = arena.allocator(), .params = .{}, .body = null };
+    try std.testing.expect(!none.isOrgMember("orgA"));
+}

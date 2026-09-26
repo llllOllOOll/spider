@@ -29,8 +29,9 @@ pub const JwksConfig = struct {
     refresh_path: ?[]const u8 = null,
     api_mode: bool = false,
     /// Cookie holding the org the user picked (e.g. "orbitx_condo"). When
-    /// present, its value becomes `c.activeOrgId()`, so `org_roles` checks
-    /// only count roles held in that org.
+    /// present and naming an org the user belongs to, its value becomes
+    /// `c.activeOrgId()`, so `org_roles` checks only count roles held in that
+    /// org. A cookie for any other org is ignored (same as no cookie).
     active_org_cookie: ?[]const u8 = null,
     /// Minimum time between JWKS re-fetches triggered by tokens with an
     /// unknown `kid`. Bounds how often arbitrary requests can make us call the
@@ -348,7 +349,11 @@ pub const JwksAuth = struct {
         }
         if (self.config.active_org_cookie) |name| {
             if (c.cookie(name)) |org_id| {
-                if (org_id.len > 0) try c.setActiveOrg(org_id);
+                // Only honored for an org the token says the user belongs to.
+                // A stale cookie (the user left that org) or a forged one is
+                // ignored, falling back to "no active org" (any org) instead
+                // of locking the user out of every org_roles route.
+                if (org_id.len > 0 and c.isOrgMember(org_id)) try c.setActiveOrg(org_id);
             }
         }
 

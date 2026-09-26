@@ -654,6 +654,20 @@ pub const Ctx = struct {
         try self.params.put(self.arena, "_auth_active_org", try self.arena.dupe(u8, org_id));
     }
 
+    /// True when the token lists `org_id` among the user's organizations.
+    pub fn isOrgMember(self: *Ctx, org_id: []const u8) bool {
+        const count_str = self.params.get("_auth_orgs_count") orelse return false;
+        const count = std.fmt.parseInt(usize, count_str, 10) catch return false;
+        var key_buf: [64]u8 = undefined;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const key = std.fmt.bufPrint(&key_buf, "_auth_org_{d}_id", .{i}) catch return false;
+            const id = self.params.get(key) orelse continue;
+            if (std.mem.eql(u8, id, org_id)) return true;
+        }
+        return false;
+    }
+
     /// True when the user holds `role` in the active org. With no active org
     /// selected, falls back to "in any of the user's orgs" (same as hasOrgRole).
     pub fn hasActiveOrgRole(self: *Ctx, role: []const u8) bool {

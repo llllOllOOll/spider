@@ -437,7 +437,19 @@ test "jwks + active_org_cookie: org_roles only count in the selected org" {
     try std.testing.expectEqual(@as(u16, 403), (try e.get("/org/1", &.{in_b})).status);
     try std.testing.expectEqual(@as(u16, 200), (try e.get("/org/1", &.{in_a})).status);
     try std.testing.expectEqual(@as(u16, 200), (try e.get("/org/1", &.{none})).status);
-    try std.testing.expectEqual(@as(u16, 403), (try e.get("/org/1", &.{forged})).status);
+    // A cookie for an org the token doesn't list (stale after leaving it, or
+    // forged) is ignored: same as no cookie, never a lock-out.
+    try std.testing.expectEqual(@as(u16, 200), (try e.get("/org/1", &.{forged})).status);
+}
+
+test "jwks + active_org_cookie: stale cookie for a left org does not lock the user out" {
+    var e = try Env.init();
+    defer e.deinit();
+    // Member of orgB only (resident). Cookie still says orgA (left it).
+    const only_b = ",\"organizations\":{\"orgB\":{\"name\":\"B\",\"roles\":[\"admin\"]}}";
+    const jwt = try makeJwt(e.alc(), far_future, only_b);
+    const stale = try std.fmt.allocPrint(e.alc(), "Cookie: __session={s}; active_org=orgA", .{jwt});
+    try std.testing.expectEqual(@as(u16, 200), (try e.get("/org/1", &.{stale})).status);
 }
 
 // ── JWKS key cache: concurrency, throttling, rotation ───────────────────
