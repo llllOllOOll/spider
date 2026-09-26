@@ -461,7 +461,7 @@ pub fn queryWith(sql: []const u8, params: anytype) !Result {
     var arena = std.heap.ArenaAllocator.init(db_allocator.?);
     errdefer arena.deinit();
 
-    return collectResult(&pg_result, arena);
+    return collectResult(pg_result, arena);
 }
 
 /// Deprecated: use queryOne(T, arena, sql, params) instead.
