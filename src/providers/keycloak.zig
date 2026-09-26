@@ -33,6 +33,23 @@ pub const KeycloakConfig = struct {
     /// to `client_id`, so a token another client of the realm obtained for
     /// the user (admin-cli, a partner app) is rejected.
     audience: ?[]const u8 = null,
+
+    /// The connection settings from the environment — KEYCLOAK_BASE_URL,
+    /// KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET and
+    /// KEYCLOAK_REDIRECT_URI (default http://localhost:3000/auth/callback);
+    /// every other field keeps its default. Adjust the result as needed:
+    ///     var cfg = spider.keycloak.KeycloakConfig.fromEnv();
+    ///     cfg.after_callback_path = "/auth/session";
+    pub fn fromEnv() KeycloakConfig {
+        const env = @import("../internal/env.zig");
+        return .{
+            .base_url = env.getOr("KEYCLOAK_BASE_URL", ""),
+            .realm = env.getOr("KEYCLOAK_REALM", ""),
+            .client_id = env.getOr("KEYCLOAK_CLIENT_ID", ""),
+            .client_secret = env.getOr("KEYCLOAK_CLIENT_SECRET", ""),
+            .redirect_uri = env.getOr("KEYCLOAK_REDIRECT_URI", "http://localhost:3000/auth/callback"),
+        };
+    }
 };
 
 pub const AuthorizeEndpoint = enum {

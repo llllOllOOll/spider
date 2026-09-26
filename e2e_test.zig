@@ -933,3 +933,144 @@ test "mountFeatures: routes served, boot() ran before serving, jobs tick" {
     std.Io.sleep(io, .fromMilliseconds(600), .real) catch {};
     try std.testing.expect(e2e_ticks.load(.monotonic) >= 2);
 }
+
+// ── spider.errorHandler / forceHttps / varyHtmx ────────────────────────
+
+fn eForbidden(_: *spider.Ctx) !spider.Response {
+    return error.Forbidden;
+}
+fn eBoom(_: *spider.Ctx) !spider.Response {
+    return error.Boom;
+}
+fn eUnauth(_: *spider.Ctx) !spider.Response {
+    return error.Unauthorized;
+}
+fn eBad(c: *spider.Ctx) !spider.Response {
+    c.setErrorDetail("bad name");
+    return error.MissingField;
+}
+fn eConflict(_: *spider.Ctx) !spider.Response {
+    return error.UniqueViolation;
+}
+fn htmlPage(c: *spider.Ctx) !spider.Response {
+    return c.html("<p>x</p>", .{});
+}
+
+fn runPolicyApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null });
+    s.use(spider.forceHttps(.{ .default_base_url = "https://example.test", .allow_http_paths = &.{ "/legacy*", "/exact" } }))
+        .use(spider.varyHtmx)
+        .get("/e/forbidden", eForbidden, .{})
+        .get("/e/boom", eBoom, .{})
+        .get("/e/unauth", eUnauth, .{})
+        .get("/e/bad", eBad, .{})
+        .get("/e/conflict", eConflict, .{})
+        .get("/e/html", htmlPage, .{})
+        .get("/e/text", fast, .{})
+        .get("/exact", fast, .{})
+        .get("/device", fast, .{ .allow_http = true })
+        .onError(spider.errorHandler(.{
+            .unauthorized_redirect = "/login",
+            .json_key = "err",
+            .toast_event = "app:toast",
+            .messages = .{ .forbidden = "Sem permissão." },
+        }))
+        .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("policy app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+var policy_port: ?u16 = null;
+fn policyAppPort(io: std.Io) !u16 {
+    try app_once_mutex.lock(io);
+    defer app_once_mutex.unlock(io);
+    if (policy_port) |p| return p;
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runPolicyApp, .{port})).detach();
+    try waitForPort(io, port);
+    policy_port = port;
+    return port;
+}
+
+const json_accept = "Accept: application/json";
+const htmx = "HX-Request: true";
+
+test "errorHandler: JSON callers get { <json_key>, request_id }" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try policyAppPort(io);
+    const a = env.arena.allocator();
+    const r = try request(io, a, port, "/e/forbidden", .{ .headers = &.{json_accept} });
+    try std.testing.expectEqual(@as(u16, 403), r.status);
+    const rid = r.header("X-Request-Id").?;
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{{\"err\":\"Sem permissão.\",\"request_id\":\"{s}\"}}", .{rid}), r.body);
+    try std.testing.expectEqualStrings("application/json", r.header("Content-Type").?);
+    const c = try request(io, a, port, "/e/conflict", .{ .headers = &.{json_accept} });
+    try std.testing.expectEqual(@as(u16, 409), c.status);
+}
+
+test "errorHandler: htmx gets the status, no swap, and a toast event" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try policyAppPort(io);
+    const a = env.arena.allocator();
+    const r = try request(io, a, port, "/e/forbidden", .{ .headers = &.{htmx} });
+    try std.testing.expectEqual(@as(u16, 403), r.status);
+    try std.testing.expectEqualStrings("none", r.header("HX-Reswap").?);
+    try std.testing.expectEqualStrings("{\"app:toast\":{\"message\":\"Sem permiss\\u00e3o.\",\"type\":\"warning\"}}", r.header("HX-Trigger").?);
+    try std.testing.expectEqualStrings("", r.body);
+    const b = try request(io, a, port, "/e/boom", .{ .headers = &.{htmx} });
+    try std.testing.expectEqual(@as(u16, 500), b.status);
+    const rid = b.header("X-Request-Id").?;
+    const want = try std.fmt.allocPrint(a, "{{\"app:toast\":{{\"message\":\"Unexpected error. Try again (ref. {s}).\",\"type\":\"error\"}}}}", .{rid});
+    try std.testing.expectEqualStrings(want, b.header("HX-Trigger").?);
+}
+
+test "errorHandler: pages get text; 400 uses the error detail; Unauthorized redirects" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try policyAppPort(io);
+    const a = env.arena.allocator();
+    const f = try request(io, a, port, "/e/forbidden", .{});
+    try std.testing.expectEqual(@as(u16, 403), f.status);
+    try std.testing.expectEqualStrings("Sem permissão.", f.body);
+    const bad = try request(io, a, port, "/e/bad", .{});
+    try std.testing.expectEqual(@as(u16, 400), bad.status);
+    try std.testing.expectEqualStrings("bad name", bad.body);
+    for ([_][]const []const u8{ &.{}, &.{json_accept}, &.{htmx} }) |hdrs| {
+        const u = try request(io, a, port, "/e/unauth", .{ .headers = hdrs });
+        try std.testing.expectEqual(@as(u16, 302), u.status);
+        try std.testing.expectEqualStrings("/login", u.header("Location").?);
+    }
+}
+
+test "forceHttps: redirects plain HTTP, except .allow_http routes and allow_http_paths" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try policyAppPort(io);
+    const a = env.arena.allocator();
+    const http = "X-Forwarded-Proto: http";
+    const r = try request(io, a, port, "/e/text?x=1", .{ .headers = &.{http} });
+    try std.testing.expectEqual(@as(u16, 302), r.status);
+    try std.testing.expectEqualStrings("https://example.test/e/text?x=1", r.header("Location").?);
+    try std.testing.expectEqual(@as(u16, 200), (try request(io, a, port, "/e/text", .{})).status); // no header: HTTPS assumed
+    try std.testing.expectEqual(@as(u16, 200), (try request(io, a, port, "/e/text", .{ .headers = &.{"X-Forwarded-Proto: https"} })).status);
+    try std.testing.expectEqual(@as(u16, 200), (try request(io, a, port, "/device", .{ .headers = &.{http} })).status);
+    try std.testing.expectEqual(@as(u16, 200), (try request(io, a, port, "/exact", .{ .headers = &.{http} })).status);
+    try std.testing.expectEqual(@as(u16, 302), (try request(io, a, port, "/exact?q=1", .{ .headers = &.{http} })).status); // exact means exact
+    try std.testing.expectEqual(@as(u16, 404), (try request(io, a, port, "/legacy/whatever", .{ .headers = &.{http} })).status); // prefix, no route
+}
+
+test "varyHtmx: Vary: HX-Request on HTML only" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try policyAppPort(io);
+    const a = env.arena.allocator();
+    try std.testing.expectEqualStrings("HX-Request", (try request(io, a, port, "/e/html", .{})).header("Vary").?);
+    try std.testing.expect((try request(io, a, port, "/e/text", .{})).header("Vary") == null);
+}

@@ -53,6 +53,14 @@ pub const loggerWith = @import("modules/logger.zig").with;
 /// std.log function with UTC timestamps: `pub const std_options: std.Options = .{ .logFn = spider.logFn };`
 pub const logFn = @import("internal/logfmt.zig").logFn;
 pub const gzip = @import("middlewares/gzip.zig").middleware;
+/// Redirect plain HTTP to HTTPS behind a TLS proxy (honors route .allow_http).
+pub const forceHttps = @import("middlewares/https.zig").forceHttps;
+pub const ForceHttpsOptions = @import("middlewares/https.zig").Options;
+/// `Vary: HX-Request` on HTML responses.
+pub const varyHtmx = @import("middlewares/vary.zig").varyHtmx;
+/// Ready-made onError: JSON / htmx toast / page (see modules/errors.zig).
+pub const errorHandler = @import("modules/errors.zig").errorHandler;
+pub const ErrorHandlerOptions = @import("modules/errors.zig").Options;
 pub const dbgRequest = @import("middlewares/dbg_request.zig").middleware;
 pub const dbgResponse = @import("middlewares/dbg_response.zig").middleware;
 pub const metrics = @import("internal/metrics.zig");
@@ -125,6 +133,7 @@ test {
     _ = @import("core/http_client_mtls.zig");
     _ = @import("providers/jwks.zig");
     _ = @import("testing.zig");
+    _ = @import("middlewares/https.zig");
 }
 
 test "every file with tests is part of the unit test binary" {
