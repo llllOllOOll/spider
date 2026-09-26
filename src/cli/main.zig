@@ -84,3 +84,7 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = cli_args;
 }
+
+test "every file with tests is part of the CLI test binary" {
+    try @import("spider_testing").expectAllTestsDiscovered(@import("test_manifest"));
+}

@@ -8,6 +8,40 @@ const std = @import("std");
 /// `zio_backend_test.zig` for a benchmark demonstrating the difference.
 const IoBackend = enum { threaded, zio };
 
+const spider_testing = @import("src/testing.zig");
+
+/// For `spider.testing.expectAllTestsDiscovered`: a module listing the files
+/// under `dir` (relative to the calling build root) that declare
+/// `test "..."` blocks, with the test-name prefix Zig gives each. `dir` must
+/// be the directory of the module's root file. Skips paths starting with
+/// any of `exclude` (relative to `dir`). Rebuilt on every `zig build`.
+///
+///     const spider_build = @import("spider"); // in an app's build.zig
+///     features_mod.addImport("test_manifest", spider_build.testManifest(b, "src/features", &.{}));
+pub fn testManifest(b: *std.Build, dir: []const u8, exclude: []const []const u8) *std.Build.Module {
+    const io = b.graph.io;
+    var paths: std.ArrayList([]const u8) = .empty;
+    var prefixes: std.ArrayList([]const u8) = .empty;
+    var root = b.root.openDir(io, dir, .{ .iterate = true }) catch |err|
+        std.debug.panic("testManifest: cannot open {s}: {s}", .{ dir, @errorName(err) });
+    defer root.close(io);
+    var walker = root.walk(b.allocator) catch @panic("OOM");
+    defer walker.deinit();
+    walk: while (walker.next(io) catch |err| std.debug.panic("testManifest: {s}: {s}", .{ dir, @errorName(err) })) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
+        for (exclude) |e| if (std.mem.startsWith(u8, entry.path, e)) continue :walk;
+        const source = root.readFileAlloc(io, entry.path, b.allocator, .limited(16 * 1024 * 1024)) catch continue;
+        if (!spider_testing.declaresTests(source)) continue;
+        var buf: [512]u8 = undefined;
+        paths.append(b.allocator, b.pathJoin(&.{ dir, entry.path })) catch @panic("OOM");
+        prefixes.append(b.allocator, b.dupe(spider_testing.prefixFor(&buf, entry.path))) catch @panic("OOM");
+    }
+    const opts = b.addOptions();
+    opts.addOption([]const []const u8, "paths", paths.items);
+    opts.addOption([]const []const u8, "prefixes", prefixes.items);
+    return opts.createModule();
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -160,7 +194,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/build_helpers.zig"),
     });
 
-    // tests — existing module tests
+    // tests — existing module tests. test_manifest lets the discovery test
+    // in src/spider.zig fail when a file's tests aren't part of this binary.
+    mod.addImport("test_manifest", testManifest(b, "src", &.{"cli/"}));
+    cli_exe.root_module.addImport("test_manifest", testManifest(b, "src/cli", &.{"templates/"}));
+    cli_exe.root_module.addImport("spider_testing", b.createModule(.{ .root_source_file = b.path("src/testing.zig") }));
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
