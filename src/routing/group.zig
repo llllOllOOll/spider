@@ -74,27 +74,35 @@ pub const Group = struct {
     }
 
     pub fn get(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.GET, path, handler_mod.forGroup(handler), config);
+        return self.route(.GET, path, toHandler(handler), config);
     }
 
     pub fn post(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.POST, path, handler_mod.forGroup(handler), config);
+        return self.route(.POST, path, toHandler(handler), config);
     }
 
     pub fn put(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.PUT, path, handler_mod.forGroup(handler), config);
+        return self.route(.PUT, path, toHandler(handler), config);
     }
 
     pub fn delete(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.DELETE, path, handler_mod.forGroup(handler), config);
+        return self.route(.DELETE, path, toHandler(handler), config);
     }
 
     pub fn patch(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.PATCH, path, handler_mod.forGroup(handler), config);
+        return self.route(.PATCH, path, toHandler(handler), config);
     }
 
     pub fn head(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.HEAD, path, handler_mod.forGroup(handler), config);
+        return self.route(.HEAD, path, toHandler(handler), config);
+    }
+
+    /// A ready `Handler` value (possibly only known at runtime, e.g.
+    /// keycloak.loginHandler()) is used as is; a function goes through
+    /// extractor detection at compile time.
+    fn toHandler(handler: anytype) Handler {
+        if (@TypeOf(handler) == Handler) return handler;
+        return comptime handler_mod.forGroup(handler);
     }
 
     fn route(self: *Group, method: std.http.Method, path: []const u8, h: Handler, comptime config: anytype) *Group {

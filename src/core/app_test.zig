@@ -337,3 +337,17 @@ test "writeRoutes: background jobs are listed, shortest interval first" {
     try s.writeRoutes(&w);
     try std.testing.expect(std.mem.endsWith(u8, w.buffered(), "3 background jobs, every: 5000ms 60000ms 60000ms\n"));
 }
+
+test "Group: a Handler only known at runtime is accepted (e.g. keycloak.loginHandler())" {
+    var runtime_handler: @import("../routing/router.zig").Handler = featOk;
+    _ = &runtime_handler;
+    var g = Group.init("/rt");
+    _ = g.get("/h", runtime_handler, .{ .public = true });
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.mount(g);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const m = (try s.router.match(.GET, "/rt/h", arena.allocator())).?;
+    try std.testing.expect(m.meta.public);
+}
