@@ -136,6 +136,23 @@ fn fakeAuth(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
     return next(c);
 }
 
+/// Yields (sleeps on the request's Io) BEFORE calling next — like a
+/// middleware doing network I/O (JWKS refetch, a DB call on the request Io).
+fn yieldingMiddleware(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
+    if (std.mem.startsWith(u8, c.getPath(), "/chain/")) {
+        std.Io.sleep(c._io, .fromMilliseconds(5), .real) catch {};
+    }
+    return next(c);
+}
+
+fn chainA(c: *spider.Ctx) !spider.Response {
+    return c.text("A", .{});
+}
+
+fn chainB(c: *spider.Ctx) !spider.Response {
+    return c.text("B", .{});
+}
+
 fn ok(c: *spider.Ctx) !spider.Response {
     const id = c.params.get("id") orelse "-";
     return c.text(try std.fmt.allocPrint(c.arena, "ok:{s}", .{id}), .{});
@@ -162,6 +179,9 @@ fn runApp(port: u16) void {
 
     s
         .use(fakeAuth)
+        .use(yieldingMiddleware)
+        .get("/chain/a", chainA, .{})
+        .get("/chain/b", chainB, .{})
         .get("/r/static", ok, .{ .roles = admin })
         .get("/r/items/:id", ok, .{ .roles = admin })
         .post("/r/items/:id", ok, .{ .roles = admin })
@@ -333,4 +353,54 @@ test "org rbac: no active org keeps any-org behavior" {
 
 test {
     _ = @import("e2e/keycloak_test.zig");
+}
+
+// ── middleware chain isolation ──────────────────────────────────────────
+
+const ChainJob = struct {
+    port: u16,
+    target: []const u8,
+    expect: []const u8,
+    wrong: *std.atomic.Value(u32),
+    errors: *std.atomic.Value(u32),
+};
+
+fn chainWorker(job: ChainJob) void {
+    var threaded: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    for (0..10) |_| {
+        var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+        defer arena.deinit();
+        const res = request(threaded.io(), arena.allocator(), job.port, job.target, .{}) catch {
+            _ = job.errors.fetchAdd(1, .seq_cst);
+            continue;
+        };
+        if (!std.mem.eql(u8, res.body, job.expect)) _ = job.wrong.fetchAdd(1, .seq_cst);
+    }
+}
+
+test "middleware chain: a middleware that yields before next() never runs another request's handler" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+
+    var wrong = std.atomic.Value(u32).init(0);
+    var errors = std.atomic.Value(u32).init(0);
+    var threads: [16]std.Thread = undefined;
+    for (&threads, 0..) |*t, i| {
+        const is_a = i % 2 == 0;
+        t.* = try std.Thread.spawn(.{}, chainWorker, .{ChainJob{
+            .port = port,
+            .target = if (is_a) "/chain/a" else "/chain/b",
+            .expect = if (is_a) "A" else "B",
+            .wrong = &wrong,
+            .errors = &errors,
+        }});
+    }
+    for (threads) |t| t.join();
+    if (wrong.load(.seq_cst) > 0 or errors.load(.seq_cst) > 0) {
+        std.debug.print("\n  160 requests: {d} got another route's response, {d} failed\n", .{ wrong.load(.seq_cst), errors.load(.seq_cst) });
+    }
+    try std.testing.expectEqual(@as(u32, 0), wrong.load(.seq_cst));
+    try std.testing.expectEqual(@as(u32, 0), errors.load(.seq_cst));
 }

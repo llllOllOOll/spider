@@ -40,24 +40,19 @@ const WsRouteHub = struct {
     threaded: std.Io.Threaded,
 };
 
-threadlocal var chain_middlewares: []const MiddlewareFn = &.{};
-threadlocal var chain_handler: ?Handler = null;
-
 fn nextFn(c: *Ctx) anyerror!Response {
-    if (chain_middlewares.len == 0) {
-        return chain_handler.?(c);
+    if (c._chain_mws.len == 0) {
+        return c._chain_handler.?(c);
     }
-    const m = chain_middlewares[0];
-    chain_middlewares = chain_middlewares[1..];
+    const m = c._chain_mws[0];
+    c._chain_mws = c._chain_mws[1..];
     return m(c, nextFn);
 }
 
 fn runChain(c: *Ctx, middlewares: []const MiddlewareFn, handler: Handler) anyerror!Response {
-    chain_middlewares = middlewares;
-    chain_handler = handler;
-    if (middlewares.len == 0) return handler(c);
-    chain_middlewares = middlewares[1..];
-    return middlewares[0](c, nextFn);
+    c._chain_mws = middlewares;
+    c._chain_handler = handler;
+    return nextFn(c);
 }
 
 const PathMiddlewareEntry = struct {

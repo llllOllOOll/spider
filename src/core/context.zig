@@ -63,6 +63,13 @@ pub const Ctx = struct {
     _last_template: ?[]const u8 = null,
     _ws_hub: ?*Hub = null,
     _sse_hub: ?*Hub = null,
+    /// Middleware chain position for THIS request (see app.zig runChain).
+    /// Per-request, not threadlocal: under zio a middleware that does I/O
+    /// before next() yields its fiber, and another request on the same
+    /// thread would otherwise overwrite the chain and resume this one into
+    /// the wrong handler.
+    _chain_mws: []const MiddlewareFn = &.{},
+    _chain_handler: ?*const fn (*Ctx) anyerror!Response = null,
 
     pub fn db(self: *Ctx) DatabaseCtx {
         return .{
