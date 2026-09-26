@@ -327,3 +327,13 @@ test "writeRoutes: sorted table with access and flags; duplicates counted" {
         "4 routes, 1 registered twice (see the warnings above)\n";
     try std.testing.expectEqualStrings(expected, out);
 }
+
+test "writeRoutes: background jobs are listed, shortest interval first" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.get("/a", featOk, .{}).sseInterval(60_000, featTick).mountFeature(feats.alpha).sseInterval(5000, featTick);
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try s.writeRoutes(&w);
+    try std.testing.expect(std.mem.endsWith(u8, w.buffered(), "3 background jobs, every: 5000ms 60000ms 60000ms\n"));
+}

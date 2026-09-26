@@ -1160,6 +1160,18 @@ pub fn Server(comptime T: type) type {
             try w.print("{d} routes", .{list.items.len});
             if (self.router.duplicates > 0) try w.print(", {d} registered twice (see the warnings above)", .{self.router.duplicates});
             try w.writeAll("\n");
+
+            // Background jobs (sseInterval / features' jobs), shortest first.
+            const n = self.interval_threads.items.len;
+            if (n > 0) {
+                const ms = try std.heap.page_allocator.alloc(u64, n);
+                defer std.heap.page_allocator.free(ms);
+                for (self.interval_threads.items, 0..) |e, i| ms[i] = e.ms;
+                std.mem.sort(u64, ms, {}, std.sort.asc(u64));
+                try w.print("{d} background jobs, every:", .{n});
+                for (ms) |v| try w.print(" {d}ms", .{v});
+                try w.writeAll("\n");
+            }
         }
 
         fn writeList(w: *std.Io.Writer, label: []const u8, items: []const []const u8) !void {
