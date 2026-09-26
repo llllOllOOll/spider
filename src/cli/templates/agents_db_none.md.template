@@ -1,0 +1,5 @@
+
+## Database
+
+None (created with `--no-db`). `spider g feature` assumes a database: here it
+falls back to generating SQLite code (repository + migration).

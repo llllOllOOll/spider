@@ -1,0 +1,5 @@
+- Views: `return c.view("posts/index", .{ .posts = rows }, .{});` renders
+  `src/features/posts/views/index.html`. `{ expr }` is HTML-escaped; pass
+  trusted markup built in Zig as `spider.RawHtml{ .html = s }`. htmx partials:
+  `c.viewFragment("posts/index", "PostsList", data, .{})`.
+- Templates are compiled into the binary: rebuild (and restart) after editing.

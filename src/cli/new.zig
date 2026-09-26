@@ -37,6 +37,14 @@ const main_zig_api_sqlite_tmpl = @embedFile("templates/main.zig.api.sqlite.templ
 const build_zig_api_tmpl = @embedFile("templates/build.zig.api.template");
 const migrations_zig_sqlite_tmpl = @embedFile("templates/migrations.zig.sqlite.template");
 const migrations_zig_pg_tmpl = @embedFile("templates/migrations.zig.pg.template");
+const agents_md_tmpl = @embedFile("templates/AGENTS.md.template");
+const agents_views_html_tmpl = @embedFile("templates/agents_views_html.md.template");
+const agents_views_api_tmpl = @embedFile("templates/agents_views_api.md.template");
+const agents_views_conv_html_tmpl = @embedFile("templates/agents_views_conv_html.md.template");
+const agents_views_conv_api_tmpl = @embedFile("templates/agents_views_conv_api.md.template");
+const agents_db_sqlite_tmpl = @embedFile("templates/agents_db_sqlite.md.template");
+const agents_db_pg_tmpl = @embedFile("templates/agents_db_pg.md.template");
+const agents_db_none_tmpl = @embedFile("templates/agents_db_none.md.template");
 
 fn runZigFetch(io: std.Io, app_name: []const u8) !void {
     var child = try std.process.spawn(io, .{
@@ -101,6 +109,33 @@ fn render(allocator: std.mem.Allocator, tmpl: []const u8, app_name: []const u8, 
     const step4 = try std.mem.replaceOwned(u8, allocator, step3, "{{db_module}}", db_module);
     defer allocator.free(step4);
     return std.mem.replaceOwned(u8, allocator, step4, "{{sqlite_enabled}}", sqlite_enabled);
+}
+
+/// AGENTS.md for the new project: the shared template plus the sections that
+/// depend on the variant (views or API-only; SQLite, PostgreSQL or no db).
+fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: bool, no_db: bool, use_pg: bool) ![]const u8 {
+    const variant = try std.fmt.allocPrint(allocator, "{s}, {s}", .{
+        if (api_only) "API-only" else "HTML views",
+        if (no_db) "no database" else if (use_pg) "PostgreSQL" else "SQLite",
+    });
+    defer allocator.free(variant);
+    const vars = [_][2][]const u8{
+        .{ "{{app_name}}", app_name },
+        .{ "{{variant}}", variant },
+        .{ "{{feature_api_flag}}", if (api_only) " --api" else "" },
+        .{ "{{extra_commands}}", if (no_db) "" else if (use_pg) "| First-time setup | `cp .env.example .env`, then `docker compose up -d db` |\n" else "| First-time setup | `cp .env.example .env` (`spider migrate` reads it) |\n" },
+        .{ "{{core_db_line}}", if (no_db) "" else "\n  db/migrations.zig       migration list (+ SQL files in db/migrations/)" },
+        .{ "{{views_layout}}", if (api_only) agents_views_api_tmpl else agents_views_html_tmpl },
+        .{ "{{views_conventions}}", if (api_only) agents_views_conv_api_tmpl else agents_views_conv_html_tmpl },
+        .{ "{{db_section}}", if (no_db) agents_db_none_tmpl else if (use_pg) agents_db_pg_tmpl else agents_db_sqlite_tmpl },
+    };
+    var out = try allocator.dupe(u8, agents_md_tmpl);
+    for (vars) |v| {
+        const next = try std.mem.replaceOwned(u8, allocator, out, v[0], v[1]);
+        allocator.free(out);
+        out = next;
+    }
+    return out;
 }
 
 fn writeFile(io: std.Io, dir: std.Io.Dir, path: []const u8, content: []const u8) !void {
@@ -281,6 +316,22 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, use_d
                 return err;
             };
             std.debug.print("  create  {s}/{s}\n", .{ app_name, path });
+        }
+    }
+
+    {
+        // Guide for coding agents; CLAUDE.md just imports it (Claude Code reads CLAUDE.md).
+        const agents_md = renderAgentsMd(allocator, app_name, api_only, effective_no_db, use_pg) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        defer allocator.free(agents_md);
+        inline for (.{ .{ "AGENTS.md", agents_md }, .{ "CLAUDE.md", "@AGENTS.md\n" } }) |f| {
+            writeFile(io, project_dir, f[0], f[1]) catch |err| {
+                fail_err = err;
+                return err;
+            };
+            std.debug.print("  create  {s}/{s}\n", .{ app_name, f[0] });
         }
     }
 

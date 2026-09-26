@@ -1,0 +1,18 @@
+
+## Database (PostgreSQL)
+
+- Start it: `docker compose up -d db` (port 5452), then `cp .env.example .env`
+  once — the app and `spider migrate` read `PG_HOST`, `PG_PORT`, `PG_USER`,
+  `PG_PASSWORD`, `PG_DB` from `.env`.
+- Queries: `spider.pg.query(T, c.arena, "SELECT ... WHERE id = $1", .{id})`,
+  `queryOne` → `?T`, `queryExecute(void, arena, sql)`. Struct fields map to
+  column names; a missing column or a NULL into a non-optional field is an
+  error — use `?T` for nullable columns.
+- Transactions: `var tx = try spider.pg.begin(); defer tx.rollback(); ...;
+  try tx.commit();` — never `query(void, .., "BEGIN")` (refused: each call
+  runs on its own pooled connection).
+- Migrations: `src/core/db/migrations/<timestamp>_<name>.sql` with
+  `-- migrate:up` / `-- migrate:down` sections, listed in
+  `src/core/db/migrations.zig`. `spider g feature` creates one; apply it with
+  `spider migrate`, then restart the app. **Until you do, the feature's pages
+  answer 500 and nothing is logged.**

@@ -1,0 +1,1 @@
+- API-only app: handlers return `c.json(value, .{ .status = ... })`; there are no views.
