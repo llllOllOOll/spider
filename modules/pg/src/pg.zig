@@ -294,6 +294,7 @@ pub fn query(
     sql: []const u8,
     params: anytype,
 ) !QueryResult(T) {
+    try guardSingle(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     return execTyped(conn, T, arena, sql, params);
@@ -305,6 +306,7 @@ pub fn queryOne(
     sql: []const u8,
     params: anytype,
 ) !?T {
+    try guardSingle(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     return execTypedOne(conn, T, arena, sql, params);
@@ -316,6 +318,7 @@ pub fn queryExecute(
     arena: std.mem.Allocator,
     sql: []const u8,
 ) !QueryResult(T) {
+    if (T == void) try guardMulti(sql) else try guardSingle(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
 
@@ -338,6 +341,7 @@ pub fn queryOneExecute(
     arena: std.mem.Allocator,
     sql: []const u8,
 ) !?T {
+    try guardSingle(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     return execTypedOne(conn, T, arena, sql, .{});
@@ -345,25 +349,149 @@ pub fn queryOneExecute(
 
 pub fn begin() !Transaction {
     const conn = try db_pool.?.acquire();
-    _ = try conn.exec("BEGIN", .{});
+    _ = conn.exec("BEGIN", .{}) catch |err| {
+        if (err == error.PG) logPgErr(conn);
+        db_pool.?.release(conn);
+        return err;
+    };
     return Transaction{ .conn = conn };
 }
 
-/// Database transaction. Use begin() to create one.
+/// Runs `body(&tx, context)` inside one transaction on one pinned connection:
+/// commits when it returns normally, rolls back when it returns an error (the
+/// error is passed through).
+///
+///   const id = try pg.transaction(i64, input, struct {
+///       fn run(tx: *pg.Transaction, in: Input) !i64 { ... }
+///   }.run);
+pub fn transaction(
+    comptime R: type,
+    context: anytype,
+    comptime body: fn (*Transaction, @TypeOf(context)) anyerror!R,
+) !R {
+    var tx = try begin();
+    errdefer tx.rollback();
+    const result = try body(&tx, context);
+    try tx.commit();
+    return result;
+}
+
+// ── Transaction-control guard ───────────────────────────────────────────────
+
+pub const TxControl = enum {
+    none,
+    /// BEGIN / START TRANSACTION
+    open,
+    /// COMMIT / END / ROLLBACK / ABORT
+    close,
+    /// SAVEPOINT / RELEASE / ROLLBACK TO — only meaningful inside a transaction
+    inside,
+};
+
+fn skipSqlNoise(sql: []const u8) []const u8 {
+    var rest = sql;
+    while (true) {
+        rest = std.mem.trimStart(u8, rest, " \t\r\n");
+        if (std.mem.startsWith(u8, rest, "--")) {
+            const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse return "";
+            rest = rest[nl + 1 ..];
+        } else if (std.mem.startsWith(u8, rest, "/*")) {
+            const end = std.mem.indexOf(u8, rest, "*/") orelse return "";
+            rest = rest[end + 2 ..];
+        } else return rest;
+    }
+}
+
+fn nextWord(sql: []const u8) struct { word: []const u8, rest: []const u8 } {
+    const s = skipSqlNoise(sql);
+    var i: usize = 0;
+    while (i < s.len and std.ascii.isAlphabetic(s[i])) i += 1;
+    return .{ .word = s[0..i], .rest = s[i..] };
+}
+
+/// Classifies the leading keyword(s) of one SQL statement.
+pub fn txControl(sql: []const u8) TxControl {
+    const first = nextWord(sql);
+    const w = first.word;
+    const second = nextWord(first.rest).word;
+    const eq = std.ascii.eqlIgnoreCase;
+    if (eq(w, "BEGIN")) return .open;
+    if (eq(w, "START")) return if (eq(second, "TRANSACTION")) .open else .none;
+    if (eq(w, "COMMIT") or eq(w, "ROLLBACK")) {
+        if (eq(second, "PREPARED")) return .none; // two-phase commit, valid outside a tx
+        if (eq(second, "TO")) return .inside;
+        return .close;
+    }
+    if (eq(w, "END") or eq(w, "ABORT")) return .close;
+    if (eq(w, "SAVEPOINT") or eq(w, "RELEASE")) return .inside;
+    return .none;
+}
+
+fn refuseTxControl(sql: []const u8) error{UseBeginForTransactions} {
+    std.log.err(
+        "[pg] refused \"{s}\": every pg.* call runs on its own pooled connection, so transaction " ++
+            "control there can't wrap other statements. Use pg.begin() / pg.transaction() instead.",
+        .{std.mem.trim(u8, sql, " \t\r\n;")},
+    );
+    return error.UseBeginForTransactions;
+}
+
+/// Single-statement entry points never accept transaction control.
+fn guardSingle(sql: []const u8) error{UseBeginForTransactions}!void {
+    if (txControl(sql) != .none) return refuseTxControl(sql);
+}
+
+/// Multi-statement entry points run everything on one connection, so a
+/// BEGIN ... COMMIT/ROLLBACK pair inside the same call is a real transaction.
+/// Unbalanced control would hand an in-transaction connection back to the pool.
+fn guardMulti(sql: []const u8) error{UseBeginForTransactions}!void {
+    var open = false;
+    var it = std.mem.splitScalar(u8, sql, ';');
+    while (it.next()) |stmt| {
+        switch (txControl(stmt)) {
+            .none => {},
+            .open => {
+                if (open) return refuseTxControl(sql);
+                open = true;
+            },
+            .close => {
+                if (!open) return refuseTxControl(sql);
+                open = false;
+            },
+            .inside => if (!open) return refuseTxControl(sql),
+        }
+    }
+    if (open) return refuseTxControl(sql);
+}
+
+/// Database transaction on ONE pinned connection. Use begin() (or
+/// transaction()) to create one.
 ///
 /// Example:
 ///   var tx = try pg.begin();
 ///   defer tx.rollback();
 ///   try tx.query(void, arena, "INSERT INTO users (name) VALUES ($1)", .{"Alice"});
 ///   try tx.commit();
+///
+/// After any statement fails, Postgres aborts the transaction: further
+/// statements (and commit) return error.TransactionAborted until rollback().
 pub const Transaction = struct {
     conn: *pg_lib.Conn,
     committed: bool = false,
     rolled_back: bool = false,
 
+    fn check(self: *Transaction) !void {
+        if (self.committed or self.rolled_back) return error.TransactionAlreadyFinished;
+        if (self.conn._state == .fail) return error.TransactionAborted;
+    }
+
     /// Deprecated: use tx.query(void, arena, sql, params) instead.
     pub fn exec(self: *Transaction, sql: []const u8, params: anytype) !void {
-        _ = try self.conn.exec(sql, params);
+        try self.check();
+        _ = self.conn.exec(sql, params) catch |err| {
+            if (err == error.PG) logPgErr(self.conn);
+            return err;
+        };
     }
 
     pub fn query(
@@ -373,6 +501,7 @@ pub const Transaction = struct {
         sql: []const u8,
         params: anytype,
     ) !QueryResult(T) {
+        try self.check();
         return execTyped(self.conn, T, arena, sql, params);
     }
 
@@ -383,19 +512,29 @@ pub const Transaction = struct {
         sql: []const u8,
         params: anytype,
     ) !?T {
+        try self.check();
         return execTypedOne(self.conn, T, arena, sql, params);
     }
 
+    /// On failure the transaction stays open; the usual `defer tx.rollback()`
+    /// then cleans it up and returns the connection.
     pub fn commit(self: *Transaction) !void {
-        if (self.committed or self.rolled_back) return error.TransactionAlreadyFinished;
-        _ = try self.conn.exec("COMMIT", .{});
+        try self.check();
+        _ = self.conn.exec("COMMIT", .{}) catch |err| {
+            if (err == error.PG) logPgErr(self.conn);
+            return err;
+        };
         db_pool.?.release(self.conn);
         self.committed = true;
     }
 
+    /// Safe to call at any point (also from `defer`), including after a
+    /// failed statement: it uses the driver's rollback, which works on an
+    /// aborted transaction, so the connection goes back to the pool clean
+    /// instead of being torn down and reopened.
     pub fn rollback(self: *Transaction) void {
         if (self.committed or self.rolled_back) return;
-        _ = self.conn.exec("ROLLBACK", .{}) catch {};
+        self.conn.rollback() catch {};
         db_pool.?.release(self.conn);
         self.rolled_back = true;
     }
@@ -404,6 +543,7 @@ pub const Transaction = struct {
 // ── PgDriver (Database interface for ORM-style usage) ───────────────────────
 
 fn pgExecFn(ptr: *anyopaque, sql: []const u8) anyerror!void {
+    try guardMulti(sql);
     _ = ptr;
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
@@ -433,6 +573,7 @@ pub const PgDriver = struct {
 
 /// Deprecated: use query(void, arena, sql, params) instead.
 pub fn exec(sql: []const u8, params: anytype) !void {
+    try guardSingle(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     _ = try conn.exec(sql, params);
@@ -440,6 +581,7 @@ pub fn exec(sql: []const u8, params: anytype) !void {
 
 /// Deprecated: use queryExecute(void, arena, sql) instead.
 pub fn execRaw(sql: []const u8) !void {
+    try guardMulti(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
     var it = std.mem.splitScalar(u8, sql, ';');
@@ -452,6 +594,7 @@ pub fn execRaw(sql: []const u8) !void {
 
 /// Deprecated: use query(T, arena, sql, params) instead.
 pub fn queryWith(sql: []const u8, params: anytype) !Result {
+    try guardSingle(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
 
@@ -488,6 +631,7 @@ pub fn queryAs(
     sql: []const u8,
     params: anytype,
 ) !MappedRows(T) {
+    try guardSingle(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
 
@@ -965,4 +1109,199 @@ test "array parameter - ANY() query" {
     try std.testing.expectEqualStrings("two", rows[0].name);
     try std.testing.expectEqual(4, rows[1].id);
     try std.testing.expectEqualStrings("four", rows[1].name);
+}
+
+// ── Transactions: pinned connection, no pool-level BEGIN/COMMIT ─────────────
+
+fn countRows(arena: std.mem.Allocator, table: []const u8) !usize {
+    const sql = try std.fmt.allocPrint(arena, "SELECT count(*)::integer FROM {s}", .{table});
+    return @intCast(try query(i32, arena, sql, .{}));
+}
+
+test "fake transaction: pool-level BEGIN/ROLLBACK can't wrap later statements" {
+    // The Orbitx pattern: pg.exec("BEGIN") ... pg.exec("ROLLBACK"). Each call
+    // takes its own pooled connection, so the INSERT between them autocommits
+    // and survives the ROLLBACK. Pool-level transaction control must be refused.
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try execRaw("DROP TABLE IF EXISTS spider_fake_tx; CREATE TABLE spider_fake_tx (id integer)");
+    defer execRaw("DROP TABLE IF EXISTS spider_fake_tx") catch {};
+
+    if (exec("BEGIN", .{})) |_| {
+        try exec("INSERT INTO spider_fake_tx VALUES (1)", .{});
+        exec("ROLLBACK", .{}) catch {};
+        const n = try countRows(arena.allocator(), "spider_fake_tx");
+        std.debug.print("\n  pg.exec(\"BEGIN\") accepted; row count after ROLLBACK = {d} (expected 0 in a real transaction)\n", .{n});
+        return error.TestUnexpectedResult;
+    } else |err| {
+        try std.testing.expectEqual(error.UseBeginForTransactions, err);
+    }
+}
+
+test "fake transaction: every pool-level entry point refuses transaction control" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const stmts = [_][]const u8{ "BEGIN", "begin", "  BEGIN;", "START TRANSACTION", "BEGIN ISOLATION LEVEL SERIALIZABLE", "COMMIT", "END", "ROLLBACK", "abort", "SAVEPOINT s1", "RELEASE SAVEPOINT s1", "-- note\nBEGIN", "/* c */ COMMIT" };
+    for (stmts) |sql| {
+        try std.testing.expectError(error.UseBeginForTransactions, exec(sql, .{}));
+        try std.testing.expectError(error.UseBeginForTransactions, query(void, a, sql, .{}));
+        try std.testing.expectError(error.UseBeginForTransactions, queryOne(i32, a, sql, .{}));
+        try std.testing.expectError(error.UseBeginForTransactions, queryOneExecute(i32, a, sql));
+        try std.testing.expectError(error.UseBeginForTransactions, queryWith(sql, .{}));
+    }
+}
+
+test "fake transaction: multi-statement calls must be balanced on their one connection" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try execRaw("DROP TABLE IF EXISTS spider_multi_tx; CREATE TABLE spider_multi_tx (id integer)");
+    defer execRaw("DROP TABLE IF EXISTS spider_multi_tx") catch {};
+
+    // Balanced: runs on one connection, genuinely transactional.
+    try queryExecute(void, arena.allocator(), "BEGIN; INSERT INTO spider_multi_tx VALUES (1); INSERT INTO spider_multi_tx VALUES (2); COMMIT");
+    try std.testing.expectEqual(@as(usize, 2), try countRows(arena.allocator(), "spider_multi_tx"));
+    try execRaw("BEGIN; INSERT INTO spider_multi_tx VALUES (3); ROLLBACK");
+    try std.testing.expectEqual(@as(usize, 2), try countRows(arena.allocator(), "spider_multi_tx"));
+
+    // Unbalanced: would hand an in-transaction connection back to the pool.
+    try std.testing.expectError(error.UseBeginForTransactions, execRaw("BEGIN; INSERT INTO spider_multi_tx VALUES (4)"));
+    try std.testing.expectError(error.UseBeginForTransactions, queryExecute(void, arena.allocator(), "INSERT INTO spider_multi_tx VALUES (5); COMMIT"));
+    try std.testing.expectEqual(@as(usize, 2), try countRows(arena.allocator(), "spider_multi_tx"));
+}
+
+test "begin(): statements share one pinned connection and are invisible until commit" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try execRaw("DROP TABLE IF EXISTS spider_pin_tx; CREATE TABLE spider_pin_tx (id integer)");
+    defer execRaw("DROP TABLE IF EXISTS spider_pin_tx") catch {};
+
+    var tx = try begin();
+    defer tx.rollback();
+    const pid_1 = try tx.queryOne(i32, a, "SELECT pg_backend_pid()", .{});
+    try tx.query(void, a, "INSERT INTO spider_pin_tx VALUES (1)", .{});
+    const pid_2 = try tx.queryOne(i32, a, "SELECT pg_backend_pid()", .{});
+    try std.testing.expectEqual(pid_1.?, pid_2.?);
+
+    // Another pooled connection must not see the uncommitted row.
+    try std.testing.expectEqual(@as(usize, 0), try countRows(a, "spider_pin_tx"));
+    // The transaction itself does.
+    try std.testing.expectEqual(@as(i32, 1), (try tx.queryOne(i32, a, "SELECT count(*)::integer FROM spider_pin_tx", .{})).?);
+
+    try tx.commit();
+    try std.testing.expectEqual(@as(usize, 1), try countRows(a, "spider_pin_tx"));
+}
+
+test "begin(): commit twice is an error, rollback after commit is a no-op" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var tx = try begin();
+    try tx.commit();
+    try std.testing.expectError(error.TransactionAlreadyFinished, tx.commit());
+    tx.rollback();
+}
+
+test "begin(): failed statement aborts the tx; rollback returns the SAME connection clean" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var pid_in_tx: i32 = 0;
+    {
+        var tx = try begin();
+        defer tx.rollback();
+        pid_in_tx = (try tx.queryOne(i32, a, "SELECT pg_backend_pid()", .{})).?;
+        try std.testing.expectError(error.PG, tx.query(void, a, "SELECT 1/0", .{}));
+        // Postgres refuses everything until the transaction ends; say so clearly.
+        try std.testing.expectError(error.TransactionAborted, tx.query(void, a, "SELECT 1", .{}));
+        try std.testing.expectError(error.TransactionAborted, tx.queryOne(i32, a, "SELECT 1", .{}));
+        try std.testing.expectError(error.TransactionAborted, tx.commit());
+    }
+    // The pool is LIFO: the next acquire gets the connection just released.
+    // Same backend pid == it was rolled back and reused, not torn down and
+    // reconnected (what happened when rollback sent ROLLBACK via exec()).
+    const pid_after = try query(i32, a, "SELECT pg_backend_pid()", .{});
+    try std.testing.expectEqual(pid_in_tx, pid_after);
+    for (0..20) |_| try std.testing.expectEqual(@as(i32, 7), try query(i32, a, "SELECT 7", .{}));
+}
+
+const TxInput = struct { a: i32, b: i32 };
+
+fn insertPair(tx: *Transaction, in: TxInput) !i32 {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try tx.query(void, arena.allocator(), "INSERT INTO spider_helper_tx VALUES ($1)", .{in.a});
+    try tx.query(void, arena.allocator(), "INSERT INTO spider_helper_tx VALUES ($1)", .{in.b});
+    return in.a + in.b;
+}
+
+fn insertThenFail(tx: *Transaction, in: TxInput) !i32 {
+    _ = try insertPair(tx, in);
+    return error.BusinessRuleViolated;
+}
+
+test "transaction(): commits on success and returns the body's value" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try execRaw("DROP TABLE IF EXISTS spider_helper_tx; CREATE TABLE spider_helper_tx (id integer)");
+    defer execRaw("DROP TABLE IF EXISTS spider_helper_tx") catch {};
+
+    const sum = try transaction(i32, TxInput{ .a = 1, .b = 2 }, insertPair);
+    try std.testing.expectEqual(@as(i32, 3), sum);
+    try std.testing.expectEqual(@as(usize, 2), try countRows(arena.allocator(), "spider_helper_tx"));
+}
+
+test "transaction(): rolls back everything when the body returns an error" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try execRaw("DROP TABLE IF EXISTS spider_helper_tx; CREATE TABLE spider_helper_tx (id integer)");
+    defer execRaw("DROP TABLE IF EXISTS spider_helper_tx") catch {};
+
+    try std.testing.expectError(error.BusinessRuleViolated, transaction(i32, TxInput{ .a = 1, .b = 2 }, insertThenFail));
+    try std.testing.expectEqual(@as(usize, 0), try countRows(arena.allocator(), "spider_helper_tx"));
+}
+
+test "txControl: classifier" {
+    try std.testing.expectEqual(TxControl.open, txControl("BEGIN"));
+    try std.testing.expectEqual(TxControl.open, txControl("\n\t begin work"));
+    try std.testing.expectEqual(TxControl.open, txControl("START TRANSACTION READ ONLY"));
+    try std.testing.expectEqual(TxControl.close, txControl("commit"));
+    try std.testing.expectEqual(TxControl.close, txControl("END"));
+    try std.testing.expectEqual(TxControl.close, txControl("ROLLBACK"));
+    try std.testing.expectEqual(TxControl.close, txControl("abort;"));
+    try std.testing.expectEqual(TxControl.inside, txControl("SAVEPOINT a"));
+    try std.testing.expectEqual(TxControl.inside, txControl("ROLLBACK TO SAVEPOINT a"));
+    try std.testing.expectEqual(TxControl.inside, txControl("release a"));
+    try std.testing.expectEqual(TxControl.open, txControl("-- c\n/* d */ BEGIN"));
+    // Not transaction control:
+    try std.testing.expectEqual(TxControl.none, txControl("COMMIT PREPARED 'x'"));
+    try std.testing.expectEqual(TxControl.none, txControl("ROLLBACK PREPARED 'x'"));
+    try std.testing.expectEqual(TxControl.none, txControl("SELECT 'BEGIN'"));
+    try std.testing.expectEqual(TxControl.none, txControl("DO $$ BEGIN PERFORM 1; END $$"));
+    try std.testing.expectEqual(TxControl.none, txControl("BEGINNING"));
+    try std.testing.expectEqual(TxControl.none, txControl("INSERT INTO t VALUES ('commit')"));
+    try std.testing.expectEqual(TxControl.none, txControl("start"));
+    try std.testing.expectEqual(TxControl.none, txControl(""));
+    try std.testing.expectEqual(TxControl.none, txControl("/* unterminated"));
 }
