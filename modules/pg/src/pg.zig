@@ -475,7 +475,14 @@ fn mappingIssue(comptime T: type, comptime field: []const u8, comptime FieldT: t
             return err;
         },
         .warn => {
-            std.log.warn("[pg] {s} mapping {s}.{s} for \"{s}\" (DbConfig.mapping = .warn: using the zero value)", .{ @errorName(err), @typeName(T), field, sqlHead(sql) });
+            // Once per struct field per process: a query in a timer or a hot
+            // page would otherwise repeat the same line on every call.
+            const Once = struct {
+                var warned = std.atomic.Value(bool).init(false);
+            };
+            if (!Once.warned.swap(true, .monotonic)) {
+                std.log.warn("[pg] {s} mapping {s}.{s} for \"{s}\" (DbConfig.mapping = .warn: using the zero value; logged once)", .{ @errorName(err), @typeName(T), field, sqlHead(sql) });
+            }
             return zeroValue(FieldT);
         },
     }
