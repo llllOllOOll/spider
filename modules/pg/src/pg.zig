@@ -52,9 +52,18 @@ pub const DbConfig = struct {
     user: ?[]const u8 = null,
     password: ?[]const u8 = null,
     pool_size: ?usize = null,
+    /// What typed mapping does with a column missing from the result or a
+    /// NULL in a non-optional field (fields with a declared default use it
+    /// either way). `.fail` returns error.ColumnMissing / error.UnexpectedNull;
+    /// `.warn` logs it and keeps the old zero value — a migration aid for
+    /// code written against the old silent behavior.
+    mapping: MappingMode = .fail,
 };
 
+pub const MappingMode = enum { fail, warn };
+
 var db_pool: ?*pg_lib.Pool = null;
+var mapping_mode: MappingMode = .fail;
 var db_allocator: ?std.mem.Allocator = null;
 
 fn getEnv(key: []const u8, default: []const u8) []const u8 {
@@ -68,6 +77,7 @@ fn getEnvInt(key: []const u8, default: u16) u16 {
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, overrides: DbConfig) !void {
     db_allocator = allocator;
+    mapping_mode = overrides.mapping;
     env.autoLoad(allocator);
 
     const host = overrides.host orelse getEnv("PG_HOST", "localhost");
@@ -136,37 +146,279 @@ pub fn releaseConn(conn: *pg_lib.Conn) void {
 pub fn QueryResult(comptime T: type) type {
     return switch (T) {
         void => void,
-        i32 => i32,
+        i32, i64 => T,
         else => []T,
     };
 }
 
-fn readIntBinary(data: []const u8, oid: i32) i64 {
+// ── Errors ──────────────────────────────────────────────────────────────────
+
+/// Postgres failures, by SQLSTATE class. `error.PG` remains for codes not
+/// listed here. Use `lastError()` in the catch for message/detail/constraint.
+pub const DbError = error{
+    UniqueViolation, // 23505
+    ForeignKeyViolation, // 23503
+    NotNullViolation, // 23502
+    CheckViolation, // 23514
+    ExclusionViolation, // 23P01
+    IntegrityConstraintViolation, // other 23xxx
+    InvalidTextRepresentation, // 22P02 (e.g. "abc"::uuid)
+    StringDataRightTruncation, // 22001
+    NumericValueOutOfRange, // 22003
+    InvalidDatetimeFormat, // 22007
+    DatetimeFieldOverflow, // 22008
+    DivisionByZero, // 22012
+    DataException, // other 22xxx
+    SerializationFailure, // 40001
+    DeadlockDetected, // 40P01
+    LockNotAvailable, // 55P03
+    QueryCanceled, // 57014
+    UndefinedTable, // 42P01
+    UndefinedColumn, // 42703
+    UndefinedFunction, // 42883
+    SqlSyntaxError, // 42601
+    InsufficientPrivilege, // 42501
+    RaisedException, // P0001 (RAISE EXCEPTION in plpgsql / triggers)
+    PG,
+};
+
+/// Typed-mapping failures (see DbConfig.mapping).
+pub const MappingError = error{ ColumnMissing, UnexpectedNull, TypeMismatch, IntegerOverflow };
+
+pub fn errorForCode(code: []const u8) DbError {
+    const eq = std.mem.eql;
+    if (eq(u8, code, "23505")) return error.UniqueViolation;
+    if (eq(u8, code, "23503")) return error.ForeignKeyViolation;
+    if (eq(u8, code, "23502")) return error.NotNullViolation;
+    if (eq(u8, code, "23514")) return error.CheckViolation;
+    if (eq(u8, code, "23P01")) return error.ExclusionViolation;
+    if (eq(u8, code, "22P02")) return error.InvalidTextRepresentation;
+    if (eq(u8, code, "22001")) return error.StringDataRightTruncation;
+    if (eq(u8, code, "22003")) return error.NumericValueOutOfRange;
+    if (eq(u8, code, "22007")) return error.InvalidDatetimeFormat;
+    if (eq(u8, code, "22008")) return error.DatetimeFieldOverflow;
+    if (eq(u8, code, "22012")) return error.DivisionByZero;
+    if (eq(u8, code, "40001")) return error.SerializationFailure;
+    if (eq(u8, code, "40P01")) return error.DeadlockDetected;
+    if (eq(u8, code, "55P03")) return error.LockNotAvailable;
+    if (eq(u8, code, "57014")) return error.QueryCanceled;
+    if (eq(u8, code, "42P01")) return error.UndefinedTable;
+    if (eq(u8, code, "42703")) return error.UndefinedColumn;
+    if (eq(u8, code, "42883")) return error.UndefinedFunction;
+    if (eq(u8, code, "42601")) return error.SqlSyntaxError;
+    if (eq(u8, code, "42501")) return error.InsufficientPrivilege;
+    if (eq(u8, code, "P0001")) return error.RaisedException;
+    if (std.mem.startsWith(u8, code, "23")) return error.IntegrityConstraintViolation;
+    if (std.mem.startsWith(u8, code, "22")) return error.DataException;
+    return error.PG;
+}
+
+/// True for any error this module returns for a Postgres-side failure.
+pub fn isDbError(err: anyerror) bool {
+    inline for (@typeInfo(DbError).error_set.error_names.?) |name| {
+        if (err == @field(anyerror, name)) return true;
+    }
+    return false;
+}
+
+/// Details of the last Postgres error raised on this thread.
+pub const ErrorInfo = struct {
+    code: []const u8,
+    message: []const u8,
+    detail: ?[]const u8,
+    constraint: ?[]const u8,
+    table: ?[]const u8,
+    column: ?[]const u8,
+};
+
+const ErrorStore = struct {
+    buf: [2048]u8 = undefined,
+    len: usize = 0,
+    info: ErrorInfo = undefined,
+    set: bool = false,
+
+    fn keep(self: *ErrorStore, v: []const u8) []const u8 {
+        const n = @min(v.len, self.buf.len - self.len);
+        @memcpy(self.buf[self.len..][0..n], v[0..n]);
+        defer self.len += n;
+        return self.buf[self.len..][0..n];
+    }
+    fn keepOpt(self: *ErrorStore, v: ?[]const u8) ?[]const u8 {
+        return if (v) |x| self.keep(x) else null;
+    }
+};
+
+threadlocal var last_error: ErrorStore = .{};
+
+/// Details (SQLSTATE, message, detail, constraint, table, column) of the
+/// Postgres error that the pg.* call which just failed returned. Read it in
+/// the `catch`, before any other I/O: it is per-thread and the next failing
+/// call on this thread replaces it. `detail` can contain row values (e.g. an
+/// email in a unique violation) — don't show it to end users.
+pub fn lastError() ?ErrorInfo {
+    return if (last_error.set) last_error.info else null;
+}
+
+fn recordError(e: anytype) void {
+    last_error = .{};
+    last_error.info = .{
+        .code = last_error.keep(e.code),
+        .message = last_error.keep(e.message),
+        .detail = last_error.keepOpt(e.detail),
+        .constraint = last_error.keepOpt(e.constraint),
+        .table = last_error.keepOpt(e.table),
+        .column = last_error.keepOpt(e.column),
+    };
+    last_error.set = true;
+}
+
+/// Every Postgres failure goes through here: records lastError(), logs ONE
+/// line (warn for data/constraint classes 22/23 — usually bad input — err
+/// otherwise; `detail` only at debug since it can carry personal data) and
+/// returns the typed error. Non-PG errors (connection, OOM...) pass through.
+fn fail(conn: *pg_lib.Conn, err: anyerror) anyerror {
+    if (err != error.PG) return err;
+    const e = conn.err orelse return err;
+    recordError(e);
+    const typed = errorForCode(e.code);
+    const client_class = std.mem.startsWith(u8, e.code, "22") or std.mem.startsWith(u8, e.code, "23");
+    if (client_class) {
+        std.log.warn("[pg] {s} {s}: {s}{s}{s}", .{ e.code, @errorName(typed), e.message, if (e.constraint != null) " constraint=" else "", e.constraint orelse "" });
+    } else {
+        std.log.err("[pg] {s} {s}: {s}{s}{s}", .{ e.code, @errorName(typed), e.message, if (e.constraint != null) " constraint=" else "", e.constraint orelse "" });
+    }
+    if (e.detail) |d| std.log.debug("[pg] detail: {s}", .{d});
+    return typed;
+}
+
+// ── Decoding (every result column arrives in binary format) ─────────────────
+
+const oid_bool = 16;
+const oid_bytea = 17;
+const oid_int8 = 20;
+const oid_int2 = 21;
+const oid_int4 = 23;
+const oid_oid = 26;
+const oid_float4 = 700;
+const oid_float8 = 701;
+const oid_date = 1082;
+const oid_time = 1083;
+const oid_timestamp = 1114;
+const oid_timestamptz = 1184;
+const oid_numeric = 1700;
+const oid_uuid = 2950;
+const oid_jsonb = 3802;
+const pg_epoch_us: i64 = 946_684_800_000_000; // 2000-01-01 in unix microseconds
+
+fn readInt(data: []const u8, oid: i32) ?i64 {
     return switch (oid) {
-        21 => @as(i64, std.mem.readInt(i16, data[0..2], .big)),
-        23 => @as(i64, std.mem.readInt(i32, data[0..4], .big)),
-        20 => std.mem.readInt(i64, data[0..8], .big),
-        else => 0,
+        oid_int2 => if (data.len >= 2) @as(i64, std.mem.readInt(i16, data[0..2], .big)) else null,
+        oid_int4 => if (data.len >= 4) @as(i64, std.mem.readInt(i32, data[0..4], .big)) else null,
+        oid_int8 => if (data.len >= 8) std.mem.readInt(i64, data[0..8], .big) else null,
+        oid_oid => if (data.len >= 4) @as(i64, std.mem.readInt(u32, data[0..4], .big)) else null,
+        else => null,
     };
 }
 
-fn readFloatBinary(data: []const u8, oid: i32) f64 {
+fn formatTimestamp(arena: std.mem.Allocator, us_since_2000: i64, utc_suffix: bool) ![]const u8 {
+    if (us_since_2000 == std.math.maxInt(i64)) return "infinity";
+    if (us_since_2000 == std.math.minInt(i64)) return "-infinity";
+    const unix_us: i128 = @as(i128, us_since_2000) + pg_epoch_us;
+    const secs: i128 = @divFloor(unix_us, std.time.us_per_s);
+    const frac_ms: u64 = @intCast(@divFloor(@mod(unix_us, std.time.us_per_s), 1000));
+    if (secs < 0) return error.TypeMismatch; // pre-1970: not needed by callers so far
+    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(secs) };
+    const yd = es.getEpochDay().calculateYearDay();
+    const md = yd.calculateMonthDay();
+    const ds = es.getDaySeconds();
+    return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}{s}", .{
+        yd.year, md.month.numeric(), md.day_index + 1, ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(), frac_ms, if (utc_suffix) "Z" else "",
+    });
+}
+
+fn formatDate(arena: std.mem.Allocator, days_since_2000: i32) ![]const u8 {
+    const days: i64 = @as(i64, days_since_2000) + 10957; // 1970-01-01 -> 2000-01-01
+    if (days < 0) return error.TypeMismatch;
+    const yd = (std.time.epoch.EpochDay{ .day = @intCast(days) }).calculateYearDay();
+    const md = yd.calculateMonthDay();
+    return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{ yd.year, md.month.numeric(), md.day_index + 1 });
+}
+
+fn numericText(arena: std.mem.Allocator, data: []const u8) ![]const u8 {
+    if (data.len < 8) return error.TypeMismatch;
+    const n = pg_lib.types.Numeric.decodeKnown(data);
+    const buf = try arena.alloc(u8, n.estimatedStringLen());
+    return n.toString(buf);
+}
+
+/// Human-readable text for a binary column value.
+fn textOf(arena: std.mem.Allocator, data: []const u8, oid: i32) ![]const u8 {
     return switch (oid) {
-        700 => @as(f64, @as(f32, @bitCast(std.mem.readInt(u32, data[0..4], .big)))),
-        701 => @as(f64, @bitCast(std.mem.readInt(u64, data[0..8], .big))),
-        else => 0.0,
+        oid_bool => if (data.len > 0 and data[0] != 0) "true" else "false",
+        oid_int2, oid_int4, oid_int8, oid_oid => std.fmt.allocPrint(arena, "{d}", .{readInt(data, oid) orelse return error.TypeMismatch}),
+        oid_float4, oid_float8 => std.fmt.allocPrint(arena, "{d}", .{readFloat(data, oid) orelse return error.TypeMismatch}),
+        oid_numeric => numericText(arena, data),
+        oid_uuid => blk: {
+            if (data.len != 16) return error.TypeMismatch;
+            const txt = try pg_lib.types.UUID.toString(data);
+            break :blk arena.dupe(u8, &txt);
+        },
+        oid_timestamp => formatTimestamp(arena, std.mem.readInt(i64, data[0..8], .big), false),
+        oid_timestamptz => formatTimestamp(arena, std.mem.readInt(i64, data[0..8], .big), true),
+        oid_date => formatDate(arena, std.mem.readInt(i32, data[0..4], .big)),
+        oid_time => blk: {
+            const us = std.mem.readInt(i64, data[0..8], .big);
+            const s_total = @divFloor(us, std.time.us_per_s);
+            const secs: u64 = @intCast(@max(0, s_total));
+            break :blk std.fmt.allocPrint(arena, "{d:0>2}:{d:0>2}:{d:0>2}", .{ secs / 3600, (secs / 60) % 60, secs % 60 });
+        },
+        // jsonb binary = 1 version byte + the JSON text.
+        oid_jsonb => arena.dupe(u8, if (data.len > 0) data[1..] else data),
+        // text, varchar, bpchar, name, json, enums, bytea (raw bytes)...: the
+        // binary form IS the value.
+        else => arena.dupe(u8, data),
     };
 }
 
-fn nullValue(comptime T: type) T {
-    const info = @typeInfo(T);
-    if (info == .optional) return null;
-    return switch (T) {
-        []const u8 => "",
-        bool => false,
-        i8, i16, i32, i64, u8, u16, u32, u64 => 0,
-        f32, f64 => 0.0,
-        else => @compileError("nullValue: unsupported field type " ++ @typeName(T)),
+fn readFloat(data: []const u8, oid: i32) ?f64 {
+    return switch (oid) {
+        oid_float4 => if (data.len >= 4) @as(f64, @as(f32, @bitCast(std.mem.readInt(u32, data[0..4], .big)))) else null,
+        oid_float8 => if (data.len >= 8) @as(f64, @bitCast(std.mem.readInt(u64, data[0..8], .big))) else null,
+        else => null,
+    };
+}
+
+/// "7", "+7", "-7.000" -> integer; any non-zero fraction is a TypeMismatch.
+fn integralText(text: []const u8) !i128 {
+    const t = std.mem.trim(u8, text, " ");
+    const dot = std.mem.indexOfScalar(u8, t, '.');
+    const int_part = if (dot) |d| t[0..d] else t;
+    if (dot) |d| for (t[d + 1 ..]) |ch| if (ch != '0') return error.TypeMismatch;
+    const digits = if (int_part.len > 0 and int_part[0] == '+') int_part[1..] else int_part;
+    return std.fmt.parseInt(i128, digits, 10) catch error.TypeMismatch;
+}
+
+fn intFrom(comptime I: type, data: []const u8, oid: i32, arena: std.mem.Allocator) !I {
+    const wide: i128 = if (readInt(data, oid)) |v| v else switch (oid) {
+        // SUM()/AVG()/numeric columns: integral values only.
+        oid_numeric => try integralText(try numericText(arena, data)),
+        oid_bool, oid_float4, oid_float8, oid_uuid, oid_timestamp, oid_timestamptz, oid_date, oid_time, oid_jsonb, oid_bytea => return error.TypeMismatch,
+        // text-like (e.g. a ::text cast of a number)
+        else => std.fmt.parseInt(i128, std.mem.trim(u8, data, " "), 10) catch return error.TypeMismatch,
+    };
+    return std.math.cast(I, wide) orelse error.IntegerOverflow;
+}
+
+fn floatFrom(comptime F: type, data: []const u8, oid: i32, arena: std.mem.Allocator) !F {
+    if (readFloat(data, oid)) |v| return @floatCast(v);
+    if (readInt(data, oid)) |v| return @floatFromInt(v);
+    return switch (oid) {
+        oid_numeric => blk: {
+            if (data.len < 8) return error.TypeMismatch;
+            break :blk @floatCast(pg_lib.types.Numeric.decodeKnown(data).toFloat());
+        },
+        oid_bool, oid_uuid, oid_timestamp, oid_timestamptz, oid_date, oid_time, oid_jsonb, oid_bytea => error.TypeMismatch,
+        else => @floatCast(std.fmt.parseFloat(f64, std.mem.trim(u8, try arena.dupe(u8, data), " ")) catch return error.TypeMismatch),
     };
 }
 
@@ -176,29 +428,63 @@ fn decodeField(comptime T: type, data: []const u8, oid: i32, arena: std.mem.Allo
         return try decodeField(info.optional.child, data, oid, arena);
     }
     if (info == .@"enum") {
+        // enum columns arrive as their label; also accept a text cast
         return std.meta.stringToEnum(T, data) orelse error.InvalidEnumValue;
     }
     return switch (T) {
-        []const u8 => try arena.dupe(u8, data),
-        bool => if (oid == 16) (data.len > 0 and data[0] != 0) else (data.len > 0 and (data[0] == 't' or data[0] == '1')),
-        i8 => @intCast(readIntBinary(data, oid)),
-        i16 => @intCast(readIntBinary(data, oid)),
-        i32 => @intCast(readIntBinary(data, oid)),
-        i64 => readIntBinary(data, oid),
-        u8 => @intCast(readIntBinary(data, oid)),
-        u16 => @intCast(readIntBinary(data, oid)),
-        u32 => @intCast(readIntBinary(data, oid)),
-        u64 => @intCast(readIntBinary(data, oid)),
-        f32 => @floatCast(readFloatBinary(data, oid)),
-        f64 => readFloatBinary(data, oid),
+        []const u8 => try textOf(arena, data, oid),
+        bool => switch (oid) {
+            oid_bool => data.len > 0 and data[0] != 0,
+            oid_int2, oid_int4, oid_int8 => (readInt(data, oid) orelse return error.TypeMismatch) != 0,
+            else => if (std.mem.eql(u8, data, "t") or std.mem.eql(u8, data, "true") or std.mem.eql(u8, data, "1"))
+                true
+            else if (std.mem.eql(u8, data, "f") or std.mem.eql(u8, data, "false") or std.mem.eql(u8, data, "0"))
+                false
+            else
+                error.TypeMismatch,
+        },
+        i8, i16, i32, i64, u8, u16, u32, u64 => try intFrom(T, data, oid, arena),
+        f32, f64 => try floatFrom(T, data, oid, arena),
         else => @compileError("decodeField: unsupported field type " ++ @typeName(T)),
     };
 }
 
-fn mapRow(comptime T: type, result: *pg_lib.Result, row: pg_lib.Row, arena: std.mem.Allocator) !T {
+fn zeroValue(comptime T: type) T {
+    const info = @typeInfo(T);
+    if (info == .optional) return null;
+    if (info == .@"enum") return @enumFromInt(0);
+    return switch (T) {
+        []const u8 => "",
+        bool => false,
+        i8, i16, i32, i64, u8, u16, u32, u64 => 0,
+        f32, f64 => 0.0,
+        else => @compileError("zeroValue: unsupported field type " ++ @typeName(T)),
+    };
+}
+
+fn sqlHead(sql: []const u8) []const u8 {
+    const t = std.mem.trim(u8, sql, " \t\r\n");
+    return t[0..@min(t.len, 80)];
+}
+
+/// Missing column / NULL into a non-optional field with no default.
+fn mappingIssue(comptime T: type, comptime field: []const u8, comptime FieldT: type, err: MappingError, sql: []const u8) MappingError!FieldT {
+    switch (mapping_mode) {
+        .fail => {
+            std.log.err("[pg] {s} mapping {s}.{s} for \"{s}\"", .{ @errorName(err), @typeName(T), field, sqlHead(sql) });
+            return err;
+        },
+        .warn => {
+            std.log.warn("[pg] {s} mapping {s}.{s} for \"{s}\" (DbConfig.mapping = .warn: using the zero value)", .{ @errorName(err), @typeName(T), field, sqlHead(sql) });
+            return zeroValue(FieldT);
+        },
+    }
+}
+
+fn mapRow(comptime T: type, result: *pg_lib.Result, row: pg_lib.Row, arena: std.mem.Allocator, sql: []const u8) !T {
     var item: T = undefined;
     const info = @typeInfo(T).@"struct";
-    inline for (info.field_names, info.field_types) |field_name, field_type| {
+    inline for (info.field_names, info.field_types, info.field_attrs) |field_name, field_type, attrs| {
         var col_idx: ?usize = null;
         for (result.column_names, 0..) |name, i| {
             if (std.mem.eql(u8, name, field_name)) {
@@ -206,25 +492,41 @@ fn mapRow(comptime T: type, result: *pg_lib.Result, row: pg_lib.Row, arena: std.
                 break;
             }
         }
+        const default = comptime attrs.defaultValue(field_type);
         if (col_idx) |ci| {
             const value = row.values[ci];
             @field(item, field_name) = if (value.is_null)
-                nullValue(field_type)
+                (if (@typeInfo(field_type) == .optional)
+                    null
+                else if (default) |d|
+                    d
+                else
+                    try mappingIssue(T, field_name, field_type, error.UnexpectedNull, sql))
             else
-                try decodeField(field_type, value.data, row.oids[ci], arena);
+                decodeField(field_type, value.data, row.oids[ci], arena) catch |err| blk: {
+                    const e: anyerror = err;
+                    if (e != error.TypeMismatch and e != error.IntegerOverflow and e != error.InvalidEnumValue) return err;
+                    std.log.err("[pg] {s} decoding {s}.{s} (column oid {d}) for \"{s}\"", .{ @errorName(err), @typeName(T), field_name, row.oids[ci], sqlHead(sql) });
+                    if (mapping_mode == .warn) break :blk zeroValue(field_type);
+                    return err;
+                };
         } else {
-            @field(item, field_name) = nullValue(field_type);
+            @field(item, field_name) = if (@typeInfo(field_type) == .optional)
+                null
+            else if (default) |d|
+                d
+            else
+                try mappingIssue(T, field_name, field_type, error.ColumnMissing, sql);
         }
     }
     return item;
 }
 
-fn logPgErr(conn: *pg_lib.Conn) void {
-    if (conn.err) |e| {
-        std.log.err("[pg] {s} (code={s})", .{ e.message, e.code });
-        if (e.detail) |d| std.log.err("[pg] detail: {s}", .{d});
-        if (e.constraint) |c| std.log.err("[pg] constraint: {s}", .{c});
-    }
+/// Scalar results (query(i32/i64, ...)): first column of the first row.
+fn scalar(comptime T: type, row: pg_lib.Row, arena: std.mem.Allocator) !?T {
+    const v = row.values[0];
+    if (v.is_null) return null;
+    return try decodeField(T, v.data, row.oids[0], arena);
 }
 
 fn execTyped(
@@ -235,29 +537,24 @@ fn execTyped(
     params: anytype,
 ) !QueryResult(T) {
     if (T == void) {
-        _ = conn.exec(sql, params) catch |err| {
-            if (err == error.PG) logPgErr(conn);
-            return err;
-        };
+        _ = conn.exec(sql, params) catch |err| return fail(conn, err);
         return {};
     }
 
-    var result = conn.queryOpts(sql, params, .{ .column_names = true }) catch |err| {
-        if (err == error.PG) logPgErr(conn);
-        return err;
-    };
+    var result = conn.queryOpts(sql, params, .{ .column_names = true }) catch |err| return fail(conn, err);
     defer result.deinit();
 
-    if (T == i32) {
-        const row = (try result.next()) orelse return 0;
-        const v = row.values[0];
-        if (v.is_null) return 0;
-        return @intCast(readIntBinary(v.data, row.oids[0]));
+    if (T == i32 or T == i64) {
+        const row = (result.next() catch |err| return fail(conn, err)) orelse return 0;
+        const v = (try scalar(T, row, arena)) orelse 0;
+        while (result.next() catch |err| return fail(conn, err)) |_| {}
+        return v;
     }
 
     var items = std.ArrayListUnmanaged(T).empty;
-    while (try result.next()) |row| {
-        try items.append(arena, try mapRow(T, result, row, arena));
+    // Errors can also arrive mid-stream (e.g. division by zero on row N).
+    while (result.next() catch |err| return fail(conn, err)) |row| {
+        try items.append(arena, try mapRow(T, result, row, arena, sql));
     }
     return try items.toOwnedSlice(arena);
 }
@@ -269,21 +566,20 @@ fn execTypedOne(
     sql: []const u8,
     params: anytype,
 ) !?T {
-    var result = try conn.queryOpts(sql, params, .{ .column_names = true });
+    var result = conn.queryOpts(sql, params, .{ .column_names = true }) catch |err| return fail(conn, err);
     defer result.deinit();
 
-    const row = (try result.next()) orelse return null;
+    const row = (result.next() catch |err| return fail(conn, err)) orelse return null;
 
-    const out: ?T = if (T == i32) blk: {
-        const v = row.values[0];
-        if (v.is_null) break :blk null;
-        break :blk @intCast(readIntBinary(v.data, row.oids[0]));
-    } else try mapRow(T, result, row, arena);
+    const out: ?T = if (T == i32 or T == i64)
+        try scalar(T, row, arena)
+    else
+        try mapRow(T, result, row, arena, sql);
 
     // Drain remaining CommandComplete + ReadyForQuery messages so conn._state
     // is restored to .idle/.transaction before the connection is reused.
     // Without this, transactions fail with ConnectionBusy on the next operation.
-    while (try result.next()) |_| {}
+    while (result.next() catch |err| return fail(conn, err)) |_| {}
 
     return out;
 }
@@ -327,7 +623,7 @@ pub fn queryExecute(
         while (it.next()) |stmt| {
             const s = std.mem.trim(u8, stmt, " \n\r\t");
             if (s.len == 0) continue;
-            _ = try conn.exec(s, .{});
+            _ = conn.exec(s, .{}) catch |err| return fail(conn, err);
         }
         return {};
     }
@@ -350,9 +646,9 @@ pub fn queryOneExecute(
 pub fn begin() !Transaction {
     const conn = try db_pool.?.acquire();
     _ = conn.exec("BEGIN", .{}) catch |err| {
-        if (err == error.PG) logPgErr(conn);
+        const typed = fail(conn, err);
         db_pool.?.release(conn);
-        return err;
+        return typed;
     };
     return Transaction{ .conn = conn };
 }
@@ -488,10 +784,7 @@ pub const Transaction = struct {
     /// Deprecated: use tx.query(void, arena, sql, params) instead.
     pub fn exec(self: *Transaction, sql: []const u8, params: anytype) !void {
         try self.check();
-        _ = self.conn.exec(sql, params) catch |err| {
-            if (err == error.PG) logPgErr(self.conn);
-            return err;
-        };
+        _ = self.conn.exec(sql, params) catch |err| return fail(self.conn, err);
     }
 
     pub fn query(
@@ -520,10 +813,7 @@ pub const Transaction = struct {
     /// then cleans it up and returns the connection.
     pub fn commit(self: *Transaction) !void {
         try self.check();
-        _ = self.conn.exec("COMMIT", .{}) catch |err| {
-            if (err == error.PG) logPgErr(self.conn);
-            return err;
-        };
+        _ = self.conn.exec("COMMIT", .{}) catch |err| return fail(self.conn, err);
         db_pool.?.release(self.conn);
         self.committed = true;
     }
@@ -551,7 +841,7 @@ fn pgExecFn(ptr: *anyopaque, sql: []const u8) anyerror!void {
     while (it.next()) |stmt| {
         const s = std.mem.trim(u8, stmt, " \n\r\t");
         if (s.len == 0) continue;
-        _ = try conn.exec(s, .{});
+        _ = conn.exec(s, .{}) catch |err| return fail(conn, err);
     }
 }
 
@@ -576,7 +866,7 @@ pub fn exec(sql: []const u8, params: anytype) !void {
     try guardSingle(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
-    _ = try conn.exec(sql, params);
+    _ = conn.exec(sql, params) catch |err| return fail(conn, err);
 }
 
 /// Deprecated: use queryExecute(void, arena, sql) instead.
@@ -588,7 +878,7 @@ pub fn execRaw(sql: []const u8) !void {
     while (it.next()) |stmt| {
         const s = std.mem.trim(u8, stmt, " \n\r\t");
         if (s.len == 0) continue;
-        _ = try conn.exec(s, .{});
+        _ = conn.exec(s, .{}) catch |err| return fail(conn, err);
     }
 }
 
@@ -598,7 +888,7 @@ pub fn queryWith(sql: []const u8, params: anytype) !Result {
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
 
-    var pg_result = try conn.queryOpts(sql, params, .{ .column_names = true });
+    var pg_result = conn.queryOpts(sql, params, .{ .column_names = true }) catch |err| return fail(conn, err);
     defer pg_result.deinit();
 
     var arena = std.heap.ArenaAllocator.init(db_allocator.?);
@@ -635,7 +925,7 @@ pub fn queryAs(
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
 
-    var pg_result = try conn.queryOpts(sql, params, .{ .column_names = true });
+    var pg_result = conn.queryOpts(sql, params, .{ .column_names = true }) catch |err| return fail(conn, err);
     defer pg_result.deinit();
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -643,7 +933,7 @@ pub fn queryAs(
     const aa = arena.allocator();
 
     var items = std.ArrayListUnmanaged(T).empty;
-    while (try pg_result.next()) |row| {
+    while (pg_result.next() catch |err| return fail(conn, err)) |row| {
         try items.append(aa, try row.to(T, .{ .map = .name, .dupe = true, .allocator = aa }));
     }
 
@@ -1226,7 +1516,7 @@ test "begin(): failed statement aborts the tx; rollback returns the SAME connect
         var tx = try begin();
         defer tx.rollback();
         pid_in_tx = (try tx.queryOne(i32, a, "SELECT pg_backend_pid()", .{})).?;
-        try std.testing.expectError(error.PG, tx.query(void, a, "SELECT 1/0", .{}));
+        try std.testing.expectError(error.DivisionByZero, tx.query(void, a, "SELECT 1/0", .{}));
         // Postgres refuses everything until the transaction ends; say so clearly.
         try std.testing.expectError(error.TransactionAborted, tx.query(void, a, "SELECT 1", .{}));
         try std.testing.expectError(error.TransactionAborted, tx.queryOne(i32, a, "SELECT 1", .{}));
@@ -1304,4 +1594,188 @@ test "txControl: classifier" {
     try std.testing.expectEqual(TxControl.none, txControl("start"));
     try std.testing.expectEqual(TxControl.none, txControl(""));
     try std.testing.expectEqual(TxControl.none, txControl("/* unterminated"));
+}
+
+// ── Typed errors ────────────────────────────────────────────────────────────
+
+fn setupErrTables(a: std.mem.Allocator) !void {
+    _ = a;
+    try execRaw("DROP TABLE IF EXISTS spider_err_child; DROP TABLE IF EXISTS spider_err_parent");
+    try execRaw("CREATE TABLE spider_err_parent (id integer PRIMARY KEY, email text UNIQUE, qty integer NOT NULL DEFAULT 0 CHECK (qty >= 0), code varchar(3))");
+    try execRaw("CREATE TABLE spider_err_child (id integer PRIMARY KEY, parent_id integer NOT NULL REFERENCES spider_err_parent(id))");
+    try query(void, std.testing.allocator, "INSERT INTO spider_err_parent (id, email) VALUES (1, 'ana@example.com')", .{});
+}
+
+fn dropErrTables() void {
+    execRaw("DROP TABLE IF EXISTS spider_err_child; DROP TABLE IF EXISTS spider_err_parent") catch {};
+}
+
+test "typed errors: SQLSTATE classes map to specific errors, lastError has the details" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try setupErrTables(a);
+    defer dropErrTables();
+
+    // 23505
+    try std.testing.expectError(error.UniqueViolation, query(void, a, "INSERT INTO spider_err_parent (id, email) VALUES (2, 'ana@example.com')", .{}));
+    const info = lastError().?;
+    try std.testing.expectEqualStrings("23505", info.code);
+    try std.testing.expectEqualStrings("spider_err_parent_email_key", info.constraint.?);
+    try std.testing.expectEqualStrings("spider_err_parent", info.table.?);
+    try std.testing.expect(std.mem.indexOf(u8, info.detail.?, "ana@example.com") != null);
+
+    // 23503, 23502, 23514
+    try std.testing.expectError(error.ForeignKeyViolation, query(void, a, "INSERT INTO spider_err_child VALUES (1, 999)", .{}));
+    try std.testing.expectEqualStrings("spider_err_child_parent_id_fkey", lastError().?.constraint.?);
+    try std.testing.expectError(error.NotNullViolation, query(void, a, "INSERT INTO spider_err_child (id) VALUES (2)", .{}));
+    try std.testing.expectEqualStrings("parent_id", lastError().?.column.?);
+    try std.testing.expectError(error.CheckViolation, query(void, a, "INSERT INTO spider_err_parent (id, qty) VALUES (3, -1)", .{}));
+
+    // 22P02 via a parameter, 22001, 22012 (mid-stream), 42601, 42P01
+    const Row = struct { id: []const u8 };
+    try std.testing.expectError(error.InvalidTextRepresentation, query(Row, a, "SELECT 'not-a-uuid'::uuid::text AS id", .{}));
+    // A uuid *parameter* is validated by the driver before it's sent.
+    try std.testing.expectError(error.InvalidUUID, query(Row, a, "SELECT $1::uuid::text AS id", .{"not-a-uuid"}));
+    try std.testing.expectError(error.StringDataRightTruncation, query(void, a, "INSERT INTO spider_err_parent (id, code) VALUES (4, 'toolong')", .{}));
+    try std.testing.expectError(error.DivisionByZero, query(struct { v: i32 }, a, "SELECT 10 / (2 - g) AS v FROM generate_series(1, 3) g", .{}));
+    try std.testing.expectError(error.SqlSyntaxError, query(void, a, "SELEC 1", .{}));
+    try std.testing.expectError(error.UndefinedTable, query(void, a, "SELECT * FROM spider_no_such_table", .{}));
+    try std.testing.expect(isDbError(error.UniqueViolation));
+    try std.testing.expect(!isDbError(error.OutOfMemory));
+
+    // The pool is healthy after all of the above.
+    try std.testing.expectEqual(@as(i32, 1), try query(i32, a, "SELECT 1", .{}));
+}
+
+test "typed errors: RAISE EXCEPTION from a trigger, and inside a transaction" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try setupErrTables(a);
+    defer dropErrTables();
+
+    try std.testing.expectError(error.RaisedException, query(void, a,
+        \\DO $$ BEGIN RAISE EXCEPTION 'blocked by rule' USING ERRCODE = 'P0001'; END $$
+    , .{}));
+    try std.testing.expectEqualStrings("blocked by rule", lastError().?.message);
+
+    var tx = try begin();
+    defer tx.rollback();
+    try std.testing.expectError(error.UniqueViolation, tx.query(void, a, "INSERT INTO spider_err_parent (id, email) VALUES (9, 'ana@example.com')", .{}));
+    try std.testing.expectError(error.TransactionAborted, tx.query(void, a, "SELECT 1", .{}));
+}
+
+test "errorForCode: classes" {
+    try std.testing.expectEqual(DbError.UniqueViolation, errorForCode("23505"));
+    try std.testing.expectEqual(DbError.IntegrityConstraintViolation, errorForCode("23000"));
+    try std.testing.expectEqual(DbError.DataException, errorForCode("22023"));
+    try std.testing.expectEqual(DbError.SerializationFailure, errorForCode("40001"));
+    try std.testing.expectEqual(DbError.PG, errorForCode("XX000"));
+}
+
+// ── Decoding ────────────────────────────────────────────────────────────────
+
+test "decode: uuid, timestamps, date, time, numeric, jsonb, bool as readable text" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const Row = struct {
+        id: []const u8,
+        ts: []const u8,
+        tstz: []const u8,
+        d: []const u8,
+        t: []const u8,
+        n: []const u8,
+        neg: []const u8,
+        j: []const u8,
+        b: []const u8,
+        i: []const u8,
+    };
+    const rows = try query(Row, arena.allocator(),
+        \\SELECT 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid AS id,
+        \\       '2026-09-26 18:40:33.183'::timestamp AS ts,
+        \\       '2026-09-26 15:40:33.183-03'::timestamptz AS tstz,
+        \\       '2026-09-26'::date AS d,
+        \\       '07:05:09'::time AS t,
+        \\       123.4500::numeric AS n,
+        \\       -0.05::numeric AS neg,
+        \\       '{"a": [1, 2]}'::jsonb AS j,
+        \\       true AS b,
+        \\       42::bigint AS i
+    , .{});
+    const r = rows[0];
+    try std.testing.expectEqualStrings("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", r.id);
+    try std.testing.expectEqualStrings("2026-09-26T18:40:33.183", r.ts);
+    try std.testing.expectEqualStrings("2026-09-26T18:40:33.183Z", r.tstz);
+    try std.testing.expectEqualStrings("2026-09-26", r.d);
+    try std.testing.expectEqualStrings("07:05:09", r.t);
+    try std.testing.expectEqualStrings("123.4500", r.n);
+    try std.testing.expectEqualStrings("-0.05", r.neg);
+    try std.testing.expectEqualStrings("{\"a\": [1, 2]}", r.j);
+    try std.testing.expectEqualStrings("true", r.b);
+    try std.testing.expectEqualStrings("42", r.i);
+}
+
+test "decode: numbers from numeric/sum/text, overflow is an error not a panic" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Row = struct { total: i64, avg: f64, small: i16, txt: i32 };
+    const rows = try query(Row, a, "SELECT sum(x)::numeric AS total, avg(x) AS avg, 7::int2 AS small, '12'::text AS txt FROM (VALUES (1), (2), (4)) v(x)", .{});
+    try std.testing.expectEqual(@as(i64, 7), rows[0].total);
+    try std.testing.expect(@abs(rows[0].avg - 7.0 / 3.0) < 1e-9);
+    try std.testing.expectEqual(@as(i16, 7), rows[0].small);
+    try std.testing.expectEqual(@as(i32, 12), rows[0].txt);
+
+    try std.testing.expectEqual(@as(i64, 5_000_000_000), try query(i64, a, "SELECT 5000000000::bigint", .{}));
+    try std.testing.expectError(error.IntegerOverflow, query(struct { v: i32 }, a, "SELECT 5000000000::bigint AS v", .{}));
+    try std.testing.expectError(error.TypeMismatch, query(struct { v: i32 }, a, "SELECT 1.5::numeric AS v", .{}));
+    try std.testing.expectError(error.TypeMismatch, query(struct { v: i64 }, a, "SELECT now() AS v", .{}));
+}
+
+// ── Missing columns / NULLs ─────────────────────────────────────────────────
+
+test "mapping: missing column and NULL into non-optional fail by default" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.ColumnMissing, query(struct { id: i32, carrier: []const u8 }, a, "SELECT 1 AS id", .{}));
+    try std.testing.expectError(error.UnexpectedNull, query(struct { name: []const u8 }, a, "SELECT NULL::text AS name", .{}));
+    try std.testing.expectError(error.UnexpectedNull, queryOne(struct { n: i32 }, a, "SELECT NULL::int AS n", .{}));
+}
+
+test "mapping: optional -> null, declared default -> default" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const Row = struct { id: i32, note: ?[]const u8, label: []const u8 = "n/a", count: i32 = -1, missing_opt: ?i32 };
+    const rows = try query(Row, arena.allocator(), "SELECT 1 AS id, NULL::text AS note, NULL::text AS label", .{});
+    try std.testing.expectEqual(@as(i32, 1), rows[0].id);
+    try std.testing.expect(rows[0].note == null);
+    try std.testing.expectEqualStrings("n/a", rows[0].label);
+    try std.testing.expectEqual(@as(i32, -1), rows[0].count);
+    try std.testing.expect(rows[0].missing_opt == null);
+}
+
+test "mapping: .warn mode keeps the old zero values (migration aid)" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    mapping_mode = .warn;
+    defer mapping_mode = .fail;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const rows = try query(struct { id: i32, carrier: []const u8, n: i32 }, arena.allocator(), "SELECT 1 AS id, NULL::int AS n", .{});
+    try std.testing.expectEqualStrings("", rows[0].carrier);
+    try std.testing.expectEqual(@as(i32, 0), rows[0].n);
 }

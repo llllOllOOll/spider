@@ -169,6 +169,14 @@ test "statusForError: defaults" {
     try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.MissingField));
     try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.SyntaxError));
     try std.testing.expectEqual(std.http.Status.internal_server_error, sfe(error.PG));
+    try std.testing.expectEqual(std.http.Status.conflict, sfe(error.UniqueViolation));
+    try std.testing.expectEqual(std.http.Status.conflict, sfe(error.ForeignKeyViolation));
+    try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.InvalidTextRepresentation));
+    try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.InvalidUUID));
+    try std.testing.expectEqual(std.http.Status.unprocessable_entity, sfe(error.RaisedException));
+    try std.testing.expectEqual(std.http.Status.service_unavailable, sfe(error.SerializationFailure));
+    try std.testing.expectEqual(std.http.Status.internal_server_error, sfe(error.DivisionByZero));
+    try std.testing.expectEqual(std.http.Status.internal_server_error, sfe(error.ColumnMissing));
     try std.testing.expectEqual(std.http.Status.internal_server_error, sfe(error.OutOfMemory));
 }
 

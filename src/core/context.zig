@@ -780,6 +780,28 @@ pub fn statusForError(err: anyerror) std.http.Status {
         error.InvalidEnumTag,
         => .bad_request,
         error.PayloadTooLarge => .payload_too_large,
+        // Postgres (spider.pg typed errors). Input-shaped failures are the
+        // client's; conflicts are 409; transient contention is 503 (retrying
+        // helps); a trigger/plpgsql RAISE is a business rule (422).
+        error.UniqueViolation,
+        error.ForeignKeyViolation,
+        error.ExclusionViolation,
+        => .conflict,
+        error.InvalidTextRepresentation,
+        error.InvalidUUID,
+        error.StringDataRightTruncation,
+        error.NumericValueOutOfRange,
+        error.InvalidDatetimeFormat,
+        error.DatetimeFieldOverflow,
+        error.NotNullViolation,
+        error.CheckViolation,
+        => .bad_request,
+        error.RaisedException => .unprocessable_entity,
+        error.SerializationFailure,
+        error.DeadlockDetected,
+        error.LockNotAvailable,
+        error.QueryCanceled,
+        => .service_unavailable,
         else => .internal_server_error,
     };
 }
