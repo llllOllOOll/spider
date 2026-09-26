@@ -35,6 +35,10 @@ fn count(c: *spider.Ctx) !spider.Response {
     return c.text(try std.fmt.allocPrint(c.arena, "{d}", .{c.sseHub().count()}), .{});
 }
 
+fn boom(_: *spider.Ctx) !spider.Response {
+    return error.Forbidden;
+}
+
 fn hello(c: *spider.Ctx) !spider.Response {
     return c.text("hello", .{});
 }
@@ -52,6 +56,7 @@ fn runApp(p: u16) void {
         .post("/emit/:room", emit, .{})
         .get("/sse-count", count, .{})
         .get("/hello", hello, .{})
+        .get("/boom", boom, .{})
         .listen(.{ .port = p, .host = "127.0.0.1" }) catch |err| {
         std.log.err("sse app listen() failed: {s}", .{@errorName(err)});
     };
@@ -240,4 +245,27 @@ test "sse: ONE connection subscribed to three channels receives events from all 
     // A channel it never subscribed to never reached it.
     try std.testing.expect(std.mem.indexOf(u8, c.seen.items, "not-mine") == null);
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, c.seen.items, "event: ping"));
+}
+
+// This app has NO onError: default error mapping (statusForError).
+
+test "default errors (no onError): status mapping, JSON for fetch callers" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try ensureStarted(io);
+
+    const html = try h.request(io, arena.allocator(), port, "/boom", .{});
+    try std.testing.expectEqual(@as(u16, 403), html.status);
+    try std.testing.expectEqualStrings("Forbidden", html.body);
+
+    const fetched = try h.request(io, arena.allocator(), port, "/boom", .{ .headers = &.{"Sec-Fetch-Dest: empty"} });
+    try std.testing.expectEqual(@as(u16, 403), fetched.status);
+    try std.testing.expectEqualStrings("{\"error\":\"Forbidden\",\"message\":\"Forbidden\"}", fetched.body);
+
+    const missing = try h.request(io, arena.allocator(), port, "/nope", .{ .headers = &.{"Accept: application/json"} });
+    try std.testing.expectEqual(@as(u16, 404), missing.status);
+    try std.testing.expectEqualStrings("{\"error\":\"NotFound\",\"message\":\"Not Found\"}", missing.body);
 }

@@ -139,7 +139,7 @@ fn register(c: *spider.Ctx) !spider.Response {
 fn errorHandler(c: *spider.Ctx, err: anyerror) !spider.Response {
     return switch (err) {
         error.Forbidden => c.text("forbidden", .{ .status = .forbidden }),
-        else => c.text(@errorName(err), .{ .status = .internal_server_error }),
+        else => c.text(@errorName(err), .{ .status = spider.statusForError(err) }),
     };
 }
 

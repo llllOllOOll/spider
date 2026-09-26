@@ -70,6 +70,40 @@ pub const Ctx = struct {
     /// the wrong handler.
     _chain_mws: []const MiddlewareFn = &.{},
     _chain_handler: ?*const fn (*Ctx) anyerror!Response = null,
+    /// Correlation id for this request (see requestId()).
+    _request_id: []const u8 = "",
+    /// Human-readable detail for the error the handler/extractor returned.
+    _error_detail: ?[]const u8 = null,
+
+    /// Id correlating every log line and the response of this request: the
+    /// incoming `X-Request-Id` when it looks sane (e.g. set by a proxy),
+    /// otherwise generated. Also sent back as the `X-Request-Id` header.
+    pub fn requestId(self: *Ctx) []const u8 {
+        return self._request_id;
+    }
+
+    /// Attach a human-readable reason to the error about to be returned
+    /// (e.g. "invalid path param: id"); onError/default handling can show it.
+    pub fn setErrorDetail(self: *Ctx, detail: []const u8) void {
+        self._error_detail = detail;
+    }
+
+    pub fn errorDetail(self: *Ctx) ?[]const u8 {
+        return self._error_detail;
+    }
+
+    /// True when the client expects JSON rather than HTML: an explicit
+    /// `Accept: application/json`, or a script request (fetch/XHR:
+    /// `Sec-Fetch-Dest: empty`) that isn't htmx. Lets an error handler answer
+    /// fetch() callers with a parseable body instead of an HTML page.
+    pub fn wantsJson(self: *Ctx) bool {
+        if (self.header("Accept")) |accept| {
+            if (std.mem.indexOf(u8, accept, "application/json") != null) return true;
+        }
+        if (self.isHtmx()) return false;
+        const dest = self.header("Sec-Fetch-Dest") orelse return false;
+        return std.mem.eql(u8, dest, "empty");
+    }
 
     pub fn db(self: *Ctx) DatabaseCtx {
         return .{
@@ -717,3 +751,35 @@ pub const Ctx = struct {
         return @tagName(self.request.head.method);
     }
 };
+
+/// Default HTTP status for an error returned by a handler, middleware or
+/// extractor. Used when the app has no `onError`, and exposed so an app's
+/// own handler can fall back to it for errors it doesn't special-case.
+pub fn statusForError(err: anyerror) std.http.Status {
+    return switch (err) {
+        error.NotFound => .not_found,
+        error.Forbidden => .forbidden,
+        error.Unauthorized => .unauthorized,
+        // Client input: path/form/multipart/JSON that can't be bound.
+        error.MissingPathParam,
+        error.InvalidPathParam,
+        error.BodyEmpty,
+        error.BodyUnreadable,
+        error.MissingField,
+        error.MissingFieldName,
+        error.MissingContentType,
+        error.InvalidBoundary,
+        error.BoundaryTooLong,
+        error.InvalidMultipartEncoding,
+        error.SyntaxError,
+        error.UnexpectedEndOfInput,
+        error.UnexpectedToken,
+        error.UnknownField,
+        error.DuplicateField,
+        error.InvalidNumber,
+        error.InvalidEnumTag,
+        => .bad_request,
+        error.PayloadTooLarge => .payload_too_large,
+        else => .internal_server_error,
+    };
+}

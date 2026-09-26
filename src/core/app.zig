@@ -163,7 +163,73 @@ fn workerLoop(wctx: WorkerCtx) void {
         };
     }
 
-    group.await(wctx.io) catch {};
+    group.await(wctx.io) catch {}; // canceled at shutdown: nothing left to report
+}
+
+fn isRequestIdChar(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch == '.';
+}
+
+/// Echoed into logs and a response header, so only a short token of safe
+/// characters is accepted from the client.
+fn isSaneRequestId(v: []const u8) bool {
+    if (v.len == 0 or v.len > 64) return false;
+    for (v) |ch| if (!isRequestIdChar(ch)) return false;
+    return true;
+}
+
+test "isSaneRequestId" {
+    try std.testing.expect(isSaneRequestId("proxy-abc_123.4"));
+    try std.testing.expect(!isSaneRequestId(""));
+    try std.testing.expect(!isSaneRequestId("bad id <script>"));
+    try std.testing.expect(!isSaneRequestId("a\r\nSet-Cookie: x"));
+    var long: [65]u8 = undefined;
+    @memset(&long, 'x');
+    try std.testing.expect(!isSaneRequestId(&long));
+}
+
+/// Incoming X-Request-Id when it looks sane (e.g. set by a reverse proxy, so
+/// its log lines and ours share one id), otherwise 16 random hex chars.
+fn makeRequestId(io: Io, arena: std.mem.Allocator, headers: std.StringHashMapUnmanaged([]const u8)) []const u8 {
+    var it = headers.iterator();
+    while (it.next()) |e| {
+        if (!std.ascii.eqlIgnoreCase(e.key_ptr.*, "X-Request-Id")) continue;
+        const v = e.value_ptr.*;
+        if (isSaneRequestId(v)) return v;
+        break;
+    }
+    var rnd: [8]u8 = undefined;
+    std.Io.random(io, &rnd);
+    const hex = std.fmt.bytesToHex(rnd, .lower);
+    return arena.dupe(u8, &hex) catch "-";
+}
+
+/// A failed write to the client is almost always the client going away
+/// (closed tab, navigation, timeout) — debug level, not an error.
+fn logRespondError(err: anyerror, rid: []const u8, method: []const u8, path: []const u8) void {
+    std.log.debug("rid={s} {s} {s}: response not delivered ({s}); client likely disconnected", .{ rid, method, path, @errorName(err) });
+}
+
+/// Turns an error from the chain into a Response: the app's onError when
+/// set, otherwise statusForError() + detail (JSON for fetch callers).
+fn respondToError(error_handler: ?ErrorHandler, c: *Ctx, err: anyerror) Response {
+    const method = @tagName(c.request.head.method);
+    if (error_handler) |eh| {
+        return eh(c, err) catch |eh_err| {
+            std.log.err("rid={s} {s} {s}: onError failed with {s} while handling {s}", .{ c.requestId(), method, c.getPath(), @errorName(eh_err), @errorName(err) });
+            return Response{ .status = .internal_server_error, .body = "Internal Server Error", .content_type = "text/plain" };
+        };
+    }
+    const status = ctx_mod.statusForError(err);
+    if (@intFromEnum(status) >= 500) {
+        std.log.err("rid={s} {s} {s}: unhandled error {s}", .{ c.requestId(), method, c.getPath(), @errorName(err) });
+    }
+    const message = c.errorDetail() orelse (status.phrase() orelse "Error");
+    if (c.wantsJson()) {
+        return c.json(.{ .@"error" = @errorName(err), .message = message }, .{ .status = status }) catch
+            Response{ .status = status, .body = message, .content_type = "text/plain" };
+    }
+    return c.text(message, .{ .status = status }) catch Response{ .status = status, .body = message, .content_type = "text/plain" };
 }
 
 fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
@@ -196,28 +262,59 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         {
             var hdr_iter = request.iterateHeaders();
             while (hdr_iter.next()) |h| {
-                headers_map.put(arena, h.name, h.value) catch {};
+                headers_map.put(arena, h.name, h.value) catch |err| {
+                    std.log.err("{s} {s}: dropped header {s} ({s})", .{ @tagName(request.head.method), path, h.name, @errorName(err) });
+                };
             }
         }
+        const request_id = makeRequestId(ctx.io, arena, headers_map);
+        const method_name = @tagName(request.head.method);
 
+        var body_error: ?anyerror = null;
         const body: ?[]const u8 = blk: {
             const cl = request.head.content_length orelse break :blk null;
             if (cl == 0) break :blk null;
-            const target_copy = arena.dupe(u8, target) catch break :blk null;
+            const target_copy = arena.dupe(u8, target) catch |err| {
+                body_error = err;
+                break :blk null;
+            };
             var body_io_buf: [4096]u8 = undefined;
             const body_reader = request.readerExpectNone(&body_io_buf);
             request.head.target = target_copy;
-            break :blk body_reader.readAlloc(arena, cl) catch null;
+            break :blk body_reader.readAlloc(arena, cl) catch |err| {
+                body_error = err;
+                break :blk null;
+            };
         };
+        // A body that couldn't be read (client stalled/disconnected mid-upload,
+        // OOM) used to reach the handler as "no body" and surface as a
+        // misleading error.BodyEmpty. Answer 400 here instead, log the real
+        // cause, and drop the connection: the stream position is unknown.
+        if (body_error) |err| {
+            std.log.warn("rid={s} {s} {s}: could not read request body ({d} bytes): {s}", .{ request_id, method_name, path, request.head.content_length orelse 0, @errorName(err) });
+            request.respond("Could not read request body", .{
+                .status = .bad_request,
+                .extra_headers = &.{ .{ .name = "content-type", .value = "text/plain" }, .{ .name = "X-Request-Id", .value = request_id } },
+                .keep_alive = false,
+            }) catch |werr| logRespondError(werr, request_id, method_name, path);
+            break;
+        }
 
         {
-            if ((static_mod.serve(ctx.io, arena, ctx.static_config, path) catch null)) |static_response| {
+            const static_hit = static_mod.serve(ctx.io, arena, ctx.static_config, path) catch |err| blk: {
+                std.log.err("rid={s} {s} {s}: static file error {s}", .{ request_id, method_name, path, @errorName(err) });
+                break :blk null;
+            };
+            if (static_hit) |static_response| {
                 var extra_hdrs_buf: [2]std.http.Header = undefined;
                 extra_hdrs_buf[0] = .{ .name = "content-type", .value = static_response.content_type };
                 request.respond(static_response.body orelse "", .{
                     .status = static_response.status,
                     .extra_headers = extra_hdrs_buf[0..1],
-                }) catch {};
+                }) catch |err| {
+                    logRespondError(err, request_id, method_name, path);
+                    break;
+                };
                 if (!request.head.keep_alive) break;
                 continue;
             }
@@ -232,7 +329,16 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             .index = ctx.views_index,
         } else null;
 
-        const match = ctx.router.match(request.head.method, path, arena) catch null;
+        // Only fails on OOM; that used to read as "no route" and answer 404.
+        const match = ctx.router.match(request.head.method, path, arena) catch |err| {
+            std.log.err("rid={s} {s} {s}: route lookup failed: {s}", .{ request_id, method_name, path, @errorName(err) });
+            request.respond("Internal Server Error", .{
+                .status = .internal_server_error,
+                .extra_headers = &.{ .{ .name = "content-type", .value = "text/plain" }, .{ .name = "X-Request-Id", .value = request_id } },
+                .keep_alive = false,
+            }) catch |werr| logRespondError(werr, request_id, method_name, path);
+            break;
+        };
         const response = if (match) |m| blk: {
             var matched_hub: ?*Hub = null;
             for (ctx.ws_route_hubs) |rh| {
@@ -254,22 +360,14 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._decorations = ctx.decorations,
                 ._ws_hub = matched_hub,
                 ._sse_hub = ctx.sse_hub,
+                ._request_id = request_id,
             };
 
             var mw_buf: [64]MiddlewareFn = undefined;
             const mw_count = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, m.middlewares, &mw_buf);
 
-            break :blk runChain(&ctx_req, mw_buf[0..mw_count], m.handler) catch |err| r: {
-                if (ctx.error_handler) |eh| {
-                    break :r eh(&ctx_req, err) catch Response{
-                        .status = .internal_server_error,
-                        .body = "Internal Server Error",
-                        .content_type = "text/plain",
-                    };
-                }
-                std.log.err("unhandled error: {s}", .{@errorName(err)});
-                break :r Response{ .status = .internal_server_error, .body = "Internal Server Error", .content_type = "text/plain" };
-            };
+            break :blk runChain(&ctx_req, mw_buf[0..mw_count], m.handler) catch |err|
+                respondToError(ctx.error_handler, &ctx_req, err);
         } else blk: {
             var ctx_req = Ctx{
                 .request = request,
@@ -284,34 +382,27 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._decorations = ctx.decorations,
                 ._ws_hub = null,
                 ._sse_hub = ctx.sse_hub,
+                ._request_id = request_id,
             };
             var mw_buf_404: [64]MiddlewareFn = undefined;
             const mw_count_404 = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, &.{}, &mw_buf_404);
+            // No route: error.NotFound through the same path as any handler
+            // error, so an app's onError renders its own 404 (it used to be a
+            // fixed text response that bypassed onError).
             const notFoundHandler: Handler = struct {
-                fn h(c: *Ctx) anyerror!Response {
-                    return c.text("404 Not Found", .{ .status = .not_found }) catch
-                        Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };
+                fn h(_: *Ctx) anyerror!Response {
+                    return error.NotFound;
                 }
             }.h;
-            break :blk if (mw_count_404 > 0)
-                runChain(&ctx_req, mw_buf_404[0..mw_count_404], notFoundHandler) catch |err| r: {
-                    if (ctx.error_handler) |eh| {
-                        break :r eh(&ctx_req, err) catch Response{
-                            .status = .internal_server_error,
-                            .body = "Internal Server Error",
-                            .content_type = "text/plain",
-                        };
-                    }
-                    break :r Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };
-                }
-            else
-                ctx_req.text("404 Not Found", .{ .status = .not_found }) catch
-                    Response{ .status = .not_found, .body = "404 Not Found", .content_type = "text/plain" };
+            break :blk runChain(&ctx_req, mw_buf_404[0..mw_count_404], notFoundHandler) catch |err|
+                respondToError(ctx.error_handler, &ctx_req, err);
         };
 
         var extra_headers_buf: [32]std.http.Header = undefined;
         var header_count: usize = 0;
         extra_headers_buf[header_count] = .{ .name = "content-type", .value = response.content_type };
+        header_count += 1;
+        extra_headers_buf[header_count] = .{ .name = "X-Request-Id", .value = request_id };
         header_count += 1;
         for (response.headers) |h| {
             if (header_count < 32) {
@@ -350,7 +441,10 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             .status = response.status,
             .extra_headers = extra_headers_buf[0..header_count],
             .keep_alive = !malformed_body_request,
-        }) catch {};
+        }) catch |err| {
+            logRespondError(err, request_id, method_name, path);
+            break;
+        };
 
         if (!request.head.keep_alive or malformed_body_request) break;
     }
@@ -475,24 +569,27 @@ fn buildAutoWrapper(comptime handler: anytype) Handler {
                     args[i] = ctx;
                 } else if (comptime isExtractor(PT)) {
                     if (PT.spider_kind == .path) {
-                        const raw = ctx.params.get(PT.param_name) orelse return ctx.text(
-                            "missing path param: " ++ PT.param_name,
-                            .{ .status = .bad_request },
-                        );
+                        // Errors (not canned 400 responses) so they reach the
+                        // app's onError like any other handler error; the
+                        // default mapping (statusForError) still gives 400.
+                        const raw = ctx.params.get(PT.param_name) orelse {
+                            ctx.setErrorDetail("missing path param: " ++ PT.param_name);
+                            return error.MissingPathParam;
+                        };
                         if (comptime PT.Inner == []const u8) {
                             args[i] = .{ .value = raw };
                         } else {
-                            const parsed = std.fmt.parseInt(PT.Inner, raw, 10) catch return ctx.text(
-                                "invalid path param: " ++ PT.param_name,
-                                .{ .status = .bad_request },
-                            );
+                            const parsed = std.fmt.parseInt(PT.Inner, raw, 10) catch {
+                                ctx.setErrorDetail("invalid path param: " ++ PT.param_name);
+                                return error.InvalidPathParam;
+                            };
                             args[i] = .{ .value = parsed };
                         }
                     } else if (PT.spider_kind == .form) {
-                        const parsed = ctx.parseForm(PT.Inner) catch |err| return ctx.text(
-                            @errorName(err),
-                            .{ .status = .bad_request },
-                        );
+                        const parsed = ctx.parseForm(PT.Inner) catch |err| {
+                            ctx.setErrorDetail("invalid form body");
+                            return err;
+                        };
                         args[i] = .{ .value = parsed };
                     } else {
                         @compileError("unsupported spider extractor kind on " ++ @typeName(PT));
@@ -559,7 +656,7 @@ fn intervalLoop(entry: *IntervalEntry) void {
             entry.io,
             std.Io.Duration.fromMilliseconds(@as(i64, @intCast(entry.ms))),
             .real,
-        ) catch {};
+        ) catch {}; // only fails when canceled at shutdown; the loop re-checks `running`
         if (entry.running.load(.acquire)) {
             entry.callback(entry.hub);
         }
@@ -793,7 +890,7 @@ pub fn Server(comptime T: type) type {
                 .ms = ms,
                 .callback = callback,
                 .io = undefined,
-            }) catch {};
+            }) catch |err| std.log.err("interval not scheduled: {s}", .{@errorName(err)});
             return self;
         }
 
@@ -827,7 +924,7 @@ pub fn Server(comptime T: type) type {
                 .ms = ms,
                 .callback = callback,
                 .io = undefined,
-            }) catch {};
+            }) catch |err| std.log.err("interval not scheduled: {s}", .{@errorName(err)});
             return self;
         }
 
@@ -839,7 +936,8 @@ pub fn Server(comptime T: type) type {
         /// own `catch {}` above.
         pub fn sseHeartbeat(self: *Self, interval_ms: ?u64) *Self {
             self.ensureSseHub();
-            if (self.sse_hub) |*hub| hub.startHeartbeat(interval_ms) catch {};
+            if (self.sse_hub) |*hub| hub.startHeartbeat(interval_ms) catch |err|
+                std.log.err("SSE heartbeat not started: {s}", .{@errorName(err)});
             return self;
         }
 
@@ -849,7 +947,8 @@ pub fn Server(comptime T: type) type {
         /// indefinitely. `interval_ms` null uses Hub.default_sweep_ms (60s).
         pub fn sseSweep(self: *Self, interval_ms: ?u64) *Self {
             self.ensureSseHub();
-            if (self.sse_hub) |*hub| hub.startSweep(interval_ms) catch {};
+            if (self.sse_hub) |*hub| hub.startSweep(interval_ms) catch |err|
+                std.log.err("SSE sweep not started: {s}", .{@errorName(err)});
             return self;
         }
 
@@ -871,7 +970,8 @@ pub fn Server(comptime T: type) type {
             middlewares: []const MiddlewareFn,
             handler: Handler,
         ) void {
-            self.router.addRoute(method, path, .{ .handler = handler, .middlewares = middlewares }) catch {};
+            self.router.addRoute(method, path, .{ .handler = handler, .middlewares = middlewares }) catch |err|
+                std.log.err("route {s} {s} not registered: {s}", .{ @tagName(method), path, @errorName(err) });
         }
 
         pub fn group(
@@ -887,7 +987,8 @@ pub fn Server(comptime T: type) type {
         pub fn mount(self: *Self, child: Group) *Self {
             child.router.forEach(std.heap.page_allocator, self, struct {
                 fn cb(s: *Self, method: std.http.Method, path: []const u8, route: Route) void {
-                    s.router.addRoute(method, path, route) catch {};
+                    s.router.addRoute(method, path, route) catch |err|
+                        std.log.err("mounted route {s} {s} not registered: {s}", .{ @tagName(method), path, @errorName(err) });
                 }
             }.cb);
 
@@ -1074,7 +1175,10 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
         // no embedded Templates struct — building it when has_embed is true
         // is wasted work, since that branch of view() never reaches vc.index.
         const views_dir = cfg.views_dir orelse "src";
-        s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, views_dir) catch null;
+        s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, views_dir) catch |err| blk: {
+            std.log.warn("views index for \"{s}\" not built: {s}", .{ views_dir, @errorName(err) });
+            break :blk null;
+        };
     }
 
     health_mod.init();
@@ -1097,7 +1201,10 @@ pub fn appWithConfig(config: Config) Server(EmptyDeco) {
     const io = threaded.io();
     if (!ctx_mod.has_embed) {
         const views_dir = config.views_dir orelse "src";
-        s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, views_dir) catch null;
+        s.views_index = views_mod.buildIndex(io, std.heap.smp_allocator, views_dir) catch |err| blk: {
+            std.log.warn("views index for \"{s}\" not built: {s}", .{ views_dir, @errorName(err) });
+            break :blk null;
+        };
     }
 
     health_mod.init();

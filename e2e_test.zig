@@ -161,8 +161,15 @@ fn ok(c: *spider.Ctx) !spider.Response {
 fn errorHandler(c: *spider.Ctx, err: anyerror) !spider.Response {
     return switch (err) {
         error.Forbidden => c.text("forbidden", .{ .status = .forbidden }),
-        else => c.text(@errorName(err), .{ .status = .internal_server_error }),
+        else => c.text(
+            try std.fmt.allocPrint(c.arena, "onError:{s}:{s}", .{ @errorName(err), c.errorDetail() orelse "" }),
+            .{ .status = spider.statusForError(err) },
+        ),
     };
+}
+
+fn typed(id: spider.Path(i64, "id"), c: *spider.Ctx) !spider.Response {
+    return c.text(try std.fmt.allocPrint(c.arena, "typed:{d}", .{id.value}), .{});
 }
 
 const admin = &[_][]const u8{"admin"};
@@ -198,6 +205,7 @@ fn runApp(port: u16) void {
         .get("/amb/new", ok, .{})
         .get("/amb/:id", ok, .{ .roles = admin })
         .get("/public/:id", ok, .{})
+        .get("/typed/:id", typed, .{})
         .mount(g)
         .onError(errorHandler)
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
@@ -404,4 +412,68 @@ test "middleware chain: a middleware that yields before next() never runs anothe
     }
     try std.testing.expectEqual(@as(u32, 0), wrong.load(.seq_cst));
     try std.testing.expectEqual(@as(u32, 0), errors.load(.seq_cst));
+}
+
+// ── request id, error routing, unreadable bodies ────────────────────────
+
+test "request id: generated when absent, echoed as X-Request-Id" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const a = try request(env.io(), env.arena.allocator(), port, "/public/1", .{});
+    const b = try request(env.io(), env.arena.allocator(), port, "/public/1", .{});
+    const ra = a.header("X-Request-Id").?;
+    try std.testing.expectEqual(@as(usize, 16), ra.len);
+    try std.testing.expect(!std.mem.eql(u8, ra, b.header("X-Request-Id").?));
+}
+
+test "request id: a sane incoming X-Request-Id is kept, a bad one replaced" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const kept = try request(env.io(), env.arena.allocator(), port, "/public/1", .{ .headers = &.{"X-Request-Id: proxy-abc_123.4"} });
+    try std.testing.expectEqualStrings("proxy-abc_123.4", kept.header("X-Request-Id").?);
+    const bad = try request(env.io(), env.arena.allocator(), port, "/public/1", .{ .headers = &.{"X-Request-Id: bad id <script>"} });
+    try std.testing.expectEqual(@as(usize, 16), bad.header("X-Request-Id").?.len);
+}
+
+test "unknown route goes through onError as NotFound (404)" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const res = try request(env.io(), env.arena.allocator(), port, "/definitely/not/here", .{});
+    try std.testing.expectEqual(@as(u16, 404), res.status);
+    try std.testing.expectEqualStrings("onError:NotFound:", res.body);
+}
+
+test "extractor failure reaches onError with its detail (400)" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const res = try request(env.io(), env.arena.allocator(), port, "/typed/abc", .{});
+    try std.testing.expectEqual(@as(u16, 400), res.status);
+    try std.testing.expectEqualStrings("onError:InvalidPathParam:invalid path param: id", res.body);
+    const good = try request(env.io(), env.arena.allocator(), port, "/typed/7", .{});
+    try std.testing.expectEqualStrings("typed:7", good.body);
+}
+
+test "truncated request body -> 400, not a misleading BodyEmpty" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try appPort(io);
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
+    var stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+    var wbuf: [512]u8 = undefined;
+    var w = stream.writer(io, &wbuf);
+    // Promises 100 bytes, sends 10, then stops sending.
+    try w.interface.writeAll("POST /r/items/1 HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\nname=short");
+    try w.interface.flush();
+    try stream.shutdown(io, .send);
+    var rbuf: [1024]u8 = undefined;
+    var r = stream.reader(io, &rbuf);
+    const raw = try r.interface.allocRemaining(env.arena.allocator(), .limited(64 * 1024));
+    try std.testing.expect(std.mem.startsWith(u8, raw, "HTTP/1.1 400"));
+    try std.testing.expect(std.mem.indexOf(u8, raw, "Could not read request body") != null);
 }

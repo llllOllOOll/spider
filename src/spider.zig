@@ -9,6 +9,7 @@ pub const NextFn = @import("core/context.zig").NextFn;
 pub const MiddlewareFn = @import("core/context.zig").MiddlewareFn;
 pub const ErrorHandler = @import("core/context.zig").ErrorHandler;
 pub const Response = @import("core/context.zig").Response;
+pub const statusForError = @import("core/context.zig").statusForError;
 pub const Path = @import("core/extractors.zig").Path;
 pub const Form = @import("core/extractors.zig").Form;
 pub const Database = @import("core/database.zig").Database;
@@ -39,6 +40,10 @@ pub const r2 = @import("spider_r2");
 pub const qrcode = @import("spider_qrcode");
 pub const push = @import("modules/push.zig");
 pub const logger = @import("modules/logger.zig").middleware;
+/// Request logger with options (quiet paths, stream opens) — see modules/logger.zig.
+pub const loggerWith = @import("modules/logger.zig").with;
+/// std.log function with UTC timestamps: `pub const std_options: std.Options = .{ .logFn = spider.logFn };`
+pub const logFn = @import("internal/logfmt.zig").logFn;
 pub const gzip = @import("middlewares/gzip.zig").middleware;
 pub const dbgRequest = @import("middlewares/dbg_request.zig").middleware;
 pub const dbgResponse = @import("middlewares/dbg_response.zig").middleware;
@@ -106,5 +111,7 @@ test {
     _ = @import("routing/router_test.zig");
     _ = @import("modules/rbac_test.zig");
     _ = @import("internal/url.zig");
+    _ = @import("internal/logfmt.zig");
+    _ = @import("modules/logger.zig");
     _ = @import("core/http_client_mtls.zig");
 }

@@ -35,6 +35,28 @@ fn dispatch(
     return match.handler(&ctx);
 }
 
+/// Like dispatch(), but for handlers expected to FAIL: returns the error
+/// and the detail the extractor attached (Ctx.errorDetail()).
+fn dispatchErr(
+    comptime T: type,
+    s: *Server(T),
+    method: std.http.Method,
+    path: []const u8,
+    alc: std.mem.Allocator,
+    body: ?[]const u8,
+) !struct { err: anyerror, detail: ?[]const u8 } {
+    const match = (try s.router.match(method, path, alc)).?;
+    var ctx = Ctx{
+        .request = undefined,
+        .arena = alc,
+        .params = match.params,
+        .body = body,
+        ._decorations = if (@sizeOf(T) == 0) null else @as(*const anyopaque, @ptrCast(&s.decorations)),
+    };
+    _ = match.handler(&ctx) catch |err| return .{ .err = err, .detail = ctx.errorDetail() };
+    return error.TestExpectedError;
+}
+
 const UpdateForm = struct { name: []const u8 };
 
 fn getById(id: Path(i64, "id"), c: *Ctx) !Response {
@@ -77,7 +99,7 @@ test "Path extractor: success" {
     try std.testing.expectEqualStrings("42", resp.body.?);
 }
 
-test "Path extractor: invalid int -> 400" {
+test "Path extractor: invalid int -> error.InvalidPathParam (400) with detail" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alc = arena.allocator();
@@ -86,11 +108,13 @@ test "Path extractor: invalid int -> 400" {
     defer s.deinit();
     _ = s.get("/items/:id", getById, .{});
 
-    const resp = try dispatch(NoDeco, &s, .GET, "/items/abc", alc, null);
-    try std.testing.expectEqual(std.http.Status.bad_request, resp.status);
+    const r = try dispatchErr(NoDeco, &s, .GET, "/items/abc", alc, null);
+    try std.testing.expectEqual(error.InvalidPathParam, r.err);
+    try std.testing.expectEqualStrings("invalid path param: id", r.detail.?);
+    try std.testing.expectEqual(std.http.Status.bad_request, context_mod.statusForError(r.err));
 }
 
-test "Path extractor: missing param -> 400" {
+test "Path extractor: missing param -> error.MissingPathParam (400) with detail" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alc = arena.allocator();
@@ -101,8 +125,10 @@ test "Path extractor: missing param -> 400" {
     // exercises the extractor's own "missing" branch.
     _ = s.get("/items", getById, .{});
 
-    const resp = try dispatch(NoDeco, &s, .GET, "/items", alc, null);
-    try std.testing.expectEqual(std.http.Status.bad_request, resp.status);
+    const r = try dispatchErr(NoDeco, &s, .GET, "/items", alc, null);
+    try std.testing.expectEqual(error.MissingPathParam, r.err);
+    try std.testing.expectEqualStrings("missing path param: id", r.detail.?);
+    try std.testing.expectEqual(std.http.Status.bad_request, context_mod.statusForError(r.err));
 }
 
 test "Form extractor: success" {
@@ -119,7 +145,7 @@ test "Form extractor: success" {
     try std.testing.expectEqualStrings("hello", resp.body.?);
 }
 
-test "Form extractor: parse failure -> 400" {
+test "Form extractor: parse failure -> the parse error (400) with detail" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alc = arena.allocator();
@@ -129,8 +155,21 @@ test "Form extractor: parse failure -> 400" {
     _ = s.post("/form", formOnly, .{});
 
     // No body at all -> Ctx.parseForm returns error.BodyEmpty.
-    const resp = try dispatch(NoDeco, &s, .POST, "/form", alc, null);
-    try std.testing.expectEqual(std.http.Status.bad_request, resp.status);
+    const r = try dispatchErr(NoDeco, &s, .POST, "/form", alc, null);
+    try std.testing.expectEqual(error.BodyEmpty, r.err);
+    try std.testing.expectEqualStrings("invalid form body", r.detail.?);
+    try std.testing.expectEqual(std.http.Status.bad_request, context_mod.statusForError(r.err));
+}
+
+test "statusForError: defaults" {
+    const sfe = context_mod.statusForError;
+    try std.testing.expectEqual(std.http.Status.not_found, sfe(error.NotFound));
+    try std.testing.expectEqual(std.http.Status.forbidden, sfe(error.Forbidden));
+    try std.testing.expectEqual(std.http.Status.unauthorized, sfe(error.Unauthorized));
+    try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.MissingField));
+    try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.SyntaxError));
+    try std.testing.expectEqual(std.http.Status.internal_server_error, sfe(error.PG));
+    try std.testing.expectEqual(std.http.Status.internal_server_error, sfe(error.OutOfMemory));
 }
 
 test "combo: Path + Form + *Ctx, *Ctx first — order does not matter" {
