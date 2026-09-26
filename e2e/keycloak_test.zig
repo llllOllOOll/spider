@@ -14,6 +14,9 @@ const realm = "test";
 var idp_port: u16 = 0;
 var app_port: u16 = 0;
 var token_calls = std.atomic.Value(u32).init(0);
+var certs_calls = std.atomic.Value(u32).init(0);
+/// When true the fake IdP also publishes the key under kid "k2" (rotation).
+var serve_k2 = std.atomic.Value(bool).init(false);
 var kc: spider.keycloak.Keycloak = undefined;
 var start_mutex: std.Io.Mutex = .init;
 var started = false;
@@ -71,7 +74,11 @@ fn issuer(alc: std.mem.Allocator) ![]const u8 {
 /// Builds a signed JWT. `extra_json` is spliced into the payload object
 /// (e.g. `,"organizations":{...}`).
 fn makeJwt(alc: std.mem.Allocator, exp: i64, extra_json: []const u8) ![]const u8 {
-    const header = "{\"alg\":\"RS256\",\"typ\":\"JWT\",\"kid\":\"k1\"}";
+    return makeJwtKid(alc, "k1", exp, extra_json);
+}
+
+fn makeJwtKid(alc: std.mem.Allocator, kid: []const u8, exp: i64, extra_json: []const u8) ![]const u8 {
+    const header = try std.fmt.allocPrint(alc, "{{\"alg\":\"RS256\",\"typ\":\"JWT\",\"kid\":\"{s}\"}}", .{kid});
     const payload = try std.fmt.allocPrint(alc, "{{\"sub\":\"user-1\",\"email\":\"u@test\",\"iss\":\"{s}\",\"exp\":{d}{s}}}", .{ try issuer(alc), exp, extra_json });
 
     const h_enc = try alc.alloc(u8, b64.Encoder.calcSize(header.len));
@@ -93,10 +100,14 @@ const orgs_claim = ",\"organizations\":{\"orgA\":{\"name\":\"A\",\"roles\":[\"ad
 // ── fake Keycloak ───────────────────────────────────────────────────────
 
 fn idpCerts(c: *spider.Ctx) !spider.Response {
+    _ = certs_calls.fetchAdd(1, .seq_cst);
     var n_enc: [b64.Encoder.calcSize(256)]u8 = undefined;
     _ = b64.Encoder.encode(&n_enc, &n_bytes);
     const Key = struct { kid: []const u8, kty: []const u8, n: []const u8, e: []const u8 };
-    return c.json(.{ .keys = &[_]Key{.{ .kid = "k1", .kty = "RSA", .n = &n_enc, .e = "AQAB" }} }, .{});
+    const k1: Key = .{ .kid = "k1", .kty = "RSA", .n = &n_enc, .e = "AQAB" };
+    const k2: Key = .{ .kid = "k2", .kty = "RSA", .n = &n_enc, .e = "AQAB" };
+    if (serve_k2.load(.seq_cst)) return c.json(.{ .keys = &[_]Key{ k1, k2 } }, .{});
+    return c.json(.{ .keys = &[_]Key{k1} }, .{});
 }
 
 fn idpToken(c: *spider.Ctx) !spider.Response {
@@ -427,6 +438,107 @@ test "jwks + active_org_cookie: org_roles only count in the selected org" {
     try std.testing.expectEqual(@as(u16, 200), (try e.get("/org/1", &.{in_a})).status);
     try std.testing.expectEqual(@as(u16, 200), (try e.get("/org/1", &.{none})).status);
     try std.testing.expectEqual(@as(u16, 403), (try e.get("/org/1", &.{forged})).status);
+}
+
+// ── JWKS key cache: concurrency, throttling, rotation ───────────────────
+
+fn certsUrl(alc: std.mem.Allocator) ![]const u8 {
+    return std.fmt.allocPrint(alc, "http://127.0.0.1:{d}/realms/{s}/protocol/openid-connect/certs", .{ idp_port, realm });
+}
+
+const VerifyJob = struct {
+    auth: *spider.jwks.JwksAuth,
+    token: []const u8,
+    ok: std.atomic.Value(u32) = .init(0),
+    failed: std.atomic.Value(u32) = .init(0),
+    rounds: usize = 1,
+};
+
+fn verifyWorker(job: *VerifyJob) void {
+    var threaded: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
+    defer threaded.deinit();
+    for (0..job.rounds) |_| {
+        var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+        defer arena.deinit();
+        if (job.auth.verifyTokenIo(threaded.io(), arena.allocator(), job.token)) |_| {
+            _ = job.ok.fetchAdd(1, .seq_cst);
+        } else |_| {
+            _ = job.failed.fetchAdd(1, .seq_cst);
+        }
+    }
+}
+
+fn runConcurrently(job: *VerifyJob, n: usize) !void {
+    var threads: [32]std.Thread = undefined;
+    for (threads[0..n]) |*t| t.* = try std.Thread.spawn(.{}, verifyWorker, .{job});
+    for (threads[0..n]) |t| t.join();
+}
+
+test "jwks: burst of unknown-kid tokens triggers at most ONE JWKS fetch" {
+    var e = try Env.init();
+    defer e.deinit();
+    var auth = try spider.jwks.JwksAuth.init(std.heap.smp_allocator, e.threaded.io(), .{
+        .jwks_url = try certsUrl(e.alc()),
+        .issuer = try issuer(e.alc()),
+    });
+    defer auth.deinit();
+
+    const before = certs_calls.load(.seq_cst);
+    var job: VerifyJob = .{ .auth = &auth, .token = try makeJwtKid(e.alc(), "unknown-kid", far_future, ""), .rounds = 5 };
+    try runConcurrently(&job, 16);
+    const fetches = certs_calls.load(.seq_cst) - before;
+    if (fetches > 1) std.debug.print("\n  80 unknown-kid verifications caused {d} JWKS fetches\n", .{fetches});
+    try std.testing.expect(fetches <= 1);
+    try std.testing.expectEqual(@as(u32, 80), job.failed.load(.seq_cst));
+}
+
+test "jwks: key rotation is picked up with a single fetch while valid tokens keep verifying" {
+    var e = try Env.init();
+    defer e.deinit();
+    serve_k2.store(false, .seq_cst);
+    defer serve_k2.store(false, .seq_cst);
+    var auth = try spider.jwks.JwksAuth.init(std.heap.smp_allocator, e.threaded.io(), .{
+        .jwks_url = try certsUrl(e.alc()),
+        .issuer = try issuer(e.alc()),
+        .min_refetch_interval_ms = 0,
+    });
+    defer auth.deinit();
+
+    serve_k2.store(true, .seq_cst); // IdP rotates: k2 now published
+    const before = certs_calls.load(.seq_cst);
+
+    // k1 tokens hammer the cache while k2 tokens force a refresh of it.
+    var old_job: VerifyJob = .{ .auth = &auth, .token = try makeJwtKid(e.alc(), "k1", far_future, ""), .rounds = 20 };
+    var new_job: VerifyJob = .{ .auth = &auth, .token = try makeJwtKid(e.alc(), "k2", far_future, ""), .rounds = 5 };
+    var t_old: [8]std.Thread = undefined;
+    for (&t_old) |*t| t.* = try std.Thread.spawn(.{}, verifyWorker, .{&old_job});
+    try runConcurrently(&new_job, 8);
+    for (t_old) |t| t.join();
+
+    try std.testing.expectEqual(@as(u32, 160), old_job.ok.load(.seq_cst));
+    try std.testing.expectEqual(@as(u32, 40), new_job.ok.load(.seq_cst));
+    try std.testing.expectEqual(@as(u32, 1), certs_calls.load(.seq_cst) - before);
+}
+
+test "jwks: unknown kid refetch is throttled between bursts" {
+    var e = try Env.init();
+    defer e.deinit();
+    var auth = try spider.jwks.JwksAuth.init(std.heap.smp_allocator, e.threaded.io(), .{
+        .jwks_url = try certsUrl(e.alc()),
+        .issuer = try issuer(e.alc()),
+        .min_refetch_interval_ms = 60_000,
+    });
+    defer auth.deinit();
+
+    const before = certs_calls.load(.seq_cst);
+    const tok = try makeJwtKid(e.alc(), "nope", far_future, "");
+    for (0..10) |_| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        try std.testing.expectError(error.UnknownKey, auth.verifyTokenIo(e.threaded.io(), arena.allocator(), tok));
+    }
+    // init() fetched moments ago, so nothing new inside the throttle window.
+    try std.testing.expectEqual(@as(u32, 0), certs_calls.load(.seq_cst) - before);
 }
 
 // ── test-only RSA key (generated for these tests, never used anywhere else) ──

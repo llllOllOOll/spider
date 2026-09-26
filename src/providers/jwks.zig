@@ -32,6 +32,11 @@ pub const JwksConfig = struct {
     /// present, its value becomes `c.activeOrgId()`, so `org_roles` checks
     /// only count roles held in that org.
     active_org_cookie: ?[]const u8 = null,
+    /// Minimum time between JWKS re-fetches triggered by tokens with an
+    /// unknown `kid`. Bounds how often arbitrary requests can make us call the
+    /// IdP (a forged kid would otherwise force one fetch per request). A real
+    /// key rotation is still picked up on the first unknown kid after it.
+    min_refetch_interval_ms: u64 = 30_000,
 };
 
 pub const Claims = struct {
@@ -45,11 +50,20 @@ pub const Claims = struct {
     extra: std.StringHashMapUnmanaged([]const u8) = .{},
 };
 
+const KeyMap = std.StringHashMapUnmanaged(JwkEntry);
+
 pub const JwksAuth = struct {
     config: JwksConfig,
     allocator: std.mem.Allocator,
     io: std.Io,
-    keys: std.StringHashMapUnmanaged(JwkEntry),
+    /// Read under `keys_lock` (shared); replaced wholesale under it (exclusive).
+    keys: KeyMap,
+    keys_lock: std.Io.RwLock = .init,
+    /// Singleflight for re-fetches: only one fetch runs at a time, and callers
+    /// that waited re-check the cache before fetching again.
+    fetch_mutex: std.Io.Mutex = .init,
+    /// Guarded by `fetch_mutex`.
+    last_fetch: ?std.Io.Timestamp = null,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: JwksConfig) !JwksAuth {
         var self = JwksAuth{
@@ -58,22 +72,32 @@ pub const JwksAuth = struct {
             .io = io,
             .keys = .{},
         };
-        try self.fetchJwks();
+        try self.fetchJwksWith(io);
+        self.last_fetch = std.Io.Timestamp.now(io, .awake);
         return self;
     }
 
     pub fn deinit(self: *JwksAuth) void {
-        var iter = self.keys.iterator();
-        while (iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*.n);
-            self.allocator.free(entry.value_ptr.*.e);
-        }
-        self.keys.deinit(self.allocator);
+        freeKeyMap(self.allocator, &self.keys);
     }
 
+    fn freeKeyMap(allocator: std.mem.Allocator, map: *KeyMap) void {
+        var iter = map.iterator();
+        while (iter.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*.n);
+            allocator.free(entry.value_ptr.*.e);
+        }
+        map.deinit(allocator);
+    }
+
+    /// Re-downloads the key set. Safe to call concurrently with verification.
     pub fn fetchJwks(self: *JwksAuth) !void {
-        var res = try pacman.get(self.io, self.allocator, self.config.jwks_url, .{});
+        return self.fetchJwksWith(self.io);
+    }
+
+    fn fetchJwksWith(self: *JwksAuth, io: std.Io) !void {
+        var res = try pacman.get(io, self.allocator, self.config.jwks_url, .{});
         defer res.deinit();
 
         if (res.status != .ok) {
@@ -99,15 +123,11 @@ pub const JwksAuth = struct {
         };
         defer parsed.deinit();
 
-        var iter = self.keys.iterator();
-        while (iter.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*.n);
-            self.allocator.free(entry.value_ptr.*.e);
-        }
-        self.keys.deinit(self.allocator);
-        self.keys = .{};
-
+        // Build the new set off to the side, then swap it in under the
+        // exclusive lock. Readers copy what they need while holding the shared
+        // lock, so nobody can still be using the old entries once it's freed.
+        var fresh: KeyMap = .{};
+        errdefer freeKeyMap(self.allocator, &fresh);
         for (parsed.value.keys) |key| {
             const kid = try self.allocator.dupe(u8, key.kid);
             errdefer self.allocator.free(kid);
@@ -115,11 +135,57 @@ pub const JwksAuth = struct {
             errdefer self.allocator.free(n);
             const e = try self.allocator.dupe(u8, key.e);
             errdefer self.allocator.free(e);
-            try self.keys.put(self.allocator, kid, .{ .n = n, .e = e });
+            try fresh.put(self.allocator, kid, .{ .n = n, .e = e });
         }
+
+        self.keys_lock.lockUncancelable(io);
+        var old = self.keys;
+        self.keys = fresh;
+        self.keys_lock.unlock(io);
+        freeKeyMap(self.allocator, &old);
+    }
+
+    /// Copies key `kid` into `arena` (null when unknown). The copy outlives
+    /// any concurrent re-fetch that frees the cached entry.
+    fn copyKey(self: *JwksAuth, io: std.Io, arena: std.mem.Allocator, kid: []const u8) !?JwkEntry {
+        self.keys_lock.lockSharedUncancelable(io);
+        defer self.keys_lock.unlockShared(io);
+        const entry = self.keys.get(kid) orelse return null;
+        return .{ .n = try arena.dupe(u8, entry.n), .e = try arena.dupe(u8, entry.e) };
+    }
+
+    /// Key for `kid`, re-fetching the JWKS at most once per
+    /// `min_refetch_interval_ms` when it's unknown (e.g. after key rotation).
+    fn resolveKey(self: *JwksAuth, io: std.Io, arena: std.mem.Allocator, kid: []const u8) !JwkEntry {
+        if (try self.copyKey(io, arena, kid)) |k| return k;
+
+        self.fetch_mutex.lockUncancelable(io);
+        defer self.fetch_mutex.unlock(io);
+
+        // Someone else may have fetched while we waited for the mutex.
+        if (try self.copyKey(io, arena, kid)) |k| return k;
+
+        const now = std.Io.Timestamp.now(io, .awake);
+        if (self.last_fetch) |last| {
+            const elapsed_ns = last.durationTo(now).nanoseconds;
+            if (elapsed_ns < @as(i96, self.config.min_refetch_interval_ms) * std.time.ns_per_ms)
+                return error.UnknownKey;
+        }
+        self.last_fetch = now;
+        self.fetchJwksWith(io) catch |err| {
+            std.log.warn("[spider] JWKS re-fetch for unknown kid failed: {s}", .{@errorName(err)});
+            return error.UnknownKey;
+        };
+        return (try self.copyKey(io, arena, kid)) orelse error.UnknownKey;
     }
 
     pub fn verifyToken(self: *JwksAuth, allocator: std.mem.Allocator, token: []const u8) !Claims {
+        return self.verifyTokenIo(self.io, allocator, token);
+    }
+
+    /// Same as verifyToken, using `io` (the request's) for locking and any
+    /// JWKS re-fetch. `allocator` should be an arena: key copies live in it.
+    pub fn verifyTokenIo(self: *JwksAuth, io: std.Io, allocator: std.mem.Allocator, token: []const u8) !Claims {
         const parts = splitToken(token) orelse return error.InvalidToken;
 
         const signing_input = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ parts.header, parts.payload });
@@ -135,14 +201,7 @@ pub const JwksAuth = struct {
         }, allocator, hdr_buf[0..hdr_len], .{ .ignore_unknown_fields = true });
         defer parsed_hdr.deinit();
 
-        const kid = parsed_hdr.value.kid;
-
-        const jwk = if (self.keys.get(kid)) |entry|
-            entry
-        else blk: {
-            try self.fetchJwks();
-            break :blk self.keys.get(kid) orelse return error.UnknownKey;
-        };
+        const jwk = try self.resolveKey(io, allocator, parsed_hdr.value.kid);
 
         try verifyRsaSha256(parts.sig, signing_input, jwk.n, jwk.e);
 
@@ -217,7 +276,7 @@ pub const JwksAuth = struct {
             return redirect(c, self.config.login_path);
         };
 
-        const claims = self.verifyToken(c.arena, token) catch |err| switch (err) {
+        const claims = self.verifyTokenIo(c._io, c.arena, token) catch |err| switch (err) {
             error.InvalidToken,
             error.UnknownKey,
             error.InvalidIssuer,
