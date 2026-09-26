@@ -592,6 +592,13 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             while (pos < str.len) {
                 const r = str[pos..];
                 if (raw_skip_close != null and str[pos] == '>') break;
+                // Stop right before a <script>/<style> that isn't at the start
+                // of this chunk, so the next chunk begins at the tag and the
+                // raw-body detection above actually sees it. Without this, text
+                // like "\n  <script>...{ x }...</script>" scanned straight past
+                // the tag and the JS body got interpolated.
+                if (pos > start and raw_skip_close == null and
+                    (std.mem.startsWith(u8, r, "<script") or std.mem.startsWith(u8, r, "<style"))) break;
                 if (std.mem.startsWith(u8, r, "{{")) break;
                 if (std.mem.startsWith(u8, r, "{ ")) break;
                 if (std.mem.startsWith(u8, r, "{ slot }")) break;

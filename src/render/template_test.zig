@@ -1435,3 +1435,30 @@ test "renderFragment does not include layout" {
     try std.testing.expect(std.mem.indexOf(u8, fragment, "<body>") == null);
     try std.testing.expect(std.mem.indexOf(u8, fragment, "page content") == null);
 }
+
+test "raw <script> body after leading text inside a for body is not interpolated" {
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc,
+        \\for (items) |i| {
+        \\  <p>{ i }</p><script>let o = { a: 1 };</script>
+        \\}
+    );
+    defer tmpl.deinit();
+    const items = [_][]const u8{"x"};
+    const r = try tmpl.render(.{ .items = &items }, alc);
+    defer alc.free(r);
+    try std.testing.expectEqualStrings("\n  <p>x</p><script>let o = { a: 1 };</script>\n", r);
+}
+
+test "raw <style> body after leading text inside an if body is not interpolated" {
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc,
+        \\if (show) {
+        \\  text <style>.a { color: red; }</style> { name }
+        \\}
+    );
+    defer tmpl.deinit();
+    const r = try tmpl.render(.{ .show = true, .name = "n" }, alc);
+    defer alc.free(r);
+    try std.testing.expectEqualStrings("\n  text <style>.a { color: red; }</style> n\n", r);
+}
