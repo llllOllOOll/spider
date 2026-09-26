@@ -131,6 +131,5 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 - `spider.dashboard` is exported but dead code (does not compile if used).
 - `build.zig.zon` says io_backend "defaults to .zio"; it defaults to `.threaded`.
 - `Config.static_dir` and `Config.workers` are not read by anything.
-- `spider --help` prints "unknown command" before the usage (use `spider help`).
 - `zig build test-sqlite` doesn't compile (the sqlite module imports `spider`,
   which that test step doesn't provide).

@@ -7,103 +7,80 @@ const migrate = @import("migrate.zig");
 const update = @import("update.zig");
 const self_update = @import("self_update.zig");
 
+const cli_args = @import("args.zig");
+
 const version = "0.6.9";
 
-const usage =
-    \\Spider CLI — spiderme.org
-    \\
-    \\Usage:
-    \\  spider new <app_name> [--daisyui] [--skip-downloads] [--api] [--no-db]
-    \\                                 Create a new Spider project
-    \\    --daisyui                    Include DaisyUI preset
-    \\    --skip-downloads             Skip binary downloads (tailwindcss, alpine, htmx, icons)
-    \\    --api                        API-only project (no HTML views)
-    \\    --no-db                      Skip database setup
-    \\    --pg                         Use PostgreSQL instead of default SQLite
-    \\  spider generate <subcommand>   Generate code (aliases: g)
-    \\  spider g <subcommand>          Alias for generate
-    \\    feature <name> [--api]        Generate a new feature (--api for REST API)
-    \\    auth [--provider=keycloak|google] [--api]  Generate auth feature (--api for bearer-only)
-    \\  spider generate-vapid           Generate VAPID keys for Web Push
-    \\  spider install                 Download frontend assets (tailwindcss, alpine, htmx, icons)
-    \\  spider migrate                 Run pending database migrations
-    \\  spider update                  Update the spider dependency in this project
-    \\  spider self-update             Update the spider CLI itself
-    \\  spider version                 Show CLI version
-    \\  spider help                    Show this help
-    \\
-;
+fn writeStdout(io: std.Io, text: []const u8) void {
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.File.stdout().writer(io, &buf);
+    w.interface.writeAll(text) catch return;
+    w.interface.flush() catch {};
+}
+
+/// Usage errors: message + hint on stderr, exit status 2.
+fn usageError(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.print("error: " ++ fmt ++ "\n", args);
+    std.process.exit(2);
+}
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const io = init.io;
-    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
-    defer args.deinit();
-    _ = args.next(); // skip program name
 
-    const command = args.next() orelse {
-        std.debug.print("{s}", .{usage});
-        return;
-    };
-
-    if (std.mem.eql(u8, command, "new")) {
-        var use_daisyui = false;
-        var skip_downloads = false;
-        var api_only = false;
-        var no_db = false;
-        var use_pg = false;
-        var app_name_opt: ?[]const u8 = null;
-        while (args.next()) |arg| {
-            if (std.mem.eql(u8, arg, "--daisyui")) {
-                use_daisyui = true;
-            } else if (std.mem.eql(u8, arg, "--skip-downloads")) {
-                skip_downloads = true;
-            } else if (std.mem.eql(u8, arg, "--api")) {
-                api_only = true;
-            } else if (std.mem.eql(u8, arg, "--no-db")) {
-                no_db = true;
-            } else if (std.mem.eql(u8, arg, "--pg")) {
-                use_pg = true;
-            } else {
-                app_name_opt = arg;
-            }
-        }
-        const app_name = app_name_opt orelse {
-            std.debug.print("error: missing app name\nUsage: spider new <app_name>\n", .{});
-            return error.MissingAppName;
-        };
-        try new.run(io, allocator, app_name, use_daisyui, skip_downloads, api_only, no_db, use_pg);
-    } else if (std.mem.eql(u8, command, "generate")) {
-        const subcommand = args.next() orelse {
-            std.debug.print("Usage: spider generate <subcommand>\n", .{});
-            return;
-        };
-        try generate.run(io, allocator, subcommand, &args);
-    } else if (std.mem.eql(u8, command, "g")) {
-        const subcommand = args.next() orelse {
-            std.debug.print("Usage: spider g <subcommand>\n", .{});
-            std.debug.print("Available subcommands:\n", .{});
-            std.debug.print("  feature <name> [--api]    Generate a new feature (--api for REST API)\n", .{});
-            std.debug.print("  auth [--provider=keycloak|google] [--api]  Generate auth feature (--api for bearer-only)\n", .{});
-            return;
-        };
-        try generate.run(io, allocator, subcommand, &args);
-    } else if (std.mem.eql(u8, command, "migrate")) {
-        try migrate.run(io, allocator);
-    } else if (std.mem.eql(u8, command, "update")) {
-        try update.run(io);
-    } else if (std.mem.eql(u8, command, "self-update")) {
-        try self_update.run(io);
-    } else if (std.mem.eql(u8, command, "install")) {
-        try install.run(io, allocator, std.Io.Dir.cwd());
-    } else if (std.mem.eql(u8, command, "generate-vapid")) {
-        const subject = args.next();
-        try generate_vapid.run(io, allocator, subject);
-    } else if (std.mem.eql(u8, command, "version")) {
-        std.debug.print("spider v{s}\n", .{version});
-    } else if (std.mem.eql(u8, command, "help")) {
-        std.debug.print("{s}", .{usage});
-    } else {
-        std.debug.print("error: unknown command '{s}'\n{s}", .{ command, usage });
+    var all: std.ArrayListUnmanaged([]const u8) = .empty;
+    {
+        var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+        defer it.deinit();
+        _ = it.next(); // program name
+        while (it.next()) |a| try all.append(allocator, try allocator.dupe(u8, a));
     }
+
+    const cmd = switch (cli_args.decide(all.items)) {
+        .help => |topic| {
+            writeStdout(io, if (topic) |c| cli_args.commandHelp(c) else cli_args.overview);
+            return;
+        },
+        .version => {
+            writeStdout(io, "spider v" ++ version ++ "\n");
+            return;
+        },
+        .unknown_command => |name| usageError("unknown command '{s}' (see `spider --help`)", .{name}),
+        .run => |c| c,
+    };
+    const rest = all.items[1..];
+
+    switch (cmd) {
+        .new => {
+            var bad: []const u8 = "";
+            const o = cli_args.parseNew(rest, &bad) catch |err| switch (err) {
+                error.MissingAppName => usageError("missing app name (usage: spider new <app_name> [options])", .{}),
+                error.UnknownOption => usageError("unknown option '{s}' for `spider new` (see `spider new --help`)", .{bad}),
+                error.ExtraArgument => usageError("unexpected argument '{s}': `spider new` takes one app name", .{bad}),
+            };
+            try new.run(io, allocator, o.app_name, o.daisyui, o.skip_downloads, o.api, o.no_db, o.pg);
+        },
+        .generate => {
+            if (rest.len == 0) {
+                writeStdout(io, cli_args.commandHelp(.generate));
+                return;
+            }
+            var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+            defer it.deinit();
+            _ = it.next(); // program name
+            _ = it.next(); // generate / g
+            _ = it.next(); // subcommand
+            try generate.run(io, allocator, rest[0], &it);
+        },
+        .migrate => try migrate.run(io, allocator),
+        .update => try update.run(io),
+        .self_update => try self_update.run(io),
+        .install => try install.run(io, allocator, std.Io.Dir.cwd()),
+        .generate_vapid => try generate_vapid.run(io, allocator, if (rest.len > 0) rest[0] else null),
+        .version, .help => unreachable, // handled by decide()
+    }
+}
+
+test {
+    _ = cli_args;
 }

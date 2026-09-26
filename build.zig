@@ -167,6 +167,8 @@ pub fn build(b: *std.Build) void {
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+    // CLI argument handling (src/cli/args.zig, via src/cli/main.zig's test block).
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cli_exe.root_module })).step);
 
     // test-zio-backend — integration test for the zio io_backend: starts a
     // real Server.listen() and hits it with real concurrent HTTP requests.
