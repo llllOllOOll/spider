@@ -45,7 +45,9 @@ Before calling a change done: `zig build test`, and for anything under
   need a listening server go in `e2e_test.zig` / `e2e/*.zig`.
 - A new test file is **not discovered** unless imported from the `test {}` block
   at the bottom of `src/spider.zig` (Zig only runs tests of the root file and
-  whole-file imports).
+  whole-file imports). If you forget, `zig build test` fails naming the file
+  (`spider.testing.expectAllTestsDiscovered` + the `spider-test-manifest`
+  build step; apps get the same via `testManifest()` in `build.zig`).
 - `test`, `test-e2e` and `test-sqlite` use Zig's default runner, which fails any
   test that logs at `.err` ("N errors were logged"). Code that errors on purpose
   in tests logs at `.warn` under `builtin.is_test` (see `src/render/renderer.zig`).

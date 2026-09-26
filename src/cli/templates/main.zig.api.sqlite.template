@@ -22,3 +22,7 @@ pub fn main(init: std.process.Init) !void {
 fn errorHandler(c: *spider.Ctx, err: anyerror) !Response {
     return c.json(.{ .@"error" = @errorName(err) }, .{ .status = .internal_server_error });
 }
+
+test "every file with tests is part of this test binary" {
+    try @import("spider").testing.expectAllTestsDiscovered(@import("test_manifest"));
+}

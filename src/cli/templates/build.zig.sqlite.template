@@ -76,6 +76,17 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    // core and features are separate modules: addTest only runs the tests of
+    // its own root module's files, so each one gets its own test binary.
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = core_mod })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = features_mod })).step);
+    // Files with tests per module, for the discovery test at each module's
+    // root (it fails if a file's tests were left out of the binary).
+    const spider_build = @import("spider");
+    const manifest_tool = spider_dep.artifact("spider-test-manifest");
+    exe.root_module.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src", &.{ "core/", "features/", "shared/" }));
+    core_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/core", &.{}));
+    features_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/features", &.{}));
 
     // Check if frontend assets are installed
     const has_assets = blk: {

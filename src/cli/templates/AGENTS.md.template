@@ -52,17 +52,16 @@ build.zig(.zon)           Spider dependency (pinned commit)
 {{views_conventions}}{{db_section}}
 ## Tests
 
-`zig build test` only runs `test` blocks in `src/main.zig`'s module.
-**Tests inside `src/features/**` or `src/core/**` are silently skipped** — the
-step still reports success. To run a feature's tests, all three are needed:
+`zig build test` runs the tests of `src/main.zig`, `src/core/` and
+`src/features/` (three test binaries). Put `test "..."` blocks next to the
+code: in a feature's `controller.zig`, `model.zig`, `repository.zig` they run
+automatically (each feature's `mod.zig` has a `test { refAllDecls }` block).
 
-1. `build.zig`, after `test_step` is declared:
-   `test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = features_mod })).step);`
-2. `src/features/mod.zig`: `test { _ = @import("posts/mod.zig"); }`
-3. `src/features/posts/mod.zig`: `test { _ = @import("model.zig"); }` (each file with tests)
-
-Zig only collects tests from files imported whole inside a `test {}` block.
-A new app has no tests yet: "passing" means nothing ran.
+A file deeper than that (e.g. `src/features/posts/util/math.zig`) only runs
+if something imports it from a `test {}` block. If nothing does,
+`zig build test` **fails** and names the file — the fix is in the message:
+`test { _ = @import("util/math.zig"); }` in the `mod.zig` next to it.
+Don't delete the "every file with tests is part of this test binary" tests.
 
 ## Gotchas
 

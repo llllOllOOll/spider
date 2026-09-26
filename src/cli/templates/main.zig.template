@@ -32,3 +32,7 @@ fn errorHandler(c: *spider.Ctx, err: anyerror) !Response {
         else => c.text(@errorName(err), .{ .status = .internal_server_error }),
     };
 }
+
+test "every file with tests is part of this test binary" {
+    try @import("spider").testing.expectAllTestsDiscovered(@import("test_manifest"));
+}
