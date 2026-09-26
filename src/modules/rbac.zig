@@ -5,9 +5,9 @@ const Response = spider.Response;
 const NextFn = spider.NextFn;
 const MiddlewareFn = spider.MiddlewareFn;
 
-/// Middlewares de RBAC para um config de rota (`.{ .roles = ..., .org_roles = ... }`),
-/// resolvidos em comptime. Quando os dois campos estão presentes, os DOIS
-/// precisam passar (cada um vira um middleware na cadeia).
+/// RBAC middlewares for a route config (`.{ .roles = ..., .org_roles = ... }`),
+/// resolved at comptime. When both fields are present, BOTH must pass (each
+/// becomes its own middleware in the chain).
 pub fn routeMiddlewares(comptime config: anytype) []const MiddlewareFn {
     const C = @TypeOf(config);
     const S = struct {
@@ -23,8 +23,8 @@ pub fn routeMiddlewares(comptime config: anytype) []const MiddlewareFn {
     return S.list;
 }
 
-/// Retorna um middleware que verifica se o usuário tem pelo menos uma das roles.
-/// Deve ser executado DEPOIS do middleware de autenticação (jwks/keycloak).
+/// Returns a middleware that requires the user to hold at least one of `roles`
+/// (realm roles). Must run AFTER the auth middleware (jwks/keycloak).
 pub fn requireRoles(comptime roles: []const []const u8) MiddlewareFn {
     const S = struct {
         fn mw(c: *Ctx, next: NextFn) anyerror!Response {
@@ -37,21 +37,18 @@ pub fn requireRoles(comptime roles: []const []const u8) MiddlewareFn {
     return S.mw;
 }
 
-/// Retorna um middleware que verifica se o usuário tem pelo menos uma das roles
-/// dentro do claim organizations (Phase Two Keycloak).
+/// Returns a middleware that requires the user to hold at least one of `roles`
+/// in the organizations claim (Phase Two Keycloak).
+///
+/// When an active org is set (`c.activeOrgId()`, from the provider's
+/// `active_org_cookie` or an app middleware calling `c.setActiveOrg`), only
+/// roles held in THAT org count — being admin of org A does not open a route
+/// while org B is active. With no active org selected, a role held in any of
+/// the user's orgs is accepted.
 pub fn requireOrgRoles(comptime roles: []const []const u8) MiddlewareFn {
     const S = struct {
         fn mw(c: *Ctx, next: NextFn) anyerror!Response {
-            const count_str = c.params.get("_auth_orgs_count") orelse return error.Forbidden;
-            const count = std.fmt.parseInt(usize, count_str, 10) catch return error.Forbidden;
-            var i: usize = 0;
-            while (i < count) : (i += 1) {
-                const key = std.fmt.allocPrint(c.arena, "_auth_org_{d}_role", .{i}) catch continue;
-                const role = c.params.get(key) orelse continue;
-                for (roles) |required| {
-                    if (std.mem.eql(u8, role, required)) return next(c);
-                }
-            }
+            if (c.orgRoleIn(roles, c.activeOrgId())) return next(c);
             return error.Forbidden;
         }
     };

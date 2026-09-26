@@ -27,6 +27,10 @@ pub const JwksConfig = struct {
     auth_skip_paths: []const []const u8 = &.{},
     refresh_path: ?[]const u8 = null,
     api_mode: bool = false,
+    /// Cookie holding the org the user picked (e.g. "orbitx_condo"). When
+    /// present, its value becomes `c.activeOrgId()`, so `org_roles` checks
+    /// only count roles held in that org.
+    active_org_cookie: ?[]const u8 = null,
 };
 
 pub const Claims = struct {
@@ -279,6 +283,11 @@ pub const JwksAuth = struct {
 
         if (extractToken(c, self.config.cookie_name)) |extracted| {
             injectOrganizations(c, extracted) catch {};
+        }
+        if (self.config.active_org_cookie) |name| {
+            if (c.cookie(name)) |org_id| {
+                if (org_id.len > 0) try c.setActiveOrg(org_id);
+            }
         }
 
         return next(c);

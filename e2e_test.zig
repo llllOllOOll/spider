@@ -131,6 +131,8 @@ fn fakeAuth(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
         }
         try c.params.put(c.arena, "_auth_orgs_count", try std.fmt.allocPrint(c.arena, "{d}", .{i}));
     }
+    // Mirrors JwksConfig.active_org_cookie.
+    if (c.cookie("active_org")) |org| try c.setActiveOrg(org);
     return next(c);
 }
 
@@ -304,4 +306,27 @@ test "rbac: Group-mounted routes enforce roles, with and without :param" {
     try expectStatus(403, &env, "/g/things/3/edit", .{ .method = "POST", .body = "" });
     try expectStatus(200, &env, "/g/things/3/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Test-Roles: admin"} });
     try expectStatus(200, &env, "/g/open/3", .{});
+}
+
+// ── active org (item 3) ─────────────────────────────────────────────────
+
+test "org rbac: role in another org does not open a route while this org is active" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const orgs = "X-Test-Orgs: orgA=admin,orgB=resident";
+    try expectStatus(403, &env, "/r/org/1", .{ .headers = &.{ orgs, "Cookie: active_org=orgB" } });
+    try expectStatus(200, &env, "/r/org/1", .{ .headers = &.{ orgs, "Cookie: active_org=orgA" } });
+    try expectStatus(403, &env, "/g/things", .{ .headers = &.{ orgs, "Cookie: active_org=orgB" } });
+}
+
+test "org rbac: forged active org cookie for a non-member org is denied" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(403, &env, "/r/org/1", .{ .headers = &.{ "X-Test-Orgs: orgA=admin", "Cookie: active_org=orgZ" } });
+}
+
+test "org rbac: no active org keeps any-org behavior" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(200, &env, "/r/org/1", .{ .headers = &.{"X-Test-Orgs: orgA=admin,orgB=resident"} });
 }

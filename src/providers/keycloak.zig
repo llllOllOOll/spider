@@ -19,6 +19,8 @@ pub const KeycloakConfig = struct {
     refresh_cookie_name: []const u8 = "__refresh",
     refresh_path: []const u8 = "/auth/refresh",
     api_mode: bool = false,
+    /// See JwksConfig.active_org_cookie.
+    active_org_cookie: ?[]const u8 = null,
 };
 
 pub const Keycloak = struct {
@@ -38,6 +40,7 @@ pub const Keycloak = struct {
             .auth_skip_paths = config.auth_skip_paths,
             .refresh_path = config.refresh_path,
             .api_mode = config.api_mode,
+            .active_org_cookie = config.active_org_cookie,
         });
         return Keycloak{
             .jwks = jwks_auth,

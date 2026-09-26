@@ -102,5 +102,6 @@ test {
     _ = @import("core/context_test.zig");
     _ = @import("core/app_test.zig");
     _ = @import("routing/router_test.zig");
+    _ = @import("modules/rbac_test.zig");
     _ = @import("core/http_client_mtls.zig");
 }

@@ -633,6 +633,49 @@ pub const Ctx = struct {
         return false;
     }
 
+    /// Org the current request acts on, when one was selected — by the auth
+    /// provider (`active_org_cookie`) or by an app middleware via
+    /// `setActiveOrg`. Null means "no selection", not "no orgs".
+    pub fn activeOrgId(self: *Ctx) ?[]const u8 {
+        return self.params.get("_auth_active_org");
+    }
+
+    /// Marks `org_id` as the org this request acts on. `requireOrgRoles` and
+    /// `hasActiveOrgRole` then only accept roles held in THIS org. Setting an
+    /// org the user isn't a member of is allowed and simply grants no org role.
+    pub fn setActiveOrg(self: *Ctx, org_id: []const u8) !void {
+        try self.params.put(self.arena, "_auth_active_org", try self.arena.dupe(u8, org_id));
+    }
+
+    /// True when the user holds `role` in the active org. With no active org
+    /// selected, falls back to "in any of the user's orgs" (same as hasOrgRole).
+    pub fn hasActiveOrgRole(self: *Ctx, role: []const u8) bool {
+        return self.orgRoleIn(&.{role}, self.activeOrgId());
+    }
+
+    /// Shared by hasActiveOrgRole and rbac.requireOrgRoles: does any
+    /// `_auth_org_{i}` entry (restricted to `org_filter` when non-null) carry
+    /// one of `roles`?
+    pub fn orgRoleIn(self: *Ctx, roles: []const []const u8, org_filter: ?[]const u8) bool {
+        const count_str = self.params.get("_auth_orgs_count") orelse return false;
+        const count = std.fmt.parseInt(usize, count_str, 10) catch return false;
+        var key_buf: [64]u8 = undefined;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            if (org_filter) |want| {
+                const id_key = std.fmt.bufPrint(&key_buf, "_auth_org_{d}_id", .{i}) catch return false;
+                const id = self.params.get(id_key) orelse continue;
+                if (!std.mem.eql(u8, id, want)) continue;
+            }
+            const role_key = std.fmt.bufPrint(&key_buf, "_auth_org_{d}_role", .{i}) catch return false;
+            const r = self.params.get(role_key) orelse continue;
+            for (roles) |want_role| {
+                if (std.mem.eql(u8, r, want_role)) return true;
+            }
+        }
+        return false;
+    }
+
     pub fn hasRole(self: *Ctx, role: []const u8) bool {
         const count_str = self.params.get("_auth_roles_count") orelse return false;
         const count = std.fmt.parseInt(usize, count_str, 10) catch return false;
