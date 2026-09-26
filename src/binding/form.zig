@@ -130,48 +130,28 @@ fn urlDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
         return allocator.dupe(u8, input);
     }
 
-    var decode_len: usize = 0;
+    // Decoding never grows the input, so one pass into an input-sized buffer
+    // then a shrink. (Counting first and writing second used to disagree on
+    // invalid escapes, returning bytes that were never written — stale memory
+    // from earlier requests.) An invalid "%xx" is kept literally.
+    const result = try allocator.alloc(u8, input.len);
+    errdefer allocator.free(result);
+    var out_len: usize = 0;
     var i: usize = 0;
     while (i < input.len) : (i += 1) {
-        if (input[i] == '%' and i + 2 < input.len) {
-            const valid = std.fmt.parseInt(u8, input[i + 1 .. i + 3], 16) catch {
-                decode_len += 3;
+        const ch = input[i];
+        if (ch == '%' and i + 2 < input.len) {
+            if (std.fmt.parseInt(u8, input[i + 1 .. i + 3], 16)) |byte| {
+                result[out_len] = byte;
+                out_len += 1;
                 i += 2;
                 continue;
-            };
-            _ = valid;
-            decode_len += 1;
-            i += 2;
-        } else {
-            decode_len += 1;
+            } else |_| {}
         }
+        result[out_len] = if (ch == '+') ' ' else ch;
+        out_len += 1;
     }
-
-    var result = try allocator.alloc(u8, decode_len);
-    errdefer allocator.free(result);
-
-    var out_len: usize = 0;
-    i = 0;
-    while (i < input.len) : (i += 1) {
-        if (input[i] == '%' and i + 2 < input.len) {
-            const hex = std.fmt.parseInt(u8, input[i + 1 .. i + 3], 16) catch {
-                result[out_len] = '%';
-                out_len += 1;
-                continue;
-            };
-            result[out_len] = hex;
-            out_len += 1;
-            i += 2;
-        } else if (input[i] == '+') {
-            result[out_len] = ' ';
-            out_len += 1;
-        } else {
-            result[out_len] = input[i];
-            out_len += 1;
-        }
-    }
-
-    return result;
+    return allocator.realloc(result, out_len);
 }
 
 test "FormData - simple field get" {
@@ -361,4 +341,37 @@ test "FormData - dot notation stored as literal key" {
     try std.testing.expect(form.fields.contains("user.email"));
     try std.testing.expect(!form.fields.contains("user"));
     try std.testing.expectEqualStrings("john@example.com", form.get("user.email").?);
+}
+
+test "urlDecode: invalid escapes are kept literally and the result has no unwritten bytes" {
+    const alloc = std.testing.allocator;
+    const cases = [_][2][]const u8{
+        .{ "%%41", "%A" },
+        .{ "%%41%%41", "%A%A" },
+        .{ "%zz", "%zz" },
+        .{ "a%4", "a%4" },
+        .{ "%", "%" },
+        .{ "%%", "%%" },
+        .{ "%4%41", "%4A" },
+        .{ "x+%2By", "x +y" },
+    };
+    for (cases) |c| {
+        const out = try urlDecode(alloc, c[0]);
+        defer alloc.free(out);
+        try std.testing.expectEqualStrings(c[1], out);
+    }
+}
+
+test "urlDecode: never returns memory it did not write (stale arena bytes)" {
+    // The reported leak: an arena reused across requests hands the decoder
+    // memory that still holds a previous request's bytes.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    _ = try arena.allocator().dupe(u8, "Authorization: Bearer SECRET-TOKEN-FROM-PREVIOUS-REQUEST");
+    _ = arena.reset(.retain_capacity);
+    var fd = try parse(arena.allocator(), "x=%%41%%41%%41%%41%%41%%41%%41%%41%%41%%41%%41%%41%%41%%41");
+    defer fd.deinit();
+    const v = fd.get("x").?;
+    try std.testing.expectEqualStrings("%A%A%A%A%A%A%A%A%A%A%A%A%A%A", v);
+    try std.testing.expect(std.mem.indexOf(u8, v, "TOKEN") == null);
 }
