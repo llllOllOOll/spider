@@ -13,6 +13,26 @@ pub const Handler = *const fn (*Ctx) anyerror!Response;
 pub const Route = struct {
     handler: Handler,
     middlewares: []const MiddlewareFn = &.{},
+    meta: RouteMeta = .{},
+};
+
+/// What a route declares about itself, from its config
+/// (`.{ .roles, .org_roles, .public, .quiet_log, .allow_http }`, see
+/// routing/route_config.zig). Available to middlewares as `c.route()`.
+pub const RouteMeta = struct {
+    /// No login needed: auth middlewares (jwks/keycloak/clerk, auth) let
+    /// the request through.
+    public: bool = false,
+    /// A successful request isn't logged (heartbeats, polling); 4xx/5xx
+    /// still are.
+    quiet_log: bool = false,
+    /// Served over plain HTTP even when the app forces HTTPS
+    /// (spider.forceHttps) — for clients that can't do TLS.
+    allow_http: bool = false,
+    /// Informational copy of the RBAC config (the checks themselves are the
+    /// route's middlewares): shown by the route listing.
+    roles: []const []const u8 = &.{},
+    org_roles: []const []const u8 = &.{},
 };
 
 const Node = struct {
@@ -42,6 +62,7 @@ pub const MatchResult = struct {
     params: std.StringHashMapUnmanaged([]const u8),
     /// Middlewares registered for the matched route only (see `Route`).
     middlewares: []const MiddlewareFn = &.{},
+    meta: RouteMeta = .{},
 };
 
 fn isDynamic(path: []const u8) bool {
@@ -209,7 +230,7 @@ pub const Router = struct {
             @memcpy(key_buf[method_str.len + 1 .. key_len], path_stripped);
             const key = key_buf[0..key_len];
             if (self.static_routes.get(key)) |route| {
-                return .{ .handler = route.handler, .params = .{}, .middlewares = route.middlewares };
+                return .{ .handler = route.handler, .params = .{}, .middlewares = route.middlewares, .meta = route.meta };
             }
         }
 
@@ -243,6 +264,6 @@ pub const Router = struct {
             params.deinit(allocator);
             return null;
         };
-        return .{ .handler = route.handler, .params = params, .middlewares = route.middlewares };
+        return .{ .handler = route.handler, .params = params, .middlewares = route.middlewares, .meta = route.meta };
     }
 };

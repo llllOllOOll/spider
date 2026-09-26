@@ -182,6 +182,8 @@ fn runApp(port: u16) void {
         .get("/home", ok, .{})
         .get("/tickets", ok, .{})
         .get("/org/:id", ok, .{ .org_roles = &.{"admin"} })
+        // Not in auth_skip_paths: public only because the route says so.
+        .get("/open/:id", ok, .{ .public = true })
         .onError(errorHandler)
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
         std.log.err("keycloak app listen() failed: {s}", .{@errorName(err)});
@@ -608,3 +610,14 @@ const d_hex =
     \\824e94ba354325e77c8b01a2e1cb81dc456b8ab8ab01297afc72aafd25560e0d
     \\ec44f2341eca31829a79e2f8aaa4cb6bb064c796e0329cea95d06c57726c43c1
 ;
+
+test "jwks: a .public route needs no session, its neighbours still do" {
+    var e = try Env.init();
+    defer e.deinit();
+    try std.testing.expectEqual(@as(u16, 200), (try e.get("/open/7", &.{})).status);
+    const protected = try e.get("/tickets", &.{});
+    try std.testing.expectEqual(@as(u16, 302), protected.status);
+    try std.testing.expectEqualStrings("/auth/login", protected.header("Location").?);
+    // A bad token doesn't matter on a public route either.
+    try std.testing.expectEqual(@as(u16, 200), (try e.get("/open/7", &.{"Cookie: __session=garbage"})).status);
+}

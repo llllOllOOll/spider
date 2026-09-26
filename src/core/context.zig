@@ -7,6 +7,7 @@ pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 const zmd = @import("../render/zmd/zmd.zig");
 const Hub = @import("../ws/hub.zig").Hub;
 const Watchdog = @import("watchdog.zig").Watchdog;
+const RouteMeta = @import("../routing/router.zig").RouteMeta;
 
 const root = @import("root");
 pub const has_embed = @hasDecl(root, "spider_templates");
@@ -76,6 +77,9 @@ pub const Ctx = struct {
     /// This connection's watchdog entry (deadlines), for SSE/WebSocket
     /// streams to bound their writes. Null outside Server.listen().
     _watch: ?*Watchdog.Entry = null,
+    /// What the matched route declared (.public, .quiet_log, .allow_http,
+    /// roles); defaults when no route matched.
+    _route: RouteMeta = .{},
     /// Human-readable detail for the error the handler/extractor returned.
     _error_detail: ?[]const u8 = null,
 
@@ -745,6 +749,11 @@ pub const Ctx = struct {
             if (std.mem.eql(u8, r, role)) return true;
         }
         return false;
+    }
+
+    /// The matched route's declarations (see routing/route_config.zig).
+    pub fn route(self: *const Ctx) RouteMeta {
+        return self._route;
     }
 
     pub fn getPath(self: *Ctx) []const u8 {

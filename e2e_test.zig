@@ -174,8 +174,37 @@ fn typed(id: spider.Path(i64, "id"), c: *spider.Ctx) !spider.Response {
 
 const admin = &[_][]const u8{"admin"};
 
+/// Group.use() middleware: tags every response it wraps.
+fn tagGroup(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
+    var resp = try next(c);
+    const hdrs = try c.arena.alloc([2][]const u8, resp.headers.len + 1);
+    @memcpy(hdrs[0..resp.headers.len], resp.headers);
+    hdrs[resp.headers.len] = .{ "X-Group", "g2" };
+    resp.headers = hdrs;
+    return resp;
+}
+
+/// Echoes what the matched route declared (c.route()).
+fn metaEcho(c: *spider.Ctx) !spider.Response {
+    const m = c.route();
+    return c.text(try std.fmt.allocPrint(c.arena, "public={} quiet_log={} allow_http={} org_roles={d}", .{ m.public, m.quiet_log, m.allow_http, m.org_roles.len }), .{});
+}
+
 fn runApp(port: u16) void {
     var s = spider.app(.{});
+
+    // Group parity + defaults: admin (active org) unless a route says otherwise.
+    var g2 = spider.Group.init("/g2");
+    _ = g2
+        .defaults(.{ .org_roles = admin })
+        .get("/inherit/:id", ok, .{})
+        .get("/open", ok, .{ .public = true })
+        .post("/staff/:id", ok, .{ .roles = &.{"staff"} })
+        .get("/typed/:id", typed, .{})
+        .patch("/p/:id", ok, .{})
+        .head("/h", ok, .{})
+        .get("/meta", metaEcho, .{ .quiet_log = true, .allow_http = true })
+        .use(tagGroup); // after the routes on purpose: applies to all of them
 
     var g = spider.Group.init("/g");
     _ = g
@@ -207,6 +236,8 @@ fn runApp(port: u16) void {
         .get("/public/:id", ok, .{})
         .get("/typed/:id", typed, .{})
         .mount(g)
+        .mount(g2)
+        .get("/meta/public", metaEcho, .{ .public = true })
         .onError(errorHandler)
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
         std.log.err("e2e app listen() failed: {s}", .{@errorName(err)});
@@ -781,4 +812,73 @@ test "sse: a client that stops reading is dropped; the others keep receiving" {
     // would reconnect instead of hanging on a dead stream.
     const r = try readUntilClose(io, env.arena.allocator(), stalled);
     try std.testing.expect(r.closed_by_server);
+}
+
+// ── Group parity, defaults, use(), route meta ──────────────────────────
+
+const org_admin = "X-Test-Orgs: orgA=admin";
+
+test "group defaults: routes inherit the group's org roles" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(403, &env, "/g2/inherit/1", .{});
+    try expectStatus(200, &env, "/g2/inherit/1", .{ .headers = &.{org_admin} });
+}
+
+test "group defaults: .public opts a route out" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(200, &env, "/g2/open", .{});
+}
+
+test "group defaults: a route's own roles replace the group's" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(403, &env, "/g2/staff/1", .{ .method = "POST", .headers = &.{org_admin} });
+    try expectStatus(200, &env, "/g2/staff/1", .{ .method = "POST", .headers = &.{"X-Test-Roles: staff"} });
+}
+
+test "group: extractor handlers work (and inherit the defaults)" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    try expectStatus(403, &env, "/g2/typed/5", .{});
+    const res = try request(env.io(), env.arena.allocator(), port, "/g2/typed/5", .{ .headers = &.{org_admin} });
+    try std.testing.expectEqualStrings("typed:5", res.body);
+    try expectStatus(400, &env, "/g2/typed/abc", .{ .headers = &.{org_admin} });
+}
+
+test "group: patch and head" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(200, &env, "/g2/p/1", .{ .method = "PATCH", .headers = &.{org_admin} });
+    try expectStatus(403, &env, "/g2/p/1", .{ .method = "PATCH" });
+    try expectStatus(200, &env, "/g2/h", .{ .method = "HEAD", .headers = &.{org_admin} });
+}
+
+test "group use(): runs on every route of the group, after the RBAC check" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const a = env.arena.allocator();
+    const ok_res = try request(env.io(), a, port, "/g2/inherit/1", .{ .headers = &.{org_admin} });
+    try std.testing.expectEqualStrings("g2", ok_res.header("X-Group").?);
+    const open = try request(env.io(), a, port, "/g2/open", .{});
+    try std.testing.expectEqualStrings("g2", open.header("X-Group").?);
+    const denied = try request(env.io(), a, port, "/g2/inherit/1", .{});
+    try std.testing.expectEqual(@as(u16, 403), denied.status);
+    try std.testing.expect(denied.header("X-Group") == null); // the gate ran first
+    const other = try request(env.io(), a, port, "/public/1", .{});
+    try std.testing.expect(other.header("X-Group") == null); // not in the group
+}
+
+test "route meta reaches the handler (c.route())" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const a = env.arena.allocator();
+    const m = try request(env.io(), a, port, "/g2/meta", .{ .headers = &.{org_admin} });
+    try std.testing.expectEqualStrings("public=false quiet_log=true allow_http=true org_roles=1", m.body);
+    const p = try request(env.io(), a, port, "/meta/public", .{});
+    try std.testing.expectEqualStrings("public=true quiet_log=false allow_http=false org_roles=0", p.body);
 }

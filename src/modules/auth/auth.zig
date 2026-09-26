@@ -169,6 +169,7 @@ pub const Auth = struct {
     }
 
     pub fn middleware(self: *const Auth, c: *Ctx, next: NextFn) !Response {
+        if (c.route().public) return next(c);
         const path = c.getPath();
 
         for (self.config.public_paths) |public_path| {

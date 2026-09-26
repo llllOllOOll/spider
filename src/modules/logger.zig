@@ -73,6 +73,13 @@ pub fn pathMatches(pattern: []const u8, path: []const u8) bool {
     return sit.next() == null;
 }
 
+/// A successful (< 400) request is skipped when its route says `.quiet_log`
+/// or its path matches `quiet_paths`; errors are always logged.
+fn shouldLog(comptime opts: Options, route_quiet: bool, path: []const u8, status: u16) bool {
+    if (status >= 400) return true;
+    return !(route_quiet or isQuiet(opts, path));
+}
+
 fn isQuiet(comptime opts: Options, path: []const u8) bool {
     inline for (opts.quiet_paths) |p| {
         if (pathMatches(p, path)) return true;
@@ -95,16 +102,15 @@ fn run(comptime opts: Options, c: *Ctx, next: NextFn) anyerror!Response {
         // so a routine 403/404 doesn't read like a crash.
         const status: u16 = @intFromEnum(statusForError(err));
         std.debug.print("{s} {s}[{d}]{s} {s: <6} {s}  {s}  rid={s} user={s} org={s}  error={s}{s}{s}\n", .{
-            logfmt.utc(&ts_buf, logfmt.nowNs()), statusColor(status), status,     resetColor(), method,
-            path,                                formatMs(lat_ns, &lat_buf), c.requestId(), userOf(c),
-            orgOf(c),                            @errorName(err),     if (c.errorDetail() != null) " detail=" else "",
-            c.errorDetail() orelse "",
+            logfmt.utc(&ts_buf, logfmt.nowNs()), statusColor(status),                             status,                    resetColor(), method,
+            path,                                formatMs(lat_ns, &lat_buf),                      c.requestId(),             userOf(c),    orgOf(c),
+            @errorName(err),                     if (c.errorDetail() != null) " detail=" else "", c.errorDetail() orelse "",
         });
         return err;
     };
 
     const status_int: u16 = @intFromEnum(resp.status);
-    if (status_int < 400 and isQuiet(opts, path)) return resp;
+    if (!shouldLog(opts, c.route().quiet_log, path, status_int)) return resp;
     if (resp.raw and !opts.log_stream_open) return resp;
 
     var ts_buf: [24]u8 = undefined;
@@ -144,4 +150,14 @@ test "pathMatches" {
     try t.expect(pathMatches("/api/access/intelbras/**", "/api/access/intelbras"));
     try t.expect(!pathMatches("/api/access/intelbras/**", "/api/access/other"));
     try t.expect(pathMatches("/", "/"));
+}
+
+test "shouldLog: route .quiet_log and quiet_paths silence successes only" {
+    const t = std.testing;
+    const o: Options = .{ .quiet_paths = &.{"/up"} };
+    try t.expect(shouldLog(o, false, "/tickets", 200));
+    try t.expect(!shouldLog(o, true, "/keepalive", 200)); // route says quiet
+    try t.expect(!shouldLog(o, false, "/up", 204)); // quiet path
+    try t.expect(shouldLog(o, true, "/keepalive", 500)); // errors always logged
+    try t.expect(shouldLog(o, false, "/up", 404));
 }

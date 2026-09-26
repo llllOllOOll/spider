@@ -273,6 +273,7 @@ pub const JwksAuth = struct {
             full_path[0..q]
         else
             full_path;
+        if (c.route().public) return next(c);
         for (self.config.auth_skip_paths) |skip| {
             if (std.mem.eql(u8, path, skip) or
                 (std.mem.startsWith(u8, path, skip) and

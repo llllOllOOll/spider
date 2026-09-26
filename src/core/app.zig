@@ -33,6 +33,10 @@ const sse_mod = @import("../ws/sse.zig");
 const Sse = sse_mod.Sse;
 const websocket = @import("../ws/websocket.zig");
 const Watchdog = @import("watchdog.zig").Watchdog;
+const handler_mod = @import("handler.zig");
+const route_config = @import("../routing/route_config.zig");
+const usesExtractors = handler_mod.usesExtractors;
+const buildAutoWrapper = handler_mod.buildAutoWrapper;
 const watchdog_mod = @import("watchdog.zig");
 const rbac = @import("../modules/rbac.zig");
 
@@ -417,6 +421,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._sse_hub = ctx.sse_hub,
                 ._request_id = request_id,
                 ._watch = &watch,
+                ._route = m.meta,
             };
 
             var mw_buf: [64]MiddlewareFn = undefined;
@@ -579,93 +584,6 @@ fn buildWrapper(comptime handler: anytype, comptime T: type) Handler {
     return W.call;
 }
 
-// Typed extractors (spider.Path/spider.Form, see core/extractors.zig) are
-// recognized by duck-typing on a `spider_kind` decl rather than importing
-// extractors.zig directly, so this file doesn't need to know that module
-// exists.
-fn isExtractor(comptime PT: type) bool {
-    return switch (@typeInfo(PT)) {
-        .@"struct", .@"enum", .@"union", .@"opaque" => @hasDecl(PT, "spider_kind"),
-        else => false,
-    };
-}
-
-// True when `handler`'s parameters require the extractor dispatch path
-// (buildAutoWrapper) instead of the classic decoration path (buildWrapper):
-// any recognized extractor param, or a *Ctx param anywhere but first.
-// Handlers with only *Ctx (at index 0) or only loose decoration types keep
-// going through buildWrapper, unchanged.
-fn usesExtractors(comptime handler: anytype) bool {
-    const fn_info = @typeInfo(@TypeOf(handler)).@"fn";
-    inline for (fn_info.param_types, 0..) |maybe_pt, i| {
-        const PT = maybe_pt orelse continue;
-        if (PT == *Ctx) {
-            if (i != 0) return true;
-        } else if (isExtractor(PT)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Dispatches handlers using spider.Path(...)/spider.Form(...) params (mixed
-// with *Ctx, in any order, no 4-param ceiling — unlike buildWrapper). Each
-// extractor resolves itself from `ctx`; on failure the wrapper returns a
-// fixed 400 response immediately, without calling the handler.
-fn buildAutoWrapper(comptime handler: anytype) Handler {
-    const fn_info = @typeInfo(@TypeOf(handler)).@"fn";
-
-    const W = struct {
-        pub fn call(ctx: *Ctx) anyerror!Response {
-            var args: std.meta.ArgsTuple(@TypeOf(handler)) = undefined;
-
-            inline for (fn_info.param_types, 0..) |maybe_pt, i| {
-                const PT = maybe_pt orelse @compileError("generic param not supported");
-
-                if (PT == *Ctx) {
-                    args[i] = ctx;
-                } else if (comptime isExtractor(PT)) {
-                    if (PT.spider_kind == .path) {
-                        // Errors (not canned 400 responses) so they reach the
-                        // app's onError like any other handler error; the
-                        // default mapping (statusForError) still gives 400.
-                        const raw = ctx.params.get(PT.param_name) orelse {
-                            ctx.setErrorDetail("missing path param: " ++ PT.param_name);
-                            return error.MissingPathParam;
-                        };
-                        if (comptime PT.Inner == []const u8) {
-                            args[i] = .{ .value = raw };
-                        } else {
-                            const parsed = std.fmt.parseInt(PT.Inner, raw, 10) catch {
-                                ctx.setErrorDetail("invalid path param: " ++ PT.param_name);
-                                return error.InvalidPathParam;
-                            };
-                            args[i] = .{ .value = parsed };
-                        }
-                    } else if (PT.spider_kind == .form) {
-                        const parsed = ctx.parseForm(PT.Inner) catch |err| {
-                            ctx.setErrorDetail("invalid form body");
-                            return err;
-                        };
-                        args[i] = .{ .value = parsed };
-                    } else {
-                        @compileError("unsupported spider extractor kind on " ++ @typeName(PT));
-                    }
-                } else {
-                    @compileError(
-                        "buildAutoWrapper only supports *Ctx and extractor params " ++
-                            "(spider.Path(...), spider.Form(...)); handler parameter `" ++
-                            @typeName(PT) ++ "` is neither. For loose-type decoration " ++
-                            "parameters, use the classic fn(*Ctx, T) !Response signature instead.",
-                    );
-                }
-            }
-
-            return @call(.auto, handler, args);
-        }
-    };
-    return W.call;
-}
 
 fn buildWsWrapper(comptime handler: fn (*Ws) anyerror!void) Handler {
     const W = struct {
@@ -842,7 +760,8 @@ pub fn Server(comptime T: type) type {
                 buildWrapper(handler, T);
             self.router.addRoute(.GET, path, .{
                 .handler = H,
-                .middlewares = comptime rbac.routeMiddlewares(config),
+                .middlewares = comptime route_config.middlewares(config),
+                .meta = comptime route_config.metaOf(config),
             }) catch unreachable;
             return self;
         }
@@ -856,7 +775,8 @@ pub fn Server(comptime T: type) type {
                 buildWrapper(handler, T);
             self.router.addRoute(.POST, path, .{
                 .handler = H,
-                .middlewares = comptime rbac.routeMiddlewares(config),
+                .middlewares = comptime route_config.middlewares(config),
+                .meta = comptime route_config.metaOf(config),
             }) catch unreachable;
             return self;
         }
@@ -870,7 +790,8 @@ pub fn Server(comptime T: type) type {
                 buildWrapper(handler, T);
             self.router.addRoute(.PUT, path, .{
                 .handler = H,
-                .middlewares = comptime rbac.routeMiddlewares(config),
+                .middlewares = comptime route_config.middlewares(config),
+                .meta = comptime route_config.metaOf(config),
             }) catch unreachable;
             return self;
         }
@@ -884,7 +805,8 @@ pub fn Server(comptime T: type) type {
                 buildWrapper(handler, T);
             self.router.addRoute(.DELETE, path, .{
                 .handler = H,
-                .middlewares = comptime rbac.routeMiddlewares(config),
+                .middlewares = comptime route_config.middlewares(config),
+                .meta = comptime route_config.metaOf(config),
             }) catch unreachable;
             return self;
         }
@@ -898,7 +820,8 @@ pub fn Server(comptime T: type) type {
                 buildWrapper(handler, T);
             self.router.addRoute(.PATCH, path, .{
                 .handler = H,
-                .middlewares = comptime rbac.routeMiddlewares(config),
+                .middlewares = comptime route_config.middlewares(config),
+                .meta = comptime route_config.metaOf(config),
             }) catch unreachable;
             return self;
         }
@@ -912,7 +835,8 @@ pub fn Server(comptime T: type) type {
                 buildWrapper(handler, T);
             self.router.addRoute(.HEAD, path, .{
                 .handler = H,
-                .middlewares = comptime rbac.routeMiddlewares(config),
+                .middlewares = comptime route_config.middlewares(config),
+                .meta = comptime route_config.metaOf(config),
             }) catch unreachable;
             return self;
         }
@@ -1057,9 +981,19 @@ pub fn Server(comptime T: type) type {
         }
 
         pub fn mount(self: *Self, child: Group) *Self {
-            child.router.forEach(std.heap.page_allocator, self, struct {
-                fn cb(s: *Self, method: std.http.Method, path: []const u8, route: Route) void {
-                    s.router.addRoute(method, path, route) catch |err|
+            const MountCtx = struct { s: *Self, use: []const MiddlewareFn };
+            const mctx: MountCtx = .{ .s = self, .use = child.use_middlewares[0..child.use_count] };
+            child.router.forEach(std.heap.page_allocator, mctx, struct {
+                fn cb(m: MountCtx, method: std.http.Method, path: []const u8, route: Route) void {
+                    var r = route;
+                    // Group.use(): after the route's own (RBAC) middlewares.
+                    if (m.use.len > 0) {
+                        const all = std.heap.page_allocator.alloc(MiddlewareFn, r.middlewares.len + m.use.len) catch @panic("OOM");
+                        @memcpy(all[0..r.middlewares.len], r.middlewares);
+                        @memcpy(all[r.middlewares.len..], m.use);
+                        r.middlewares = all;
+                    }
+                    m.s.router.addRoute(method, path, r) catch |err|
                         std.log.err("mounted route {s} {s} not registered: {s}", .{ @tagName(method), path, @errorName(err) });
                 }
             }.cb);

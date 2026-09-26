@@ -1,22 +1,44 @@
 const std = @import("std");
 const Router = @import("router.zig").Router;
 const Handler = @import("router.zig").Handler;
+const RouteMeta = @import("router.zig").RouteMeta;
+const route_config = @import("route_config.zig");
+const handler_mod = @import("../core/handler.zig");
 const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 const sse_mod = @import("../ws/sse.zig");
 const Sse = sse_mod.Sse;
-const rbac = @import("../modules/rbac.zig");
 
 const PathMiddlewareEntry = struct {
     path: []const u8,
     middleware: MiddlewareFn,
 };
 
+/// A set of routes under one prefix, built by a feature and mounted on the
+/// server (`server.mount(g)` or `server.mountFeatures(features)`).
+///
+///     var g = spider.Group.init("/tickets");
+///     _ = g
+///         .defaults(.{ .org_roles = ticket_roles })   // before the routes
+///         .get("", controller.index, .{})              // inherits the defaults
+///         .post("/:id/approve", controller.approve, .{ .org_roles = admin_roles }) // replaces them
+///         .get("/public-feed", controller.feed, .{ .public = true });              // opts out
+///
+/// Routes take the same config as server routes (routing/route_config.zig)
+/// and plain or extractor handlers (spider.Path / spider.Form).
 pub const Group = struct {
     router: *Router,
     prefix: []const u8,
     path_middlewares: [32]PathMiddlewareEntry = undefined,
     path_middleware_count: usize = 0,
     has_sse: bool = false,
+    /// From defaults(): RBAC middlewares and flags for routes that don't
+    /// declare their own access rules.
+    default_middlewares: []const MiddlewareFn = &.{},
+    default_meta: RouteMeta = .{},
+    /// From use(): run on every route of the group, after its RBAC checks.
+    use_middlewares: [16]MiddlewareFn = undefined,
+    use_count: usize = 0,
+    route_count: usize = 0,
 
     pub fn init(prefix: []const u8) Group {
         const r = std.heap.page_allocator.create(Router) catch @panic("OOM");
@@ -28,43 +50,72 @@ pub const Group = struct {
         };
     }
 
-    pub fn get(self: *Group, path: []const u8, handler: Handler, comptime config: anytype) *Group {
-        const full = self.join(path) catch unreachable;
-        self.router.addRoute(.GET, full, .{
-            .handler = handler,
-            .middlewares = comptime rbac.routeMiddlewares(config),
-        }) catch unreachable;
-        self.freeJoined(path, full);
+    /// Access rules and flags every route of the group inherits unless the
+    /// route declares its own `.roles` / `.org_roles` / `.public`
+    /// (`.quiet_log` / `.allow_http` are overridden one by one). Must come
+    /// before the group's routes.
+    pub fn defaults(self: *Group, comptime config: anytype) *Group {
+        comptime route_config.validate(config);
+        if (self.route_count > 0) std.debug.panic("Group \"{s}\": defaults() must come before the group's routes", .{self.prefix});
+        self.default_middlewares = comptime route_config.middlewares(config);
+        self.default_meta = comptime route_config.metaOf(config);
         return self;
     }
 
-    pub fn post(self: *Group, path: []const u8, handler: Handler, comptime config: anytype) *Group {
-        const full = self.join(path) catch unreachable;
-        self.router.addRoute(.POST, full, .{
-            .handler = handler,
-            .middlewares = comptime rbac.routeMiddlewares(config),
-        }) catch unreachable;
-        self.freeJoined(path, full);
+    /// Middleware for every route of this group (applied when the group is
+    /// mounted, so the order relative to the routes doesn't matter). Runs
+    /// after the route's RBAC checks. Unlike useAt(), it's tied to the
+    /// routes, not to a path prefix.
+    pub fn use(self: *Group, m: MiddlewareFn) *Group {
+        if (self.use_count >= self.use_middlewares.len) std.debug.panic("Group \"{s}\": more than {d} use() middlewares", .{ self.prefix, self.use_middlewares.len });
+        self.use_middlewares[self.use_count] = m;
+        self.use_count += 1;
         return self;
     }
 
-    pub fn put(self: *Group, path: []const u8, handler: Handler, comptime config: anytype) *Group {
-        const full = self.join(path) catch unreachable;
-        self.router.addRoute(.PUT, full, .{
-            .handler = handler,
-            .middlewares = comptime rbac.routeMiddlewares(config),
-        }) catch unreachable;
-        self.freeJoined(path, full);
-        return self;
+    pub fn get(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
+        return self.route(.GET, path, handler_mod.forGroup(handler), config);
     }
 
-    pub fn delete(self: *Group, path: []const u8, handler: Handler, comptime config: anytype) *Group {
+    pub fn post(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
+        return self.route(.POST, path, handler_mod.forGroup(handler), config);
+    }
+
+    pub fn put(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
+        return self.route(.PUT, path, handler_mod.forGroup(handler), config);
+    }
+
+    pub fn delete(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
+        return self.route(.DELETE, path, handler_mod.forGroup(handler), config);
+    }
+
+    pub fn patch(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
+        return self.route(.PATCH, path, handler_mod.forGroup(handler), config);
+    }
+
+    pub fn head(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
+        return self.route(.HEAD, path, handler_mod.forGroup(handler), config);
+    }
+
+    fn route(self: *Group, method: std.http.Method, path: []const u8, h: Handler, comptime config: anytype) *Group {
+        comptime route_config.validate(config);
+        const own = comptime route_config.metaOf(config);
+        const T = @TypeOf(config);
+        var meta = self.default_meta;
+        var mws = self.default_middlewares;
+        if (comptime route_config.declaresAccess(config)) {
+            mws = comptime route_config.middlewares(config);
+            meta.public = own.public;
+            meta.roles = own.roles;
+            meta.org_roles = own.org_roles;
+        }
+        if (comptime @hasField(T, "quiet_log")) meta.quiet_log = own.quiet_log;
+        if (comptime @hasField(T, "allow_http")) meta.allow_http = own.allow_http;
+
         const full = self.join(path) catch unreachable;
-        self.router.addRoute(.DELETE, full, .{
-            .handler = handler,
-            .middlewares = comptime rbac.routeMiddlewares(config),
-        }) catch unreachable;
+        self.router.addRoute(method, full, .{ .handler = h, .middlewares = mws, .meta = meta }) catch unreachable;
         self.freeJoined(path, full);
+        self.route_count += 1;
         return self;
     }
 
