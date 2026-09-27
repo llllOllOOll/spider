@@ -191,6 +191,26 @@ fn metaEcho(c: *spider.Ctx) !spider.Response {
     return c.text(try std.fmt.allocPrint(c.arena, "public={} quiet_log={} allow_http={} org_roles={d}", .{ m.public, m.quiet_log, m.allow_http, m.org_roles.len }), .{});
 }
 
+/// An app's own login (no JWT): the session names a user whose roles live
+/// in the app's database, put on the request with the identity API.
+///   X-Session: 1 -> user 1: role editor, manager of org c1
+///   X-Session: 2 -> user 2: no roles
+fn dbSession(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
+    const sid = c.header("X-Session") orelse return next(c);
+    try c.setUser(.{ .id = sid });
+    if (std.mem.eql(u8, sid, "1")) {
+        try c.addRole("editor");
+        try c.addOrgRole(.{ .org_id = "c1", .org_name = "Tower A", .role = "manager" });
+    }
+    return next(c);
+}
+
+/// Post 10 belongs to user 1.
+fn ownsPost(c: *spider.Ctx) !bool {
+    const id = c.params.get("id") orelse return false;
+    return std.mem.eql(u8, id, "10") and std.mem.eql(u8, c.userId() orelse "", "1");
+}
+
 fn runApp(port: u16) void {
     var s = spider.app(.{});
 
@@ -214,6 +234,14 @@ fn runApp(port: u16) void {
         .get("/admin", ok, .{ .roles = admin })
         .get("/open", ok, .{ .public = true });
 
+    var own = spider.Group.init("/own");
+    _ = own
+        .defaults(.{ .authenticated = true })
+        .get("/me", ok, .{})
+        .get("/editor", ok, .{ .roles = &.{"editor"} })
+        .get("/org", ok, .{ .org_roles = &.{"manager"} })
+        .post("/posts/:id/edit", ok, .{ .policy = spider.policy("post_owner", ownsPost) });
+
     var g = spider.Group.init("/g");
     _ = g
         .get("/things", ok, .{ .org_roles = admin })
@@ -224,6 +252,7 @@ fn runApp(port: u16) void {
     s
         .use(fakeAuth)
         .use(yieldingMiddleware)
+        .useAt("/own", dbSession)
         .get("/chain/a", chainA, .{})
         .get("/chain/b", chainB, .{})
         .get("/r/static", ok, .{ .roles = admin })
@@ -246,6 +275,7 @@ fn runApp(port: u16) void {
         .mount(g)
         .mount(g2)
         .mount(gl)
+        .mount(own)
         .get("/meta/public", metaEcho, .{ .public = true })
         .onError(errorHandler)
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
@@ -374,6 +404,29 @@ test "rbac: Group-mounted routes enforce roles, with and without :param" {
     try expectStatus(403, &env, "/g/things/3/edit", .{ .method = "POST", .body = "" });
     try expectStatus(200, &env, "/g/things/3/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Test-Roles: admin"} });
     try expectStatus(200, &env, "/g/open/3", .{});
+}
+
+// ── roles from the app itself, policies ─────────────────────────────────
+
+test "identity API: an app's own session and roles drive .authenticated, .roles and .org_roles" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(401, &env, "/own/me", .{});
+    try expectStatus(200, &env, "/own/me", .{ .headers = &.{"X-Session: 2"} });
+    try expectStatus(403, &env, "/own/editor", .{ .headers = &.{"X-Session: 2"} });
+    try expectStatus(200, &env, "/own/editor", .{ .headers = &.{"X-Session: 1"} });
+    try expectStatus(403, &env, "/own/org", .{ .headers = &.{"X-Session: 2"} });
+    try expectStatus(200, &env, "/own/org", .{ .headers = &.{"X-Session: 1"} });
+}
+
+test "policy: 401 anonymous, 403 for another user, 200 for the owner" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const edit: RequestOptions = .{ .method = "POST", .body = "" };
+    try expectStatus(401, &env, "/own/posts/10/edit", edit);
+    try expectStatus(403, &env, "/own/posts/10/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Session: 2"} });
+    try expectStatus(200, &env, "/own/posts/10/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Session: 1"} });
+    try expectStatus(403, &env, "/own/posts/11/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Session: 1"} });
 }
 
 // ── active org (item 3) ─────────────────────────────────────────────────

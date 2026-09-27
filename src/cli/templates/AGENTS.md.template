@@ -77,12 +77,18 @@ auth. Fix the code, not the check — and don't delete that test.
   parameters and returns `spider.Group`. `spider g feature` writes all of this.
 - The third argument is the route's config, checked at compile time:
   `.roles` / `.org_roles` (who may call it), `.public` (no login),
-  `.authenticated` (any logged-in user; 401 otherwise), `.quiet_log`
+  `.authenticated` (any logged-in user; 401 otherwise), `.policy =
+  spider.policy("post_owner", isPostOwner)` (a rule that isn't a role:
+  ownership, plan, signature — `fn (*spider.Ctx) !bool`), `.quiet_log`
   (successful requests aren't logged), `.allow_http` (skips forceHttps). An
   unknown key, or `.public` together with roles or `.authenticated`, doesn't
   compile.
 - `defaults(...)` comes before the routes; a route that sets `.roles`,
-  `.org_roles`, `.public` or `.authenticated` replaces it (it doesn't add to it).
+  `.org_roles`, `.public`, `.authenticated` or `.policy` replaces it (it doesn't add to it).
+- Roles don't have to come from the identity provider: a middleware (after
+  the auth one) can load them from the database with `c.setUser`,
+  `c.addRole`, `c.addOrgRole`; the route checks read them the same way.
+  Access checks go in the route config or a policy, not inside handlers.
 - Roles only mean something once requests are authenticated (`spider g auth`
   adds the provider's middleware). Without auth every route is open and a
   route with `.roles` answers 403 to everyone. That's why generated features

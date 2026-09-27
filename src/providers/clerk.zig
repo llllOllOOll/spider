@@ -13,6 +13,14 @@ pub const ClerkConfig = struct {
     redirect_uri: []const u8 = "http://localhost:3000/auth/callback",
     login_path: []const u8 = "/login",
     after_callback_path: []const u8 = "/",
+    /// Where the session token carries roles (what `.roles` checks); Clerk
+    /// has none by default — add one with a custom session claim, e.g.
+    /// {"roles": "{{user.public_metadata.roles}}"} and roles_claim = "roles".
+    /// The active organization's role (what `.org_roles` checks) is read
+    /// without configuration. See JwksConfig.roles_claim.
+    roles_claim: ?[]const u8 = null,
+    /// See JwksConfig.map_claims.
+    map_claims: ?*const fn (c: *Ctx, claims: std.json.ObjectMap) anyerror!void = null,
 };
 
 pub const Clerk = struct {
@@ -30,6 +38,9 @@ pub const Clerk = struct {
             .cookie_name = "__session",
             .login_path = config.login_path,
             .after_callback_path = config.after_callback_path,
+            .roles_claim = config.roles_claim,
+            .org_claims = .clerk,
+            .map_claims = config.map_claims,
         });
         return Clerk{
             .jwks = jwks_auth,

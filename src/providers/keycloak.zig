@@ -4,7 +4,8 @@ const Ctx = @import("../core/context.zig").Ctx;
 const Response = @import("../core/context.zig").Response;
 const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 const Handler = @import("../routing/router.zig").Handler;
-const JwksAuth = @import("jwks.zig").JwksAuth;
+const jwks = @import("jwks.zig");
+const JwksAuth = jwks.JwksAuth;
 const url_util = @import("../internal/url.zig");
 
 pub const KeycloakConfig = struct {
@@ -33,6 +34,13 @@ pub const KeycloakConfig = struct {
     /// to `client_id`, so a token another client of the realm obtained for
     /// the user (admin-cli, a partner app) is rejected.
     audience: ?[]const u8 = null,
+    /// See JwksConfig.roles_claim (e.g. "resource_access.<client>.roles"
+    /// for client roles instead of realm roles).
+    roles_claim: ?[]const u8 = "realm_access.roles",
+    /// See JwksConfig.org_claims.
+    org_claims: jwks.OrgClaims = .phase_two,
+    /// See JwksConfig.map_claims.
+    map_claims: ?*const fn (c: *Ctx, claims: std.json.ObjectMap) anyerror!void = null,
 
     /// The connection settings from the environment — KEYCLOAK_BASE_URL,
     /// KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET and
@@ -95,6 +103,9 @@ pub const Keycloak = struct {
             .refresh_path = config.refresh_path,
             .api_mode = config.api_mode,
             .active_org_cookie = config.active_org_cookie,
+            .roles_claim = config.roles_claim,
+            .org_claims = config.org_claims,
+            .map_claims = config.map_claims,
         });
         return Keycloak{
             .jwks = jwks_auth,

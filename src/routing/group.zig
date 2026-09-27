@@ -51,7 +51,8 @@ pub const Group = struct {
     }
 
     /// Access rules and flags every route of the group inherits unless the
-    /// route declares its own `.roles` / `.org_roles` / `.public`
+    /// route declares its own `.roles` / `.org_roles` / `.public` /
+    /// `.authenticated` / `.policy`
     /// (`.quiet_log` / `.allow_http` are overridden one by one). Must come
     /// before the group's routes.
     pub fn defaults(self: *Group, comptime config: anytype) *Group {
@@ -117,6 +118,7 @@ pub const Group = struct {
             meta.authenticated = own.authenticated;
             meta.roles = own.roles;
             meta.org_roles = own.org_roles;
+            meta.policy = own.policy;
         }
         if (comptime @hasField(T, "quiet_log")) meta.quiet_log = own.quiet_log;
         if (comptime @hasField(T, "allow_http")) meta.allow_http = own.allow_http;

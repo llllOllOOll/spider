@@ -443,14 +443,16 @@ test "writeRoutesJson: auth flag, routes with access and flags, jobs" {
     _ = s
         .get("/b", featOk, .{ .org_roles = &.{"admin"}, .roles = &.{"staff"} })
         .get("/a", featOk, .{ .public = true, .quiet_log = true })
+        .get("/c", featOk, .{ .policy = spider_policy("post_owner") })
         .sseInterval(5000, featTick);
     var buf: [2048]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try s.writeRoutesJson(&w);
     try std.testing.expectEqualStrings(
         "{\"auth\":false,\"routes\":[" ++
-            "{\"method\":\"GET\",\"path\":\"/a\",\"access\":\"public\",\"public\":true,\"authenticated\":false,\"roles\":[],\"org_roles\":[],\"quiet_log\":true,\"allow_http\":false}," ++
-            "{\"method\":\"GET\",\"path\":\"/b\",\"access\":\"org:admin roles:staff\",\"public\":false,\"authenticated\":false,\"roles\":[\"staff\"],\"org_roles\":[\"admin\"],\"quiet_log\":false,\"allow_http\":false}" ++
+            "{\"method\":\"GET\",\"path\":\"/a\",\"access\":\"public\",\"public\":true,\"authenticated\":false,\"roles\":[],\"org_roles\":[],\"quiet_log\":true,\"allow_http\":false,\"policy\":null}," ++
+            "{\"method\":\"GET\",\"path\":\"/b\",\"access\":\"org:admin roles:staff\",\"public\":false,\"authenticated\":false,\"roles\":[\"staff\"],\"org_roles\":[\"admin\"],\"quiet_log\":false,\"allow_http\":false,\"policy\":null}," ++
+            "{\"method\":\"GET\",\"path\":\"/c\",\"access\":\"policy:post_owner\",\"public\":false,\"authenticated\":false,\"roles\":[],\"org_roles\":[],\"quiet_log\":false,\"allow_http\":false,\"policy\":\"post_owner\"}" ++
             "],\"jobs_ms\":[5000],\"duplicates\":0}\n",
         w.buffered(),
     );
@@ -467,4 +469,36 @@ test "Group.sseWith: inherits the group's defaults() like any route" {
     const m = (try s.router.match(.GET, "/live/events", arena.allocator())).?;
     try std.testing.expectEqual(@as(usize, 1), m.meta.org_roles.len);
     try std.testing.expectEqual(@as(usize, 1), m.middlewares.len);
+}
+
+fn featPolicyCheck(c: *Ctx) bool {
+    _ = c;
+    return true;
+}
+fn spider_policy(comptime name: []const u8) @import("../modules/rbac.zig").Policy {
+    return comptime @import("../modules/rbac.zig").policy(name, featPolicyCheck);
+}
+
+test "Group: a route's .policy replaces the group's defaults() like .roles does, and counts as declared access" {
+    var g = Group.init("/posts");
+    _ = g
+        .defaults(.{ .roles = &.{"staff"} })
+        .get("/all", featOk, .{})
+        .post("/:id/edit", featOk, .{ .policy = spider_policy("post_owner") })
+        .post("/:id/pin", featOk, .{ .roles = &.{"staff"}, .policy = spider_policy("post_owner") });
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.mount(g).requireRouteAccess();
+    try s.checkRouteAccess();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const edit = (try s.router.match(.POST, "/posts/1/edit", arena.allocator())).?;
+    try std.testing.expectEqualStrings("post_owner", edit.meta.policy.?);
+    try std.testing.expectEqual(@as(usize, 0), edit.meta.roles.len);
+    try std.testing.expectEqual(@as(usize, 1), edit.middlewares.len);
+    const pin = (try s.router.match(.POST, "/posts/1/pin", arena.allocator())).?;
+    try std.testing.expectEqual(@as(usize, 2), pin.middlewares.len);
+    const list = (try s.router.match(.GET, "/posts/all", arena.allocator())).?;
+    try std.testing.expect(list.meta.policy == null);
+    try std.testing.expectEqual(@as(usize, 1), list.meta.roles.len);
 }

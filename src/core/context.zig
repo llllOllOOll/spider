@@ -718,8 +718,8 @@ pub const Ctx = struct {
 
     /// Shared by hasActiveOrgRole and rbac.requireOrgRoles: does any
     /// `_auth_org_{i}` entry (restricted to `org_filter` when non-null) carry
-    /// one of `roles`?
-    pub fn orgRoleIn(self: *Ctx, roles: []const []const u8, org_filter: ?[]const u8) bool {
+    /// one of `wanted`?
+    pub fn orgRoleIn(self: *Ctx, wanted: []const []const u8, org_filter: ?[]const u8) bool {
         const count_str = self.params.get("_auth_orgs_count") orelse return false;
         const count = std.fmt.parseInt(usize, count_str, 10) catch return false;
         var key_buf: [64]u8 = undefined;
@@ -732,7 +732,7 @@ pub const Ctx = struct {
             }
             const role_key = std.fmt.bufPrint(&key_buf, "_auth_org_{d}_role", .{i}) catch return false;
             const r = self.params.get(role_key) orelse continue;
-            for (roles) |want_role| {
+            for (wanted) |want_role| {
                 if (std.mem.eql(u8, r, want_role)) return true;
             }
         }
@@ -749,6 +749,79 @@ pub const Ctx = struct {
             if (std.mem.eql(u8, r, role)) return true;
         }
         return false;
+    }
+
+    // --- Identity: who the request is from, and what it may do ------------
+    //
+    // Auth providers fill these (jwks/keycloak/clerk from the token, the
+    // HS256 `auth` middleware its user id); an app whose users or roles live
+    // elsewhere (its database, a session, another IdP) fills them from its
+    // own middleware, registered after the auth one. `.authenticated`,
+    // `.roles`, `.org_roles` and policies read them the same way whatever
+    // the source.
+
+    pub const User = struct {
+        id: []const u8,
+        email: ?[]const u8 = null,
+        name: ?[]const u8 = null,
+    };
+
+    /// Marks the request as coming from `user` (what `.authenticated` checks).
+    pub fn setUser(self: *Ctx, user: User) !void {
+        try self.params.put(self.arena, "_auth_sub", try self.arena.dupe(u8, user.id));
+        if (user.email) |e| try self.params.put(self.arena, "_auth_email", try self.arena.dupe(u8, e));
+        if (user.name) |n| try self.params.put(self.arena, "_auth_name", try self.arena.dupe(u8, n));
+    }
+
+    /// The logged-in user's id: the token's subject, or the HS256 `auth`
+    /// middleware's user id. Null for an anonymous request.
+    pub fn userId(self: *Ctx) ?[]const u8 {
+        return self.params.get("_auth_sub") orelse self.params.get("_user_id");
+    }
+
+    /// Grants the user a role (what `.roles` and `hasRole` check).
+    pub fn addRole(self: *Ctx, role: []const u8) !void {
+        const n = self.authCount("_auth_roles_count");
+        try self.params.put(self.arena, try std.fmt.allocPrint(self.arena, "_auth_role_{d}", .{n}), try self.arena.dupe(u8, role));
+        try self.params.put(self.arena, "_auth_roles_count", try std.fmt.allocPrint(self.arena, "{d}", .{n + 1}));
+    }
+
+    /// Replaces the user's roles (e.g. the token's) with `list`.
+    pub fn setRoles(self: *Ctx, list: []const []const u8) !void {
+        try self.params.put(self.arena, "_auth_roles_count", "0");
+        for (list) |r| try self.addRole(r);
+    }
+
+    /// The user's roles, in the order they were granted.
+    pub fn roles(self: *Ctx) ![]const []const u8 {
+        const n = self.authCount("_auth_roles_count");
+        var out: std.ArrayList([]const u8) = .empty;
+        for (0..n) |i| {
+            const r = self.params.get(try std.fmt.allocPrint(self.arena, "_auth_role_{d}", .{i})) orelse continue;
+            try out.append(self.arena, r);
+        }
+        return out.items;
+    }
+
+    pub const OrgRole = struct {
+        org_id: []const u8,
+        org_name: []const u8 = "",
+        role: []const u8,
+    };
+
+    /// Grants the user a role inside an organization (what `.org_roles`,
+    /// `isOrgMember` and `hasActiveOrgRole` check). One call per role.
+    pub fn addOrgRole(self: *Ctx, r: OrgRole) !void {
+        const n = self.authCount("_auth_orgs_count");
+        const a = self.arena;
+        try self.params.put(a, try std.fmt.allocPrint(a, "_auth_org_{d}_id", .{n}), try a.dupe(u8, r.org_id));
+        try self.params.put(a, try std.fmt.allocPrint(a, "_auth_org_{d}_name", .{n}), try a.dupe(u8, r.org_name));
+        try self.params.put(a, try std.fmt.allocPrint(a, "_auth_org_{d}_role", .{n}), try a.dupe(u8, r.role));
+        try self.params.put(a, "_auth_orgs_count", try std.fmt.allocPrint(a, "{d}", .{n + 1}));
+    }
+
+    fn authCount(self: *Ctx, key: []const u8) usize {
+        return std.fmt.parseInt(usize, self.params.get(key) orelse return 0, 10) catch 0;
     }
 
     /// The matched route's declarations (see routing/route_config.zig).

@@ -12,7 +12,7 @@
 //!   icon-set               an icon class from a set src/styles.css doesn't load
 //!   feature-not-registered a feature folder missing from src/features/mod.zig
 //!   route-access           with auth, a route that declares no access (roles / org_roles /
-//!                          public / authenticated, itself or through its group's defaults())
+//!                          public / authenticated / policy, itself or through its group's defaults())
 //! Warnings:
 //!   inline-style           style="..." in a template (display:none for Alpine is fine)
 //!   inline-svg             <svg> pasted in a template instead of an icon class
@@ -161,7 +161,7 @@ pub fn checkRoutesOutside(report: *Report, path: []const u8, text: []const u8) !
 }
 
 fn hasAccessKey(text: []const u8) bool {
-    for ([_][]const u8{ ".roles", ".org_roles", ".public", ".authenticated" }) |k| {
+    for ([_][]const u8{ ".roles", ".org_roles", ".public", ".authenticated", ".policy" }) |k| {
         if (std.mem.indexOf(u8, text, k) != null) return true;
     }
     return false;
@@ -252,9 +252,9 @@ pub fn checkRouteAccess(report: *Report, path: []const u8, text: []const u8) !vo
                 const plain_sse = std.mem.eql(u8, m, ".sse(") or std.mem.eql(u8, m, ".ws(");
                 if (!plain_sse and (group_default or declaresAccess(text, call))) continue;
                 const fix = if (plain_sse)
-                    "use .sseWith(path, handler, .{ ... }) with .authenticated / .roles / .org_roles"
+                    "use .sseWith(path, handler, .{ ... }) with .authenticated / .roles / .org_roles / .policy"
                 else
-                    "add .roles / .org_roles / .authenticated (any logged-in user) or .public to its config, or a defaults(...) to its group";
+                    "add .roles / .org_roles / .authenticated (any logged-in user) / .policy or .public to its config, or a defaults(...) to its group";
                 try report.add(.err, path, lineOf(text, start + at), "route-access", "route declares no access; with auth, any logged-in user may call it", .{}, fix);
             }
         }
@@ -396,7 +396,8 @@ test "checkRouteAccess: declared, inherited from defaults(), missing, and plain 
         \\        .get("/a", controller.a, .{ .public = true })
         \\        .get("/b", controller.b, .{ .quiet_log = true })
         \\        .sse("/events", controller.events)
-        \\        .sseWith("/live", controller.live, .{ .authenticated = true });
+        \\        .sseWith("/live", controller.live, .{ .authenticated = true })
+        \\        .post("/:id/edit", controller.edit, .{ .policy = spider.policy("post_owner", isOwner) });
         \\    return g;
         \\}
     );

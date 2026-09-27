@@ -1168,7 +1168,7 @@ pub fn Server(comptime T: type) type {
         /// The route listing as one line of JSON (`SPIDER_ROUTES=json`, read
         /// by `spider routes --json/--check/--lock/--diff`):
         /// {"auth":bool,"routes":[{"method","path","access","public","roles",
-        /// "org_roles","quiet_log","allow_http"}],"jobs_ms":[..],"duplicates":n}
+        /// "org_roles","quiet_log","allow_http","policy"}],"jobs_ms":[..],"duplicates":n}
         pub fn writeRoutesJson(self: *Self, w: *std.Io.Writer) !void {
             const list = try self.router.entries(std.heap.page_allocator);
             defer Router.freeEntries(std.heap.page_allocator, list);
@@ -1204,6 +1204,8 @@ pub fn Server(comptime T: type) type {
                 try js.write(m.quiet_log);
                 try js.objectField("allow_http");
                 try js.write(m.allow_http);
+                try js.objectField("policy");
+                try js.write(m.policy);
                 try js.endObject();
             }
             try js.endArray();
@@ -1228,7 +1230,7 @@ pub fn Server(comptime T: type) type {
         }
 
         /// Every route must say who may call it (`.public`, `.authenticated`,
-        /// `.roles` or `.org_roles`): listen() refuses to start otherwise, listing the
+        /// `.roles`, `.org_roles` or `.policy`): listen() refuses to start otherwise, listing the
         /// ones that don't. Same as `require_route_access = true` in
         /// spider.config.zig. Off by default.
         pub fn requireRouteAccess(self: *Self) *Self {
@@ -1252,7 +1254,7 @@ pub fn Server(comptime T: type) type {
                 // before (it may exist in production when env stays .development).
                 if (std.mem.eql(u8, e.path, livereload_path)) continue;
                 missing += 1;
-                log("route {s} {s} declares no access (require_route_access): add .public, .authenticated, .roles or .org_roles to its config, or a defaults() to its group", .{ @tagName(e.method), e.path });
+                log("route {s} {s} declares no access (require_route_access): add .public, .authenticated, .roles, .org_roles or .policy to its config, or a defaults() to its group", .{ @tagName(e.method), e.path });
             }
             if (missing > 0) {
                 log("{d} route(s) without declared access; not starting", .{missing});

@@ -46,6 +46,10 @@ pub const dashboard = @import("modules/dashboard.zig");
 pub const livereload = @import("modules/livereload.zig");
 pub const health = @import("modules/health.zig");
 pub const rbac = @import("modules/rbac.zig");
+/// A named access rule for a route: `.policy = spider.policy("post_owner", isPostOwner)`
+/// with `fn isPostOwner(c: *spider.Ctx) !bool`. See modules/rbac.zig.
+pub const policy = rbac.policy;
+pub const Policy = rbac.Policy;
 pub const r2 = @import("spider_r2");
 pub const qrcode = @import("spider_qrcode");
 pub const push = @import("modules/push.zig");

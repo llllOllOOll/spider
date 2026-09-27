@@ -53,6 +53,7 @@ pub const RouteJson = struct {
     org_roles: []const []const u8 = &.{},
     quiet_log: bool = false,
     allow_http: bool = false,
+    policy: ?[]const u8 = null,
 };
 
 pub const Listing = struct {
@@ -90,8 +91,9 @@ pub fn lockLine(arena: std.mem.Allocator, r: RouteJson) ![]const u8 {
 
 pub const lock_header =
     \\# routes.lock — written by `spider routes --lock`; checked by `spider routes --diff`.
-    \\# One route per line: method, path, access (public, roles:, org:, or - for
-    \\# nothing declared), flags. Commit it: a diff here is an access change.
+    \\# One route per line: method, path, access (public, authenticated, roles:,
+    \\# org:, policy:, or - for nothing declared), flags. Commit it: a diff here
+    \\# is an access change.
     \\
 ;
 
@@ -202,7 +204,7 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, environ_map: *std.process.Envir
             }
             std.debug.print("{d} route(s) declare no access; with auth, any logged-in user may call them:\n", .{bad.len});
             for (bad) |r| std.debug.print("  {s} {s}\n", .{ r.method, r.path });
-            std.debug.print("fix: .roles / .org_roles / .authenticated / .public in the route's config, or defaults() in its group\n", .{});
+            std.debug.print("fix: .roles / .org_roles / .authenticated / .policy / .public in the route's config, or defaults() in its group\n", .{});
             return 1;
         },
         .lock => {

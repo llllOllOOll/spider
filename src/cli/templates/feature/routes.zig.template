@@ -6,9 +6,12 @@ const controller = @import("controller.zig");
 /// that returns a spider.Group. Paths are relative to the group prefix.
 ///
 /// The 3rd argument of each route is its config, checked at compile time:
-/// .roles / .org_roles (who may call it), .public (no login needed),
-/// .quiet_log (don't log successful requests), .allow_http (skip forceHttps).
-/// A route that sets .roles, .org_roles or .public replaces the defaults().
+/// .roles / .org_roles (who may call it), .authenticated (any logged-in
+/// user), .public (no login needed), .policy = spider.policy("name", fn)
+/// (a rule that isn't a role, e.g. owns the record), .quiet_log (don't log
+/// successful requests), .allow_http (skip forceHttps).
+/// A route that sets .roles, .org_roles, .authenticated, .policy or .public
+/// replaces the defaults().
 pub fn build() spider.Group {
     var g = spider.Group.init("/{{plural}}");
     _ = g

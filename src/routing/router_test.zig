@@ -184,6 +184,10 @@ test "RouteMeta.writeAccess: the access column of the route listing" {
         .{ .{ .quiet_log = true }, "-" },
         .{ .{ .authenticated = true }, "authenticated" },
         .{ .{ .authenticated = true, .roles = &.{"a"} }, "roles:a" },
+        .{ .{ .policy = "post_owner" }, "policy:post_owner" },
+        .{ .{ .roles = &.{"staff"}, .policy = "post_owner" }, "roles:staff policy:post_owner" },
+        .{ .{ .authenticated = true, .policy = "post_owner" }, "authenticated policy:post_owner" },
+        .{ .{ .public = true, .policy = "stripe_signature" }, "public policy:stripe_signature" },
     };
     for (cases) |c| {
         var buf: [64]u8 = undefined;

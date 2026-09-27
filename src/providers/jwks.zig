@@ -44,6 +44,39 @@ pub const JwksConfig = struct {
     /// IdP (a forged kid would otherwise force one fetch per request). A real
     /// key rotation is still picked up on the first unknown kid after it.
     min_refetch_interval_ms: u64 = 30_000,
+    /// Where the token carries the user's roles (what `.roles` checks): a
+    /// claim name, or a dotted path into nested objects; the claim is a
+    /// list of strings or one string. A name containing dots is first
+    /// looked up whole. Defaults to Keycloak's realm roles. Others:
+    ///   "roles"                           Entra ID app roles, custom tokens
+    ///   "cognito:groups"                  AWS Cognito groups
+    ///   "https://myapp.example/roles"     Auth0 (a namespaced custom claim)
+    ///   "resource_access.my-client.roles" Keycloak client roles
+    /// null: the token grants no roles.
+    roles_claim: ?[]const u8 = "realm_access.roles",
+    /// How the token carries organization memberships (what `.org_roles`
+    /// checks). See OrgClaims.
+    org_claims: OrgClaims = .phase_two,
+    /// Called with the verified token's claims after the mapping above, to
+    /// put anything else on the request with c.addRole / c.addOrgRole /
+    /// c.setActiveOrg (permissions, groups, a tenant id...). Like Spring's
+    /// JwtAuthenticationConverter. An error it returns is the request's
+    /// (error.Forbidden: 403).
+    map_claims: ?*const fn (c: *Ctx, claims: std.json.ObjectMap) anyerror!void = null,
+};
+
+pub const OrgClaims = enum {
+    /// Keycloak with Phase Two organizations: an `organizations` claim,
+    /// {"<org id>": {"name": "..", "roles": ["..", ..]}}; roles may also be
+    /// a single string.
+    phase_two,
+    /// Clerk: the session's active organization, `o: {id, rol, slg}` (v2
+    /// tokens) or `org_id` / `org_role` / `org_slug` (v1; the "org:" prefix
+    /// of the role is dropped, so both give e.g. "admin"). It is also the
+    /// active org (`c.activeOrgId()`).
+    clerk,
+    /// The token carries no organizations.
+    none,
 };
 
 pub const Claims = struct {
@@ -349,18 +382,11 @@ pub const JwksAuth = struct {
             try c.params.put(c.arena, try c.arena.dupe(u8, "_auth_iss"), try c.arena.dupe(u8, iss));
         }
 
-        if (claims.realm_access) |ra| {
-            for (ra.roles, 0..) |role, i| {
-                const key = try std.fmt.allocPrint(c.arena, "_auth_role_{d}", .{i});
-                try c.params.put(c.arena, key, try c.arena.dupe(u8, role));
-            }
-            const count_str = try std.fmt.allocPrint(c.arena, "{d}", .{ra.roles.len});
-            try c.params.put(c.arena, "_auth_roles_count", count_str);
-        }
-
-        if (extractToken(c, self.config.cookie_name)) |extracted| {
-            injectOrganizations(c, extracted) catch {};
-        }
+        // The signature was checked above; decoding again can't fail for a
+        // token that got here, but a failure just means no roles.
+        if (decodePayload(c.arena, token)) |payload| {
+            try applyClaims(c, self.config, payload);
+        } else |_| {}
         if (self.config.active_org_cookie) |name| {
             if (c.cookie(name)) |org_id| {
                 // Only honored for an org the token says the user belongs to.
@@ -375,61 +401,102 @@ pub const JwksAuth = struct {
     }
 };
 
-fn injectOrganizations(c: *Ctx, token: []const u8) !void {
-    // Split JWT para re-decodificar o payload
-    var it = std.mem.splitScalar(u8, token, '.');
-    _ = it.next() orelse return; // skip header
-    const payload_b64 = it.next() orelse return;
+fn decodePayload(arena: std.mem.Allocator, token: []const u8) !std.json.ObjectMap {
+    const parts = splitToken(token) orelse return error.InvalidToken;
+    const buf = try arena.alloc(u8, try b64.Decoder.calcSizeForSlice(parts.payload));
+    try b64.Decoder.decode(buf, parts.payload);
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena, buf, .{});
+    if (v != .object) return error.InvalidToken;
+    return v.object;
+}
 
-    const payload_len = try b64.Decoder.calcSizeForSlice(payload_b64);
-    const payload_buf = try c.arena.alloc(u8, payload_len);
-    try b64.Decoder.decode(payload_buf, payload_b64);
+/// Puts the token's roles and organizations on the request, as configured
+/// (roles_claim, org_claims), then runs map_claims.
+pub fn applyClaims(c: *Ctx, config: JwksConfig, claims: std.json.ObjectMap) !void {
+    if (config.roles_claim) |path| {
+        if (claimAt(claims, path)) |v| switch (v) {
+            .string => |s| try c.addRole(s),
+            .array => |list| {
+                // Present but empty still says "no roles" (count 0).
+                if (list.items.len == 0) try c.setRoles(&.{});
+                for (list.items) |item| if (item == .string) try c.addRole(item.string);
+            },
+            else => {},
+        };
+    }
+    switch (config.org_claims) {
+        .phase_two => try phaseTwoOrgs(c, claims),
+        .clerk => try clerkOrg(c, claims),
+        .none => {},
+    }
+    if (config.map_claims) |f| try f(c, claims);
+}
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, c.arena, payload_buf[0..payload_len], .{});
-    defer parsed.deinit();
+/// `path` as one claim name, else as a dotted path through nested objects.
+fn claimAt(claims: std.json.ObjectMap, path: []const u8) ?std.json.Value {
+    if (claims.get(path)) |v| return v;
+    var cur: std.json.Value = .{ .object = claims };
+    var it = std.mem.splitScalar(u8, path, '.');
+    while (it.next()) |seg| {
+        if (cur != .object) return null;
+        cur = cur.object.get(seg) orelse return null;
+    }
+    return cur;
+}
 
-    const orgs = parsed.value.object.get("organizations") orelse return;
-
-    var i: usize = 0;
-    var org_iter = orgs.object.iterator();
-    while (org_iter.next()) |entry| {
-        const org_id = entry.key_ptr.*;
-        const org_val = entry.value_ptr.*;
-
-        const org_name = org_val.object.get("name") orelse continue;
-        const roles_val = org_val.object.get("roles") orelse continue;
-
+fn phaseTwoOrgs(c: *Ctx, claims: std.json.ObjectMap) !void {
+    const orgs = claims.get("organizations") orelse return;
+    if (orgs != .object) return;
+    if (c.params.get("_auth_orgs_count") == null) try c.params.put(c.arena, "_auth_orgs_count", "0");
+    var it = orgs.object.iterator();
+    while (it.next()) |entry| {
+        const org = entry.value_ptr.*;
+        if (org != .object) continue;
+        const name = org.object.get("name") orelse continue;
+        if (name != .string) continue;
+        const roles_val = org.object.get("roles") orelse continue;
+        const ref: Ctx.OrgRole = .{ .org_id = entry.key_ptr.*, .org_name = name.string, .role = undefined };
         switch (roles_val) {
-            .string => |s| {
-                const id_key = try std.fmt.allocPrint(c.arena, "_auth_org_{d}_id", .{i});
-                try c.params.put(c.arena, id_key, try c.arena.dupe(u8, org_id));
-                const name_key = try std.fmt.allocPrint(c.arena, "_auth_org_{d}_name", .{i});
-                try c.params.put(c.arena, name_key, try c.arena.dupe(u8, org_name.string));
-                const role_key = try std.fmt.allocPrint(c.arena, "_auth_org_{d}_role", .{i});
-                try c.params.put(c.arena, role_key, try c.arena.dupe(u8, s));
-                i += 1;
+            .string => |s| try c.addOrgRole(withRole(ref, s)),
+            .array => |arr| for (arr.items) |r| {
+                if (r == .string) try c.addOrgRole(withRole(ref, r.string));
             },
-            .array => |arr| {
-                for (arr.items) |role_val| {
-                    const role = switch (role_val) {
-                        .string => |s| s,
-                        else => continue,
-                    };
-                    const id_key = try std.fmt.allocPrint(c.arena, "_auth_org_{d}_id", .{i});
-                    try c.params.put(c.arena, id_key, try c.arena.dupe(u8, org_id));
-                    const name_key = try std.fmt.allocPrint(c.arena, "_auth_org_{d}_name", .{i});
-                    try c.params.put(c.arena, name_key, try c.arena.dupe(u8, org_name.string));
-                    const role_key = try std.fmt.allocPrint(c.arena, "_auth_org_{d}_role", .{i});
-                    try c.params.put(c.arena, role_key, try c.arena.dupe(u8, role));
-                    i += 1;
-                }
-            },
-            else => continue,
+            else => {},
         }
     }
+}
 
-    const count_str = try std.fmt.allocPrint(c.arena, "{d}", .{i});
-    try c.params.put(c.arena, "_auth_orgs_count", count_str);
+fn withRole(ref: Ctx.OrgRole, role: []const u8) Ctx.OrgRole {
+    var r = ref;
+    r.role = role;
+    return r;
+}
+
+fn clerkOrg(c: *Ctx, claims: std.json.ObjectMap) !void {
+    var id: ?[]const u8 = null;
+    var role: ?[]const u8 = null;
+    var slug: []const u8 = "";
+    if (claims.get("o")) |o| {
+        if (o == .object) {
+            id = stringField(o.object, "id");
+            role = stringField(o.object, "rol");
+            slug = stringField(o.object, "slg") orelse "";
+        }
+    } else {
+        id = stringField(claims, "org_id");
+        role = stringField(claims, "org_role");
+        slug = stringField(claims, "org_slug") orelse "";
+    }
+    const org_id = id orelse return;
+    const r = role orelse return;
+    const bare = if (std.mem.startsWith(u8, r, "org:")) r["org:".len..] else r;
+    try c.addOrgRole(.{ .org_id = org_id, .org_name = slug, .role = bare });
+    try c.setActiveOrg(org_id);
+}
+
+fn stringField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const v = obj.get(key) orelse return null;
+    return if (v == .string) v.string else null;
 }
 
 fn redirect(c: *Ctx, url: []const u8) Response {
@@ -519,4 +586,124 @@ fn verifyRsaSha256Raw(sig: []const u8, msg: []const u8, n: []const u8, e: []cons
         },
         else => return error.UnsupportedKeySize,
     }
+}
+
+fn testCtx(a: std.mem.Allocator) Ctx {
+    return Ctx{ .request = undefined, .arena = a, .params = .{}, .body = null };
+}
+
+fn testClaims(c: *Ctx, config: JwksConfig, json: []const u8) !void {
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, c.arena, json, .{});
+    try applyClaims(c, config, v.object);
+}
+
+const test_cfg: JwksConfig = .{ .jwks_url = "" };
+
+test "applyClaims: Keycloak token (default config) gives the same _auth_* params as before" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = testCtx(arena.allocator());
+    try testClaims(&c, test_cfg,
+        \\{"sub":"u1","realm_access":{"roles":["staff","offline_access"]},
+        \\ "organizations":{"c1":{"name":"Tower A","roles":["admin","sindico"]},"c2":{"name":"Tower B","roles":"resident"}}}
+    );
+    const p = c.params;
+    try std.testing.expectEqualStrings("2", p.get("_auth_roles_count").?);
+    try std.testing.expectEqualStrings("staff", p.get("_auth_role_0").?);
+    try std.testing.expectEqualStrings("offline_access", p.get("_auth_role_1").?);
+    try std.testing.expectEqualStrings("3", p.get("_auth_orgs_count").?);
+    try std.testing.expectEqualStrings("c1", p.get("_auth_org_0_id").?);
+    try std.testing.expectEqualStrings("Tower A", p.get("_auth_org_0_name").?);
+    try std.testing.expectEqualStrings("admin", p.get("_auth_org_0_role").?);
+    try std.testing.expectEqualStrings("sindico", p.get("_auth_org_1_role").?);
+    try std.testing.expectEqualStrings("c2", p.get("_auth_org_2_id").?);
+    try std.testing.expectEqualStrings("resident", p.get("_auth_org_2_role").?);
+}
+
+test "applyClaims: an empty organizations claim still sets the count to 0; no claims set nothing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = testCtx(arena.allocator());
+    try testClaims(&c, test_cfg, "{\"sub\":\"u1\",\"organizations\":{}}");
+    try std.testing.expectEqualStrings("0", c.params.get("_auth_orgs_count").?);
+    var none = testCtx(arena.allocator());
+    try testClaims(&none, test_cfg, "{\"sub\":\"u1\"}");
+    try std.testing.expectEqual(@as(usize, 0), none.params.count());
+}
+
+test "applyClaims: roles_claim reads other providers' role claims" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { []const u8, []const u8, []const u8 }{
+        // Cognito groups (a colon, no nesting)
+        .{ "cognito:groups", "{\"sub\":\"u\",\"cognito:groups\":[\"admins\"]}", "admins" },
+        // Auth0 namespaced claim: a name with dots, matched whole
+        .{ "https://app.example.com/roles", "{\"sub\":\"u\",\"https://app.example.com/roles\":[\"editor\"]}", "editor" },
+        // Keycloak client roles (a nested path)
+        .{ "resource_access.web.roles", "{\"sub\":\"u\",\"resource_access\":{\"web\":{\"roles\":[\"billing\"]}}}", "billing" },
+        // A single role as a string
+        .{ "role", "{\"sub\":\"u\",\"role\":\"owner\"}", "owner" },
+    };
+    for (cases) |case| {
+        var c = testCtx(a);
+        var cfg = test_cfg;
+        cfg.roles_claim = case[0];
+        try testClaims(&c, cfg, case[1]);
+        try std.testing.expect(c.hasRole(case[2]));
+        try std.testing.expectEqual(@as(usize, 1), (try c.roles()).len);
+    }
+    var off = testCtx(a);
+    var cfg = test_cfg;
+    cfg.roles_claim = null;
+    try testClaims(&off, cfg, "{\"sub\":\"u\",\"realm_access\":{\"roles\":[\"staff\"]}}");
+    try std.testing.expect(!off.hasRole("staff"));
+}
+
+test "applyClaims: Clerk org claims (v2 `o`, v1 org_*) become the active org's role" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cfg = test_cfg;
+    cfg.org_claims = .clerk;
+    const tokens = [_][]const u8{
+        "{\"sub\":\"u\",\"v\":2,\"o\":{\"id\":\"org_1\",\"rol\":\"admin\",\"slg\":\"acme\"}}",
+        "{\"sub\":\"u\",\"org_id\":\"org_1\",\"org_role\":\"org:admin\",\"org_slug\":\"acme\"}",
+    };
+    for (tokens) |tok| {
+        var c = testCtx(a);
+        try testClaims(&c, cfg, tok);
+        try std.testing.expectEqualStrings("org_1", c.activeOrgId().?);
+        try std.testing.expectEqualStrings("acme", c.params.get("_auth_org_0_name").?);
+        try std.testing.expect(c.hasActiveOrgRole("admin"));
+    }
+    var personal = testCtx(a);
+    try testClaims(&personal, cfg, "{\"sub\":\"u\",\"v\":2}");
+    try std.testing.expect(personal.activeOrgId() == null);
+}
+
+fn mapPermissions(c: *Ctx, claims: std.json.ObjectMap) anyerror!void {
+    const perms = claims.get("permissions") orelse return;
+    for (perms.array.items) |p| try c.addRole(p.string);
+    if (claims.get("tenant")) |t| try c.addOrgRole(.{ .org_id = t.string, .role = "member" });
+}
+
+fn rejectAll(c: *Ctx, claims: std.json.ObjectMap) anyerror!void {
+    _ = c;
+    _ = claims;
+    return error.Forbidden;
+}
+
+test "applyClaims: map_claims runs after the built-in mapping; its error is the request's" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var cfg = test_cfg;
+    cfg.map_claims = mapPermissions;
+    var c = testCtx(arena.allocator());
+    try testClaims(&c, cfg, "{\"sub\":\"u\",\"realm_access\":{\"roles\":[\"staff\"]},\"permissions\":[\"posts:write\"],\"tenant\":\"t9\"}");
+    try std.testing.expect(c.hasRole("staff") and c.hasRole("posts:write"));
+    try std.testing.expect(c.isOrgMember("t9"));
+    cfg.map_claims = rejectAll;
+    var d = testCtx(arena.allocator());
+    try std.testing.expectError(error.Forbidden, testClaims(&d, cfg, "{\"sub\":\"u\"}"));
 }

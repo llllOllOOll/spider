@@ -17,7 +17,7 @@ pub const Route = struct {
 };
 
 /// What a route declares about itself, from its config
-/// (`.{ .roles, .org_roles, .public, .quiet_log, .allow_http }`, see
+/// (`.{ .roles, .org_roles, .public, .policy, .quiet_log, .allow_http }`, see
 /// routing/route_config.zig). Available to middlewares as `c.route()`.
 pub const RouteMeta = struct {
     /// No login needed: auth middlewares (jwks/keycloak/clerk, auth) let
@@ -35,21 +35,34 @@ pub const RouteMeta = struct {
     /// route's middlewares): shown by the route listing.
     roles: []const []const u8 = &.{},
     org_roles: []const []const u8 = &.{},
+    /// The name of the route's `.policy` (spider.policy), if any.
+    policy: ?[]const u8 = null,
 
-    /// The route says who may call it: `.public`, `.authenticated`, or
-    /// `.roles` / `.org_roles`.
+    /// The route says who may call it: `.public`, `.authenticated`,
+    /// `.roles` / `.org_roles`, or `.policy`.
     pub fn declaresAccess(m: RouteMeta) bool {
-        return m.public or m.authenticated or m.roles.len > 0 or m.org_roles.len > 0;
+        return m.public or m.authenticated or m.roles.len > 0 or m.org_roles.len > 0 or m.policy != null;
     }
 
     /// The access column of the route listing: "public", "roles:a,b",
-    /// "org:a,b", "org:a roles:b", "authenticated", or "-" (nothing declared).
+    /// "org:a,b", "org:a roles:b", "authenticated", or "-" (nothing
+    /// declared), followed by " policy:name" when the route has one
+    /// ("policy:name" alone for a route with only a policy).
     pub fn writeAccess(m: RouteMeta, w: *std.Io.Writer) !void {
-        if (m.public) return w.writeAll("public");
         if (!m.declaresAccess()) return w.writeAll("-");
-        if (m.roles.len == 0 and m.org_roles.len == 0) return w.writeAll("authenticated");
-        if (m.org_roles.len > 0) try writeList(w, "org:", m.org_roles);
-        if (m.roles.len > 0) try writeList(w, if (m.org_roles.len > 0) " roles:" else "roles:", m.roles);
+        const has_roles = m.roles.len > 0 or m.org_roles.len > 0;
+        if (m.public) {
+            try w.writeAll("public");
+        } else if (has_roles) {
+            if (m.org_roles.len > 0) try writeList(w, "org:", m.org_roles);
+            if (m.roles.len > 0) try writeList(w, if (m.org_roles.len > 0) " roles:" else "roles:", m.roles);
+        } else if (m.authenticated or m.policy == null) {
+            try w.writeAll("authenticated");
+        }
+        if (m.policy) |p| {
+            if (m.public or has_roles or m.authenticated) try w.writeAll(" ");
+            try w.print("policy:{s}", .{p});
+        }
     }
 
     fn writeList(w: *std.Io.Writer, label: []const u8, items: []const []const u8) !void {

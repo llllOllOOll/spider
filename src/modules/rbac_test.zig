@@ -158,3 +158,116 @@ test "Ctx.isOrgMember" {
     var none = Ctx{ .request = undefined, .arena = arena.allocator(), .params = .{}, .body = null };
     try std.testing.expect(!none.isOrgMember("orgA"));
 }
+
+fn bareCtx(alc: std.mem.Allocator) Ctx {
+    return Ctx{ .request = undefined, .arena = alc, .params = .{}, .body = null };
+}
+
+/// Runs `mw`, returning the error it failed with (null when it let the request through).
+fn failure(mw: ctx_mod.MiddlewareFn, c: *Ctx) ?anyerror {
+    _ = mw(c, passThrough) catch |err| return err;
+    return null;
+}
+
+test "Ctx.addRole / setRoles: roles from any source feed .roles checks" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = bareCtx(arena.allocator());
+    try std.testing.expect(!try allows(rbac.requireRoles(&.{"editor"}), &c));
+    try c.addRole("viewer");
+    try c.addRole("editor");
+    try std.testing.expect(c.hasRole("viewer") and c.hasRole("editor"));
+    try std.testing.expect(try allows(rbac.requireRoles(&.{"editor"}), &c));
+    const listed = try c.roles();
+    try std.testing.expectEqual(@as(usize, 2), listed.len);
+    try std.testing.expectEqualStrings("editor", listed[1]);
+
+    try c.setRoles(&.{"viewer"});
+    try std.testing.expect(!c.hasRole("editor"));
+    try std.testing.expect(!try allows(rbac.requireRoles(&.{"editor"}), &c));
+    try std.testing.expectEqual(@as(usize, 1), (try c.roles()).len);
+}
+
+test "Ctx.addOrgRole: feeds .org_roles and writes the same _auth_org_N_* params the JWKS provider does" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = bareCtx(arena.allocator());
+    try c.addOrgRole(.{ .org_id = "c1", .org_name = "Tower A", .role = "manager" });
+    try c.addOrgRole(.{ .org_id = "c2", .role = "resident" });
+    try std.testing.expectEqualStrings("2", c.params.get("_auth_orgs_count").?);
+    try std.testing.expectEqualStrings("c1", c.params.get("_auth_org_0_id").?);
+    try std.testing.expectEqualStrings("Tower A", c.params.get("_auth_org_0_name").?);
+    try std.testing.expectEqualStrings("manager", c.params.get("_auth_org_0_role").?);
+    try std.testing.expectEqualStrings("", c.params.get("_auth_org_1_name").?);
+    try std.testing.expect(c.isOrgMember("c2"));
+    try std.testing.expect(try allows(rbac.requireOrgRoles(&.{"manager"}), &c));
+    try c.setActiveOrg("c2");
+    try std.testing.expect(!try allows(rbac.requireOrgRoles(&.{"manager"}), &c));
+}
+
+test "Ctx.setUser / userId: an app's own login satisfies .authenticated" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = bareCtx(arena.allocator());
+    try std.testing.expect(c.userId() == null);
+    try std.testing.expectEqual(@as(?anyerror, error.Unauthorized), failure(rbac.requireAuthenticated, &c));
+    try c.setUser(.{ .id = "42", .email = "a@b.c" });
+    try std.testing.expectEqualStrings("42", c.userId().?);
+    try std.testing.expectEqualStrings("a@b.c", c.params.get("_auth_email").?);
+    try std.testing.expect(c.params.get("_auth_name") == null);
+    try std.testing.expectEqual(@as(?anyerror, null), failure(rbac.requireAuthenticated, &c));
+
+    // The HS256 `auth` middleware's identity counts too.
+    var h = bareCtx(arena.allocator());
+    try h.params.put(arena.allocator(), "_user_id", "7");
+    try std.testing.expectEqualStrings("7", h.userId().?);
+}
+
+fn isOwner(c: *Ctx) anyerror!bool {
+    return std.mem.eql(u8, c.params.get("owner") orelse "", c.userId() orelse "-");
+}
+fn alwaysTrue(c: *Ctx) bool {
+    _ = c;
+    return true;
+}
+fn broken(c: *Ctx) anyerror!bool {
+    _ = c;
+    return error.DatabaseDown;
+}
+
+test "policy: true passes; false is 403 with a user, 401 without one; errors propagate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const owner = rbac.requirePolicy(rbac.policy("post_owner", isOwner));
+
+    var anon = bareCtx(a);
+    try std.testing.expectEqual(@as(?anyerror, error.Unauthorized), failure(owner, &anon));
+
+    var other = bareCtx(a);
+    try other.setUser(.{ .id = "1" });
+    try other.params.put(a, "owner", "2");
+    try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(owner, &other));
+
+    var same = bareCtx(a);
+    try same.setUser(.{ .id = "2" });
+    try same.params.put(a, "owner", "2");
+    try std.testing.expectEqual(@as(?anyerror, null), failure(owner, &same));
+
+    // A check that can't fail returns plain bool.
+    var anyone = bareCtx(a);
+    try std.testing.expectEqual(@as(?anyerror, null), failure(rbac.requirePolicy(rbac.policy("open", alwaysTrue)), &anyone));
+    try std.testing.expectEqual(@as(?anyerror, error.DatabaseDown), failure(rbac.requirePolicy(rbac.policy("db", broken)), &anyone));
+}
+
+test "rbac.routeMiddlewares: the policy runs after roles and org_roles" {
+    const mws = comptime rbac.routeMiddlewares(.{ .roles = &[_][]const u8{"staff"}, .policy = rbac.policy("post_owner", isOwner) });
+    try std.testing.expectEqual(@as(usize, 2), mws.len);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = bareCtx(arena.allocator());
+    try c.setUser(.{ .id = "2" });
+    try c.params.put(arena.allocator(), "owner", "2");
+    try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(mws[0], &c)); // no staff role
+    try std.testing.expectEqual(@as(?anyerror, null), failure(mws[1], &c));
+}
