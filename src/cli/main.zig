@@ -98,6 +98,7 @@ test {
     _ = @import("auth_updater.zig");
     _ = routes_cmd;
     _ = @import("auth.zig");
+    _ = @import("new.zig");
 }
 
 test "every file with tests is part of the CLI test binary" {

@@ -1,9 +1,9 @@
 
 ## Database (SQLite)
 
-- File: `SQLITE_PATH` from `.env`, default `db.sqlite` in the working directory.
-  Run `cp .env.example .env` once: without `.env` (or an existing `db.sqlite`),
-  `spider migrate` fails with "no database configured".
+- File: `SQLITE_PATH` from `.env` (`db.sqlite` in the working directory).
+  `spider new` created `.env` (git-ignored, with its own `JWT_SECRET`);
+  `.env.example` is the committed reference — add new settings to both.
 - Queries: `spider.sqlite.query(T, c.arena, "SELECT ... WHERE id = ?", .{id})`,
   `queryOne` → `?T`, `queryExecute(void, arena, sql)` for DDL; params are `?`.
   Struct fields map to column names; use `?T` for nullable columns.

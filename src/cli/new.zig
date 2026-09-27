@@ -124,7 +124,7 @@ fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: 
         .{ "{{app_name}}", app_name },
         .{ "{{variant}}", variant },
         .{ "{{feature_api_flag}}", if (api_only) " --api" else "" },
-        .{ "{{extra_commands}}", if (no_db) "" else if (use_pg) "| First-time setup | `cp .env.example .env`, then `docker compose up -d db` |\n" else "| First-time setup | `cp .env.example .env` (`spider migrate` reads it) |\n" },
+        .{ "{{extra_commands}}", if (!no_db and use_pg) "| First-time setup | `docker compose up -d db` |\n" else "" },
         .{ "{{core_db_line}}", if (no_db) "" else "\n  db/migrations.zig       migration list (+ SQL files in db/migrations/)" },
         .{ "{{views_layout}}", if (api_only) agents_views_api_tmpl else agents_views_html_tmpl },
         .{ "{{views_conventions}}", if (api_only) agents_views_conv_api_tmpl else agents_views_conv_html_tmpl },
@@ -137,6 +137,30 @@ fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: 
         out = next;
     }
     return out;
+}
+
+/// The generated .env: `.env.example` with the JWT_SECRET placeholder
+/// replaced by `secret`.
+pub fn envFromExample(allocator: std.mem.Allocator, example: []const u8, secret: []const u8) ![]u8 {
+    const placeholder = "JWT_SECRET=change_me_in_production";
+    const line = try std.fmt.allocPrint(allocator, "JWT_SECRET={s}", .{secret});
+    defer allocator.free(line);
+    return std.mem.replaceOwned(u8, allocator, example, placeholder, line);
+}
+
+test "envFromExample: the example's settings with a generated JWT_SECRET" {
+    const a = std.testing.allocator;
+    inline for (.{ env_example_tmpl, env_example_pg_tmpl }) |tmpl| {
+        const out = try envFromExample(a, tmpl, "0123abcd");
+        defer a.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "\nJWT_SECRET=0123abcd\n") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "change_me") == null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "PG_HOST=localhost") != null);
+    }
+}
+
+test "the generated .gitignore keeps .env out of git" {
+    try std.testing.expect(std.mem.indexOf(u8, gitignore_tmpl, "\n.env\n") != null);
 }
 
 fn writeFile(io: std.Io, dir: std.Io.Dir, path: []const u8, content: []const u8) !void {
@@ -322,6 +346,31 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, use_d
     }
 
     {
+        // .env ready to use: the same settings as .env.example (which is the
+        // one to commit; .gitignore ignores .env) with its own random
+        // JWT_SECRET. Without it `spider migrate` found no database until
+        // the developer copied the file by hand.
+        const example = render(allocator, selected_env_example_tmpl, app_name, zon_safe_name, fingerprint, "", sqlite_enabled) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        defer allocator.free(example);
+        var secret: [32]u8 = undefined;
+        std.Io.random(io, &secret);
+        const hex = std.fmt.bytesToHex(secret, .lower);
+        const env_content = envFromExample(allocator, example, &hex) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        defer allocator.free(env_content);
+        writeFile(io, project_dir, ".env", env_content) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        std.debug.print("  create  {s}/.env (local settings, git-ignored; JWT_SECRET generated)\n", .{app_name});
+    }
+
+    {
         // Guide for coding agents; CLAUDE.md just imports it (Claude Code reads CLAUDE.md).
         const agents_md = renderAgentsMd(allocator, app_name, api_only, effective_no_db, use_pg) catch |err| {
             fail_err = err;
@@ -430,6 +479,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, use_d
 
     std.debug.print("\nDone! Next steps:\n", .{});
     std.debug.print("  cd {s}\n", .{app_name});
+    if (use_pg and !effective_no_db) std.debug.print("  docker compose up -d db\n", .{});
     std.debug.print("  zig build run        ← downloads assets and starts server automatically\n", .{});
     std.debug.print("                         (requires spider CLI in PATH — run: spider install)\n", .{});
 

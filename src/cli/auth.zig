@@ -169,37 +169,53 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
     try auth_updater.updateMainZig(io, allocator, root_dir, provider, provider_config, api);
     std.debug.print("  update  src/main.zig\n", .{});
 
-    // Append env vars to .env.example
+    // Keycloak settings: in .env.example (the committed reference) and in
+    // .env, which `spider new` creates — otherwise the app reads empty
+    // KEYCLOAK_* values. A project without .env keeps not having one.
     if (std.mem.eql(u8, provider, "keycloak")) {
-        const env_example_path = ".env.example";
-        const env_vars_base =
-            "\n# Keycloak\n" ++
-            "KEYCLOAK_BASE_URL=http://localhost:8080\n" ++
-            "KEYCLOAK_REALM=myrealm\n" ++
-            "KEYCLOAK_CLIENT_ID=spider-app\n" ++
-            "KEYCLOAK_CLIENT_SECRET=your-client-secret\n" ++
-            "KEYCLOAK_REDIRECT_URI=http://localhost:3000/auth/callback\n" ++
-            "KEYCLOAK_REDIRECT_URI_LOGOUT=http://localhost:3000\n";
-
-        const existing = root_dir.readFileAlloc(io, env_example_path, allocator, .limited(16 * 1024)) catch "";
-        defer if (existing.len > 0) allocator.free(existing);
-
-        if (std.mem.indexOf(u8, existing, "KEYCLOAK_") == null) {
-            const jwt_suffix = if (std.mem.indexOf(u8, existing, "JWT_SECRET") == null)
-                "JWT_SECRET=change-me-in-production\n"
-            else
-                "";
-
-            const env_vars = try std.mem.concat(allocator, u8, &.{ env_vars_base, jwt_suffix });
-            defer allocator.free(env_vars);
-            const new_content = try std.mem.concat(allocator, u8, &.{ existing, env_vars });
-            defer allocator.free(new_content);
-            try fs_utils.writeFile(io, root_dir, env_example_path, new_content);
-            std.debug.print("  update  .env.example\n", .{});
+        inline for (.{ ".env.example", ".env" }) |path| {
+            const is_example = comptime std.mem.eql(u8, path, ".env.example");
+            const existing: ?[]u8 = root_dir.readFileAlloc(io, path, allocator, .limited(16 * 1024)) catch null;
+            defer if (existing) |e| allocator.free(e);
+            if (existing != null or is_example) {
+                if (try withKeycloakVars(allocator, existing orelse "")) |updated| {
+                    defer allocator.free(updated);
+                    try fs_utils.writeFile(io, root_dir, path, updated);
+                    std.debug.print("  update  {s}\n", .{path});
+                }
+            }
         }
     }
 
     std.debug.print("\nDone! Auth feature with {s} provider generated.\n", .{provider});
+}
+
+/// `env` with the Keycloak variables appended, or null when it already has
+/// them.
+pub fn withKeycloakVars(allocator: std.mem.Allocator, env: []const u8) !?[]u8 {
+    if (std.mem.indexOf(u8, env, "KEYCLOAK_") != null) return null;
+    const vars =
+        "\n# Keycloak\n" ++
+        "KEYCLOAK_BASE_URL=http://localhost:8080\n" ++
+        "KEYCLOAK_REALM=myrealm\n" ++
+        "KEYCLOAK_CLIENT_ID=spider-app\n" ++
+        "KEYCLOAK_CLIENT_SECRET=your-client-secret\n" ++
+        "KEYCLOAK_REDIRECT_URI=http://localhost:3000/auth/callback\n" ++
+        "KEYCLOAK_REDIRECT_URI_LOGOUT=http://localhost:3000\n";
+    const jwt = if (std.mem.indexOf(u8, env, "JWT_SECRET") == null) "JWT_SECRET=change-me-in-production\n" else "";
+    return try std.mem.concat(allocator, u8, &.{ env, vars, jwt });
+}
+
+test "withKeycloakVars: appends once, keeps an existing JWT_SECRET" {
+    const a = std.testing.allocator;
+    const once = (try withKeycloakVars(a, "JWT_SECRET=abc\n")).?;
+    defer a.free(once);
+    try std.testing.expect(std.mem.startsWith(u8, once, "JWT_SECRET=abc\n\n# Keycloak\nKEYCLOAK_BASE_URL="));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, once, "JWT_SECRET="));
+    try std.testing.expect((try withKeycloakVars(a, once)) == null);
+    const fresh = (try withKeycloakVars(a, "")).?;
+    defer a.free(fresh);
+    try std.testing.expect(std.mem.endsWith(u8, fresh, "JWT_SECRET=change-me-in-production\n"));
 }
 
 fn detectDbModule(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir) ![]const u8 {

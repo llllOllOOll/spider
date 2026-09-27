@@ -1,9 +1,10 @@
 
 ## Database (PostgreSQL)
 
-- Start it: `docker compose up -d db` (port 5452), then `cp .env.example .env`
-  once — the app and `spider migrate` read `PG_HOST`, `PG_PORT`, `PG_USER`,
-  `PG_PASSWORD`, `PG_DB` from `.env`.
+- Start it: `docker compose up -d db` (port 5452). The app and `spider migrate`
+  read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD`, `PG_DB` from `.env`,
+  which `spider new` created (git-ignored); `.env.example` is the committed
+  reference — add new settings to both.
 - Queries: `spider.pg.query(T, c.arena, "SELECT ... WHERE id = $1", .{id})`,
   `queryOne` → `?T`, `queryExecute(void, arena, sql)`. Struct fields map to
   column names; a missing column or a NULL into a non-optional field is an
