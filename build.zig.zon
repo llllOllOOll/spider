@@ -1,8 +1,8 @@
 .{
     .name = .spider,
-    .version = "0.6.9",
+    .version = "0.7.0",
     .fingerprint = 0x6ad76a84ae06b73f,
-    .minimum_zig_version = "0.17.0-dev.667+0569f1f6a",
+    .minimum_zig_version = "0.17.0-dev.956+2dca73595",
     .dependencies = .{
         .pacman = .{
             .url = "git+https://github.com/llllOllOOll/pacman#6e0074ddba77311dacd61fb342a25c5b93112583",
@@ -16,9 +16,9 @@
         // for the automatic fetch-and-rerun to kick in — a broken
         // production deploy (empty build cache, single `zig build`
         // invocation) is what happens when that two-pass dance isn't
-        // handled just right. Since io_backend defaults to .zio, this is
-        // fetched on effectively every build anyway; making it eager
-        // avoids that whole class of problem for one extra unconditional
+        // handled just right. io_backend defaults to .threaded, but apps
+        // that build with .zio (Orbitx, for one) need it, and a lazy fetch
+        // failing on a clean deploy is worse than one extra unconditional
         // fetch on `.threaded`-only builds.
         .zio = .{
             .url = "git+https://github.com/lalinsky/zio?ref=zig-0.17#316161e6da288c0f0432709767aa2f02ba00ecce",

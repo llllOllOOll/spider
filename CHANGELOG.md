@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-27
+
+### Breaking changes
+
+- Cross-site request check on by default (`Config.origin_check`): a browser's
+  cross-site POST/PUT/PATCH/DELETE or WebSocket upgrade gets 403 before
+  routing. Non-browser clients (webhooks, servers) are unaffected; use
+  `trusted_origins` / `exempt_paths` for legitimate cross-site posts.
+- Request bodies over `Config.max_body_bytes` (10 MiB) get 413.
+- `Config.static_dir` is now honored: `null` turns static files off.
+- Template interpolation `{ … }` is HTML-escaped by default.
+- Removed: `spider.metrics` (never updated by the server), `spider.dashboard`
+  (did not compile when used), the `spider_build` module (`setup()` could not
+  be imported and ignored `spider.config.zig`).
+- Live reload is disabled (`/_spider/reload` is no longer registered; the
+  module stays for a future `spider dev`). `Config.env` is not read today.
+- `minimum_zig_version` is `0.17.0-dev.956+2dca73595` (Spider and generated apps).
+
+### Added
+
+- App structure: features with `routes.build()`, `server.mountFeatures()`,
+  jobs (`spider.every`) and `boot` hooks; `spider.Group` defaults/use/sseWith.
+- Route config (third argument, checked at compile time): `.roles`,
+  `.org_roles`, `.public`, `.authenticated`, `.policy`, `.quiet_log`,
+  `.allow_http`.
+- Authorization: `spider.policy`, `spider.resourcePolicy` (+ `spider.Loaded`,
+  `c.loaded`), `spider.policySet` (`route`, `can`, `find`).
+- Identity from any source: `c.setUser`, `c.userId`, `c.addRole`,
+  `c.setRoles`, `c.roles`, `c.addOrgRole`; JWKS/Keycloak/Clerk `roles_claim`,
+  `org_claims`, `map_claims`; Clerk active-organization roles.
+- Route access tooling: `spider routes [--json|--check|--lock|--diff]`,
+  `spider.testing.expectRoutes`, `require_route_access`.
+- `spider check` (conventions with file:line and fix; `bool-attr`,
+  `route-access`, `kit-class`, …) and `spider.testing.expectConventions`.
+- CLI: `spider new` writes `.env`, AGENTS.md; `--ui=daisyui|tailwind`,
+  `--pwa`; `spider ui`, `spider icons`, `spider add|remove pwa`,
+  `spider g auth` for the features layout; generated `build.zig` picks the
+  I/O backend with one line.
+- `c.clientIp()` with `Config.trusted_proxies`; `Config.workers` honored.
+- Cookies: `c.deleteCookie`, `CookieOptions.domain`, injection-safe values.
+- htmx: `c.htmx(.{ … })`, `c.hxEvent`, `spider.varyHtmx`;
+  `spider.errorHandler`, `spider.forceHttps`, `KeycloakConfig.fromEnv`.
+- Templates: `{ disabled if (cond) }` / `{ "cls" if (cond) }`.
+- SSE: `Hub.emitHtmlTo`, `Sse.sendHtml`; multi-line data framed per line.
+- Static files: ETag, 304, `immutable` for `?v=` URLs.
+- `error.BadRequest` → 400; typed Postgres errors mapped to 409/400/422/503.
+
+### Fixed
+
+- Tokens that fail verification (`jwtVerify`, JWKS) are 401, not 500.
+- JWKS rejects tokens issued to other clients of the realm.
+- The server keeps accepting after accept errors; connection deadlines.
+- SSE hub writes on the server's Io, bounded; a failed client is dropped.
+- Live reload script follows the page's scheme (wss on https).
+- Form url-decoding, Group handlers known only at runtime, test discovery.
+
+### Docs
+
+- README rewritten and every example compiled against the current code;
+  `llms.txt` (API reference) and AGENTS.md for coding agents; exact Zig build
+  and how to verify it.
+
 ## [0.6.6] - 2026-06-08
 
 ### Fixed
