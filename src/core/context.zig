@@ -773,7 +773,9 @@ pub fn statusForError(err: anyerror) std.http.Status {
         error.NotFound => .not_found,
         error.Forbidden => .forbidden,
         error.Unauthorized => .unauthorized,
-        // Client input: path/form/multipart/JSON that can't be bound.
+        // Client input: path/form/multipart/JSON that can't be bound, or that
+        // app code rejected itself (error.BadRequest + c.setErrorDetail).
+        error.BadRequest,
         error.MissingPathParam,
         error.InvalidPathParam,
         error.BodyEmpty,

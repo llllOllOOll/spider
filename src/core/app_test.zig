@@ -168,6 +168,9 @@ test "statusForError: defaults" {
     try std.testing.expectEqual(std.http.Status.unauthorized, sfe(error.Unauthorized));
     try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.MissingField));
     try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.SyntaxError));
+    // Generic "the request is wrong": app code rejecting input it validated
+    // itself (with c.setErrorDetail for the message).
+    try std.testing.expectEqual(std.http.Status.bad_request, sfe(error.BadRequest));
     try std.testing.expectEqual(std.http.Status.internal_server_error, sfe(error.PG));
     try std.testing.expectEqual(std.http.Status.conflict, sfe(error.UniqueViolation));
     try std.testing.expectEqual(std.http.Status.conflict, sfe(error.ForeignKeyViolation));
