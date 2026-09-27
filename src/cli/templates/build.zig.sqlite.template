@@ -7,6 +7,9 @@ pub fn build(b: *std.Build) void {
     const spider_dep = b.dependency("spider", .{
         .target = target,
         .sqlite = true,
+        // I/O backend: comment one line and uncomment the other.
+        .io_backend = .threaded, // OS threads, blocking sockets (default)
+        // .io_backend = .zio, // fibers on an event loop (epoll)
     });
     const spider_mod = spider_dep.module("spider");
 
