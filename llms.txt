@@ -48,11 +48,13 @@ Without `.pg = true` etc., `spider.pg` fails with "no module named 'spider_pg'".
 
 ## Server — `spider.app(decorations) / spider.appWithConfig(spider.Config)`
 
-- Routes: `get|post|put|delete|patch|head(path, handler, comptime .{ .roles = []const []const u8, .org_roles = ... })` → `*Server`, chainable. The third argument is required (`.{}` for none). Every builder method returns `*Server`: chain them, or write `_ = server.use(mw);` as a statement. Paths: `/a/:id`, trailing `/*` wildcard.
+- Routes: `get|post|put|delete|patch|head(path, handler, comptime config)` → `*Server`, chainable. `config` keys (checked at compile time — unknown keys and `.public` with roles are errors): `.roles` (realm roles, any of), `.org_roles` (roles in the active org), `.public = true` (auth middlewares let it through), `.quiet_log = true` (success not logged), `.allow_http = true` (exempt from `spider.forceHttps`). Handlers read them with `c.route()`. The third argument is required (`.{}` for none). Every builder method returns `*Server`: chain them, or write `_ = server.use(mw);` as a statement. Paths: `/a/:id`, trailing `/*` wildcard.
 - Handler forms: `fn(*Ctx) !Response`; with extractors `fn(id: spider.Path(i64, "id"), f: spider.Form(T), c: *Ctx)` (any order, bad input → 400); with decorations `fn(*Ctx, Dep)` where `Dep` is a field type of the struct passed to `spider.app(.{ ... })`.
 - Middleware: `use(fn(*Ctx, NextFn) anyerror!Response)`, `useAt(path_prefix, mw)` (`"/admin/*"`).
 - `onError(fn(*Ctx, anyerror) !Response)`; default mapping `spider.statusForError(err)` (NotFound 404, Forbidden 403, Unauthorized 401, bind/parse errors 400, pg constraint errors 409/422/503...).
 - `mount(spider.Group)`, `group(...)`, `staticDir(dir)`, `staticAt(dir, prefix)`, `health(path, handler)`, `db(spider.Database)`.
+- Features: `mountFeatures(@import("features"))` registers every `pub const` namespace of the module; `mountFeature(features.x)` one of them. Per feature: every `pub fn` with no params returning `spider.Group` in its `routes` namespace is mounted; `pub const jobs = .{spider.every(ms, fn (*spider.Hub) void)}` is scheduled; `pub fn boot(b: spider.Boot) !void` (`b.allocator`, `b.io`) runs in `listen()` before the first connection. Optional: `mount()` stays for anything else.
+- Route table: `SPIDER_ROUTES=1` makes `listen()` print method, path, access (`public` / `org:..` / `roles:..` / `-`), flags and background jobs, then return (no boot hooks). `spider routes` runs `zig build run` with it. `writeRoutes(w)` writes the same table. A method+path registered twice logs a warning.
 - Streams: `sse(path, fn(*Sse) anyerror!void)`, `sseInterval(ms, fn(*Hub) void)`, `sseHeartbeat(?ms)`, `sseSweep(?ms)`, `ws(path, fn(*Ws) anyerror!void)`, `wsInterval(path, ms, fn(*Hub) void)`.
 - `listen(.{ .port = ?u16, .host = ?[]const u8 }) !void` — blocks. `deinit()`.
 
@@ -62,7 +64,10 @@ Without `.pg = true` etc., `spider.pg` fails with "no module named 'spider_pg'".
 
 ## spider.Group
 
-`Group.init(prefix)`; `get|post|put|delete(path, handler: spider.Handler-compatible fn(*Ctx) !Response, comptime .{ .roles, .org_roles })`; `sse(path, fn(*Sse))`; `useAt(suffix, mw)`. No `patch/head/ws/use`, and group handlers can't use extractors/decorations (plain `fn(*Ctx)` only). Mount with `server.mount(g)`.
+`Group.init(prefix)`; `get|post|put|delete|patch|head(path, handler, comptime config)` — same config keys and handlers as the server (plain, extractors, or a `spider.Handler` value), except decorations; `sse(path, fn(*Sse))`; `useAt(suffix, mw)`.
+- `defaults(comptime config)` (call before the routes): access rules/flags every route inherits; a route with its own `.roles`/`.org_roles`/`.public` replaces them (`.quiet_log`/`.allow_http` override one by one).
+- `use(mw)`: middleware for every route of the group, after its RBAC checks, applied at mount (route-bound, not a path prefix).
+- Mount with `server.mount(g)`, or return it from a feature's `routes.build()` for `mountFeatures`.
 
 ## Ctx — request
 
@@ -103,6 +108,7 @@ Needs `.sqlite = true` on the dependency. `init(allocator, io, .{ .path = ?[]con
 
 ## Auth
 
+- `spider.keycloak.KeycloakConfig.fromEnv()`: connection settings from KEYCLOAK_BASE_URL/REALM/CLIENT_ID/CLIENT_SECRET/REDIRECT_URI; set the rest on the result.
 - `spider.keycloak.Keycloak.init(allocator, io, .{ .base_url, .realm, .client_id, .client_secret, .redirect_uri, .login_path, .after_callback_path, .auth_skip_paths, .refresh_path, .active_org_cookie, .audience })`; `.middleware()`, `.loginHandler()`, `.callbackHandler()`, `.refreshHandler()`, `.authorize(c, .{ .endpoint = .auth|.registrations, .payload, .idp_hint })`. Sets `_auth_sub`, `_auth_email`, `_auth_name`, realm/org roles as `c.params`.
 - `spider.jwks.JwksAuth` (generic JWKS/RS256: `.jwks_url`, `.issuer`, `.audience`, `.cookie_name`, `.api_mode`, ...), `spider.google`, `spider.clerk`, `spider.auth` (HS256 JWT).
 - `spider.rbac.requireRoles(roles)`, `requireOrgRoles(roles)` middlewares (same as route `.roles` / `.org_roles`).
@@ -111,6 +117,8 @@ Needs `.sqlite = true` on the dependency. `init(allocator, io, .{ .path = ?[]con
 
 `spider.env`: `get(key) ?[]const u8`, `getOr(key, default)`, `getInt(T, key, default)`, `getBool(key, default)` (`.env`, `.env.<SPIDER_ENV>`, `.env.local` load on first use).
 `spider.logger` / `spider.loggerWith(.{ .quiet_paths = &.{"/up"} })` request logging; `spider.logFn` (timestamped `std_options.logFn`); `spider.gzip`.
+`spider.errorHandler(.{ .unauthorized_redirect, .json_key = "error", .toast_event = "spider:toast", .forbidden_view, .template_not_found_is_404, .messages = .{ .forbidden, .not_found, .conflict, .unprocessable, .busy, .bad_request, .internal } })` → an `onError`: JSON `{<json_key>, request_id}`, htmx (status kept, `HX-Reswap: none`, `HX-Trigger` toast `{message, type}`), page (`forbidden_view` or text); 5xx logged with rid/user/org.
+`spider.forceHttps(.{ .default_base_url, .base_url_env = "BASE_URL", .proto_header = "X-Forwarded-Proto", .allow_http_paths = &.{"/exact", "/prefix*"} })` middleware; `spider.varyHtmx` (`Vary: HX-Request` on HTML).
 `spider.r2.R2`: `initFromEnv(io)`, `put(c, key, body, content_type)`, `get(c, key)`, `delete`, `head`, `copyObject`.
 `spider.push` (Web Push/VAPID), `spider.qrcode`, `spider.http_client` (HTTP client), `spider.http_client_mtls`, `spider.health`, `spider.metrics`, `spider.zmd` (markdown).
 Internal/unstable (don't build on): `spider.ast`, `spider.form_parser`, `spider.template_max_component_depth`. Dead: `spider.dashboard`.

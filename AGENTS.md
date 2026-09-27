@@ -70,12 +70,15 @@ Before calling a change done: `zig build test`, and for anything under
 ```
 src/spider.zig        public API (everything apps import) + test discovery block
 src/core/
-  app.zig             Server(T): routes, middleware, listen(), accept loop,
-                      handleConnection (request lifecycle), Server config
+  app.zig             Server(T): routes, middleware, mountFeatures, listen(),
+                      accept loop, handleConnection (request lifecycle),
+                      writeRoutes (SPIDER_ROUTES / `spider routes`)
+  handler.zig         handler wrapping shared by Server and Group (extractors)
   context.zig         Ctx (per-request API), Response, statusForError()
   extractors.zig      spider.Path(T, name) / spider.Form(T) handler params
   watchdog.zig        connection deadlines (idle/header/body/stream write)
-src/routing/          router (trie + static map), Group (mountable route set)
+src/routing/          router (trie + static map; RouteMeta), Group (defaults, use),
+                      route_config.zig (the route config keys, checked at comptime)
 src/render/           template engine: parser → AST → renderer; escaping, RawHtml
 src/ws/               Hub (SSE/WS fan-out, channels, replay), Sse, Ws
 src/binding/          form + multipart parsing
@@ -98,6 +101,26 @@ response. Handlers return `!spider.Response`; errors like `error.NotFound`,
 `error.Forbidden`, `error.Unauthorized` map to 404/403/401.
 
 Per-request memory: `c.arena` (reset between requests on the same connection).
+
+## Routes and features (how apps are structured)
+
+- Route config (3rd argument, required): `.roles`, `.org_roles`, `.public`,
+  `.quiet_log`, `.allow_http` — validated at compile time
+  (routing/route_config.zig). It travels with the route as `RouteMeta`
+  (`c.route()`): jwks/keycloak and HS256 auth skip `.public`, the logger
+  skips successful `.quiet_log`, `spider.forceHttps` skips `.allow_http`.
+- `Group.defaults(config)` before the routes; a route declaring
+  `.roles/.org_roles/.public` replaces the defaults. `Group.use(mw)` wraps
+  every route of the group after its RBAC checks (added at mount).
+- Apps: each feature exposes `routes.build()` (+ any other zero-arg fn
+  returning `spider.Group`), optional `pub const jobs = .{spider.every(..)}`
+  and `pub fn boot(spider.Boot) !void`; `main.zig` calls
+  `server.mountFeatures(features)` (or `mountFeature(x)` one at a time;
+  `mount()` stays for groups that live elsewhere). Route matching doesn't
+  depend on registration order.
+- Ready-made app pieces: `spider.errorHandler(.{..})` (onError for JSON /
+  htmx toast / page), `spider.forceHttps(.{..})`, `spider.varyHtmx`,
+  `KeycloakConfig.fromEnv()`.
 
 ## Subsystems — what to know before editing
 
