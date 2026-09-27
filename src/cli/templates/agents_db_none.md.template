@@ -1,5 +1,7 @@
 
 ## Database
 
-None (created with `--no-db`). `spider g feature` assumes a database: here it
-falls back to generating SQLite code (repository + migration).
+None (created with `--no-db`). `spider g feature` generates database code
+(repository + migration) that doesn't compile here: the build has no
+`spider.pg` / `spider.sqlite`. Write features by hand (routes.zig +
+controller.zig + mod.zig, see "Routes and access"), or add a database first.

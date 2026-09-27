@@ -17,6 +17,7 @@
 | Tests | `zig build test` (see "Tests" below) |
 | New CRUD feature | `spider g feature <name>`{{feature_api_flag}} |
 | Apply migrations | `spider migrate` |
+| List routes and their access | `spider routes` |
 | Help | `spider help` |
 {{extra_commands}}
 The `spider` CLI must be on PATH. First build fetches dependencies (network).
@@ -24,31 +25,68 @@ The `spider` CLI must be on PATH. First build fetches dependencies (network).
 ## Layout
 
 ```
-src/main.zig              entry point: db init, every route, onError, listen()
+src/main.zig              entry point: db init, middleware, mountFeatures, onError, listen()
 src/features/<name>/      one folder per feature:
-  controller.zig          handlers — fn (c: *spider.Ctx) !spider.Response
+  routes.zig              its routes (a spider.Group) and who may call them
+  controller.zig          handlers — fn (c: *spider.Ctx, <extractors>) !spider.Response
   model.zig               structs (form input, rows)
   repository.zig          SQL
-  mod.zig                 re-exports the feature's files
-src/features/mod.zig      registry: one `pub const <name> = @import(...)` per feature
+  mod.zig                 re-exports the feature's files (routes, controller, ...)
+src/features/mod.zig      registry: one `pub const <name> = @import(...)` per
+                          feature — everything listed here is mounted and tested
 src/core/                 app-wide code shared by features{{core_db_line}}
 {{views_layout}}spider.config.zig         spider.Config (env, port, host, views)
 build.zig(.zon)           Spider dependency (pinned commit)
 ```
 
-## Conventions
+## Routes and access
 
-- Routes live in `src/main.zig`, chained on the server:
-  `.get("/posts/:id", posts.controller.show, .{})`. The third argument is the
-  route config: `.{}` or `.{ .roles = &.{"admin"} }`. `spider g feature` adds its
-  routes there for you.
-- Path params: `c.params.get("id")`; query: `c.query("q")`; forms:
-  `try c.parseForm(Model)`; JSON body: `try c.bodyJson(T)`.
+- A feature's routes live in its `routes.zig`, never in `src/main.zig`:
+
+  ```zig
+  pub fn build() spider.Group {
+      var g = spider.Group.init("/posts");
+      _ = g
+          .defaults(.{ .roles = &.{"editor"} }) // every route below, unless it says otherwise
+          .get("", controller.index, .{})
+          .get("/:id", controller.show, .{ .public = true })
+          .post("/:id/delete", controller.delete, .{ .roles = &.{"admin"} });
+      return g;
+  }
+  ```
+
+  `server.mountFeatures(features)` in `src/main.zig` mounts, for every feature
+  in `src/features/mod.zig`, each `pub fn` of its `routes.zig` that takes no
+  parameters and returns `spider.Group`. `spider g feature` writes all of this.
+- The third argument is the route's config, checked at compile time:
+  `.roles` / `.org_roles` (who may call it), `.public` (no login), `.quiet_log`
+  (successful requests aren't logged), `.allow_http` (skips forceHttps). An
+  unknown key, or `.public` together with roles, doesn't compile.
+- `defaults(...)` comes before the routes; a route that sets `.roles`,
+  `.org_roles` or `.public` replaces it (it doesn't add to it).
+- Roles only mean something once requests are authenticated (`spider g auth`
+  adds the provider's middleware). Without auth every route is open and a
+  route with `.roles` answers 403 to everyone. That's why generated features
+  have their `defaults()` line commented out until the app has auth; after
+  `spider g auth`, enable it in each feature and set the real role.
+- **After adding or changing routes, run `spider routes`** and read the access
+  column: `public`, `roles:<...>`, `org:<...>`, or `-` (any logged-in user once
+  there is auth). A route you meant to protect showing `-` is a bug.
+- Handler parameters: `*spider.Ctx` plus typed extractors —
+  `id: spider.Path(i64, "id")` (use `id.value`; a bad value answers 400 before
+  the handler runs) and `spider.Form(T)`. Query: `c.query("q")`; JSON body:
+  `try c.bodyJson(T)`.
 - Return errors for HTTP errors: `error.NotFound` → 404, `error.Forbidden` → 403,
-  `error.Unauthorized` → 401 (see `onError` in `src/main.zig`).
+  `error.Unauthorized` → 401. `spider.errorHandler(...)` in `src/main.zig` turns
+  them into the response (JSON for API callers, an htmx toast event, or text)
+  and logs every 5xx with its request id.
 - Per-request memory: `c.arena` — no manual frees in handlers.
-- Adding a feature by hand: create `src/features/<name>/`, register it in
-  `src/features/mod.zig`, add its routes in `src/main.zig`.
+- Background work: `pub const jobs = .{ spider.every(60_000, tick) };` in a
+  feature's `mod.zig` (`fn tick(hub: *spider.Hub) void`); one-time startup:
+  `pub fn boot(b: spider.Boot) !void`. Both are picked up by mountFeatures.
+- Adding a feature by hand: create `src/features/<name>/` with `routes.zig`
+  and a `mod.zig` that has `pub const routes = @import("routes.zig");`, then
+  add it to `src/features/mod.zig`. Nothing to change in `src/main.zig`.
 {{views_conventions}}{{db_section}}
 ## Tests
 
@@ -67,5 +105,7 @@ Don't delete the "every file with tests is part of this test binary" tests.
 
 - `src/main.zig` passes `.port = 3000` to `listen()`, which takes precedence over
   `port` in `spider.config.zig`. Change both, or remove it from `listen()`.
-- Unhandled errors answer 500 and nothing is logged by default. To see failures
-  in the terminal, add `.use(spider.logger)` before the routes in `src/main.zig`.
+- A feature missing from `src/features/mod.zig` is silently not mounted (and
+  its tests don't run): `spider routes` shows it isn't there.
+- `spider routes` runs `src/main.zig` up to `listen()` (e.g. it connects to the
+  database), so the app's `.env` must be in place.

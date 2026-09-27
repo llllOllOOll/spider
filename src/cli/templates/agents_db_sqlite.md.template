@@ -11,4 +11,5 @@
   `-- migrate:up` / `-- migrate:down` sections, listed in
   `src/core/db/migrations.zig`. `spider g feature` creates one; apply it with
   `spider migrate`, then restart the app. **Until you do, the feature's pages
-  answer 500 ("Error") and nothing is logged.**
+  answer 500**, logged only as `[500] GET /posts ... error=Error` (SQLite
+  doesn't say which table is missing).
