@@ -16,6 +16,7 @@ const controller_api_sqlite_tmpl = @embedFile("templates/feature/controller.zig.
 const controller_api_pg_tmpl = @embedFile("templates/feature/controller.zig.api.pg.template");
 const routes_tmpl = @embedFile("templates/feature/routes.zig.template");
 const routes_api_tmpl = @embedFile("templates/feature/routes.zig.api.template");
+const routes_test_tmpl = @embedFile("templates/feature/routes_test.zig.template");
 const index_html_tmpl = @embedFile("templates/feature/index.html.template");
 const list_html_tmpl = @embedFile("templates/feature/_list.html.template");
 const card_html_tmpl = @embedFile("templates/feature/_card.html.template");
@@ -78,8 +79,11 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     const controller_content = try template_engine.renderTemplate(allocator, controller_tmpl_selected, feature, plural);
     defer allocator.free(controller_content);
 
-    const routes_content = try renderRoutes(allocator, if (api) routes_api_tmpl else routes_tmpl, feature, plural, hasAuth(io, allocator, root_dir));
+    const with_auth = hasAuth(io, allocator, root_dir);
+    const routes_content = try renderRoutes(allocator, if (api) routes_api_tmpl else routes_tmpl, feature, plural, with_auth);
     defer allocator.free(routes_content);
+    const routes_test_content = try renderRoutesTest(allocator, api, feature, plural, with_auth);
+    defer allocator.free(routes_test_content);
 
     const index_html_content = try template_engine.renderTemplate(allocator, index_html_tmpl, feature, plural);
     defer allocator.free(index_html_content);
@@ -142,6 +146,9 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
 
     try fs_utils.writeFile(io, feature_dir, "routes.zig", routes_content);
     std.debug.print("  create  src/features/{s}/routes.zig\n", .{feature});
+
+    try fs_utils.writeFile(io, feature_dir, "routes_test.zig", routes_test_content);
+    std.debug.print("  create  src/features/{s}/routes_test.zig\n", .{feature});
 
     if (!api) {
         try fs_utils.writeFile(io, feature_dir, "views/index.html", index_html_content);
@@ -243,6 +250,47 @@ pub fn renderRoutes(allocator: std.mem.Allocator, tmpl: []const u8, feature: []c
     const with_defaults = try std.mem.replaceOwned(u8, allocator, tmpl, "{{defaults}}", if (with_auth) defaults_active else defaults_commented);
     defer allocator.free(with_defaults);
     return template_engine.renderTemplate(allocator, with_defaults, feature, plural);
+}
+
+/// The routes the templates register (method, path after the prefix), in
+/// the order routes.zig lists them.
+const html_routes = [_][2][]const u8{
+    .{ "GET", "" },         .{ "GET", "/new" },         .{ "GET", "/:id/edit" },
+    .{ "POST", "/create" }, .{ "POST", "/:id/update" }, .{ "POST", "/:id/delete" },
+};
+const api_routes = [_][2][]const u8{
+    .{ "GET", "" }, .{ "GET", "/:id" }, .{ "POST", "" }, .{ "PATCH", "/:id" }, .{ "DELETE", "/:id" },
+};
+
+/// routes_test.zig: the access table matching routes.zig as generated
+/// (the defaults() role with auth, "-" without).
+pub fn renderRoutesTest(allocator: std.mem.Allocator, api: bool, feature: []const u8, plural: []const u8, with_auth: bool) ![]u8 {
+    const access = if (with_auth) try std.fmt.allocPrint(allocator, "roles:{s}_admin", .{plural}) else try allocator.dupe(u8, "-");
+    defer allocator.free(access);
+    var rows: std.ArrayListUnmanaged(u8) = .empty;
+    defer rows.deinit(allocator);
+    for (if (api) api_routes[0..] else html_routes[0..]) |r| {
+        const line = try std.fmt.allocPrint(allocator, "        .{{ \"{s}\", \"/{s}{s}\", \"{s}\" }},\n", .{ r[0], plural, r[1], access });
+        defer allocator.free(line);
+        try rows.appendSlice(allocator, line);
+    }
+    const with_rows = try std.mem.replaceOwned(u8, allocator, routes_test_tmpl, "{{rows}}", rows.items);
+    defer allocator.free(with_rows);
+    return template_engine.renderTemplate(allocator, with_rows, feature, plural);
+}
+
+test "renderRoutesTest: one row per generated route, access matching defaults()" {
+    const a = std.testing.allocator;
+    const open = try renderRoutesTest(a, false, "post", "posts", false);
+    defer a.free(open);
+    try std.testing.expect(std.mem.indexOf(u8, open, "        .{ \"POST\", \"/posts/:id/delete\", \"-\" },\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, open, "test \"post routes: method, path and access\"") != null);
+    try std.testing.expectEqual(@as(usize, 6), std.mem.count(u8, open, "        .{ \""));
+    const closed = try renderRoutesTest(a, true, "post", "posts", true);
+    defer a.free(closed);
+    try std.testing.expect(std.mem.indexOf(u8, closed, "        .{ \"PATCH\", \"/posts/:id\", \"roles:posts_admin\" },\n") != null);
+    try std.testing.expectEqual(@as(usize, 5), std.mem.count(u8, closed, "        .{ \""));
+    try std.testing.expect(std.mem.indexOf(u8, closed, "{{") == null);
 }
 
 test "renderRoutes: defaults() active only when the app has auth" {

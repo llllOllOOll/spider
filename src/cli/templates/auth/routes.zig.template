@@ -4,7 +4,8 @@ const controller = @import("controller.zig");
 
 /// Mounted by `server.mountFeatures(features)` in src/main.zig. Login,
 /// callback and logout are `.public`: the auth middleware lets them through
-/// without a session. /auth/session needs the session the callback created.
+/// without a session. /auth/session is for any logged-in user (the session
+/// the callback created): `.authenticated`.
 pub fn build() spider.Group {
     const p = auth.provider orelse @panic("set features.auth.provider before mountFeatures (src/main.zig)");
     var g = spider.Group.init("/auth");
@@ -12,6 +13,6 @@ pub fn build() spider.Group {
         .get("/login", p.loginHandler(), .{ .public = true })
         .get("/callback", p.callbackHandler(), .{ .public = true })
         .get("/logout", controller.logout, .{ .public = true })
-        .get("/session", controller.session, .{});
+        .get("/session", controller.session, .{ .authenticated = true });
     return g;
 }

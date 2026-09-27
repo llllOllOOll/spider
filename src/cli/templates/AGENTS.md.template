@@ -17,7 +17,9 @@
 | Tests | `zig build test` (see "Tests" below) |
 | New CRUD feature | `spider g feature <name>`{{feature_api_flag}} |
 | Apply migrations | `spider migrate` |
-| List routes and their access | `spider routes` |
+| List routes and their access | `spider routes` (`--json` for tools) |
+| Fail on routes without access (app with auth) | `spider routes --check` |
+| Snapshot / compare the route table | `spider routes --lock` / `spider routes --diff` |
 | Help | `spider help` |
 {{extra_commands}}
 The `spider` CLI must be on PATH. First build fetches dependencies (network).
@@ -28,6 +30,7 @@ The `spider` CLI must be on PATH. First build fetches dependencies (network).
 src/main.zig              entry point: db init, middleware, mountFeatures, onError, listen()
 src/features/<name>/      one folder per feature:
   routes.zig              its routes (a spider.Group) and who may call them
+  routes_test.zig         the access contract: method, path, access per route
   controller.zig          handlers — fn (c: *spider.Ctx, <extractors>) !spider.Response
   model.zig               structs (form input, rows)
   repository.zig          SQL
@@ -59,19 +62,35 @@ build.zig(.zon)           Spider dependency (pinned commit)
   in `src/features/mod.zig`, each `pub fn` of its `routes.zig` that takes no
   parameters and returns `spider.Group`. `spider g feature` writes all of this.
 - The third argument is the route's config, checked at compile time:
-  `.roles` / `.org_roles` (who may call it), `.public` (no login), `.quiet_log`
+  `.roles` / `.org_roles` (who may call it), `.public` (no login),
+  `.authenticated` (any logged-in user; 401 otherwise), `.quiet_log`
   (successful requests aren't logged), `.allow_http` (skips forceHttps). An
-  unknown key, or `.public` together with roles, doesn't compile.
+  unknown key, or `.public` together with roles or `.authenticated`, doesn't
+  compile.
 - `defaults(...)` comes before the routes; a route that sets `.roles`,
-  `.org_roles` or `.public` replaces it (it doesn't add to it).
+  `.org_roles`, `.public` or `.authenticated` replaces it (it doesn't add to it).
 - Roles only mean something once requests are authenticated (`spider g auth`
   adds the provider's middleware). Without auth every route is open and a
   route with `.roles` answers 403 to everyone. That's why generated features
   have their `defaults()` line commented out until the app has auth; after
   `spider g auth`, enable it in each feature and set the real role.
 - **After adding or changing routes, run `spider routes`** and read the access
-  column: `public`, `roles:<...>`, `org:<...>`, or `-` (any logged-in user once
-  there is auth). A route you meant to protect showing `-` is a bug.
+  column: `public`, `authenticated`, `roles:<...>`, `org:<...>`, or `-`
+  (nothing declared: any logged-in user once there is auth). A route you
+  meant to protect showing `-` is a bug; one meant for any logged-in user
+  says so with `.authenticated = true`.
+  `spider routes --check` fails on those when the app has auth.
+- Each feature's `routes_test.zig` pins its table with
+  `spider.testing.expectRoutes(routes.build(), &.{ .{ "GET", "/posts", "-" }, ... })`.
+  Adding, moving or re-protecting a route fails `zig build test` until you
+  update that table too (the failure prints the actual one) — make it match
+  what you meant, never the other way round. Routes you add by hand get a row.
+- `spider routes --lock` writes `routes.lock` (commit it); `spider routes --diff`
+  exits 1 and lists what changed since. Use it in CI or before a review.
+- Strict mode: `server.requireRouteAccess()` in `src/main.zig` (or
+  `require_route_access = true` in `spider.config.zig`) makes the app refuse to
+  start while any route declares no access, naming them. For SSE streams use
+  `sseWith(path, handler, .{ ... })` (plain `sse()` declares nothing).
 - Handler parameters: `*spider.Ctx` plus typed extractors —
   `id: spider.Path(i64, "id")` (use `id.value`; a bad value answers 400 before
   the handler runs) and `spider.Form(T)`. Query: `c.query("q")`; JSON body:

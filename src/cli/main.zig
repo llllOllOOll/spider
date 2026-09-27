@@ -8,6 +8,7 @@ const update = @import("update.zig");
 const self_update = @import("self_update.zig");
 
 const cli_args = @import("args.zig");
+const routes_cmd = @import("routes_cmd.zig");
 
 const version = "0.6.9";
 
@@ -74,18 +75,13 @@ pub fn main(init: std.process.Init) !void {
         },
         .migrate => try migrate.run(io, allocator),
         .routes => {
-            // The app lists its own routes: listen() prints them and returns
-            // when SPIDER_ROUTES is set.
-            try init.environ_map.put("SPIDER_ROUTES", "1");
-            var child = try std.process.spawn(io, .{
-                .argv = &.{ "zig", "build", "run" },
-                .environ_map = init.environ_map,
-            });
-            const term = try child.wait(io);
-            switch (term) {
-                .exited => |code| if (code != 0) std.process.exit(code),
-                else => std.process.exit(1),
-            }
+            var bad: []const u8 = "";
+            const mode = routes_cmd.parseMode(rest, &bad) catch |err| switch (err) {
+                error.UnknownOption => usageError("unknown option '{s}' for `spider routes` (see `spider routes --help`)", .{bad}),
+                error.TooManyOptions => usageError("`spider routes` takes one of --json, --check, --lock, --diff ('{s}')", .{bad}),
+            };
+            const code = try routes_cmd.run(io, allocator, init.environ_map, mode);
+            if (code != 0) std.process.exit(code);
         },
         .update => try update.run(io),
         .self_update => try self_update.run(io),
@@ -100,6 +96,8 @@ test {
     _ = @import("feature.zig");
     _ = @import("routes_updater.zig");
     _ = @import("auth_updater.zig");
+    _ = routes_cmd;
+    _ = @import("auth.zig");
 }
 
 test "every file with tests is part of the CLI test binary" {

@@ -151,8 +151,9 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\      CRUD feature: src/features/<name>/ (controller, model, repository,
         \\      views), a migration, routes in src/main.zig. --api for JSON.
         \\      Apply the migration with `spider migrate` before using it.
-        \\  auth [--provider=keycloak|google] [--api]
-        \\      Auth feature for the provider (--api: bearer tokens only).
+        \\  auth [--provider=keycloak] [--api]
+        \\      Keycloak login (--api: bearer tokens only). For Google sign-in, add
+        \\      Google as an identity provider of the Keycloak realm.
         \\
         ,
         .migrate =>
@@ -165,13 +166,22 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\
         ,
         .routes =>
-        \\Usage: spider routes
+        \\Usage: spider routes [--json | --check | --lock | --diff]
         \\
-        \\Build and start the app with SPIDER_ROUTES=1 (`zig build run`): it prints
+        \\Build and start the app with SPIDER_ROUTES set (`zig build run`): it lists
         \\every route — method, path, access (public / org: / roles: / -) and flags
         \\(quiet_log, allow_http) — and exits before listening. The app's startup
         \\code runs up to listen() (e.g. it connects to the database); features'
         \\boot() hooks don't run.
+        \\
+        \\Options:
+        \\  --json   the listing as one line of JSON (with "auth": whether a login
+        \\           middleware is installed)
+        \\  --check  exit 1 if the app has auth and some route declares no access
+        \\           ("-": any logged-in user may call it)
+        \\  --lock   write routes.lock; commit it
+        \\  --diff   compare with routes.lock: exit 1 and show what changed,
+        \\           exit 2 if there is no routes.lock
         \\
         ,
         .install =>
