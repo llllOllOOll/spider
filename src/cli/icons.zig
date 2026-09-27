@@ -255,7 +255,10 @@ fn say(comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !u8 {
-    const root = try fs_utils.findProjectRoot(io);
+    const root = fs_utils.findProjectRoot(io) catch {
+        std.debug.print("error: not inside a Spider app (no build.zig.zon here or above)\n", .{});
+        return 2;
+    };
     const styles_path = "src/styles.css";
     const styles = root.readFileAlloc(io, styles_path, allocator, .limited(1024 * 1024)) catch {
         say("error: {s} not found (spider icons works in a Spider app with views)\n", .{styles_path});

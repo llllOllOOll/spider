@@ -17,6 +17,7 @@
 | Tests | `zig build test` (see "Tests" below) |
 | New CRUD feature | `spider g feature <name>`{{feature_api_flag}} |
 | Apply migrations | `spider migrate` |
+| Check the conventions below (file:line + fix) | `spider check` (`--strict`: warnings fail too) |
 | List routes and their access | `spider routes` (`--json` for tools) |
 | Fail on routes without access (app with auth) | `spider routes --check` |
 | Snapshot / compare the route table | `spider routes --lock` / `spider routes --diff` |
@@ -44,6 +45,16 @@ src/core/                 app-wide code shared by features{{core_db_line}}
 {{views_layout}}spider.config.zig         spider.Config (env, port, host, views)
 build.zig(.zon)           Spider dependency (pinned commit)
 ```
+
+## Conventions are checked
+
+`zig build test` includes "the app follows Spider's conventions"
+(`spider.testing.expectConventions()` in `src/main.zig`), and `spider check`
+prints the same report plus warnings. Each problem comes with its file, line
+and fix: a route outside a feature's `routes.zig`, a UI kit class instead of
+`ui-*`, an icon from a set that isn't loaded, a feature missing from
+`src/features/mod.zig`, a route without declared access once the app has
+auth. Fix the code, not the check — and don't delete that test.
 
 ## Routes and access
 

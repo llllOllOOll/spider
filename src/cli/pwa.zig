@@ -148,7 +148,10 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, adding: bool, args: []const
         say("usage: spider {s} pwa   (see `spider {s} --help`)\n", .{ verb, verb });
         return 2;
     }
-    const root = try fs_utils.findProjectRoot(io);
+    const root = fs_utils.findProjectRoot(io) catch {
+        std.debug.print("error: not inside a Spider app (no build.zig.zon here or above)\n", .{});
+        return 2;
+    };
     const zon = try root.readFileAlloc(io, "build.zig.zon", allocator, .limited(64 * 1024));
     defer allocator.free(zon);
     const app_name = appNameFromZon(zon) orelse "app";

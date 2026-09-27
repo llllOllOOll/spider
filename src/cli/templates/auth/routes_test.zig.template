@@ -1,0 +1,17 @@
+const spider = @import("spider");
+const auth = @import("mod.zig");
+const routes = @import("routes.zig");
+
+// The access contract of the auth routes. routes.build() needs a provider:
+// an unset one would panic, so the test gives it one that never runs.
+test "auth routes: method, path and access" {
+    var provider: spider.{{provider}}.{{Provider}} = undefined;
+    auth.provider = &provider;
+    defer auth.provider = null;
+    try spider.testing.expectRoutes(routes.build(), &.{
+        .{ "GET", "/auth/login", "public" },
+        .{ "GET", "/auth/callback", "public" },
+        .{ "GET", "/auth/logout", "public" },
+        .{ "GET", "/auth/session", "authenticated" },
+    });
+}

@@ -12,6 +12,7 @@ const routes_cmd = @import("routes_cmd.zig");
 const ui_mod = @import("ui.zig");
 const icons_mod = @import("icons.zig");
 const pwa_mod = @import("pwa.zig");
+const check_mod = @import("check.zig");
 
 const version = "0.6.9";
 
@@ -97,6 +98,10 @@ pub fn main(init: std.process.Init) !void {
             const code = try icons_mod.run(io, allocator, rest);
             if (code != 0) std.process.exit(code);
         },
+        .check => {
+            const code = try check_mod.run(io, allocator, rest);
+            if (code != 0) std.process.exit(code);
+        },
         .add, .remove => {
             const code = try pwa_mod.run(io, allocator, cmd == .add, rest);
             if (code != 0) std.process.exit(code);
@@ -120,6 +125,7 @@ test {
     _ = ui_mod;
     _ = icons_mod;
     _ = pwa_mod;
+    _ = check_mod;
 }
 
 test "every file with tests is part of the CLI test binary" {

@@ -18,6 +18,7 @@ const features_mod_tmpl = @embedFile("templates/features_mod.zig.template");
 const features_mod_api_tmpl = @embedFile("templates/features_mod.zig.api.template");
 const home_mod_tmpl = @embedFile("templates/home_mod.zig.template");
 const home_routes_tmpl = @embedFile("templates/home_routes.zig.template");
+const home_routes_test_tmpl = @embedFile("templates/home_routes_test.zig.template");
 const styles_css_tmpl = @embedFile("templates/styles.css.template");
 const nav_bar_tmpl = @embedFile("templates/nav-bar.html.template");
 const side_bar_tmpl = @embedFile("templates/side-bar.html.template");
@@ -286,6 +287,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
         .{ "src/features/home/views/index.html", home_index_tmpl },
         .{ "src/features/home/controller.zig", home_controller_tmpl },
         .{ "src/features/home/routes.zig", home_routes_tmpl },
+        .{ "src/features/home/routes_test.zig", home_routes_test_tmpl },
         .{ "Dockerfile", dockerfile_tmpl },
         .{ "docker-compose.yml", docker_compose_tmpl },
         .{ ".env.example", selected_env_example_tmpl },

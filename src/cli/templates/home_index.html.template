@@ -7,15 +7,13 @@ extends "layout"
         <p class="text-xs font-mono tracking-widest uppercase opacity-30">Spider</p>
     </div>
 
-    <div class="w-full max-w-2xl rounded-xl overflow-hidden" style="border: 1px solid rgba(255,255,255,0.08);">
+    <div class="w-full max-w-2xl rounded-xl overflow-hidden border border-base-content/10">
 
-        <div class="grid grid-cols-2" style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+        <div class="grid grid-cols-2 border-b border-base-content/10">
 
             <a href="https://spiderme.org/docs" target="_blank"
-               class="group flex flex-col gap-5 p-8 bg-base-200 hover:bg-base-300 transition-colors"
-               style="border-right: 1px solid rgba(255,255,255,0.08);">
-                <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40"
-                     style="background: rgba(255,255,255,0.05);">
+               class="group flex flex-col gap-5 p-8 bg-base-200 hover:bg-base-300 transition-colors border-r border-base-content/10">
+                <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40 bg-base-content/5">
                     <span class="hero-book-open size-5" aria-hidden="true"></span>
                 </div>
                 <div>
@@ -31,8 +29,7 @@ extends "layout"
 
             <a href="https://spiderme.org/docs/quickstart" target="_blank"
                class="group flex flex-col gap-5 p-8 bg-base-200 hover:bg-base-300 transition-colors">
-                <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40"
-                     style="background: rgba(255,255,255,0.05);">
+                <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40 bg-base-content/5">
                     <span class="hero-command-line size-5" aria-hidden="true"></span>
                 </div>
                 <div>
@@ -52,10 +49,8 @@ extends "layout"
         <div class="grid grid-cols-2">
 
             <a href="https://github.com/llllOllOOll/spider" target="_blank"
-               class="group flex flex-col gap-5 p-8 bg-base-200 hover:bg-base-300 transition-colors"
-               style="border-right: 1px solid rgba(255,255,255,0.08);">
-                <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40"
-                     style="background: rgba(255,255,255,0.05);">
+               class="group flex flex-col gap-5 p-8 bg-base-200 hover:bg-base-300 transition-colors border-r border-base-content/10">
+                <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40 bg-base-content/5">
                     <span class="hero-code-bracket size-5" aria-hidden="true"></span>
                 </div>
                 <div>
@@ -71,8 +66,7 @@ extends "layout"
 
             <a href="https://spiderme.org" target="_blank"
                class="group flex flex-col gap-5 p-8 bg-base-200 hover:bg-base-300 transition-colors">
-                <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40"
-                     style="background: rgba(255,255,255,0.05);">
+                <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40 bg-base-content/5">
                     <span class="hero-globe-alt size-5" aria-hidden="true"></span>
                 </div>
                 <div>

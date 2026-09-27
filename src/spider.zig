@@ -8,6 +8,8 @@ pub const Template = @import("render/template.zig").Template;
 pub const RawHtml = @import("render/context.zig").RawHtml;
 /// Test helpers for apps (see testing.zig): catch skipped test files.
 pub const testing = @import("testing.zig");
+/// App conventions checked by `spider check` and testing.expectConventions().
+pub const conventions = @import("conventions.zig");
 pub const Ctx = @import("core/context.zig").Ctx;
 pub const NextFn = @import("core/context.zig").NextFn;
 pub const MiddlewareFn = @import("core/context.zig").MiddlewareFn;
@@ -135,6 +137,7 @@ test {
     _ = @import("modules/logger.zig");
     _ = @import("modules/auth_marker.zig");
     _ = @import("routing/expect_routes.zig");
+    _ = @import("conventions.zig");
     _ = @import("core/http_client_mtls.zig");
     _ = @import("providers/jwks.zig");
     _ = @import("testing.zig");

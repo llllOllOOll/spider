@@ -25,6 +25,12 @@ pub fn main(init: std.process.Init) !void {
         .listen(.{ .port = 3000, .host = "0.0.0.0" }) catch |err| return err;
 }
 
+// Routes in routes.zig with declared access, ui-* classes, icons from the
+// active sets, features registered: `spider check` prints the same report.
+test "the app follows Spider's conventions" {
+    try @import("spider").testing.expectConventions();
+}
+
 test "every file with tests is part of this test binary" {
     try @import("spider").testing.expectAllTestsDiscovered(@import("test_manifest"));
 }

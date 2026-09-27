@@ -6,3 +6,7 @@ pub const routes = @import("routes.zig");
 /// The provider created in src/main.zig; set before mountFeatures (its
 /// login and callback handlers are routes of this feature).
 pub var provider: ?*spider.{{provider}}.{{Provider}} = null;
+
+test {
+    _ = @import("routes_test.zig");
+}

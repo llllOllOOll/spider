@@ -118,6 +118,9 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `server.mountFeatures(features)` (or `mountFeature(x)` one at a time;
   `mount()` stays for groups that live elsewhere). Route matching doesn't
   depend on registration order.
+- App conventions: `src/conventions.zig` (rules) behind
+  `spider.testing.expectConventions()` (generated apps run it in `zig build
+  test`) and `spider check` (CLI, via the spider_testing module).
 - Access checks for apps: `spider.testing.expectRoutes(group, rows)` (a
   feature's method/path/access table as a test), `spider routes
   --check/--lock/--diff` (reads the listing from `SPIDER_ROUTES=json`), and

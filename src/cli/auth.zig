@@ -7,6 +7,7 @@ const auth_updater = @import("auth_updater.zig");
 
 const mod_tmpl = @embedFile("templates/auth/mod.zig.template");
 const routes_tmpl = @embedFile("templates/auth/routes.zig.template");
+const routes_test_tmpl = @embedFile("templates/auth/routes_test.zig.template");
 const controller_sqlite_tmpl = @embedFile("templates/auth/controller.zig.sqlite.template");
 const controller_pg_tmpl = @embedFile("templates/auth/controller.zig.pg.template");
 const migration_sql_sqlite_tmpl = @embedFile("templates/auth/migration.sql.sqlite.template");
@@ -115,6 +116,10 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
         defer allocator.free(routes_content);
         try fs_utils.writeFile(io, auth_dir, "routes.zig", routes_content);
         std.debug.print("  create  src/features/auth/routes.zig\n", .{});
+        const routes_test_content = try template_engine.renderTemplateWithVars(allocator, routes_test_tmpl, &vars);
+        defer allocator.free(routes_test_content);
+        try fs_utils.writeFile(io, auth_dir, "routes_test.zig", routes_test_content);
+        std.debug.print("  create  src/features/auth/routes_test.zig\n", .{});
 
         // No login.html — auth provider (keycloak/google) handles login page
 
@@ -188,6 +193,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
     }
 
     std.debug.print("\nDone! Auth feature with {s} provider generated.\n", .{provider});
+    std.debug.print("Features generated before auth have their defaults() commented out: with auth,\n", .{});
+    std.debug.print("their routes need declared access. `spider check` lists them.\n", .{});
 }
 
 /// `env` with the Keycloak variables appended, or null when it already has

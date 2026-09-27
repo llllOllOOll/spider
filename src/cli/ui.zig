@@ -70,31 +70,9 @@ pub fn stylesForKits(allocator: std.mem.Allocator, styles_css: []const u8) !?[]u
     return try out.toOwnedSlice(allocator);
 }
 
-/// A daisyUI component class (btn, btn-primary, card-body, ...) — what
-/// templates must not use directly once the kit layer exists. Tailwind
-/// utilities that share a word (select-none, table, collapse) aren't.
-pub fn isDaisyClass(token: []const u8) bool {
-    if (std.mem.startsWith(u8, token, "ui-")) return false;
-    const bases = [_][]const u8{
-        "btn",         "card",     "badge",    "menu",      "alert",    "toast",   "navbar",       "drawer",
-        "modal",       "dropdown", "tabs",     "stat",      "stats",    "avatar",  "indicator",    "join",
-        "fieldset",    "loading",  "progress", "radio",     "checkbox", "toggle",  "rating",       "steps",
-        "swap",        "tooltip",  "kbd",      "dock",      "skeleton", "input",   "textarea",     "file-input",
-        "breadcrumbs", "timeline", "carousel", "countdown", "label",    "btm-nav", "form-control",
-    };
-    for (bases) |b| {
-        if (std.mem.eql(u8, token, b)) return true;
-        if (token.len > b.len and std.mem.startsWith(u8, token, b) and token[b.len] == '-') return true;
-    }
-    // select-bordered, select-primary... but not select-none/text/all/auto.
-    if (std.mem.eql(u8, token, "select")) return true;
-    if (std.mem.startsWith(u8, token, "select-")) {
-        const rest = token["select-".len..];
-        for ([_][]const u8{ "none", "text", "all", "auto" }) |u| if (std.mem.eql(u8, rest, u)) return false;
-        return true;
-    }
-    return false;
-}
+/// A daisyUI component class (btn, btn-primary, card-body, ...): the same
+/// list `spider check` uses.
+pub const isDaisyClass = @import("spider_testing").conventions.isKitClass;
 
 /// daisyUI classes used directly in a line of a template's class
 /// attributes (class="..." and Alpine :class="... '...' ...").
@@ -148,7 +126,10 @@ fn say(comptime fmt: []const u8, args: anytype) void {
 }
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !u8 {
-    const root = try fs_utils.findProjectRoot(io);
+    const root = fs_utils.findProjectRoot(io) catch {
+        std.debug.print("error: not inside a Spider app (no build.zig.zon here or above)\n", .{});
+        return 2;
+    };
     const ui_path = "src/ui.css";
     const current = root.readFileAlloc(io, ui_path, allocator, .limited(1024 * 1024)) catch null;
     defer if (current) |c| allocator.free(c);
