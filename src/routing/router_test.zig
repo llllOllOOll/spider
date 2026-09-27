@@ -173,3 +173,41 @@ test "Group: routes with RBAC config carry middlewares in the group router" {
     const p = (try g.router.match(.POST, "/api/items", arena.allocator())).?;
     try std.testing.expectEqual(@as(usize, 0), p.middlewares.len);
 }
+
+test "RouteMeta.writeAccess: the access column of the route listing" {
+    const cases = [_]struct { router_mod.RouteMeta, []const u8 }{
+        .{ .{}, "-" },
+        .{ .{ .public = true }, "public" },
+        .{ .{ .roles = &.{ "a", "b" } }, "roles:a,b" },
+        .{ .{ .org_roles = &.{"admin"} }, "org:admin" },
+        .{ .{ .org_roles = &.{"admin"}, .roles = &.{"staff"} }, "org:admin roles:staff" },
+        .{ .{ .quiet_log = true }, "-" },
+        .{ .{ .authenticated = true }, "authenticated" },
+        .{ .{ .authenticated = true, .roles = &.{"a"} }, "roles:a" },
+    };
+    for (cases) |c| {
+        var buf: [64]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        try c[0].writeAccess(&w);
+        try std.testing.expectEqualStrings(c[1], w.buffered());
+        try std.testing.expectEqual(!std.mem.eql(u8, c[1], "-"), c[0].declaresAccess());
+    }
+}
+
+test "Router.entries: every route once, sorted by path then method, with its meta" {
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+    try r.addRoute(.POST, "/b", .{ .handler = h1 });
+    try r.addRoute(.GET, "/b", .{ .handler = h1, .meta = .{ .public = true } });
+    try r.addRoute(.GET, "/a/:id", .{ .handler = h2 });
+    try r.addRoute(.GET, "/a", .{ .handler = h2 });
+    const list = try r.entries(std.testing.allocator);
+    defer Router.freeEntries(std.testing.allocator, list);
+    try std.testing.expectEqual(@as(usize, 4), list.len);
+    try std.testing.expectEqualStrings("/a", list[0].path);
+    try std.testing.expectEqualStrings("/a/:id", list[1].path);
+    try std.testing.expectEqualStrings("/b", list[2].path);
+    try std.testing.expectEqual(std.http.Method.GET, list[2].method);
+    try std.testing.expect(list[2].route.meta.public);
+    try std.testing.expectEqual(std.http.Method.POST, list[3].method);
+}

@@ -105,7 +105,7 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 ## Routes and features (how apps are structured)
 
 - Route config (3rd argument, required): `.roles`, `.org_roles`, `.public`,
-  `.quiet_log`, `.allow_http` — validated at compile time
+  `.authenticated`, `.quiet_log`, `.allow_http` — validated at compile time
   (routing/route_config.zig). It travels with the route as `RouteMeta`
   (`c.route()`): jwks/keycloak and HS256 auth skip `.public`, the logger
   skips successful `.quiet_log`, `spider.forceHttps` skips `.allow_http`.
@@ -118,6 +118,12 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `server.mountFeatures(features)` (or `mountFeature(x)` one at a time;
   `mount()` stays for groups that live elsewhere). Route matching doesn't
   depend on registration order.
+- Access checks for apps: `spider.testing.expectRoutes(group, rows)` (a
+  feature's method/path/access table as a test), `spider routes
+  --check/--lock/--diff` (reads the listing from `SPIDER_ROUTES=json`), and
+  `requireRouteAccess()` / `Config.require_route_access` (listen() refuses
+  routes that declare no access). "Has auth" = a `use`/`useAt` middleware
+  marked by `modules/auth_marker.zig` (providers mark theirs).
 - Ready-made app pieces: `spider.errorHandler(.{..})` (onError for JSON /
   htmx toast / page), `spider.forceHttps(.{..})`, `spider.varyHtmx`,
   `KeycloakConfig.fromEnv()`.

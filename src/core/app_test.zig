@@ -351,3 +351,117 @@ test "Group: a Handler only known at runtime is accepted (e.g. keycloak.loginHan
     const m = (try s.router.match(.GET, "/rt/h", arena.allocator())).?;
     try std.testing.expect(m.meta.public);
 }
+
+const Sse = @import("../ws/sse.zig").Sse;
+const NextFn = context_mod.NextFn;
+fn featStream(_: *Sse) anyerror!void {}
+fn plainMw(c: *Ctx, next: NextFn) anyerror!Response {
+    return next(c);
+}
+fn sessionMw(c: *Ctx, next: NextFn) anyerror!Response {
+    return next(c);
+}
+
+test "require_route_access: a route without declared access fails the boot check, naming it" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s
+        .get("/open", featOk, .{ .public = true })
+        .get("/staff", featOk, .{ .roles = &.{"staff"} })
+        .get("/forgot", featOk, .{})
+        .requireRouteAccess();
+    try std.testing.expectError(error.RouteAccessUndeclared, s.checkRouteAccess());
+}
+
+test "require_route_access: listen() refuses to start (before binding any port)" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.get("/forgot", featOk, .{}).requireRouteAccess();
+    // Port 1 can't be bound by a test: reaching bind() would fail differently.
+    try std.testing.expectError(error.RouteAccessUndeclared, s.listen(.{ .port = 1, .host = "127.0.0.1" }));
+}
+
+test "require_route_access: off by default, so existing apps with undeclared routes still boot" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.get("/forgot", featOk, .{});
+    try std.testing.expect(!s.config.require_route_access);
+    try s.checkRouteAccess();
+}
+
+test "require_route_access: passes when every route declares access (group defaults count)" {
+    var g = Group.init("/g");
+    _ = g
+        .defaults(.{ .org_roles = &.{"admin"} })
+        .get("/a", featOk, .{})
+        .sseWith("/events", featStream, .{})
+        .get("/b", featOk, .{ .public = true });
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.mount(g).sseWith("/feed", featStream, .{ .roles = &.{"staff"} }).requireRouteAccess();
+    try s.checkRouteAccess();
+}
+
+test "require_route_access: plain sse() routes declare nothing" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.sse("/events", featStream).requireRouteAccess();
+    try std.testing.expectError(error.RouteAccessUndeclared, s.checkRouteAccess());
+}
+
+test "built-ins: /up and /_spider/health are public; dev-only /_spider/reload declares nothing but passes the check" {
+    var s = app_mod.appWithConfig(.{ .views_dir = null, .static_dir = null, .env = .development });
+    defer s.deinit();
+    _ = s.requireRouteAccess();
+    try s.checkRouteAccess();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "/up", "/_spider/health" }) |p| {
+        const m = (try s.router.match(.GET, p, arena.allocator())).?;
+        try std.testing.expect(m.meta.public and m.meta.quiet_log);
+    }
+    const reload = (try s.router.match(.GET, "/_spider/reload", arena.allocator())).?;
+    try std.testing.expect(!reload.meta.declaresAccess());
+}
+
+test "hasAuth: only a marked middleware (use or useAt) counts" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.use(plainMw);
+    try std.testing.expect(!s.hasAuth());
+    @import("../modules/auth_marker.zig").mark(sessionMw);
+    _ = s.useAt("/app", sessionMw);
+    try std.testing.expect(s.hasAuth());
+}
+
+test "writeRoutesJson: auth flag, routes with access and flags, jobs" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s
+        .get("/b", featOk, .{ .org_roles = &.{"admin"}, .roles = &.{"staff"} })
+        .get("/a", featOk, .{ .public = true, .quiet_log = true })
+        .sseInterval(5000, featTick);
+    var buf: [2048]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try s.writeRoutesJson(&w);
+    try std.testing.expectEqualStrings(
+        "{\"auth\":false,\"routes\":[" ++
+            "{\"method\":\"GET\",\"path\":\"/a\",\"access\":\"public\",\"public\":true,\"authenticated\":false,\"roles\":[],\"org_roles\":[],\"quiet_log\":true,\"allow_http\":false}," ++
+            "{\"method\":\"GET\",\"path\":\"/b\",\"access\":\"org:admin roles:staff\",\"public\":false,\"authenticated\":false,\"roles\":[\"staff\"],\"org_roles\":[\"admin\"],\"quiet_log\":false,\"allow_http\":false}" ++
+            "],\"jobs_ms\":[5000],\"duplicates\":0}\n",
+        w.buffered(),
+    );
+}
+
+test "Group.sseWith: inherits the group's defaults() like any route" {
+    var g = Group.init("/live");
+    _ = g.defaults(.{ .org_roles = &.{"admin"} }).sseWith("/events", featStream, .{});
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.mount(g);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const m = (try s.router.match(.GET, "/live/events", arena.allocator())).?;
+    try std.testing.expectEqual(@as(usize, 1), m.meta.org_roles.len);
+    try std.testing.expectEqual(@as(usize, 1), m.middlewares.len);
+}

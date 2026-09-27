@@ -120,6 +120,7 @@ fn fakeAuth(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
         }
         try c.params.put(c.arena, "_auth_roles_count", try std.fmt.allocPrint(c.arena, "{d}", .{i}));
     }
+    if (c.header("X-Test-Sub")) |sub| try c.params.put(c.arena, "_auth_sub", sub);
     if (c.header("X-Test-Orgs")) |orgs| {
         var i: usize = 0;
         var it = std.mem.splitScalar(u8, orgs, ',');
@@ -206,6 +207,13 @@ fn runApp(port: u16) void {
         .get("/meta", metaEcho, .{ .quiet_log = true, .allow_http = true })
         .use(tagGroup); // after the routes on purpose: applies to all of them
 
+    var gl = spider.Group.init("/logged");
+    _ = gl
+        .defaults(.{ .authenticated = true })
+        .get("/me", ok, .{})
+        .get("/admin", ok, .{ .roles = admin })
+        .get("/open", ok, .{ .public = true });
+
     var g = spider.Group.init("/g");
     _ = g
         .get("/things", ok, .{ .org_roles = admin })
@@ -237,6 +245,7 @@ fn runApp(port: u16) void {
         .get("/typed/:id", typed, .{})
         .mount(g)
         .mount(g2)
+        .mount(gl)
         .get("/meta/public", metaEcho, .{ .public = true })
         .onError(errorHandler)
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
@@ -1113,4 +1122,42 @@ test "varyHtmx: Vary: HX-Request on HTML only" {
     const a = env.arena.allocator();
     try std.testing.expectEqualStrings("HX-Request", (try request(io, a, port, "/e/html", .{})).header("Vary").?);
     try std.testing.expect((try request(io, a, port, "/e/text", .{})).header("Vary") == null);
+}
+
+fn runUndeclaredApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null });
+    s.get("/forgot", ok, .{})
+        .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("undeclared app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+test "require_route_access: the same app boots without the flag, and refuses to with it" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const a = env.arena.allocator();
+
+    // Without the flag (the default): serves the route that declares nothing.
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runUndeclaredApp, .{port})).detach();
+    try waitForPort(io, port);
+    try std.testing.expectEqual(@as(u16, 200), (try request(io, a, port, "/forgot", .{})).status);
+
+    // With it: listen() returns the error before binding; the port stays free.
+    var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null, .require_route_access = true });
+    _ = s.get("/forgot", ok, .{});
+    const port2 = try reserveEphemeralPort(io);
+    try std.testing.expectError(error.RouteAccessUndeclared, s.listen(.{ .port = port2, .host = "127.0.0.1" }));
+    try std.testing.expectError(error.ConnectionRefused, request(io, a, port2, "/forgot", .{}));
+}
+
+test ".authenticated: 401 without an identity, 200 with one; roles and .public still replace it" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(401, &env, "/logged/me", .{});
+    try expectStatus(200, &env, "/logged/me", .{ .headers = &.{"X-Test-Sub: user-1"} });
+    try expectStatus(403, &env, "/logged/admin", .{ .headers = &.{"X-Test-Sub: user-1"} });
+    try expectStatus(200, &env, "/logged/admin", .{ .headers = &.{ "X-Test-Sub: user-1", "X-Test-Roles: admin" } });
+    try expectStatus(200, &env, "/logged/open", .{});
 }

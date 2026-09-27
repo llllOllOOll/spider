@@ -199,8 +199,8 @@ pub const Auth = struct {
 
     pub fn asFn(self: *const Auth) MiddlewareFn {
         const S = struct {
-            // var estática: escrita uma vez em setup (single-thread),
-            // lida de forma segura por todos os worker threads.
+            // Written once during setup (single thread), then only read
+            // by the worker threads.
             var instance: ?*const Auth = null;
 
             fn mw(c: *Ctx, next: NextFn) anyerror!Response {
@@ -208,6 +208,7 @@ pub const Auth = struct {
             }
         };
         S.instance = self;
+        @import("../auth_marker.zig").mark(S.mw);
         return S.mw;
     }
 };

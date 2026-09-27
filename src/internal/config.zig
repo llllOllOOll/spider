@@ -33,6 +33,11 @@ pub const Config = struct {
     /// is then closed, so the client reconnects instead of silently missing
     /// events, and a stuck client can't hold up delivery to everyone else.
     stream_write_timeout_ms: u32 = 10_000,
+    /// Every route must declare who may call it (`.public`, `.roles` or
+    /// `.org_roles`, directly or through its group's defaults()); listen()
+    /// refuses to start otherwise and names the routes that don't. Turns
+    /// "forgot the RBAC" into a boot error. Also `server.requireRouteAccess()`.
+    require_route_access: bool = false,
 };
 
 pub const default = Config{};

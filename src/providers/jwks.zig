@@ -1,4 +1,5 @@
 const std = @import("std");
+const auth_marker = @import("../modules/auth_marker.zig");
 const pacman = @import("pacman");
 const Ctx = @import("../core/context.zig").Ctx;
 const Response = @import("../core/context.zig").Response;
@@ -264,6 +265,7 @@ pub const JwksAuth = struct {
             }
         };
         S.instance = self;
+        auth_marker.mark(S.mw);
         return S.mw;
     }
 

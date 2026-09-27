@@ -1,0 +1,47 @@
+//! Which middlewares authenticate requests, so the server can tell whether
+//! an app has auth (the route listing reports it; `spider routes --check`
+//! only flags routes with no declared access when there is auth).
+//!
+//! Spider's providers mark their middleware when it's created (jwks /
+//! keycloak, clerk, HS256 `auth`). An app with its own session middleware
+//! marks it with `spider.markAuthMiddleware(mw)`.
+//!
+//! Filled while the app is set up (single thread, before listen()); read
+//! afterwards.
+
+const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
+
+var marked: [16]MiddlewareFn = undefined;
+var count: usize = 0;
+
+pub fn mark(mw: MiddlewareFn) void {
+    if (isMarked(mw)) return;
+    if (count == marked.len) @panic("spider.markAuthMiddleware: more than 16 auth middlewares");
+    marked[count] = mw;
+    count += 1;
+}
+
+pub fn isMarked(mw: MiddlewareFn) bool {
+    for (marked[0..count]) |m| if (m == mw) return true;
+    return false;
+}
+
+const std = @import("std");
+const Ctx = @import("../core/context.zig").Ctx;
+const NextFn = @import("../core/context.zig").NextFn;
+const Response = @import("../core/context.zig").Response;
+
+fn testMw(c: *Ctx, next: NextFn) anyerror!Response {
+    return next(c);
+}
+fn otherMw(c: *Ctx, next: NextFn) anyerror!Response {
+    return next(c);
+}
+
+test "mark / isMarked: only the marked middleware, marking twice is harmless" {
+    try std.testing.expect(!isMarked(testMw));
+    mark(testMw);
+    mark(testMw);
+    try std.testing.expect(isMarked(testMw));
+    try std.testing.expect(!isMarked(otherMw));
+}

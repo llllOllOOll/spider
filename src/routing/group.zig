@@ -114,6 +114,7 @@ pub const Group = struct {
         if (comptime route_config.declaresAccess(config)) {
             mws = comptime route_config.middlewares(config);
             meta.public = own.public;
+            meta.authenticated = own.authenticated;
             meta.roles = own.roles;
             meta.org_roles = own.org_roles;
         }
@@ -136,6 +137,13 @@ pub const Group = struct {
         self.freeJoined(path, full);
         self.has_sse = true;
         return self;
+    }
+
+    /// sse() with a route config, like get(): the group's defaults() apply
+    /// unless the config declares its own access. (sse() takes neither.)
+    pub fn sseWith(self: *Group, path: []const u8, comptime handler: fn (*Sse) anyerror!void, comptime config: anytype) *Group {
+        self.has_sse = true;
+        return self.route(.GET, path, sse_mod.buildHandler(handler), config);
     }
 
     pub fn useAt(self: *Group, path_suffix: []const u8, m: MiddlewareFn) *Group {

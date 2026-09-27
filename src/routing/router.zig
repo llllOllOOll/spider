@@ -26,6 +26,8 @@ pub const RouteMeta = struct {
     /// A successful request isn't logged (heartbeats, polling); 4xx/5xx
     /// still are.
     quiet_log: bool = false,
+    /// Any logged-in user (`.authenticated = true`): 401 without an identity.
+    authenticated: bool = false,
     /// Served over plain HTTP even when the app forces HTTPS
     /// (spider.forceHttps) — for clients that can't do TLS.
     allow_http: bool = false,
@@ -33,6 +35,38 @@ pub const RouteMeta = struct {
     /// route's middlewares): shown by the route listing.
     roles: []const []const u8 = &.{},
     org_roles: []const []const u8 = &.{},
+
+    /// The route says who may call it: `.public`, `.authenticated`, or
+    /// `.roles` / `.org_roles`.
+    pub fn declaresAccess(m: RouteMeta) bool {
+        return m.public or m.authenticated or m.roles.len > 0 or m.org_roles.len > 0;
+    }
+
+    /// The access column of the route listing: "public", "roles:a,b",
+    /// "org:a,b", "org:a roles:b", "authenticated", or "-" (nothing declared).
+    pub fn writeAccess(m: RouteMeta, w: *std.Io.Writer) !void {
+        if (m.public) return w.writeAll("public");
+        if (!m.declaresAccess()) return w.writeAll("-");
+        if (m.roles.len == 0 and m.org_roles.len == 0) return w.writeAll("authenticated");
+        if (m.org_roles.len > 0) try writeList(w, "org:", m.org_roles);
+        if (m.roles.len > 0) try writeList(w, if (m.org_roles.len > 0) " roles:" else "roles:", m.roles);
+    }
+
+    fn writeList(w: *std.Io.Writer, label: []const u8, items: []const []const u8) !void {
+        try w.writeAll(label);
+        for (items, 0..) |r, i| {
+            if (i > 0) try w.writeAll(",");
+            try w.writeAll(r);
+        }
+    }
+};
+
+/// One registered route, as listed by Router.entries().
+pub const Entry = struct {
+    method: std.http.Method,
+    /// Always starts with '/'.
+    path: []const u8,
+    route: Route,
 };
 
 const Node = struct {
@@ -170,6 +204,49 @@ pub const Router = struct {
     fn warnDuplicate(self: *Router, method: std.http.Method, path: []const u8) void {
         self.duplicates += 1;
         std.log.warn("route {s} {s} registered twice; the later registration wins", .{ @tagName(method), path });
+    }
+
+    /// Every route, sorted by path then method. Free with freeEntries().
+    pub fn entries(self: *Router, allocator: std.mem.Allocator) ![]Entry {
+        const Collect = struct {
+            list: *std.ArrayListUnmanaged(Entry),
+            alloc: std.mem.Allocator,
+            failed: *bool,
+            fn cb(c: @This(), method: std.http.Method, path: []const u8, route: Route) void {
+                const p = (if (path.len > 0 and path[0] == '/')
+                    c.alloc.dupe(u8, path)
+                else
+                    std.fmt.allocPrint(c.alloc, "/{s}", .{path})) catch {
+                    c.failed.* = true;
+                    return;
+                };
+                c.list.append(c.alloc, .{ .method = method, .path = p, .route = route }) catch {
+                    c.alloc.free(p);
+                    c.failed.* = true;
+                };
+            }
+        };
+        var list: std.ArrayListUnmanaged(Entry) = .empty;
+        var failed = false;
+        self.forEach(allocator, Collect{ .list = &list, .alloc = allocator, .failed = &failed }, Collect.cb);
+        if (failed) {
+            for (list.items) |e| allocator.free(e.path);
+            list.deinit(allocator);
+            return error.OutOfMemory;
+        }
+        std.mem.sort(Entry, list.items, {}, struct {
+            fn lt(_: void, a: Entry, b: Entry) bool {
+                const o = std.mem.order(u8, a.path, b.path);
+                if (o != .eq) return o == .lt;
+                return @intFromEnum(a.method) < @intFromEnum(b.method);
+            }
+        }.lt);
+        return list.toOwnedSlice(allocator);
+    }
+
+    pub fn freeEntries(allocator: std.mem.Allocator, list: []Entry) void {
+        for (list) |e| allocator.free(e.path);
+        allocator.free(list);
     }
 
     pub fn forEach(self: *Router, allocator: std.mem.Allocator, context: anytype, comptime callback: fn (@TypeOf(context), std.http.Method, []const u8, Route) void) void {

@@ -18,6 +18,10 @@ const ErrorHandler = ctx_mod.ErrorHandler;
 const ViewsConfig = ctx_mod.ViewsConfig;
 const Database = @import("database.zig").Database;
 const Router = @import("../routing/router.zig").Router;
+const auth_marker = @import("../modules/auth_marker.zig");
+/// Registered only with `env = .development`; declares no access on purpose
+/// (see checkRouteAccess).
+pub const livereload_path = "/_spider/reload";
 const Handler = @import("../routing/router.zig").Handler;
 const Route = @import("../routing/router.zig").Route;
 const Group = @import("../routing/group.zig").Group;
@@ -976,6 +980,18 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// sse() with a route config, like get(): `.roles`, `.org_roles`,
+        /// `.public`, `.quiet_log`, `.allow_http`.
+        pub fn sseWith(self: *Self, path: []const u8, comptime handler: fn (*Sse) anyerror!void, comptime config: anytype) *Self {
+            self.ensureSseHub();
+            self.router.addRoute(.GET, path, .{
+                .handler = sse_mod.buildHandler(handler),
+                .middlewares = comptime route_config.middlewares(config),
+                .meta = comptime route_config.metaOf(config),
+            }) catch unreachable;
+            return self;
+        }
+
         pub fn health(self: *Self, path: []const u8, comptime handler: anytype) *Self {
             return self.get(path, handler, .{});
         }
@@ -1118,79 +1134,142 @@ pub fn Server(comptime T: type) type {
         /// Printed by listen() instead of serving when SPIDER_ROUTES is set
         /// (what `spider routes` does).
         pub fn writeRoutes(self: *Self, w: *std.Io.Writer) !void {
-            const Entry = struct { method: std.http.Method, path: []const u8, route: Route };
-            const Collect = struct {
-                list: *std.ArrayListUnmanaged(Entry),
-                fn cb(c: @This(), method: std.http.Method, path: []const u8, route: Route) void {
-                    const p = if (path.len > 0 and path[0] == '/')
-                        std.heap.page_allocator.dupe(u8, path) catch return
-                    else
-                        std.fmt.allocPrint(std.heap.page_allocator, "/{s}", .{path}) catch return;
-                    c.list.append(std.heap.page_allocator, .{ .method = method, .path = p, .route = route }) catch return;
-                }
-            };
-            var list: std.ArrayListUnmanaged(Entry) = .empty;
-            defer {
-                for (list.items) |e| std.heap.page_allocator.free(e.path);
-                list.deinit(std.heap.page_allocator);
-            }
-            self.router.forEach(std.heap.page_allocator, Collect{ .list = &list }, Collect.cb);
-            std.mem.sort(Entry, list.items, {}, struct {
-                fn lt(_: void, a: Entry, b: Entry) bool {
-                    const o = std.mem.order(u8, a.path, b.path);
-                    if (o != .eq) return o == .lt;
-                    return @intFromEnum(a.method) < @intFromEnum(b.method);
-                }
-            }.lt);
-            for (list.items) |e| {
+            const list = try self.router.entries(std.heap.page_allocator);
+            defer Router.freeEntries(std.heap.page_allocator, list);
+            for (list) |e| {
                 const m = e.route.meta;
                 try w.print("{s: <7} {s: <48} ", .{ @tagName(e.method), e.path });
-                if (m.public) {
-                    try w.writeAll("public");
-                } else if (m.org_roles.len > 0 or m.roles.len > 0) {
-                    if (m.org_roles.len > 0) try writeList(w, "org:", m.org_roles);
-                    if (m.roles.len > 0) try writeList(w, if (m.org_roles.len > 0) " roles:" else "roles:", m.roles);
-                } else {
-                    try w.writeAll("-");
-                }
+                try m.writeAccess(w);
                 if (m.quiet_log) try w.writeAll("  quiet_log");
                 if (m.allow_http) try w.writeAll("  allow_http");
                 try w.writeAll("\n");
             }
-            try w.print("{d} routes", .{list.items.len});
+            try w.print("{d} routes", .{list.len});
             if (self.router.duplicates > 0) try w.print(", {d} registered twice (see the warnings above)", .{self.router.duplicates});
             try w.writeAll("\n");
 
             // Background jobs (sseInterval / features' jobs), shortest first.
-            const n = self.interval_threads.items.len;
-            if (n > 0) {
-                const ms = try std.heap.page_allocator.alloc(u64, n);
-                defer std.heap.page_allocator.free(ms);
-                for (self.interval_threads.items, 0..) |e, i| ms[i] = e.ms;
-                std.mem.sort(u64, ms, {}, std.sort.asc(u64));
-                try w.print("{d} background jobs, every:", .{n});
+            const ms = try self.jobIntervals(std.heap.page_allocator);
+            defer std.heap.page_allocator.free(ms);
+            if (ms.len > 0) {
+                try w.print("{d} background jobs, every:", .{ms.len});
                 for (ms) |v| try w.print(" {d}ms", .{v});
                 try w.writeAll("\n");
             }
         }
 
-        fn writeList(w: *std.Io.Writer, label: []const u8, items: []const []const u8) !void {
-            try w.writeAll(label);
-            for (items, 0..) |r, i| {
-                if (i > 0) try w.writeAll(",");
-                try w.writeAll(r);
+        fn jobIntervals(self: *Self, allocator: std.mem.Allocator) ![]u64 {
+            const ms = try allocator.alloc(u64, self.interval_threads.items.len);
+            for (self.interval_threads.items, 0..) |e, i| ms[i] = e.ms;
+            std.mem.sort(u64, ms, {}, std.sort.asc(u64));
+            return ms;
+        }
+
+        /// The route listing as one line of JSON (`SPIDER_ROUTES=json`, read
+        /// by `spider routes --json/--check/--lock/--diff`):
+        /// {"auth":bool,"routes":[{"method","path","access","public","roles",
+        /// "org_roles","quiet_log","allow_http"}],"jobs_ms":[..],"duplicates":n}
+        pub fn writeRoutesJson(self: *Self, w: *std.Io.Writer) !void {
+            const list = try self.router.entries(std.heap.page_allocator);
+            defer Router.freeEntries(std.heap.page_allocator, list);
+            const ms = try self.jobIntervals(std.heap.page_allocator);
+            defer std.heap.page_allocator.free(ms);
+            var js: std.json.Stringify = .{ .writer = w };
+            try js.beginObject();
+            try js.objectField("auth");
+            try js.write(self.hasAuth());
+            try js.objectField("routes");
+            try js.beginArray();
+            for (list) |e| {
+                const m = e.route.meta;
+                var buf: [512]u8 = undefined;
+                var aw: std.Io.Writer = .fixed(&buf);
+                m.writeAccess(&aw) catch {};
+                try js.beginObject();
+                try js.objectField("method");
+                try js.write(@tagName(e.method));
+                try js.objectField("path");
+                try js.write(e.path);
+                try js.objectField("access");
+                try js.write(aw.buffered());
+                try js.objectField("public");
+                try js.write(m.public);
+                try js.objectField("authenticated");
+                try js.write(m.authenticated);
+                try js.objectField("roles");
+                try js.write(m.roles);
+                try js.objectField("org_roles");
+                try js.write(m.org_roles);
+                try js.objectField("quiet_log");
+                try js.write(m.quiet_log);
+                try js.objectField("allow_http");
+                try js.write(m.allow_http);
+                try js.endObject();
+            }
+            try js.endArray();
+            try js.objectField("jobs_ms");
+            try js.write(ms);
+            try js.objectField("duplicates");
+            try js.write(self.router.duplicates);
+            try js.endObject();
+            try w.writeAll("\n");
+        }
+
+        /// A middleware installed with use()/useAt() authenticates requests
+        /// (Spider's providers, or one marked with spider.markAuthMiddleware).
+        pub fn hasAuth(self: *Self) bool {
+            for (self.global_middlewares[0..self.global_middleware_count]) |m| {
+                if (auth_marker.isMarked(m)) return true;
+            }
+            for (self.path_middlewares[0..self.path_middleware_count]) |e| {
+                if (auth_marker.isMarked(e.middleware)) return true;
+            }
+            return false;
+        }
+
+        /// Every route must say who may call it (`.public`, `.authenticated`,
+        /// `.roles` or `.org_roles`): listen() refuses to start otherwise, listing the
+        /// ones that don't. Same as `require_route_access = true` in
+        /// spider.config.zig. Off by default.
+        pub fn requireRouteAccess(self: *Self) *Self {
+            self.config.require_route_access = true;
+            return self;
+        }
+
+        /// The boot check behind require_route_access: logs every route
+        /// without declared access and fails with error.RouteAccessUndeclared.
+        /// Does nothing when the option is off.
+        pub fn checkRouteAccess(self: *Self) !void {
+            if (!self.config.require_route_access) return;
+            const list = try self.router.entries(std.heap.page_allocator);
+            defer Router.freeEntries(std.heap.page_allocator, list);
+            // warn under `zig test`: the test runner fails any test that logs at err.
+            const log = if (@import("builtin").is_test) std.log.warn else std.log.err;
+            var missing: usize = 0;
+            for (list) |e| {
+                if (e.route.meta.declaresAccess()) continue;
+                // Development-only live reload: left to the app's auth like
+                // before (it may exist in production when env stays .development).
+                if (std.mem.eql(u8, e.path, livereload_path)) continue;
+                missing += 1;
+                log("route {s} {s} declares no access (require_route_access): add .public, .authenticated, .roles or .org_roles to its config, or a defaults() to its group", .{ @tagName(e.method), e.path });
+            }
+            if (missing > 0) {
+                log("{d} route(s) without declared access; not starting", .{missing});
+                return error.RouteAccessUndeclared;
             }
         }
 
         pub fn listen(self: *Self, options: ListenOptions) !void {
-            if (env.get("SPIDER_ROUTES") != null) {
+            if (env.get("SPIDER_ROUTES")) |mode| {
                 var threaded = std.Io.Threaded.init_single_threaded;
                 var buf: [4096]u8 = undefined;
                 var out = std.Io.File.stdout().writer(threaded.io(), &buf);
-                try self.writeRoutes(&out.interface);
+                if (std.mem.eql(u8, mode, "json")) try self.writeRoutesJson(&out.interface) else try self.writeRoutes(&out.interface);
                 try out.interface.flush();
                 return;
             }
+            try self.checkRouteAccess();
             if (comptime build_options.io_backend == .zio) {
                 return self.listenZio(options);
             }
@@ -1370,12 +1449,12 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
     health_mod.init();
 
     if (cfg.env == .development) {
-        _ = s.get("/_spider/reload", livereload.handler, .{});
+        _ = s.get(livereload_path, livereload.handler, .{});
     }
 
     // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
     _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });
-    _ = s.get("/_spider/health", health_mod.health, .{});
+    _ = s.get("/_spider/health", health_mod.health, .{ .public = true, .quiet_log = true });
 
     return s;
 }
@@ -1397,12 +1476,12 @@ pub fn appWithConfig(config: Config) Server(EmptyDeco) {
     health_mod.init();
 
     if (config.env == .development) {
-        _ = s.get("/_spider/reload", livereload.handler, .{});
+        _ = s.get(livereload_path, livereload.handler, .{});
     }
 
     // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
     _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });
-    _ = s.get("/_spider/health", health_mod.health, .{});
+    _ = s.get("/_spider/health", health_mod.health, .{ .public = true, .quiet_log = true });
 
     return s;
 }

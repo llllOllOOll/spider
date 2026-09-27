@@ -13,6 +13,8 @@ pub fn routeMiddlewares(comptime config: anytype) []const MiddlewareFn {
     const S = struct {
         const list: []const MiddlewareFn = blk: {
             var out: []const MiddlewareFn = &.{};
+            if (@hasField(C, "authenticated") and config.authenticated)
+                out = out ++ &[_]MiddlewareFn{requireAuthenticated};
             if (@hasField(C, "roles") and config.roles.len > 0)
                 out = out ++ &[_]MiddlewareFn{requireRoles(config.roles)};
             if (@hasField(C, "org_roles") and config.org_roles.len > 0)
@@ -21,6 +23,14 @@ pub fn routeMiddlewares(comptime config: anytype) []const MiddlewareFn {
         };
     };
     return S.list;
+}
+
+/// `.authenticated = true`: any logged-in user; 401 when the request carries
+/// no identity (`_auth_sub` from jwks/keycloak/clerk, `_user_id` from the
+/// HS256 `auth` middleware) — also when the app has no auth middleware.
+pub fn requireAuthenticated(c: *Ctx, next: NextFn) anyerror!Response {
+    if (c.params.get("_auth_sub") == null and c.params.get("_user_id") == null) return error.Unauthorized;
+    return next(c);
 }
 
 /// Returns a middleware that requires the user to hold at least one of `roles`

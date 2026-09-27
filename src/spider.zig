@@ -60,6 +60,9 @@ pub const ForceHttpsOptions = @import("middlewares/https.zig").Options;
 pub const varyHtmx = @import("middlewares/vary.zig").varyHtmx;
 /// Ready-made onError: JSON / htmx toast / page (see modules/errors.zig).
 pub const errorHandler = @import("modules/errors.zig").errorHandler;
+/// Tells Spider that `mw` authenticates requests (an app's own session
+/// middleware); Spider's providers mark theirs. See modules/auth_marker.zig.
+pub const markAuthMiddleware = @import("modules/auth_marker.zig").mark;
 pub const ErrorHandlerOptions = @import("modules/errors.zig").Options;
 pub const dbgRequest = @import("middlewares/dbg_request.zig").middleware;
 pub const dbgResponse = @import("middlewares/dbg_response.zig").middleware;
@@ -130,6 +133,8 @@ test {
     _ = @import("internal/url.zig");
     _ = @import("internal/logfmt.zig");
     _ = @import("modules/logger.zig");
+    _ = @import("modules/auth_marker.zig");
+    _ = @import("routing/expect_routes.zig");
     _ = @import("core/http_client_mtls.zig");
     _ = @import("providers/jwks.zig");
     _ = @import("testing.zig");
