@@ -621,3 +621,9 @@ test "jwks: a .public route needs no session, its neighbours still do" {
     // A bad token doesn't matter on a public route either.
     try std.testing.expectEqual(@as(u16, 200), (try e.get("/open/7", &.{"Cookie: __session=garbage"})).status);
 }
+
+test "the built-in /up probe is public behind the auth middleware" {
+    var e = try Env.init();
+    defer e.deinit();
+    try std.testing.expectEqual(@as(u16, 200), (try e.get("/up", &.{})).status);
+}

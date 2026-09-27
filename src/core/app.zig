@@ -1373,7 +1373,8 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
         _ = s.get("/_spider/reload", livereload.handler, .{});
     }
 
-    _ = s.get("/up", health_mod.up, .{});
+    // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
+    _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });
     _ = s.get("/_spider/health", health_mod.health, .{});
 
     return s;
@@ -1399,7 +1400,8 @@ pub fn appWithConfig(config: Config) Server(EmptyDeco) {
         _ = s.get("/_spider/reload", livereload.handler, .{});
     }
 
-    _ = s.get("/up", health_mod.up, .{});
+    // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
+    _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });
     _ = s.get("/_spider/health", health_mod.health, .{});
 
     return s;
