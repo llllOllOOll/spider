@@ -12,6 +12,7 @@ pub fn contentType(path: []const u8) []const u8 {
     if (std.mem.eql(u8, ext, ".css")) return "text/css";
     if (std.mem.eql(u8, ext, ".js")) return "application/javascript";
     if (std.mem.eql(u8, ext, ".json")) return "application/json";
+    if (std.mem.eql(u8, ext, ".webmanifest")) return "application/manifest+json";
     if (std.mem.eql(u8, ext, ".png")) return "image/png";
     if (std.mem.eql(u8, ext, ".jpg")) return "image/jpeg";
     if (std.mem.eql(u8, ext, ".jpeg")) return "image/jpeg";
@@ -78,4 +79,9 @@ fn serveFile(
         .content_type = contentType(file_path),
         .headers = &.{},
     };
+}
+
+test "contentType: web app manifest" {
+    try std.testing.expectEqualStrings("application/manifest+json", contentType("/manifest.webmanifest"));
+    try std.testing.expectEqualStrings("application/javascript", contentType("/sw.js"));
 }

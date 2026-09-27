@@ -11,6 +11,7 @@ const cli_args = @import("args.zig");
 const routes_cmd = @import("routes_cmd.zig");
 const ui_mod = @import("ui.zig");
 const icons_mod = @import("icons.zig");
+const pwa_mod = @import("pwa.zig");
 
 const version = "0.6.9";
 
@@ -61,9 +62,10 @@ pub fn main(init: std.process.Init) !void {
                 error.UnknownOption => usageError("unknown option '{s}' for `spider new` (see `spider new --help`)", .{bad}),
                 error.ExtraArgument => usageError("unexpected argument '{s}': `spider new` takes one app name", .{bad}),
                 error.UnknownUiKit => usageError("unknown UI kit in '{s}' (kits: daisyui, tailwind)", .{bad}),
+                error.PwaNeedsViews => usageError("--pwa needs HTML views; it can't be combined with --api", .{}),
             };
             if (o.daisyui_alias) std.debug.print("note: --daisyui is the default now (same as --ui=daisyui); the app shell with navbar and sidebar is src/shared/templates/app.html (`extends \"app\"`).\n", .{});
-            try new.run(io, allocator, o.app_name, ui_mod.find(o.ui).?, o.skip_downloads, o.api, o.no_db, o.pg);
+            try new.run(io, allocator, o.app_name, ui_mod.find(o.ui).?, o.skip_downloads, o.api, o.no_db, o.pg, o.pwa);
         },
         .generate => {
             if (rest.len == 0) {
@@ -95,6 +97,10 @@ pub fn main(init: std.process.Init) !void {
             const code = try icons_mod.run(io, allocator, rest);
             if (code != 0) std.process.exit(code);
         },
+        .add, .remove => {
+            const code = try pwa_mod.run(io, allocator, cmd == .add, rest);
+            if (code != 0) std.process.exit(code);
+        },
         .update => try update.run(io),
         .self_update => try self_update.run(io),
         .install => try install.run(io, allocator, std.Io.Dir.cwd()),
@@ -113,6 +119,7 @@ test {
     _ = @import("new.zig");
     _ = ui_mod;
     _ = icons_mod;
+    _ = pwa_mod;
 }
 
 test "every file with tests is part of the CLI test binary" {

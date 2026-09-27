@@ -22,6 +22,7 @@
 | Snapshot / compare the route table | `spider routes --lock` / `spider routes --diff` |
 | UI kit in use / switch it (views apps) | `spider ui` / `spider ui use <daisyui\|tailwind>` |
 | Icon sets in use / add or remove one | `spider icons` / `spider icons add\|remove <set>` |
+| Installable PWA (manifest, service worker) | `spider add pwa` / `spider remove pwa` |
 | Help | `spider help` |
 {{extra_commands}}
 The `spider` CLI must be on PATH. First build fetches dependencies (network).

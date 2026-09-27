@@ -175,7 +175,7 @@ fn writeFile(io: std.Io, dir: std.Io.Dir, path: []const u8, content: []const u8)
     try writer.interface.flush();
 }
 
-pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_kit: ui_mod.Kit, skip_downloads: bool, api_only: bool, no_db: bool, use_pg: bool) !void {
+pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_kit: ui_mod.Kit, skip_downloads: bool, api_only: bool, no_db: bool, use_pg: bool, with_pwa: bool) !void {
     // check zig is available
     const zig_result = std.process.run(allocator, io, .{
         .argv = &.{ "zig", "version" },
@@ -242,7 +242,6 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
     project_dir.createDirPath(io, "bin") catch {};
     project_dir.createDirPath(io, "public/js") catch {};
     project_dir.createDirPath(io, "public/css") catch {};
-    project_dir.createDirPath(io, "public/fonts") catch {};
 
     if (!effective_skip) {
         std.debug.print("  Run 'spider install' to download frontend assets\n", .{});
@@ -351,6 +350,15 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
             return err;
         };
         std.debug.print("  create  {s}/src/ui.css (UI kit: {s})\n", .{ app_name, ui_kit.name });
+
+        if (with_pwa) {
+            const prefix = try std.fmt.allocPrint(allocator, "{s}/", .{app_name});
+            defer allocator.free(prefix);
+            @import("pwa.zig").add(io, allocator, project_dir, app_name, prefix) catch |err| {
+                fail_err = err;
+                return err;
+            };
+        }
     }
 
     {

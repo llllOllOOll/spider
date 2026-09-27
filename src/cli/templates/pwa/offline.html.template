@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offline — {{app_name}}</title>
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<!-- Served by the service worker when a page can't load. Static on purpose:
+     it's cached once and shown without the server. -->
+<body class="bg-base-100 text-base-content min-h-screen grid place-items-center p-6">
+    <main class="text-center max-w-sm flex flex-col items-center gap-4">
+        <img src="/pwa/icon-192.png" alt="" class="w-16 h-16 rounded-xl">
+        <h1 class="text-xl font-semibold">You're offline</h1>
+        <p class="text-sm text-base-content/60">Check your connection. The page will load again as soon as you're back online.</p>
+        <button type="button" class="ui-btn ui-btn-primary" onclick="location.reload()">Try again</button>
+    </main>
+</body>
+</html>

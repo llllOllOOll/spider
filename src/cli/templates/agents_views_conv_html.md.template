@@ -18,5 +18,10 @@
   (Heroicons; `-solid`, `-mini`, `-micro` variants; names at heroicons.com).
   They take the text color. Never paste `<svg>` markup or use emoji as icons.
   Other sets: `spider icons add lucide` (`lucide-*`) / `tabler` (`tabler-*`).
+- PWA (only if `public/manifest.webmanifest` exists — `spider add pwa`): the
+  service worker `public/sw.js` only serves `/offline.html` when a page can't
+  load, plus push notifications; keep it that way (never cache pages, API or
+  htmx responses — stale HTML is the classic PWA bug) and bump its VERSION
+  when you change it. Never just delete sw.js: `spider remove pwa`.
 - Interactivity: htmx attributes for server round-trips, Alpine (`x-data`,
   `@click`, `$store.toast.fire(msg)`, `$store.layout`) for local UI state.

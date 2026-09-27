@@ -15,6 +15,8 @@ pub const Command = enum {
     routes,
     ui,
     icons,
+    add,
+    remove,
     install,
     update,
     self_update,
@@ -31,6 +33,8 @@ pub const Command = enum {
             .{ "routes", .routes },
             .{ "ui", .ui },
             .{ "icons", .icons },
+            .{ "add", .add },
+            .{ "remove", .remove },
             .{ "install", .install },
             .{ "update", .update },
             .{ "self-update", .self_update },
@@ -79,13 +83,14 @@ pub const NewOptions = struct {
     /// --daisyui was given: an alias of --ui=daisyui (the default), kept
     /// for old scripts.
     daisyui_alias: bool = false,
+    pwa: bool = false,
     skip_downloads: bool = false,
     api: bool = false,
     no_db: bool = false,
     pg: bool = false,
 };
 
-pub const NewError = error{ MissingAppName, UnknownOption, ExtraArgument, UnknownUiKit };
+pub const NewError = error{ MissingAppName, UnknownOption, ExtraArgument, UnknownUiKit, PwaNeedsViews };
 
 /// `args` are the ones after `new`. `bad` receives the offending argument.
 pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions {
@@ -100,6 +105,8 @@ pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions 
                 bad.* = a;
                 return error.UnknownUiKit;
             }
+        } else if (std.mem.eql(u8, a, "--pwa")) {
+            o.pwa = true;
         } else if (std.mem.eql(u8, a, "--skip-downloads")) {
             o.skip_downloads = true;
         } else if (std.mem.eql(u8, a, "--api")) {
@@ -119,6 +126,10 @@ pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions 
         }
     }
     if (o.app_name.len == 0) return error.MissingAppName;
+    if (o.pwa and o.api) {
+        bad.* = "--pwa";
+        return error.PwaNeedsViews;
+    }
     return o;
 }
 
@@ -134,6 +145,8 @@ pub const overview =
     \\  routes                List the app's routes (method, path, access, flags)
     \\  ui                    Show or switch the UI kit (daisyui, tailwind)
     \\  icons                 Show, add or remove icon sets (heroicons, lucide, tabler)
+    \\  add pwa               Make the app an installable PWA (manifest, service worker)
+    \\  remove pwa            Remove the PWA (and unregister it from browsers)
     \\  install               Download frontend assets (tailwindcss, alpine, htmx, icons)
     \\  update                Update the spider dependency in this project
     \\  self-update           Update the spider CLI itself
@@ -159,6 +172,8 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\  --ui=<kit>        UI kit: daisyui (default) or tailwind (plain, no library).
         \\                    Switch later with `spider ui use <kit>`.
         \\  --daisyui         Same as --ui=daisyui (the default)
+        \\  --pwa             Installable PWA: manifest, service worker, icons
+        \\                    (same as `spider add pwa` afterwards)
         \\  --skip-downloads  Don't download tailwindcss, alpine, htmx, icons now
         \\
         ,
@@ -227,6 +242,27 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\
         \\  add <set>      add the set's @plugin to src/styles.css and download it
         \\  remove <set>   remove it; lists template lines still using its classes
+        \\
+        ,
+        .add =>
+        \\Usage: spider add pwa
+        \\
+        \\Make the app an installable Progressive Web App. Writes public/
+        \\manifest.webmanifest (name, start_url, scope, display, icons incl.
+        \\maskable), public/sw.js (offline page for page loads, push
+        \\notifications; it never caches pages or API responses), public/
+        \\offline.html, public/js/pwa.js (registration, $store.pwa.install())
+        \\and public/pwa/*.png, and adds a <!-- spider:pwa --> block to the
+        \\layouts' <head>.
+        \\
+        ,
+        .remove =>
+        \\Usage: spider remove pwa
+        \\
+        \\Remove the PWA: deletes the manifest, offline page, pwa.js, icons and
+        \\the layouts' <head> block, and replaces public/sw.js with one that
+        \\clears its caches and unregisters itself in browsers that installed
+        \\the app (deleting sw.js would leave them running the old one).
         \\
         ,
         .install =>
