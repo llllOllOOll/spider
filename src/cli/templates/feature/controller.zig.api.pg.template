@@ -8,9 +8,8 @@ pub fn index(c: *spider.Ctx) !spider.Response {
     return c.json(items, .{});
 }
 
-pub fn show(c: *spider.Ctx) !spider.Response {
-    const id_str = c.params.get("id") orelse return error.NotFound;
-    const id = try std.fmt.parseInt(i64, id_str, 10);
+pub fn show(c: *spider.Ctx, id_param: spider.Path(i64, "id")) !spider.Response {
+    const id = id_param.value;
     const item = try repository.findById(c.arena, id) orelse
         return c.json(.{ .@"error" = "not found" }, .{ .status = .not_found });
     return c.json(item, .{});
@@ -22,18 +21,16 @@ pub fn create(c: *spider.Ctx) !spider.Response {
     return c.json(item, .{ .status = .created });
 }
 
-pub fn update(c: *spider.Ctx) !spider.Response {
-    const id_str = c.params.get("id") orelse return error.NotFound;
-    const id = try std.fmt.parseInt(i64, id_str, 10);
+pub fn update(c: *spider.Ctx, id_param: spider.Path(i64, "id")) !spider.Response {
+    const id = id_param.value;
     const input = try c.bodyJson(model.UpdateInput);
     const item = try repository.update(c.arena, id, input) orelse
         return c.json(.{ .@"error" = "not found" }, .{ .status = .not_found });
     return c.json(item, .{});
 }
 
-pub fn delete(c: *spider.Ctx) !spider.Response {
-    const id_str = c.params.get("id") orelse return error.NotFound;
-    const id = try std.fmt.parseInt(i64, id_str, 10);
+pub fn delete(c: *spider.Ctx, id_param: spider.Path(i64, "id")) !spider.Response {
+    const id = id_param.value;
     try repository.delete(c.arena, id);
     return c.json(.{}, .{ .status = .no_content });
 }

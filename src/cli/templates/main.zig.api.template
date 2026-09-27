@@ -1,7 +1,6 @@
 const std = @import("std");
 const spider = @import("spider");
 const features = @import("features");
-const Response = spider.Response;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
@@ -12,13 +11,14 @@ pub fn main(init: std.process.Init) !void {
     var server = spider.app(.{});
     defer server.deinit();
 
+    // Routes live with their feature (src/features/<name>/routes.zig);
+    // mountFeatures registers every feature listed in src/features/mod.zig.
+    // `spider routes` prints what got registered.
     server
-        .onError(errorHandler)
+        .use(spider.logger)
+        .mountFeatures(features)
+        .onError(spider.errorHandler(.{ .always_json = true }))
         .listen(.{ .port = 3000, .host = "0.0.0.0" }) catch |err| return err;
-}
-
-fn errorHandler(c: *spider.Ctx, err: anyerror) !Response {
-    return c.json(.{ .@"error" = @errorName(err) }, .{ .status = .internal_server_error });
 }
 
 test "every file with tests is part of this test binary" {

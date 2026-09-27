@@ -97,6 +97,9 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = cli_args;
+    _ = @import("feature.zig");
+    _ = @import("routes_updater.zig");
+    _ = @import("auth_updater.zig");
 }
 
 test "every file with tests is part of the CLI test binary" {

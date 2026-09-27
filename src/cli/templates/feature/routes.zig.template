@@ -1,0 +1,22 @@
+const spider = @import("spider");
+const controller = @import("controller.zig");
+
+/// Routes of the {{feature}} feature. src/main.zig mounts them with
+/// `server.mountFeatures(features)`: every pub fn here with no parameters
+/// that returns a spider.Group. Paths are relative to the group prefix.
+///
+/// The 3rd argument of each route is its config, checked at compile time:
+/// .roles / .org_roles (who may call it), .public (no login needed),
+/// .quiet_log (don't log successful requests), .allow_http (skip forceHttps).
+/// A route that sets .roles, .org_roles or .public replaces the defaults().
+pub fn build() spider.Group {
+    var g = spider.Group.init("/{{plural}}");
+    _ = g
+{{defaults}}        .get("", controller.index, .{})
+        .get("/new", controller.newForm, .{})
+        .get("/:id/edit", controller.edit, .{})
+        .post("/create", controller.create, .{})
+        .post("/:id/update", controller.update, .{})
+        .post("/:id/delete", controller.delete, .{});
+    return g;
+}

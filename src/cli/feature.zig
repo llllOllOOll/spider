@@ -14,6 +14,8 @@ const repository_pg_tmpl = @embedFile("templates/feature/repository.zig.pg.templ
 const controller_tmpl = @embedFile("templates/feature/controller.zig.template");
 const controller_api_sqlite_tmpl = @embedFile("templates/feature/controller.zig.api.sqlite.template");
 const controller_api_pg_tmpl = @embedFile("templates/feature/controller.zig.api.pg.template");
+const routes_tmpl = @embedFile("templates/feature/routes.zig.template");
+const routes_api_tmpl = @embedFile("templates/feature/routes.zig.api.template");
 const index_html_tmpl = @embedFile("templates/feature/index.html.template");
 const list_html_tmpl = @embedFile("templates/feature/_list.html.template");
 const card_html_tmpl = @embedFile("templates/feature/_card.html.template");
@@ -76,6 +78,9 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     const controller_content = try template_engine.renderTemplate(allocator, controller_tmpl_selected, feature, plural);
     defer allocator.free(controller_content);
 
+    const routes_content = try renderRoutes(allocator, if (api) routes_api_tmpl else routes_tmpl, feature, plural, hasAuth(io, allocator, root_dir));
+    defer allocator.free(routes_content);
+
     const index_html_content = try template_engine.renderTemplate(allocator, index_html_tmpl, feature, plural);
     defer allocator.free(index_html_content);
 
@@ -134,6 +139,9 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
 
     try fs_utils.writeFile(io, feature_dir, "controller.zig", controller_content);
     std.debug.print("  create  src/features/{s}/controller.zig\n", .{feature});
+
+    try fs_utils.writeFile(io, feature_dir, "routes.zig", routes_content);
+    std.debug.print("  create  src/features/{s}/routes.zig\n", .{feature});
 
     if (!api) {
         try fs_utils.writeFile(io, feature_dir, "views/index.html", index_html_content);
@@ -197,10 +205,63 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     try mod_updater.updateFeaturesMod(io, allocator, features_dir, feature);
     std.debug.print("  update  src/features/mod.zig\n", .{});
 
-    try routes_updater.updateMainZig(io, allocator, root_dir, feature, plural, api);
-    std.debug.print("  update  src/main.zig\n", .{});
+    switch (try routes_updater.wireFeature(io, allocator, root_dir, feature)) {
+        .automatic => std.debug.print("  (routes mounted by mountFeatures in src/main.zig)\n", .{}),
+        .inserted => std.debug.print("  update  src/main.zig (.mountFeature(features.{s}))\n", .{feature}),
+        .manual, .no_main => std.debug.print("warning: add `.mountFeature(features.{s})` to the server in src/main.zig\n", .{feature}),
+    }
 
-    std.debug.print("\nDone!\n", .{});
+    std.debug.print("\nDone! Next:\n", .{});
+    std.debug.print("  spider migrate   create the {s} table (until then /{s} answers 500)\n", .{ plural, plural });
+    std.debug.print("  spider routes    check what got registered, and who may call it\n", .{});
+    std.debug.print("  access: src/features/{s}/routes.zig (defaults() and each route's config)\n", .{feature});
+}
+
+/// The app already authenticates requests (spider g auth added a provider
+/// middleware): generated routes then get an active defaults() role.
+fn hasAuth(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir) bool {
+    const main_content = root_dir.readFileAlloc(io, "src/main.zig", allocator, .limited(64 * 1024)) catch return false;
+    defer allocator.free(main_content);
+    return mainHasAuth(main_content);
+}
+
+fn mainHasAuth(main_src: []const u8) bool {
+    return std.mem.indexOf(u8, main_src, "_auth.middleware()") != null;
+}
+
+/// routes.zig with its defaults() line: active when the app has auth,
+/// commented out otherwise (a role nobody can hold would answer 403 to
+/// every request until auth exists).
+pub fn renderRoutes(allocator: std.mem.Allocator, tmpl: []const u8, feature: []const u8, plural: []const u8, with_auth: bool) ![]u8 {
+    const defaults_active =
+        "        // Who may use these routes: adjust the role (or use .org_roles).\n" ++
+        "        .defaults(.{ .roles = &.{\"{{plural}}_admin\"} })\n";
+    const defaults_commented =
+        "        // Who may use these routes. Once the app has auth (spider g auth),\n" ++
+        "        // enable this and set the role; until then every route is open:\n" ++
+        "        // .defaults(.{ .roles = &.{\"{{plural}}_admin\"} })\n";
+    const with_defaults = try std.mem.replaceOwned(u8, allocator, tmpl, "{{defaults}}", if (with_auth) defaults_active else defaults_commented);
+    defer allocator.free(with_defaults);
+    return template_engine.renderTemplate(allocator, with_defaults, feature, plural);
+}
+
+test "renderRoutes: defaults() active only when the app has auth" {
+    const a = std.testing.allocator;
+    const open = try renderRoutes(a, routes_tmpl, "post", "posts", false);
+    defer a.free(open);
+    try std.testing.expect(std.mem.indexOf(u8, open, "        // .defaults(.{ .roles = &.{\"posts_admin\"} })\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, open, "Group.init(\"/posts\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, open, "{{") == null);
+
+    const closed = try renderRoutes(a, routes_api_tmpl, "post", "posts", true);
+    defer a.free(closed);
+    try std.testing.expect(std.mem.indexOf(u8, closed, "\n        .defaults(.{ .roles = &.{\"posts_admin\"} })\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, closed, ".patch(\"/:id\", controller.update, .{})") != null);
+}
+
+test "mainHasAuth: a provider middleware in main.zig" {
+    try std.testing.expect(mainHasAuth("        .use(keycloak_auth.middleware())\n"));
+    try std.testing.expect(!mainHasAuth("        .use(spider.logger)\n"));
 }
 
 fn detectDbModule(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir) ![]const u8 {

@@ -1,4 +1,5 @@
 pub const controller = @import("controller.zig");
+pub const routes = @import("routes.zig");
 
 // Makes the tests of this feature's files part of `zig build test`.
 test {
