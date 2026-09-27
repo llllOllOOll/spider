@@ -714,6 +714,7 @@ fn runDeadlineApp(port: u16) void {
         .body_timeout_ms = short_ms,
         .max_body_bytes = 1024,
         .trusted_proxies = &.{"127.0.0.1"},
+        .workers = 2,
     });
     s.get("/fast", fast, .{})
         .get("/ip", clientIpEcho, .{})

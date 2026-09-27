@@ -11,8 +11,13 @@ pub const Config = struct {
     host: []const u8 = "127.0.0.1",
     views_dir: ?[]const u8 = "./views",
     layout: ?[]const u8 = "layout",
+    /// Directory served as static files at "/" (before routing, always
+    /// public). null: no static files. `server.staticDir()` / `staticAt()`
+    /// override it.
     static_dir: ?[]const u8 = "./public",
     env: Env = .development,
+    /// Accept threads of the threaded I/O backend (null: one per CPU).
+    /// Ignored by the zio backend.
     workers: ?usize = null,
     /// Connection deadlines (ms, 0 = off), enforced by the connection
     /// watchdog so idle or stalled clients can't hold file descriptors

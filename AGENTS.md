@@ -84,7 +84,7 @@ src/ws/               Hub (SSE/WS fan-out, channels, replay), Sse, Ws
 src/binding/          form + multipart parsing
 src/providers/        jwks (JWT via JWKS), keycloak, google, clerk
 src/modules/          rbac, logger, static files, health, push (Web Push), auth (HS256)
-src/internal/         config (spider.Config), env (.env loading), logfmt, metrics
+src/internal/         config (spider.Config), env (.env loading), logfmt
 src/cli/              `spider` CLI; src/cli/templates/*.template = files it generates
 modules/pg|sqlite|r2|qrcode   separate packages re-exported as spider.pg etc.
 e2e_test.zig, e2e/    end-to-end tests; zio_backend_test.zig
@@ -173,8 +173,7 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `src/cli/templates/*.template`.
 - `tasks.md`, `memory.md`, `test.sh`, `test-mysql*.zig`, `server.log`,
   `test.db` are leftovers; don't treat them as current plans or tests.
-- `spider.dashboard` is exported but dead code (does not compile if used).
-- `build.zig.zon` says io_backend "defaults to .zio"; it defaults to `.threaded`.
-- `Config.static_dir` and `Config.workers` are not read by anything.
+- `spider.livereload` is disabled (not registered by the server); kept for a
+  future `spider dev`. `Config.env` is not read by anything today.
 - `zig build test-sqlite` doesn't compile (the sqlite module imports `spider`,
   which that test step doesn't provide).

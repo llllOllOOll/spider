@@ -90,6 +90,7 @@ pub fn serve(
     request_path: []const u8,
     req: Request,
 ) !?Response {
+    if (config.dir.len == 0) return null; // static files off (Config.static_dir = null)
     if (!std.mem.startsWith(u8, request_path, config.prefix)) return null;
 
     const after_prefix = request_path[config.prefix.len..];
@@ -189,4 +190,10 @@ test "serve: a file under the static dir comes with cache headers" {
     try std.testing.expectEqualStrings("body{}", r.body.?);
     try std.testing.expectEqualStrings("public, max-age=31536000, immutable", headerValue(r, "Cache-Control").?);
     try std.testing.expect((try serve(std.testing.io, a, .{ .dir = dir, .prefix = "/" }, "/missing.css", .{})) == null);
+}
+
+test "serve: an empty static dir (Config.static_dir = null) serves nothing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expect((try serve(std.testing.io, arena.allocator(), .{ .dir = "", .prefix = "/" }, "/index.html", .{})) == null);
 }

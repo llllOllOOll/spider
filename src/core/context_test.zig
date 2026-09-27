@@ -148,3 +148,9 @@ test "htmx: header values with CR/LF are refused" {
     var c = cookieCtx(arena.allocator());
     try std.testing.expectError(error.InvalidHeaderValue, c.htmx(.{ .redirect = "/x\r\nSet-Cookie: a=b" }));
 }
+
+test "statusForError: invalid or expired tokens are 401, not 500" {
+    try std.testing.expectEqual(std.http.Status.unauthorized, context_mod.statusForError(error.Expired));
+    try std.testing.expectEqual(std.http.Status.unauthorized, context_mod.statusForError(error.InvalidSignature));
+    try std.testing.expectEqual(std.http.Status.unauthorized, context_mod.statusForError(error.InvalidFormat));
+}

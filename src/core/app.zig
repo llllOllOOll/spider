@@ -1360,7 +1360,7 @@ pub fn Server(comptime T: type) type {
                 entry.thread = std.Thread.spawn(.{}, intervalLoop, .{entry}) catch continue;
             }
 
-            const cpu_count = std.Thread.getCpuCount() catch 2;
+            const cpu_count = @max(1, self.config.workers orelse (std.Thread.getCpuCount() catch 2));
 
             const threads = try gpa.alloc(std.Thread, cpu_count);
             defer gpa.free(threads);
@@ -1487,6 +1487,7 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
     var s = Server(@TypeOf(decorations)).init();
     s.decorations = decorations;
     s.config = cfg;
+    s.static_config = .{ .dir = cfg.static_dir orelse "", .prefix = "/" };
     var threaded = std.Io.Threaded.init_single_threaded;
     defer threaded.deinit();
     const io = threaded.io();
@@ -1503,9 +1504,9 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
 
     health_mod.init();
 
-    if (cfg.env == .development) {
-        _ = s.get(livereload_path, livereload.handler, .{});
-    }
+    // Live reload (/_spider/reload, modules/livereload.zig) is disabled: it
+    // only reloaded after a manual restart and nothing injected its script.
+    // Kept for a future `spider dev` (file watch + rebuild + reload).
 
     // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
     _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });
@@ -1517,6 +1518,7 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
 pub fn appWithConfig(config: Config) Server(EmptyDeco) {
     var s = Server(EmptyDeco).init();
     s.config = config;
+    s.static_config = .{ .dir = config.static_dir orelse "", .prefix = "/" };
     var threaded = std.Io.Threaded.init_single_threaded;
     defer threaded.deinit();
     const io = threaded.io();
@@ -1530,9 +1532,9 @@ pub fn appWithConfig(config: Config) Server(EmptyDeco) {
 
     health_mod.init();
 
-    if (config.env == .development) {
-        _ = s.get(livereload_path, livereload.handler, .{});
-    }
+    // Live reload (/_spider/reload, modules/livereload.zig) is disabled: it
+    // only reloaded after a manual restart and nothing injected its script.
+    // Kept for a future `spider dev` (file watch + rebuild + reload).
 
     // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
     _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });

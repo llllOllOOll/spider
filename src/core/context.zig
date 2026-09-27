@@ -935,6 +935,9 @@ pub fn statusForError(err: anyerror) std.http.Status {
         error.NotFound => .not_found,
         error.Forbidden => .forbidden,
         error.Unauthorized => .unauthorized,
+        // A token that fails verification (spider.auth.jwtVerify, JWKS):
+        // the caller isn't authenticated, the server isn't broken.
+        error.Expired, error.InvalidSignature, error.InvalidFormat => .unauthorized,
         // Client input: path/form/multipart/JSON that can't be bound, or that
         // app code rejected itself (error.BadRequest + c.setErrorDetail).
         error.BadRequest,

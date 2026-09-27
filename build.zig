@@ -179,11 +179,6 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(gen_exe);
 
-    // spider_build — build helpers for dev projects
-    _ = b.addModule("spider_build", .{
-        .root_source_file = b.path("src/build_helpers.zig"),
-    });
-
     // tests — existing module tests. test_manifest lets the discovery test
     // in src/spider.zig fail when a file's tests aren't part of this binary.
     const manifest_tool = b.addExecutable(.{

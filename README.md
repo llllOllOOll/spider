@@ -1,4 +1,4 @@
-# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider v0.6.9
+# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider v0.7.0
 
 Build web servers in Zig — performant, productive, and batteries-included.
 
@@ -25,7 +25,7 @@ curl -fsSL https://spiderme.org/install.sh | bash
 Or a specific version:
 
 ```bash
-curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.6.9
+curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.7.0
 ```
 
 Then `spider new myapp` creates a project with Spider already added as a
@@ -88,7 +88,7 @@ Spider is developed and tested with this exact Zig development build:
 0.17.0-dev.956+2dca73595
 ```
 
-(`minimum_zig_version` in `build.zig.zon` is older; use the build above.)
+(`minimum_zig_version` in `build.zig.zon` declares the same build.)
 
 ```bash
 zig version
@@ -203,8 +203,7 @@ info: Server listening on http://127.0.0.1:3000
 The third argument of every route is its config (`.{}` for none, see
 [Routing](#routing)). `listen(.{ .port, .host })` fields you leave out come from
 `spider.config.zig` (see [Configuration](#configuration)), else `127.0.0.1:3000`.
-`spider.app()` also registers `GET /up` and `GET /_spider/health` (and
-`/_spider/reload` in development).
+`spider.app()` also registers `GET /up` and `GET /_spider/health`.
 
 ### A generated app
 
@@ -1018,14 +1017,12 @@ served. Static files skip routing and middleware — they are always public.
 
 ---
 
-## Health and live reload
+## Health
 
-- `GET /up` → `200 OK`, `GET /_spider/health` → `{"status":"ok","uptime_seconds":N}`
-  (both `.public` and `.quiet_log`).
-- In development (`.env = .development`, the default) Spider registers a
-  WebSocket at `/_spider/reload`. Put `spider.livereload.SCRIPT` in your layout
-  (as a `spider.RawHtml`) and the page reloads when the server comes back after
-  a restart. Spider doesn't watch files. Use `.env = .production` in production.
+`GET /up` → `200 OK`, `GET /_spider/health` → `{"status":"ok","uptime_seconds":N}`
+(both `.public` and `.quiet_log`, for load balancers and kamal-proxy).
+
+There is no live reload today: rebuild and restart the app after a change.
 
 ---
 
@@ -1040,7 +1037,7 @@ pub const config = spider.Config{
     .port = 3000,
     .host = "0.0.0.0",
     .views_dir = "./src",          // runtime template mode
-    .env = .development,           // .development adds the live-reload route
+    .env = .development,           // not read by Spider today
     .keepalive_timeout_ms = 120_000,
     .header_timeout_ms = 30_000,
     .body_timeout_ms = 60_000,
@@ -1055,8 +1052,9 @@ pub const config = spider.Config{
 It is read by `spider.app(...)` only when the app's `build.zig` registers it as
 the `spider_config` import of the spider module (`spider new` does; see
 [Manual Install](#manual-install)). `spider.appWithConfig(cfg)` uses `cfg`
-instead. `static_dir` and `workers` exist but aren't read: use
-`server.staticDir(dir)`; the threaded backend runs one accept thread per CPU.
+instead. `static_dir` (default `"./public"`, `null`: no static files) and
+`workers` (accept threads of the threaded backend; `null`: one per CPU) are
+config fields too.
 
 ### Environment (`.env`)
 
@@ -1168,8 +1166,8 @@ src/
 │                             client_ip.zig, database.zig, http_client_mtls.zig
 ├── routing/                — router.zig, group.zig, route_config.zig, expect_routes.zig
 ├── middlewares/            — gzip, https (forceHttps), vary (varyHtmx), dbg_*
-├── modules/                — auth/ (HS256), rbac, errors, static, health, livereload,
-│                             push, logger, auth_marker
+├── modules/                — auth/ (HS256), rbac, errors, static, health, push,
+│                             logger, auth_marker, livereload (disabled)
 ├── render/                 — template engine (parser, ast, renderer, views) + zmd/
 ├── internal/               — config, env, logfmt, logger, url, …
 ├── ws/                     — websocket.zig, hub.zig, ws.zig, sse.zig
@@ -1187,9 +1185,9 @@ The complete API: [`llms.txt`](llms.txt).
 
 Spider follows Zig's development branch and migrates ahead of each stable
 release. It is developed and tested with one pinned build — currently
-`0.17.0-dev.956+2dca73595` (see [Requirements](#requirements)); `build.zig.zon`
-declares an older `minimum_zig_version`. Newer master builds may break until
-Spider catches up.
+`0.17.0-dev.956+2dca73595` (see [Requirements](#requirements)), which is also
+`minimum_zig_version` in `build.zig.zon` and the build CI uses. Newer master
+builds may break until Spider catches up.
 
 ---
 

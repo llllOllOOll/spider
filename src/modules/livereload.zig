@@ -1,3 +1,7 @@
+//! DISABLED — not registered by the server (see core/app.zig). A WebSocket
+//! at /_spider/reload plus a script that reloads the page when the server
+//! comes back after a restart. Kept for a future `spider dev` (watch files,
+//! rebuild, reload); nothing uses it today.
 const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const Response = @import("../core/context.zig").Response;
@@ -8,10 +12,11 @@ pub const SCRIPT =
     \\(function() {
     \\  if (window.__spiderReload) return;
     \\  window.__spiderReload = true;
-    \\  var port = window.location.port || '80';
-    \\  var host = window.location.hostname;
+    \\  // wss:// on an https page (a ws:// socket there is blocked as mixed
+    \\  // content); location.host carries the port when there is one.
+    \\  var url = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/_spider/reload';
     \\  function connect() {
-    \\    var sock = new WebSocket('ws://' + host + ':' + port + '/_spider/reload');
+    \\    var sock = new WebSocket(url);
     \\    sock.onopen = function() {
     \\      console.log('[Spider] live reload ready');
     \\    };
@@ -21,7 +26,7 @@ pub const SCRIPT =
     \\    };
     \\  }
     \\  function tryReconnect() {
-    \\    var test = new WebSocket('ws://' + host + ':' + port + '/_spider/reload');
+    \\    var test = new WebSocket(url);
     \\    test.onopen = function() {
     \\      console.log('[Spider] reloading...');
     \\      window.location.reload();
@@ -49,4 +54,10 @@ pub fn handler(c: *Ctx) !Response {
     }
 
     return c.text("", .{});
+}
+
+test "SCRIPT: follows the page's scheme and host (wss on https, no hardcoded port)" {
+    try std.testing.expect(std.mem.indexOf(u8, SCRIPT, "'wss://' : 'ws://'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, SCRIPT, "window.location.host +") != null);
+    try std.testing.expect(std.mem.indexOf(u8, SCRIPT, "'80'") == null);
 }

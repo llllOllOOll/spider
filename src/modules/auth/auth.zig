@@ -71,7 +71,12 @@ pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, io: std.Io, token: 
     defer alloc.free(payload_json_buf);
     std.base64.url_safe_no_pad.Decoder.decode(payload_json_buf, payload_b64) catch return JwtError.InvalidFormat;
 
-    var parsed = try std.json.parseFromSlice(T, alloc, payload_json_buf[0..decoded_len], .{});
+    // A validly signed payload that isn't the expected claims is still an
+    // unusable token (401), not a server error.
+    var parsed = std.json.parseFromSlice(T, alloc, payload_json_buf[0..decoded_len], .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return JwtError.InvalidFormat,
+    };
     defer parsed.deinit();
 
     // Verificar expiração
@@ -212,3 +217,19 @@ pub const Auth = struct {
         return S.mw;
     }
 };
+
+test "jwtVerify: a signed token whose payload isn't the claims is InvalidFormat (401), not a parse error" {
+    const a = std.testing.allocator;
+    const secret = "s3cret";
+    const payload = "bm90IGpzb24"; // base64url("not json")
+    const signing_input = try std.fmt.allocPrint(a, "{s}.{s}", .{ HEADER_B64, payload });
+    defer a.free(signing_input);
+    var mac: [32]u8 = undefined;
+    std.crypto.auth.hmac.sha2.HmacSha256.create(&mac, signing_input, secret);
+    var sig_buf: [64]u8 = undefined;
+    const sig = std.base64.url_safe_no_pad.Encoder.encode(&sig_buf, &mac);
+    const token = try std.fmt.allocPrint(a, "{s}.{s}", .{ signing_input, sig });
+    defer a.free(token);
+    try std.testing.expectError(error.InvalidFormat, jwtVerify(Claims, a, std.testing.io, token, secret));
+    try std.testing.expectError(error.InvalidSignature, jwtVerify(Claims, a, std.testing.io, token, "other"));
+}

@@ -412,7 +412,7 @@ test "require_route_access: plain sse() routes declare nothing" {
     try std.testing.expectError(error.RouteAccessUndeclared, s.checkRouteAccess());
 }
 
-test "built-ins: /up and /_spider/health are public; dev-only /_spider/reload declares nothing but passes the check" {
+test "built-ins: /up and /_spider/health are public; live reload is not registered (disabled)" {
     var s = app_mod.appWithConfig(.{ .views_dir = null, .static_dir = null, .env = .development });
     defer s.deinit();
     _ = s.requireRouteAccess();
@@ -423,8 +423,7 @@ test "built-ins: /up and /_spider/health are public; dev-only /_spider/reload de
         const m = (try s.router.match(.GET, p, arena.allocator())).?;
         try std.testing.expect(m.meta.public and m.meta.quiet_log);
     }
-    const reload = (try s.router.match(.GET, "/_spider/reload", arena.allocator())).?;
-    try std.testing.expect(!reload.meta.declaresAccess());
+    try std.testing.expect((try s.router.match(.GET, "/_spider/reload", arena.allocator())) == null);
 }
 
 test "hasAuth: only a marked middleware (use or useAt) counts" {
@@ -551,4 +550,15 @@ test "Loaded extractor: without a resourcePolicy for that type -> error.Resource
     try std.testing.expectEqual(error.ResourceNotLoaded, r.err);
     try std.testing.expect(std.mem.indexOf(u8, r.detail.?, "Note") != null);
     try std.testing.expectEqual(std.http.Status.internal_server_error, context_mod.statusForError(r.err));
+}
+
+test "Config.static_dir sets the static root; null turns static files off; staticDir() still overrides" {
+    var a = app_mod.appWithConfig(.{ .views_dir = null, .static_dir = "./assets" });
+    defer a.deinit();
+    try std.testing.expectEqualStrings("./assets", a.static_config.dir);
+    var b = app_mod.appWithConfig(.{ .views_dir = null, .static_dir = null });
+    defer b.deinit();
+    try std.testing.expectEqualStrings("", b.static_config.dir);
+    _ = b.staticDir("./pub");
+    try std.testing.expectEqualStrings("./pub", b.static_config.dir);
 }

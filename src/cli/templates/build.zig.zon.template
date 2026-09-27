@@ -2,7 +2,7 @@
     .name = .{{zon_name}},
     .version = "0.1.0",
     .fingerprint = {{fingerprint}},
-    .minimum_zig_version = "0.17.0-dev.667+0569f1f6a",
+    .minimum_zig_version = "0.17.0-dev.956+2dca73595",
     .dependencies = .{},
     .paths = .{
         "build.zig",

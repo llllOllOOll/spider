@@ -31,7 +31,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.667+0569f1f6a
+          version: 0.17.0-dev.956+2dca73595
 
       - name: Build Spider CLI
         run: zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
