@@ -34,6 +34,28 @@ pub const CookieOptions = struct {
     same_site: []const u8 = "Lax",
     path: []const u8 = "/",
     max_age: ?u32 = null,
+    /// Domain attribute (null: host-only, the safer default).
+    domain: ?[]const u8 = null,
+};
+
+/// htmx response headers (htmx 2 names), built by `Ctx.htmx`.
+pub const HtmxHeaders = struct {
+    /// HX-Trigger: an event name, or JSON from `Ctx.hxEvent` to send data.
+    trigger: ?[]const u8 = null,
+    trigger_after_swap: ?[]const u8 = null,
+    trigger_after_settle: ?[]const u8 = null,
+    retarget: ?[]const u8 = null,
+    reswap: ?Swap = null,
+    reselect: ?[]const u8 = null,
+    push_url: ?[]const u8 = null,
+    replace_url: ?[]const u8 = null,
+    /// Client-side redirect (full page load).
+    redirect: ?[]const u8 = null,
+    /// Client-side navigation without a full reload (a path or JSON).
+    location: ?[]const u8 = null,
+    refresh: bool = false,
+
+    pub const Swap = enum { innerHTML, outerHTML, textContent, beforebegin, afterbegin, beforeend, afterend, delete, none };
 };
 
 pub const ResponseOptions = struct {
@@ -85,6 +107,8 @@ pub const Ctx = struct {
     /// The resource a route's resourcePolicy loaded (see loaded()), and a
     /// marker of its type.
     _loaded: ?*anyopaque = null,
+    /// Config.trusted_proxies, for clientIp().
+    _trusted_proxies: []const []const u8 = &.{},
     _loaded_type: ?*const anyopaque = null,
 
     /// Id correlating every log line and the response of this request: the
@@ -557,39 +581,75 @@ pub const Ctx = struct {
         return ResponseOptions{ .headers = headers };
     }
 
+    /// The Set-Cookie value for `name=value` with `opts`. A name, value or
+    /// attribute that could inject another attribute or header (`;`, CR/LF,
+    /// control characters; in names also `=`, spaces and separators) is
+    /// error.InvalidCookie. Spaces and UTF-8 in values are accepted, as
+    /// browsers do.
     pub fn setCookie(
         self: *Ctx,
         name: []const u8,
         value: []const u8,
         opts: CookieOptions,
     ) ![]const u8 {
-        if (opts.max_age) |age| {
-            return std.fmt.allocPrint(
-                self.arena,
-                "{s}={s}; Path={s}; Max-Age={d}; SameSite={s}{s}{s}",
-                .{
-                    name,
-                    value,
-                    opts.path,
-                    age,
-                    opts.same_site,
-                    if (opts.http_only) "; HttpOnly" else "",
-                    if (opts.secure) "; Secure" else "",
-                },
-            );
+        if (!validCookieName(name) or !validCookieText(value) or !validCookieText(opts.path) or
+            !validCookieText(opts.same_site) or (opts.domain != null and !validCookieText(opts.domain.?)))
+            return error.InvalidCookie;
+        var out: std.ArrayList(u8) = .empty;
+        try out.print(self.arena, "{s}={s}; Path={s}", .{ name, value, opts.path });
+        if (opts.domain) |d| try out.print(self.arena, "; Domain={s}", .{d});
+        if (opts.max_age) |age| try out.print(self.arena, "; Max-Age={d}", .{age});
+        try out.print(self.arena, "; SameSite={s}", .{opts.same_site});
+        if (opts.http_only) try out.appendSlice(self.arena, "; HttpOnly");
+        if (opts.secure) try out.appendSlice(self.arena, "; Secure");
+        return out.items;
+    }
+
+    /// htmx response headers for `ResponseOptions.headers`:
+    ///     .headers = try c.htmx(.{ .retarget = "#form", .reswap = .outerHTML,
+    ///         .trigger = try c.hxEvent("spider:toast", .{ .message = "Saved", .type = "success" }) })
+    /// A value containing CR/LF is error.InvalidHeaderValue.
+    pub fn htmx(self: *Ctx, h: HtmxHeaders) ![]const [2][]const u8 {
+        var out: std.ArrayList([2][]const u8) = .empty;
+        const pairs = [_]struct { []const u8, ?[]const u8 }{
+            .{ "HX-Trigger", h.trigger },
+            .{ "HX-Trigger-After-Swap", h.trigger_after_swap },
+            .{ "HX-Trigger-After-Settle", h.trigger_after_settle },
+            .{ "HX-Retarget", h.retarget },
+            .{ "HX-Reswap", if (h.reswap) |s| @tagName(s) else null },
+            .{ "HX-Reselect", h.reselect },
+            .{ "HX-Push-Url", h.push_url },
+            .{ "HX-Replace-Url", h.replace_url },
+            .{ "HX-Redirect", h.redirect },
+            .{ "HX-Location", h.location },
+            .{ "HX-Refresh", if (h.refresh) "true" else null },
+        };
+        for (pairs) |p| {
+            const v = p[1] orelse continue;
+            if (std.mem.indexOfAny(u8, v, "\r\n") != null) return error.InvalidHeaderValue;
+            try out.append(self.arena, .{ p[0], v });
         }
-        return std.fmt.allocPrint(
-            self.arena,
-            "{s}={s}; Path={s}; SameSite={s}{s}{s}",
-            .{
-                name,
-                value,
-                opts.path,
-                opts.same_site,
-                if (opts.http_only) "; HttpOnly" else "",
-                if (opts.secure) "; Secure" else "",
-            },
-        );
+        return out.items;
+    }
+
+    /// HX-Trigger JSON carrying data: `{"name":<data>}` (non-ASCII escaped,
+    /// so it is a valid header value). For `HtmxHeaders.trigger*`.
+    pub fn hxEvent(self: *Ctx, name: []const u8, data: anytype) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.arena);
+        var js: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .escape_unicode = true } };
+        try js.beginObject();
+        try js.objectField(name);
+        try js.write(data);
+        try js.endObject();
+        return out.written();
+    }
+
+    /// The Set-Cookie value that removes `name`: empty value, Max-Age=0.
+    /// Pass the same path/domain it was set with, or the browser keeps it.
+    pub fn deleteCookie(self: *Ctx, name: []const u8, opts: CookieOptions) ![]const u8 {
+        var o = opts;
+        o.max_age = 0;
+        return self.setCookie(name, "", o);
     }
 
     pub fn query(self: *Ctx, name: []const u8) ?[]const u8 {
@@ -619,8 +679,8 @@ pub const Ctx = struct {
     /// The immediate TCP peer's address (no port), allocated in `arena`.
     ///
     /// Behind a reverse proxy, this is the proxy's address, not the
-    /// original client's — `header("X-Forwarded-For")` is the right source
-    /// in that case. This exists for the direct-connection case (no proxy
+    /// original client's — use `clientIp()` with `Config.trusted_proxies`
+    /// in that case (not the raw X-Forwarded-For, which clients can forge). This exists for the direct-connection case (no proxy
     /// in front, e.g. local dev or a LAN device hitting the server
     /// directly), where no proxy ever adds that header, and callers would
     /// otherwise have no way to identify who connected.
@@ -637,6 +697,15 @@ pub const Ctx = struct {
                 .{std.Io.net.Ip6Address.Unresolved{ .bytes = a.bytes, .interface_name = null }},
             ) catch null,
         };
+    }
+
+    /// The client's address: the TCP peer, or — when the peer is one of
+    /// `Config.trusted_proxies` — the first untrusted address in
+    /// X-Forwarded-For (right to left). Use this for logs, audit and rate
+    /// limits; a client can write X-Forwarded-For itself, so reading the
+    /// header directly lets anyone pick their own address.
+    pub fn clientIp(self: *Ctx) ?[]const u8 {
+        return @import("client_ip.zig").resolve(self.peerAddress(), self.header("X-Forwarded-For"), self._trusted_proxies);
     }
 
     pub fn redirect(self: *Ctx, url: []const u8) !Response {
@@ -928,4 +997,20 @@ test "typeMarker: one per type" {
     try std.testing.expect(typeMarker(u8) == typeMarker(u8));
     try std.testing.expect(typeMarker(u8) != typeMarker(u16));
     try std.testing.expect(typeMarker(struct { a: u8 }) != typeMarker(struct { a: u8 }));
+}
+
+fn validCookieText(s: []const u8) bool {
+    for (s) |ch| {
+        if (ch < 0x20 or ch == 0x7f or ch == ';') return false;
+    }
+    return true;
+}
+
+fn validCookieName(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s) |ch| {
+        if (ch <= 0x20 or ch >= 0x7f) return false;
+        if (std.mem.indexOfScalar(u8, "()<>@,;:\\\"/[]?={}", ch) != null) return false;
+    }
+    return true;
 }

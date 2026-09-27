@@ -150,6 +150,10 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   closes an fd (handleConnection owns it); a failed write `drop()`s the slot.
 - **Connection deadlines**: `Config.keepalive_timeout_ms`, `header_timeout_ms`,
   `body_timeout_ms`, `stream_write_timeout_ms`; never applied while a handler runs.
+- **Before routing** (`handleConnection`): `max_body_bytes` (413, checked on
+  Content-Length before reading), static files (ETag; `immutable` with `?v=`;
+  304), then `origin_check` (core/origin.zig: cross-site unsafe method or WS
+  upgrade → 403). `Ctx.clientIp()` uses `trusted_proxies` (core/client_ip.zig).
 - **Postgres** (`modules/pg/src/pg.zig`): use `query`/`queryOne`/`queryExecute`
   and `begin()`/`transaction()`; the rest is deprecated. `pg.exec("BEGIN")`
   is refused on purpose (each call is a different pooled connection).

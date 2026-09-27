@@ -10,6 +10,7 @@
 //!   route-outside-routes   a route registered outside src/features/<f>/routes.zig
 //!   kit-class              a UI kit class (btn, card, ...) in a template instead of ui-*
 //!   icon-set               an icon class from a set src/styles.css doesn't load
+//!   bool-attr              disabled/checked/selected/... given "{ expr }" (on even when false)
 //!   feature-not-registered a feature folder missing from src/features/mod.zig
 //!   route-access           with auth, a route that declares no access (roles / org_roles /
 //!                          public / authenticated / policy, itself or through its group's defaults())
@@ -321,6 +322,9 @@ fn setActive(styles: []const u8, set: []const u8) bool {
     return std.mem.indexOf(u8, styles, line) != null;
 }
 
+/// HTML boolean attributes: present = on, whatever the value.
+const bool_attrs = [_][]const u8{ "disabled", "checked", "selected", "required", "readonly", "hidden", "multiple", "autofocus", "open", "novalidate", "inert" };
+
 pub fn checkTemplate(report: *Report, path: []const u8, text: []const u8, styles: []const u8, has_ui_layer: bool) !void {
     var line_no: usize = 0;
     var lines = std.mem.splitScalar(u8, text, '\n');
@@ -349,6 +353,13 @@ pub fn checkTemplate(report: *Report, path: []const u8, text: []const u8, styles
             const value = std.mem.trim(u8, line[start..end], " ;");
             if (!std.mem.eql(u8, value, "display:none") and !std.mem.eql(u8, value, "display: none")) {
                 try report.add(.warn, path, line_no, "inline-style", "inline style=\"{s}\"", .{value}, "use Tailwind utilities or a ui-* class in src/ui.css");
+            }
+        }
+        for (bool_attrs) |name| {
+            var needle_buf: [32]u8 = undefined;
+            const needle = std.fmt.bufPrint(&needle_buf, " {s}=\"{{", .{name}) catch continue;
+            if (std.mem.indexOf(u8, line, needle) != null) {
+                try report.add(.err, path, line_no, "bool-attr", "`{s}=\"{{ ... }}\"`: a boolean attribute is on whenever it's present, so it stays on when the value is false", .{name}, "write `{{ NAME if (cond) }}` instead, e.g. <input {{ disabled if (locked) }}>");
             }
         }
         if (std.mem.indexOf(u8, line, "<svg") != null) {
@@ -462,6 +473,22 @@ test "checkTemplate: kit classes, inactive icon sets, inline style and svg" {
     var r2 = testReport(&arena);
     try checkTemplate(&r2, "src/x.html", "<a class=\"btn\">x</a>", styles, false);
     try t.expectEqual(@as(usize, 0), r2.issues.items.len);
+}
+
+test "checkTemplate: bool-attr — a boolean attribute given { expr } stays on when it's false" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var r = testReport(&arena);
+    try checkTemplate(&r, "src/x.html",
+        \\<input name="q" disabled="{ locked }">
+        \\<option value="a" selected="{ item.selected }">a</option>
+        \\<input { disabled if (locked) } :disabled="busy" required>
+        \\<button disabled>x</button>
+    , "", true);
+    try t.expectEqual(@as(usize, 2), r.issues.items.len);
+    try t.expectEqualStrings("bool-attr", r.issues.items[0].rule);
+    try t.expectEqual(@as(usize, 1), r.issues.items[0].line);
+    try t.expectEqual(@as(usize, 2), r.issues.items[1].line);
 }
 
 test "isKitClass" {

@@ -83,6 +83,14 @@ auth. Fix the code, not the check — and don't delete that test.
   (successful requests aren't logged), `.allow_http` (skips forceHttps). An
   unknown key, or `.public` together with roles or `.authenticated`, doesn't
   compile.
+- Boolean attributes and conditional classes in templates: `{ disabled if (locked) }`,
+  `class="ui-btn { "ui-btn-active" if (current) }"` — never `disabled="{ x }"`
+  (the attribute stays on when x is false; `spider check` flags it).
+- htmx response headers: `.headers = try c.htmx(.{ .retarget = "#form", .reswap = .outerHTML,
+  .trigger = try c.hxEvent("spider:toast", .{ .message = "Salvo", .type = "success" }) })`
+  instead of building `HX-*` header arrays by hand.
+- The client's address is `c.clientIp()` (set `trusted_proxies` in spider.config.zig
+  behind a proxy); never read X-Forwarded-For directly.
 - `defaults(...)` comes before the routes; a route that sets `.roles`,
   `.org_roles`, `.public`, `.authenticated` or `.policy` replaces it (it doesn't add to it).
 - Roles don't have to come from the identity provider: a middleware (after

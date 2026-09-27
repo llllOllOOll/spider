@@ -39,6 +39,7 @@ const websocket = @import("../ws/websocket.zig");
 const Watchdog = @import("watchdog.zig").Watchdog;
 const handler_mod = @import("handler.zig");
 const route_config = @import("../routing/route_config.zig");
+const origin_mod = @import("origin.zig");
 const usesExtractors = handler_mod.usesExtractors;
 const buildAutoWrapper = handler_mod.buildAutoWrapper;
 const watchdog_mod = @import("watchdog.zig");
@@ -283,6 +284,14 @@ fn readBody(r: *Io.Reader, arena: std.mem.Allocator, len: u64, watch: *Watchdog.
     return buf;
 }
 
+fn headerIgnoreCase(headers: std.StringHashMapUnmanaged([]const u8), name: []const u8) ?[]const u8 {
+    var it = headers.iterator();
+    while (it.next()) |e| {
+        if (std.ascii.eqlIgnoreCase(e.key_ptr.*, name)) return e.value_ptr.*;
+    }
+    return null;
+}
+
 fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
     defer ctx.stream.close(ctx.io);
     // Registered after the close defer, so it is unregistered before the
@@ -333,6 +342,19 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         const request_id = makeRequestId(ctx.io, arena, headers_map);
         const method_name = @tagName(request.head.method);
 
+        // Checked before the body is read: the Content-Length alone would
+        // otherwise size the allocation (a declared 4 GB body used to be
+        // allocated as such).
+        if ((request.head.content_length orelse 0) > ctx.config.max_body_bytes) {
+            std.log.warn("rid={s} {s} {s}: request body of {d} bytes over max_body_bytes ({d})", .{ request_id, method_name, path, request.head.content_length.?, ctx.config.max_body_bytes });
+            request.respond("Payload Too Large", .{
+                .status = .payload_too_large,
+                .extra_headers = &.{ .{ .name = "content-type", .value = "text/plain" }, .{ .name = "X-Request-Id", .value = request_id } },
+                .keep_alive = false,
+            }) catch |werr| logRespondError(werr, request_id, method_name, path);
+            break;
+        }
+
         var body_error: ?anyerror = null;
         const body: ?[]const u8 = blk: {
             const cl = request.head.content_length orelse break :blk null;
@@ -364,16 +386,25 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         }
 
         {
-            const static_hit = static_mod.serve(ctx.io, arena, ctx.static_config, path) catch |err| blk: {
+            const static_hit = static_mod.serve(ctx.io, arena, ctx.static_config, path, .{
+                .query = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[q + 1 ..] else null,
+                .if_none_match = headerIgnoreCase(headers_map, "If-None-Match"),
+            }) catch |err| blk: {
                 std.log.err("rid={s} {s} {s}: static file error {s}", .{ request_id, method_name, path, @errorName(err) });
                 break :blk null;
             };
             if (static_hit) |static_response| {
-                var extra_hdrs_buf: [2]std.http.Header = undefined;
+                var extra_hdrs_buf: [4]std.http.Header = undefined;
                 extra_hdrs_buf[0] = .{ .name = "content-type", .value = static_response.content_type };
+                var n_hdrs: usize = 1;
+                for (static_response.headers) |h| {
+                    if (n_hdrs == extra_hdrs_buf.len) break;
+                    extra_hdrs_buf[n_hdrs] = .{ .name = h[0], .value = h[1] };
+                    n_hdrs += 1;
+                }
                 request.respond(static_response.body orelse "", .{
                     .status = static_response.status,
-                    .extra_headers = extra_hdrs_buf[0..1],
+                    .extra_headers = extra_hdrs_buf[0..n_hdrs],
                 }) catch |err| {
                     logRespondError(err, request_id, method_name, path);
                     break;
@@ -381,6 +412,26 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 if (!request.head.keep_alive) break;
                 continue;
             }
+        }
+
+        if (!origin_mod.allowed(ctx.config.origin_check, .{
+            .method = request.head.method,
+            .path = path,
+            .host = headerIgnoreCase(headers_map, "Host"),
+            .origin = headerIgnoreCase(headers_map, "Origin"),
+            .sec_fetch_site = headerIgnoreCase(headers_map, "Sec-Fetch-Site"),
+            .upgrade = headerIgnoreCase(headers_map, "Upgrade"),
+        })) {
+            std.log.warn("rid={s} {s} {s}: cross-site request refused (origin={s}, sec-fetch-site={s})", .{ request_id, method_name, path, headerIgnoreCase(headers_map, "Origin") orelse "-", headerIgnoreCase(headers_map, "Sec-Fetch-Site") orelse "-" });
+            request.respond("Cross-site request refused", .{
+                .status = .forbidden,
+                .extra_headers = &.{ .{ .name = "content-type", .value = "text/plain" }, .{ .name = "X-Request-Id", .value = request_id } },
+            }) catch |err| {
+                logRespondError(err, request_id, method_name, path);
+                break;
+            };
+            if (!request.head.keep_alive) break;
+            continue;
         }
 
         const views_cfg: ?ViewsConfig = if (ctx.config.views_dir) |vd| ViewsConfig{
@@ -425,6 +476,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._sse_hub = ctx.sse_hub,
                 ._request_id = request_id,
                 ._watch = &watch,
+                ._trusted_proxies = ctx.config.trusted_proxies,
                 ._route = m.meta,
             };
 
@@ -449,6 +501,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._sse_hub = ctx.sse_hub,
                 ._request_id = request_id,
                 ._watch = &watch,
+                ._trusted_proxies = ctx.config.trusted_proxies,
             };
             var mw_buf_404: [64]MiddlewareFn = undefined;
             const mw_count_404 = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, &.{}, &mw_buf_404);

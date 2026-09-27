@@ -251,6 +251,16 @@ pub const Parser = struct {
 
         // If the expression is an if/else block, parse and return it directly.
         const trimmed_expr = trimWhitespace(expr_raw);
+        // `{ disabled if (locked) }` / `{ "ui-btn-active" if (tab == "home") }`:
+        // the word or string only when the condition holds — boolean
+        // attributes and conditional classes (`disabled="{ x }"` would print
+        // "false" and stay disabled). Sugar for `if (cond) { "text" }`.
+        if (suffixIf(trimmed_expr)) |s| {
+            const synthesized = try std.fmt.allocPrint(p.alc, "if ({s}) {{ \"{s}\" }}", .{ s.cond, s.text });
+            defer p.alc.free(synthesized);
+            var sub_pos: usize = 0;
+            return parseIfNode(p.alc, synthesized, &sub_pos);
+        }
         if (std.mem.startsWith(u8, trimmed_expr, "if (")) {
             var sub_pos: usize = 0;
             return parseIfNode(p.alc, trimmed_expr, &sub_pos);
@@ -643,4 +653,25 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
     }
 
     return nodes.toOwnedSlice(alc);
+}
+
+/// `NAME if (COND)` or `"TEXT" if (COND)` -> .{ text, cond }. NAME is an
+/// attribute-like word (letters, digits, - _ : @ .); TEXT has no quotes.
+fn suffixIf(expr: []const u8) ?struct { text: []const u8, cond: []const u8 } {
+    const marker = " if (";
+    const at = std.mem.indexOf(u8, expr, marker) orelse return null;
+    if (expr.len == 0 or expr[expr.len - 1] != ')') return null;
+    const head = expr[0..at];
+    const cond = expr[at + marker.len .. expr.len - 1];
+    if (cond.len == 0) return null;
+    if (head.len >= 2 and head[0] == '"' and head[head.len - 1] == '"') {
+        const text = head[1 .. head.len - 1];
+        if (std.mem.indexOfScalar(u8, text, '"') != null) return null;
+        return .{ .text = text, .cond = cond };
+    }
+    if (head.len == 0) return null;
+    for (head) |ch| {
+        if (!(std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch == ':' or ch == '@' or ch == '.')) return null;
+    }
+    return .{ .text = head, .cond = cond };
 }

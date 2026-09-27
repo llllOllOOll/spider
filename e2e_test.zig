@@ -318,6 +318,7 @@ fn runApp(port: u16) void {
         .mount(gl)
         .mount(own)
         .get("/meta/public", metaEcho, .{ .public = true })
+        .get("/ip", clientIpEcho, .{})
         .onError(errorHandler)
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
         std.log.err("e2e app listen() failed: {s}", .{@errorName(err)});
@@ -445,6 +446,35 @@ test "rbac: Group-mounted routes enforce roles, with and without :param" {
     try expectStatus(403, &env, "/g/things/3/edit", .{ .method = "POST", .body = "" });
     try expectStatus(200, &env, "/g/things/3/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Test-Roles: admin"} });
     try expectStatus(200, &env, "/g/open/3", .{});
+}
+
+// ── cross-site request check (on by default) ────────────────────────────
+
+test "origin check: a cross-site POST from a browser is refused with 403 before routing" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const admin_post: RequestOptions = .{ .method = "POST", .body = "", .headers = &.{ "X-Test-Roles: admin", "Sec-Fetch-Site: cross-site", "Origin: https://evil.example" } };
+    try expectStatus(403, &env, "/r/items/1", admin_post);
+    try expectStatus(403, &env, "/r/items/1", .{ .method = "POST", .body = "", .headers = &.{ "X-Test-Roles: admin", "Origin: https://evil.example" } });
+}
+
+test "origin check: same-origin browsers, matching Origin and non-browser clients pass" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(200, &env, "/r/items/1", .{ .method = "POST", .body = "", .headers = &.{ "X-Test-Roles: admin", "Sec-Fetch-Site: same-origin", "Origin: http://127.0.0.1" } });
+    try expectStatus(200, &env, "/r/items/1", .{ .method = "POST", .body = "", .headers = &.{ "X-Test-Roles: admin", "Origin: http://127.0.0.1" } });
+    try expectStatus(200, &env, "/r/items/1", .{ .method = "POST", .body = "", .headers = &.{"X-Test-Roles: admin"} });
+    // Safe methods are never checked.
+    try expectStatus(200, &env, "/r/items/1", .{ .headers = &.{ "X-Test-Roles: admin", "Sec-Fetch-Site: cross-site", "Origin: https://evil.example" } });
+}
+
+test "clientIp: X-Forwarded-For is ignored without trusted proxies, used behind one" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const direct = try request(env.io(), env.arena.allocator(), try appPort(env.io()), "/ip", .{ .headers = &.{"X-Forwarded-For: 203.0.113.7"} });
+    try std.testing.expectEqualStrings("127.0.0.1", direct.body);
+    const proxied = try request(env.io(), env.arena.allocator(), try deadlineAppPort(env.io()), "/ip", .{ .headers = &.{"X-Forwarded-For: 6.6.6.6, 203.0.113.7"} });
+    try std.testing.expectEqualStrings("203.0.113.7", proxied.body);
 }
 
 // ── roles from the app itself, policies ─────────────────────────────────
@@ -666,6 +696,10 @@ fn slowHandler(c: *spider.Ctx) !spider.Response {
     return c.text("slow", .{});
 }
 
+fn clientIpEcho(c: *spider.Ctx) !spider.Response {
+    return c.text(c.clientIp() orelse "-", .{});
+}
+
 fn bodyLen(c: *spider.Ctx) !spider.Response {
     const len = if (c.body) |b| b.len else 0;
     return c.text(try std.fmt.allocPrint(c.arena, "{d}", .{len}), .{});
@@ -678,8 +712,11 @@ fn runDeadlineApp(port: u16) void {
         .keepalive_timeout_ms = short_ms,
         .header_timeout_ms = short_ms,
         .body_timeout_ms = short_ms,
+        .max_body_bytes = 1024,
+        .trusted_proxies = &.{"127.0.0.1"},
     });
     s.get("/fast", fast, .{})
+        .get("/ip", clientIpEcho, .{})
         .get("/slow", slowHandler, .{})
         .post("/len", bodyLen, .{})
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
@@ -780,6 +817,32 @@ test "deadline: a body that stops arriving gets 400 and the connection closed" {
     const r = try readUntilClose(io, env.arena.allocator(), stream);
     try std.testing.expect(r.closed_by_server);
     try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 400"));
+}
+
+test "body limit: a declared body over max_body_bytes gets 413 before it is read" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    // Declares 4 GB and sends nothing: answered at once, nothing allocated.
+    try send(io, stream, "POST /len HTTP/1.1\r\nHost: x\r\nContent-Length: 4000000000\r\n\r\n");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(r.closed_by_server);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 413"));
+}
+
+test "body limit: a body within max_body_bytes is read as before" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    const body: [1024]u8 = @splat('x');
+    try send(io, stream, "POST /len HTTP/1.1\r\nHost: x\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n" ++ body);
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 200"));
+    try std.testing.expect(std.mem.endsWith(u8, r.bytes, "1024"));
 }
 
 test "deadline: a slow but steady body is not cut" {

@@ -142,6 +142,8 @@ test {
     _ = @import("core/watchdog.zig");
     _ = @import("core/context_test.zig");
     _ = @import("core/app_test.zig");
+    _ = @import("core/origin_test.zig");
+    _ = @import("core/client_ip.zig");
     _ = @import("routing/router_test.zig");
     _ = @import("modules/rbac_test.zig");
     _ = @import("internal/url.zig");

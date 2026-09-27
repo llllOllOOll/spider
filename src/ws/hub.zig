@@ -369,6 +369,16 @@ pub const Hub = struct {
         self.broadcastToChannelEvent(channel, id, event, json);
     }
 
+    /// emitTo() for HTML: `html` goes out as is (not JSON-encoded), one
+    /// `data:` line per line, so htmx's SSE extension can swap it in
+    /// (`<div hx-ext="sse" sse-connect="/events" sse-swap="badge">`).
+    /// Recorded in the channel's history like emitTo(). Render it once for
+    /// everyone on the channel: it must not carry per-user data.
+    pub fn emitHtmlTo(self: *Hub, channel: []const u8, event: []const u8, html: []const u8) void {
+        const id = self.recordHistory(channel, event, html) catch return;
+        self.broadcastToChannelEvent(channel, id, event, html);
+    }
+
     /// Assigns the next hub-wide event id and appends
     /// the event to its replay buffer, pruning anything past
     /// history_max_entries or history_max_age_ms. Only emitTo()/notifyUser()
@@ -511,26 +521,14 @@ pub const Hub = struct {
     pub fn sendSse(self: *Hub, stream: net.Stream, event: []const u8, data: []const u8) !void {
         var write_buf: [4096]u8 = undefined;
         var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
-        const writer = &sw.interface;
-        try writer.writeAll("event: ");
-        try writer.writeAll(event);
-        try writer.writeAll("\ndata: ");
-        try writer.writeAll(data);
-        try writer.writeAll("\n\n");
-        try writer.flush();
+        try writeSseFrame(&sw.interface, null, event, data);
+        try sw.interface.flush();
     }
-
     pub fn sendSseWithId(self: *Hub, stream: net.Stream, id: u64, event: []const u8, data: []const u8) !void {
         var write_buf: [4096]u8 = undefined;
         var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
-        const writer = &sw.interface;
-        try writer.print("id: {d}\n", .{id});
-        try writer.writeAll("event: ");
-        try writer.writeAll(event);
-        try writer.writeAll("\ndata: ");
-        try writer.writeAll(data);
-        try writer.writeAll("\n\n");
-        try writer.flush();
+        try writeSseFrame(&sw.interface, id, event, data);
+        try sw.interface.flush();
     }
 
     /// SSE comment line (leading ':') — spec-valid content the client's
@@ -1430,4 +1428,49 @@ test "Hub: writeToConn on an unknown connection is an error, not a write" {
     var hub = Hub.init(testing.allocator, io);
     defer hub.deinit();
     try testing.expectError(error.UnknownConnection, hub.writeToConn(42, Hub.sendSse, .{ "x", "{}" }));
+}
+
+test "writeSseFrame: every data line gets its own data: prefix (multi-line HTML survives)" {
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeSseFrame(&w, 7, "row", "<tr>\n  <td>a</td>\r\n</tr>");
+    try testing.expectEqualStrings("id: 7\nevent: row\ndata: <tr>\ndata:   <td>a</td>\ndata: </tr>\n\n", w.buffered());
+    var w2: std.Io.Writer = .fixed(&buf);
+    try writeSseFrame(&w2, null, "message", "{\"a\":1}");
+    try testing.expectEqualStrings("event: message\ndata: {\"a\":1}\n\n", w2.buffered());
+}
+
+test "Hub: emitHtmlTo records the raw HTML (not JSON) for replay" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    var hub = Hub.init(testing.allocator, threaded.io());
+    defer hub.deinit();
+    hub.emitHtmlTo("org:1", "badge", "<span>3</span>\n");
+    const entries = try hub.historySince(testing.allocator, "org:1", 0);
+    defer {
+        for (entries) |e| {
+            testing.allocator.free(e.event);
+            testing.allocator.free(e.data);
+        }
+        testing.allocator.free(entries);
+    }
+    try testing.expectEqual(@as(usize, 1), entries.len);
+    try testing.expectEqualStrings("<span>3</span>\n", entries[0].data);
+    try testing.expectEqualStrings("badge", entries[0].event);
+}
+
+/// One SSE frame: optional `id:`, `event:`, then `data:` once per line of
+/// `data` (CR/LF or LF), and the blank line that ends the event. A single
+/// `data:` with raw newlines inside would end the event early.
+pub fn writeSseFrame(w: *std.Io.Writer, id: ?u64, event: []const u8, data: []const u8) !void {
+    if (id) |n| try w.print("id: {d}\n", .{n});
+    try w.writeAll("event: ");
+    try w.writeAll(event);
+    try w.writeAll("\n");
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        try w.writeAll("data: ");
+        try w.writeAll(std.mem.trimEnd(u8, line, "\r"));
+        try w.writeAll("\n");
+    }
+    try w.writeAll("\n");
 }

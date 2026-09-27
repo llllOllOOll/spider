@@ -22,6 +22,12 @@ pub const Sse = struct {
         try self.writeFrame(Hub.sendSse, .{ event, json });
     }
 
+    /// send() for HTML: `html` goes out as is (not JSON-encoded), one
+    /// `data:` line per line — for htmx's SSE extension (`sse-swap`).
+    pub fn sendHtml(self: *Sse, event: []const u8, html: []const u8) !void {
+        try self.writeFrame(Hub.sendSse, .{ event, html });
+    }
+
     /// Writes through the Hub's per-connection lock when this connection is
     /// registered (so it can't interleave with a concurrent emitTo/heartbeat
     /// on the same socket); falls back to a direct write otherwise.

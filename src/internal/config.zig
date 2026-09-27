@@ -28,6 +28,22 @@ pub const Config = struct {
     /// Longest silence while receiving a request body; restarts on every
     /// chunk, so a slow but steady upload is never cut.
     body_timeout_ms: u32 = 60_000,
+    /// Largest request body accepted, from its Content-Length: a bigger one
+    /// is answered 413 before anything is read or allocated (the connection
+    /// is then closed). Uploads that go straight to object storage (presigned
+    /// URLs) never reach it; raise it for apps that take files through the app.
+    max_body_bytes: u64 = 10 * 1024 * 1024,
+    /// Cross-site request check, on by default: a state-changing request a
+    /// browser sends from another site (CSRF) or a cross-site WebSocket
+    /// upgrade gets 403 before routing. Non-browser clients (webhooks,
+    /// servers) aren't affected. See core/origin.zig; add `trusted_origins`
+    /// or `exempt_paths` for legitimate cross-site posts, `.enabled = false`
+    /// to turn it off.
+    origin_check: @import("../core/origin.zig").Policy = .{},
+    /// Reverse proxies whose X-Forwarded-For is believed by `Ctx.clientIp()`:
+    /// CIDRs or addresses, e.g. &.{"10.0.0.0/8", "172.16.0.0/12"} for a
+    /// proxy on a private network. Empty (the default): the header is ignored.
+    trusted_proxies: []const []const u8 = &.{},
     /// Longest a server push to an SSE/WebSocket client may stay blocked
     /// (its socket buffer full: the client stopped reading). The connection
     /// is then closed, so the client reconnects instead of silently missing

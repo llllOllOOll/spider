@@ -1462,3 +1462,27 @@ test "raw <style> body after leading text inside an if body is not interpolated"
     defer alc.free(r);
     try std.testing.expectEqualStrings("\n  text <style>.a { color: red; }</style> n\n", r);
 }
+
+test "{ name if (cond) }: boolean attribute present only when cond holds" {
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc, "<input name=\"q\" { disabled if (locked) } { required if (need) }>");
+    defer tmpl.deinit();
+    const on = try tmpl.render(.{ .locked = true, .need = false }, alc);
+    defer alc.free(on);
+    try std.testing.expectEqualStrings("<input name=\"q\" disabled >", on);
+    const off = try tmpl.render(.{ .locked = false, .need = true }, alc);
+    defer alc.free(off);
+    try std.testing.expectEqualStrings("<input name=\"q\"  required>", off);
+}
+
+test "{ \"class\" if (cond) }: conditional class, with comparisons" {
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc, "<a class=\"ui-btn { \"ui-btn-active\" if (tab == \"home\") }\">x</a>");
+    defer tmpl.deinit();
+    const on = try tmpl.render(.{ .tab = "home" }, alc);
+    defer alc.free(on);
+    try std.testing.expectEqualStrings("<a class=\"ui-btn ui-btn-active\">x</a>", on);
+    const off = try tmpl.render(.{ .tab = "other" }, alc);
+    defer alc.free(off);
+    try std.testing.expectEqualStrings("<a class=\"ui-btn \">x</a>", off);
+}

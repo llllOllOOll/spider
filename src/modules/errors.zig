@@ -87,15 +87,10 @@ pub fn errorHandler(comptime opts: Options) ErrorHandler {
             }
 
             if (c.isHtmx()) {
-                var out: std.Io.Writer.Allocating = .init(c.arena);
-                var js: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .escape_unicode = true } };
-                try js.beginObject();
-                try js.objectField(opts.toast_event);
-                try js.write(.{ .message = message, .type = if (code >= 500) "error" else "warning" });
-                try js.endObject();
-                const hdrs = try c.arena.alloc([2][]const u8, 2);
-                hdrs[0] = .{ "HX-Trigger", out.written() };
-                hdrs[1] = .{ "HX-Reswap", "none" };
+                const hdrs = try c.htmx(.{
+                    .trigger = try c.hxEvent(opts.toast_event, .{ .message = message, .type = if (code >= 500) "error" else "warning" }),
+                    .reswap = .none,
+                });
                 return Response{ .status = status, .body = "", .content_type = "text/plain", .headers = hdrs };
             }
 
