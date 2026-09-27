@@ -42,7 +42,7 @@ fn insertBeforeLine(allocator: std.mem.Allocator, content: *[]u8, marker: []cons
 }
 
 /// main.zig with the provider added. `provider_config` is either statements
-/// declaring `<provider>_config` (keycloak) or struct-literal fields (google).
+/// declaring `<provider>_config` (keycloak) or struct-literal fields.
 pub fn transform(
     allocator: std.mem.Allocator,
     existing: []const u8,

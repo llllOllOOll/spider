@@ -35,6 +35,6 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, subcommand: []const u8, arg
         std.debug.print("Usage: spider generate <subcommand>\n", .{});
         std.debug.print("Available subcommands:\n", .{});
         std.debug.print("  feature <name> [--api]    Generate a new feature (--api for REST API)\n", .{});
-        std.debug.print("  auth [--provider=keycloak|google] [--api]  Generate auth feature (--api for bearer-only)\n", .{});
+        std.debug.print("  auth [--provider=keycloak] [--api]  Generate auth feature (--api for bearer-only)\n", .{});
     }
 }

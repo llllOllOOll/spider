@@ -29,16 +29,29 @@ const keycloak_config_api =
     \\
 ;
 
-const google_config =
-    \\        .client_id     = spider.env.getOr("GOOGLE_CLIENT_ID", ""),
-    \\        .client_secret = spider.env.getOr("GOOGLE_CLIENT_SECRET", ""),
-    \\        .redirect_uri  = spider.env.getOr("GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/callback"),
-;
+/// Why `provider` can't be generated, or null when it can. Only Keycloak:
+/// spider.google has the OAuth calls (authUrl, fetchProfile) but no session
+/// provider (middleware, login/callback handlers), so the code generated for
+/// "google" never compiled.
+pub fn unsupportedProvider(provider: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, provider, "keycloak")) return null;
+    if (std.mem.eql(u8, provider, "google"))
+        return "Google sign-in isn't generated: Spider has no Google session provider.\n" ++
+            "Use Keycloak (--provider=keycloak) and add Google as an identity provider\n" ++
+            "of the realm; users then pick it on the Keycloak login page.";
+    return "unsupported provider; use --provider=keycloak";
+}
+
+test "unsupportedProvider: keycloak only; google says why" {
+    try std.testing.expect(unsupportedProvider("keycloak") == null);
+    try std.testing.expect(std.mem.indexOf(u8, unsupportedProvider("google").?, "identity provider") != null);
+    try std.testing.expect(unsupportedProvider("github") != null);
+}
 
 pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: bool) !void {
-    if (!std.mem.eql(u8, provider, "keycloak") and !std.mem.eql(u8, provider, "google")) {
-        std.debug.print("error: unsupported provider '{s}'. Use --provider=keycloak or --provider=google\n", .{provider});
-        return error.UnsupportedProvider;
+    if (unsupportedProvider(provider)) |why| {
+        std.debug.print("error: --provider={s}: {s}\n", .{ provider, why });
+        std.process.exit(2);
     }
 
     const root_dir = try fs_utils.findProjectRoot(io);
@@ -150,12 +163,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
     }
 
     // Select provider config
-    const provider_config = if (api)
-        keycloak_config_api
-    else if (std.mem.eql(u8, provider, "keycloak"))
-        keycloak_config
-    else
-        google_config;
+    const provider_config = if (api) keycloak_config_api else keycloak_config;
 
     // Update main.zig
     try auth_updater.updateMainZig(io, allocator, root_dir, provider, provider_config, api);
