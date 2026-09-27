@@ -1,3 +1,8 @@
 const std = @import("std");
 const spider = @import("spider");
 pub const controller = @import("controller.zig");
+pub const routes = @import("routes.zig");
+
+/// The provider created in src/main.zig; set before mountFeatures (its
+/// login and callback handlers are routes of this feature).
+pub var provider: ?*spider.{{provider}}.{{Provider}} = null;

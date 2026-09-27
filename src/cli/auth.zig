@@ -6,6 +6,7 @@ const migration_updater = @import("migration_updater.zig");
 const auth_updater = @import("auth_updater.zig");
 
 const mod_tmpl = @embedFile("templates/auth/mod.zig.template");
+const routes_tmpl = @embedFile("templates/auth/routes.zig.template");
 const controller_sqlite_tmpl = @embedFile("templates/auth/controller.zig.sqlite.template");
 const controller_pg_tmpl = @embedFile("templates/auth/controller.zig.pg.template");
 const migration_sql_sqlite_tmpl = @embedFile("templates/auth/migration.sql.sqlite.template");
@@ -13,23 +14,19 @@ const migration_sql_pg_tmpl = @embedFile("templates/auth/migration.sql.pg.templa
 const migrations_zig_sqlite_tmpl = @embedFile("templates/migrations.zig.sqlite.template");
 const migrations_zig_pg_tmpl = @embedFile("templates/migrations.zig.pg.template");
 
+// Keycloak: connection settings from .env (KeycloakConfig.fromEnv), plus
+// what differs from the defaults. No skip list: routes that need no login
+// say so themselves (`.public`, see features/auth/routes.zig).
 const keycloak_config =
-    \\        .base_url      = spider.env.getOr("KEYCLOAK_BASE_URL", ""),
-    \\        .realm         = spider.env.getOr("KEYCLOAK_REALM", ""),
-    \\        .client_id     = spider.env.getOr("KEYCLOAK_CLIENT_ID", ""),
-    \\        .client_secret = spider.env.getOr("KEYCLOAK_CLIENT_SECRET", ""),
-    \\        .redirect_uri  = spider.env.getOr("KEYCLOAK_REDIRECT_URI", "http://localhost:3000/auth/callback"),
-    \\        .login_path    = "/auth/login",
-    \\        .after_callback_path = "/auth/session",
-    \\        .auth_skip_paths = &.{ "/auth/login", "/auth/callback", "/auth/logout", "/up", "/invite" },
+    \\    var keycloak_config = spider.keycloak.KeycloakConfig.fromEnv();
+    \\    keycloak_config.after_callback_path = "/auth/session";
+    \\
 ;
 
 const keycloak_config_api =
-    \\        .base_url      = spider.env.getOr("KEYCLOAK_BASE_URL", ""),
-    \\        .realm         = spider.env.getOr("KEYCLOAK_REALM", ""),
-    \\        .client_id     = spider.env.getOr("KEYCLOAK_CLIENT_ID", ""),
-    \\        .client_secret = spider.env.getOr("KEYCLOAK_CLIENT_SECRET", ""),
-    \\        .api_mode      = true,
+    \\    var keycloak_config = spider.keycloak.KeycloakConfig.fromEnv();
+    \\    keycloak_config.api_mode = true;
+    \\
 ;
 
 const google_config =
@@ -99,6 +96,12 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
         defer allocator.free(controller_content);
         try fs_utils.writeFile(io, auth_dir, "controller.zig", controller_content);
         std.debug.print("  create  src/features/auth/controller.zig\n", .{});
+
+        // Routes: login/callback from the provider, session/logout from the controller
+        const routes_content = try template_engine.renderTemplateWithVars(allocator, routes_tmpl, &vars);
+        defer allocator.free(routes_content);
+        try fs_utils.writeFile(io, auth_dir, "routes.zig", routes_content);
+        std.debug.print("  create  src/features/auth/routes.zig\n", .{});
 
         // No login.html — auth provider (keycloak/google) handles login page
 
