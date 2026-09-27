@@ -180,3 +180,82 @@ pub fn resourcePolicy(comptime name: []const u8, comptime T: type, comptime opts
     // The name rules and the (*Ctx) bool shape are policy()'s.
     return policy(name, S.check);
 }
+
+/// The rules about one kind of resource, in one place — like a Laravel
+/// Policy class or a Pundit policy:
+///
+///     pub const Tickets = spider.policySet(Ticket, .{
+///         .name = "ticket",                  // policies listed as ticket.view, ticket.update...
+///         .load = service.loadTicket,        // as in resourcePolicy
+///         .deny = .not_found,                // default for every rule (optional)
+///         .rules = .{
+///             .view = canView,               // fn (*Ctx, *const Ticket) bool or !bool
+///             .update = isOwner,
+///             .delete = .{ .check = isAdmin, .deny = .forbidden }, // per-rule deny
+///         },
+///     });
+///
+/// Routes take `.policy = Tickets.route(.update)` (a resourcePolicy: 401 /
+/// 404 / 403 as documented there, the ticket reaches the handler as
+/// `spider.Loaded(Ticket)`); a handler asks `try Tickets.can(c, .update,
+/// ticket)` (e.g. to show an edit button). An action missing from `.rules`
+/// doesn't compile.
+pub fn policySet(comptime T: type, comptime opts: anytype) type {
+    const O = @TypeOf(opts);
+    comptime {
+        for (@typeInfo(O).@"struct".field_names) |f| {
+            if (!std.mem.eql(u8, f, "name") and !std.mem.eql(u8, f, "load") and !std.mem.eql(u8, f, "rules") and !std.mem.eql(u8, f, "deny"))
+                @compileError("spider.policySet(" ++ @typeName(T) ++ "): unknown option `." ++ f ++ "` (known: .name, .load, .rules, .deny)");
+        }
+        if (!@hasField(O, "name") or !@hasField(O, "load") or !@hasField(O, "rules"))
+            @compileError("spider.policySet(" ++ @typeName(T) ++ "): needs .name, .load and .rules");
+    }
+    const set_deny: Deny = if (@hasField(O, "deny")) opts.deny else .forbidden;
+    return struct {
+        pub const Resource = T;
+        pub const name: []const u8 = opts.name;
+
+        fn rule(comptime action: @TypeOf(.enum_literal)) type {
+            const key = @tagName(action);
+            if (!@hasField(@TypeOf(opts.rules), key))
+                @compileError("spider.policySet(\"" ++ opts.name ++ "\"): no rule `." ++ key ++ "` in .rules");
+            const r = @field(opts.rules, key);
+            const is_struct = @typeInfo(@TypeOf(r)) == .@"struct";
+            if (is_struct) {
+                for (@typeInfo(@TypeOf(r)).@"struct".field_names) |f| {
+                    if (!std.mem.eql(u8, f, "check") and !std.mem.eql(u8, f, "deny"))
+                        @compileError("spider.policySet(\"" ++ opts.name ++ "\"): rule `." ++ key ++ "`: unknown option `." ++ f ++ "` (known: .check, .deny)");
+                }
+            }
+            return struct {
+                const check = if (is_struct) r.check else r;
+                const deny: Deny = if (is_struct and @hasField(@TypeOf(r), "deny")) r.deny else set_deny;
+            };
+        }
+
+        /// The policy for a route: `.policy = Tickets.route(.update)`.
+        pub fn route(comptime action: @TypeOf(.enum_literal)) Policy {
+            const R = rule(action);
+            return resourcePolicy(opts.name ++ "." ++ @tagName(action), T, .{ .load = opts.load, .check = R.check, .deny = R.deny });
+        }
+
+        /// Whether the request's user may do `action` to `value` (already
+        /// loaded). Calls the rule as is: anonymous users are whatever the
+        /// rule makes of them.
+        pub fn can(c: *Ctx, comptime action: @TypeOf(.enum_literal), value: *const T) !bool {
+            const allowed: anyerror!bool = rule(action).check(c, value);
+            return allowed;
+        }
+
+        /// The set's loader (e.g. for a route that lists or creates, where
+        /// no single resource is checked).
+        pub fn find(c: *Ctx) !?T {
+            const r = opts.load(c);
+            if (@typeInfo(@TypeOf(r)) == .error_union) {
+                const v = try r;
+                return v;
+            }
+            return r;
+        }
+    };
+}

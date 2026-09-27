@@ -195,6 +195,7 @@ fn metaEcho(c: *spider.Ctx) !spider.Response {
 /// in the app's database, put on the request with the identity API.
 ///   X-Session: 1 -> user 1: role editor, manager of org c1
 ///   X-Session: 2 -> user 2: no roles
+///   X-Session: 3 -> user 3: role admin
 fn dbSession(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
     const sid = c.header("X-Session") orelse return next(c);
     try c.setUser(.{ .id = sid });
@@ -202,6 +203,7 @@ fn dbSession(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
         try c.addRole("editor");
         try c.addOrgRole(.{ .org_id = "c1", .org_name = "Tower A", .role = "manager" });
     }
+    if (std.mem.eql(u8, sid, "3")) try c.addRole("admin");
     return next(c);
 }
 
@@ -229,6 +231,21 @@ fn ownsDoc(c: *spider.Ctx, doc: *const Doc) bool {
 
 fn showDoc(doc: spider.Loaded(Doc), c: *spider.Ctx) !spider.Response {
     return c.text(try std.fmt.allocPrint(c.arena, "doc {d}: {s}", .{ doc.value.id, doc.value.title }), .{});
+}
+
+fn canViewDoc(c: *spider.Ctx, doc: *const Doc) bool {
+    return ownsDoc(c, doc) or c.hasRole("admin");
+}
+
+const Docs = spider.policySet(Doc, .{
+    .name = "doc",
+    .load = loadDoc,
+    .rules = .{ .view = canViewDoc, .update = ownsDoc },
+});
+
+fn docPage(doc: spider.Loaded(Doc), c: *spider.Ctx) !spider.Response {
+    const can_edit = try Docs.can(c, .update, doc.value);
+    return c.text(try std.fmt.allocPrint(c.arena, "{s} can_edit={}", .{ doc.value.title, can_edit }), .{});
 }
 
 fn runApp(port: u16) void {
@@ -262,6 +279,8 @@ fn runApp(port: u16) void {
         .get("/org", ok, .{ .org_roles = &.{"manager"} })
         .post("/posts/:id/edit", ok, .{ .policy = spider.policy("post_owner", ownsPost) })
         .get("/docs/:id", showDoc, .{ .policy = spider.resourcePolicy("doc_owner", Doc, .{ .load = loadDoc, .check = ownsDoc }) })
+        .get("/set/:id", docPage, .{ .policy = Docs.route(.view) })
+        .post("/set/:id", showDoc, .{ .policy = Docs.route(.update) })
         .get("/private/:id", showDoc, .{ .policy = spider.resourcePolicy("doc_owner", Doc, .{ .load = loadDoc, .check = ownsDoc, .deny = .not_found }) });
 
     var g = spider.Group.init("/g");
@@ -469,6 +488,21 @@ test "resourcePolicy with .deny = .not_found: someone else's doc looks missing" 
     try expectStatus(404, &env, "/own/private/11", .{ .headers = &.{"X-Session: 1"} });
     try expectStatus(404, &env, "/own/private/99", .{ .headers = &.{"X-Session: 1"} });
     try expectStatus(200, &env, "/own/private/10", .{ .headers = &.{"X-Session: 1"} });
+}
+
+test "policySet: route(.view) lets the owner and admins in; can(.update) tells the handler who may edit" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const owner = try request(env.io(), env.arena.allocator(), port, "/own/set/10", .{ .headers = &.{"X-Session: 1"} });
+    try std.testing.expectEqualStrings("plan can_edit=true", owner.body);
+    const by_admin = try request(env.io(), env.arena.allocator(), port, "/own/set/10", .{ .headers = &.{"X-Session: 3"} });
+    try std.testing.expectEqualStrings("plan can_edit=false", by_admin.body);
+    try expectStatus(403, &env, "/own/set/10", .{ .headers = &.{"X-Session: 2"} });
+    try expectStatus(404, &env, "/own/set/99", .{ .headers = &.{"X-Session: 1"} });
+    try expectStatus(401, &env, "/own/set/10", .{});
+    try expectStatus(403, &env, "/own/set/10", .{ .method = "POST", .body = "", .headers = &.{"X-Session: 3"} });
+    try expectStatus(200, &env, "/own/set/10", .{ .method = "POST", .body = "", .headers = &.{"X-Session: 1"} });
 }
 
 // ── active org (item 3) ─────────────────────────────────────────────────

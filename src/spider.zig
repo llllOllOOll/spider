@@ -55,6 +55,9 @@ pub const Policy = rbac.Policy;
 /// A policy that loads the route's resource (404 when missing), checks it,
 /// and hands it to the handler (spider.Loaded(T) / c.loaded(T)).
 pub const resourcePolicy = rbac.resourcePolicy;
+/// The rules about one kind of resource in one place (Laravel Policy /
+/// Pundit): `Set.route(.update)` for routes, `Set.can(c, .update, x)` in handlers.
+pub const policySet = rbac.policySet;
 pub const r2 = @import("spider_r2");
 pub const qrcode = @import("spider_qrcode");
 pub const push = @import("modules/push.zig");

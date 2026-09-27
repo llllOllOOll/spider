@@ -365,3 +365,69 @@ test "resourcePolicy: loaders returning ?T, !?T or !T; loader errors propagate" 
     var d = try postCtx(a, "1", "1");
     try std.testing.expectEqual(@as(?anyerror, error.DatabaseDown), failure(rbac.requirePolicy(rbac.resourcePolicy("err", Post, .{ .load = loadPostOrError, .check = ownsLoaded })), &d));
 }
+
+// --- policySet -----------------------------------------------------------------
+
+fn isAdminUser(c: *Ctx, post: *const Post) bool {
+    _ = post;
+    return c.hasRole("admin");
+}
+fn canViewPost(c: *Ctx, post: *const Post) !bool {
+    return ownsLoaded(c, post) or c.hasRole("admin");
+}
+
+const Posts = rbac.policySet(Post, .{
+    .name = "post",
+    .load = loadPost,
+    .deny = .not_found,
+    .rules = .{
+        .view = canViewPost,
+        .update = ownsLoaded,
+        .delete = .{ .check = isAdminUser, .deny = .forbidden },
+    },
+});
+
+test "policySet: route(action) is a resourcePolicy named set.action with the set's loader and deny" {
+    try std.testing.expectEqualStrings("post.view", Posts.route(.view).name);
+    try std.testing.expectEqualStrings("post.delete", Posts.route(.delete).name);
+    try std.testing.expectEqualStrings("post", Posts.name);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const view = rbac.requirePolicy(Posts.route(.view));
+    const update = rbac.requirePolicy(Posts.route(.update));
+    const delete = rbac.requirePolicy(Posts.route(.delete));
+
+    var owner = try postCtx(a, "1", "10");
+    try std.testing.expectEqual(@as(?anyerror, null), failure(update, &owner));
+    try std.testing.expectEqualStrings("mine", owner.loaded(Post).?.title);
+
+    var other = try postCtx(a, "2", "10");
+    try std.testing.expectEqual(@as(?anyerror, error.NotFound), failure(update, &other)); // set-wide .not_found
+    try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(delete, &other)); // rule's own .forbidden
+
+    var admin = try postCtx(a, "2", "10");
+    try admin.addRole("admin");
+    try std.testing.expectEqual(@as(?anyerror, null), failure(view, &admin));
+    var admin2 = try postCtx(a, "2", "10");
+    try admin2.addRole("admin");
+    try std.testing.expectEqual(@as(?anyerror, null), failure(delete, &admin2));
+
+    var anon = try postCtx(a, null, "10");
+    try std.testing.expectEqual(@as(?anyerror, error.Unauthorized), failure(view, &anon));
+}
+
+test "policySet: can() asks a rule about an already loaded resource; find() uses the set's loader" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c = try postCtx(a, "1", "10");
+    const post = (try Posts.find(&c)).?;
+    try std.testing.expect(try Posts.can(&c, .update, &post));
+    try std.testing.expect(!try Posts.can(&c, .delete, &post));
+    try c.addRole("admin");
+    try std.testing.expect(try Posts.can(&c, .delete, &post));
+    var missing = try postCtx(a, "1", "99");
+    try std.testing.expect((try Posts.find(&missing)) == null);
+}

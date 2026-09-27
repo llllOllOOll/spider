@@ -94,6 +94,12 @@ auth. Fix the code, not the check — and don't delete that test.
   isOwner })`: it loads the record (404 if missing), checks it (403, or 404
   with `.deny = .not_found`) and the handler takes `post: spider.Loaded(Post)`
   instead of loading it again.
+- Several rules about the same model go in one `spider.policySet(Ticket, .{
+  .name = "ticket", .load = loadTicket, .rules = .{ .view = canView, .update
+  = isOwner } })` in the feature's `policy.zig`: routes use
+  `.policy = policy.Tickets.route(.update)`, handlers and views ask
+  `try policy.Tickets.can(c, .update, ticket)` (e.g. to show an edit button)
+  instead of repeating the rule.
 - Roles only mean something once requests are authenticated (`spider g auth`
   adds the provider's middleware). Without auth every route is open and a
   route with `.roles` answers 403 to everyone. That's why generated features
