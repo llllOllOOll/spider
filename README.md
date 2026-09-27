@@ -65,12 +65,72 @@ This automatically detects `spider.config.zig` and runs the template generator.
 
 ## Requirements
 
-- Zig `0.17.0-dev` or compatible
+Spider is developed and tested with this exact Zig development build:
+
+```
+0.17.0-dev.956+2dca73595
+```
+
+(`minimum_zig_version` in `build.zig.zon` is older; use the build above.)
 
 ```bash
 zig version
-# 0.17.0-dev.93+76174e1bc
+# 0.17.0-dev.956+2dca73595
 ```
+
+### Getting that exact Zig build
+
+ziglang.org only keeps the latest master build, so this one is gone from
+`ziglang.org/builds` (404). The [community mirrors](https://ziglang.org/download/community-mirrors/)
+still serve it: they must keep development builds until the next tagged
+release (0.17.0). After 0.17.0 ships they may drop it, and Spider will move
+to a tagged release. Download from a mirror and **verify the signature**
+before using it:
+
+```bash
+VERSION=0.17.0-dev.956+2dca73595
+FILE=zig-x86_64-linux-$VERSION.tar.xz   # or zig-aarch64-linux-, zig-aarch64-macos-, zig-x86_64-macos-, ...
+
+# Try the mirrors from the official list until one has the file.
+for m in $(curl -s https://ziglang.org/download/community-mirrors.txt); do
+  curl -fsSL -o "$FILE" "$m/$FILE?source=spider-readme" &&
+    curl -fsSL -o "$FILE.minisig" "$m/$FILE.minisig?source=spider-readme" && break
+done
+
+# Verify with the Zig Software Foundation's public key (https://ziglang.org/download/).
+minisign -Vm "$FILE" -P RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U
+# The output must include: trusted comment: ... file:<the same $FILE>
+
+tar -xf "$FILE" && ./zig-x86_64-linux-$VERSION/zig version
+```
+
+Direct links (checked on 2026-09-27; mirrors are caches and can drop files —
+the loop above tries every mirror). Add `.minisig` to any link for its
+signature.
+
+| File | Mirrors that had it |
+|---|---|
+| Linux x86_64 | [pkg.hexops.org](https://pkg.hexops.org/zig/zig-x86_64-linux-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.squirl.dev](https://zig.squirl.dev/zig-x86_64-linux-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.tilok.dev](https://zig.tilok.dev/zig-x86_64-linux-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.karearl.com](https://zig.karearl.com/zig/zig-x86_64-linux-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.vortan.dev](https://zig.vortan.dev/zig/zig-x86_64-linux-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) |
+| Linux aarch64 | [pkg.hexops.org](https://pkg.hexops.org/zig/zig-aarch64-linux-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.squirl.dev](https://zig.squirl.dev/zig-aarch64-linux-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.tilok.dev](https://zig.tilok.dev/zig-aarch64-linux-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) |
+| macOS aarch64 (Apple Silicon) | [pkg.hexops.org](https://pkg.hexops.org/zig/zig-aarch64-macos-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.squirl.dev](https://zig.squirl.dev/zig-aarch64-macos-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.tilok.dev](https://zig.tilok.dev/zig-aarch64-macos-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.karearl.com](https://zig.karearl.com/zig/zig-aarch64-macos-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) |
+| macOS x86_64 | [pkg.hexops.org](https://pkg.hexops.org/zig/zig-x86_64-macos-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) |
+| Windows x86_64 | [pkg.hexops.org](https://pkg.hexops.org/zig/zig-x86_64-windows-0.17.0-dev.956+2dca73595.zip?source=spider-readme) · [zig.squirl.dev](https://zig.squirl.dev/zig-x86_64-windows-0.17.0-dev.956+2dca73595.zip?source=spider-readme) · [zig.tilok.dev](https://zig.tilok.dev/zig-x86_64-windows-0.17.0-dev.956+2dca73595.zip?source=spider-readme) · [zig.karearl.com](https://zig.karearl.com/zig/zig-x86_64-windows-0.17.0-dev.956+2dca73595.zip?source=spider-readme) · [zig.vortan.dev](https://zig.vortan.dev/zig/zig-x86_64-windows-0.17.0-dev.956+2dca73595.zip?source=spider-readme) |
+| Source | [pkg.hexops.org](https://pkg.hexops.org/zig/zig-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.squirl.dev](https://zig.squirl.dev/zig-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.tilok.dev](https://zig.tilok.dev/zig-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.karearl.com](https://zig.karearl.com/zig/zig-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) |
+| Bootstrap (source + LLVM) | [pkg.hexops.org](https://pkg.hexops.org/zig/zig-bootstrap-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.squirl.dev](https://zig.squirl.dev/zig-bootstrap-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.tilok.dev](https://zig.tilok.dev/zig-bootstrap-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) · [zig.karearl.com](https://zig.karearl.com/zig/zig-bootstrap-0.17.0-dev.956+2dca73595.tar.xz?source=spider-readme) |
+
+For x86_64-linux you can also compare the checksum of the signed tarball:
+
+```
+11d995f47f847c3394bb8555d7d8841e686ac6ac8c521c8ce62a6616e6eb0b48  zig-x86_64-linux-0.17.0-dev.956+2dca73595.tar.xz
+```
+
+The same mirrors also serve `zig-0.17.0-dev.956+2dca73595.tar.xz` (source)
+and `zig-bootstrap-0.17.0-dev.956+2dca73595.tar.xz` (builds Zig from source
+without a system LLVM), each with its `.minisig`. Keep a copy of what you
+download: once the mirrors drop this build, a copy is the only way to get it.
+In GitHub Actions, [`mlugg/setup-zig`](https://codeberg.org/mlugg/setup-zig)
+downloads from these mirrors and verifies the signature
+(`with: version: 0.17.0-dev.956+2dca73595`).
 
 ---
 
