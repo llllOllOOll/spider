@@ -2,11 +2,12 @@
 
 Build web servers in Zig — performant, productive, and batteries-included.
 
-**Batteries included:** PostgreSQL, SQLite, MySQL, JWT auth, Google OAuth,
-Clerk, Keycloak, WebSockets, SSE, Web Push, Cloudflare R2, multipart upload,
-HTMX support, CLI tool, and a powerful template engine.
+**Batteries included:** PostgreSQL, SQLite, JWT auth, Keycloak/JWKS, Clerk,
+Google OAuth, role and policy based access control, WebSockets, SSE, Web Push,
+Cloudflare R2, multipart upload, htmx helpers, a template engine, and a CLI that
+scaffolds apps and checks them.
 
-📖 **Documentation:** this README  
+📖 **Documentation:** this README, and [`llms.txt`](llms.txt) — the maintained API reference  
 🔧 **CLI:** `spider new myapp`
 
 ---
@@ -15,15 +16,20 @@ HTMX support, CLI tool, and a powerful template engine.
 
 ### Quick Install (Recommended)
 
+Installs the `spider` CLI (to `~/.local/bin`, or `--install-dir PATH`):
+
 ```bash
 curl -fsSL https://spiderme.org/install.sh | bash
 ```
 
-Or specify a version:
+Or a specific version:
 
 ```bash
 curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.6.9
 ```
+
+Then `spider new myapp` creates a project with Spider already added as a
+dependency and its `build.zig` wired (see [Quick Start](#quick-start)).
 
 ### Manual Install
 
@@ -36,8 +42,21 @@ zig fetch --save git+https://github.com/llllOllOOll/spider#main
 Then in your `build.zig`:
 
 ```zig
-const spider_dep = b.dependency("spider", .{ .target = target });
+const spider_dep = b.dependency("spider", .{
+    .target = target,
+    .optimize = optimize,
+    // I/O backend: comment one line and uncomment the other.
+    .io_backend = .threaded, // OS threads, blocking sockets (default)
+    // .io_backend = .zio, // fibers on an event loop (epoll)
+    // .pg = true, .sqlite = true, .r2 = true, .qrcode = true,
+});
 const spider_mod = spider_dep.module("spider");
+
+// spider.config.zig is read only when it is registered on the spider module.
+spider_mod.addImport("spider_config", b.createModule(.{
+    .root_source_file = b.path("spider.config.zig"),
+    .imports = &.{.{ .name = "spider", .module = spider_mod }},
+}));
 
 const exe = b.addExecutable(.{
     .name = "myapp",
@@ -45,21 +64,19 @@ const exe = b.addExecutable(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "spider", .module = spider_mod },
-        },
+        .imports = &.{.{ .name = "spider", .module = spider_mod }},
     }),
 });
+
+// Optional: embed the templates in the binary (then, in main.zig:
+// `pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;`).
+const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));
+gen.addArg("src/");
+gen.addArg("src/embedded_templates.zig");
+exe.step.dependOn(&gen.step);
 ```
 
-Alternatively, use the **build helper** for one-line setup:
-
-```zig
-const spider_build = @import("spider_build");
-spider_build.setup(b, exe, spider_dep);
-```
-
-This automatically detects `spider.config.zig` and runs the template generator.
+Easiest: `spider new myapp` generates all of this.
 
 ---
 
@@ -134,1510 +151,1045 @@ downloads from these mirrors and verifies the signature
 
 ---
 
+
+---
+
 ## Quick Start
+
+```bash
+spider new myapp          # HTML views + SQLite; --pg, --no-db, --api, --pwa, --ui=tailwind
+cd myapp
+zig build run             # http://localhost:3000
+spider g feature posts    # a CRUD feature in src/features/posts/ + a migration
+```
+
+A minimal app by hand:
 
 ```zig
 const std = @import("std");
 const spider = @import("spider");
 
-// Embed templates (optional — one line enables embed mode)
-pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
-
-pub fn main() void {
+pub fn main() !void {
     var server = spider.app(.{});
     defer server.deinit();
 
-    server
-        .get("/", homeHandler)
-        .get("/users/:id", userHandler)
-        .post("/users", createUserHandler)
-        .listen(.{ .port = 3000 }) catch {};
+    try server
+        .get("/", home, .{})
+        .get("/users/:id", user, .{})
+        .post("/users", createUser, .{})
+        .listen(.{ .port = 3000 });
 }
 
-fn homeHandler(c: *spider.Ctx) !spider.Response {
+fn home(c: *spider.Ctx) !spider.Response {
     return c.json(.{ .message = "Hello from Spider!" }, .{});
 }
 
-fn userHandler(c: *spider.Ctx) !spider.Response {
-    const id = c.param("id") orelse "unknown";
+fn user(c: *spider.Ctx) !spider.Response {
+    const id = c.params.get("id") orelse return error.NotFound;
     return c.json(.{ .user_id = id }, .{});
 }
 
-fn createUserHandler(c: *spider.Ctx) !spider.Response {
-    const User = struct { name: []const u8, email: []const u8 };
-    const body = try c.bodyJson(User);
-    return c.json(.{ .created = true, .name = body.name }, .{ .status = .created });
+fn createUser(c: *spider.Ctx) !spider.Response {
+    const Input = struct { name: []const u8, email: []const u8 };
+    const in = try c.bodyJson(Input);
+    return c.json(.{ .created = true, .name = in.name }, .{ .status = .created });
 }
 ```
 
-```bash
-zig build run
-# Server listening on http://127.0.0.1:3000
-# Starting 12 worker threads
+```
+info: Server listening on http://127.0.0.1:3000
 ```
 
-`listen` accepts both `port` and `host` — any field not set falls back to the values in `spider.config.zig`:
+The third argument of every route is its config (`.{}` for none, see
+[Routing](#routing)). `listen(.{ .port, .host })` fields you leave out come from
+`spider.config.zig` (see [Configuration](#configuration)), else `127.0.0.1:3000`.
+`spider.app()` also registers `GET /up` and `GET /_spider/health` (and
+`/_spider/reload` in development).
 
-```zig
-.listen(.{ .port = 8080 })                          // override port only
-.listen(.{ .host = "0.0.0.0" })                     // override host only
-.listen(.{ .port = 8080, .host = "0.0.0.0" })       // override both
-.listen(.{})                                         // use config values
+### A generated app
+
+```
+myapp/
+├── build.zig / build.zig.zon / spider.config.zig
+├── .env (git-ignored) / .env.example / Dockerfile / docker-compose.yml / AGENTS.md
+├── public/                 — favicon, images, js/, css/app.css (built by tailwindcss)
+├── bin/                    — tailwindcss, icon plugins (spider install)
+└── src/
+    ├── main.zig            — server.use(spider.logger).mountFeatures(features).onError(...).listen(...)
+    ├── styles.css / ui.css — Tailwind entry; ui-* classes of the chosen UI kit
+    ├── core/               — db/migrations/*.sql
+    ├── shared/templates/   — layout.html, app.html, nav/side bars, toast
+    └── features/
+        ├── mod.zig         — lists the features
+        └── home/           — mod.zig, controller.zig, routes.zig, routes_test.zig, views/
 ```
 
----
-
-## Context — `c: *spider.Ctx`
-
-Every handler receives a `*spider.Ctx`. It provides everything you need — no allocators, no I/O wiring required.
-
-### Responses
-
-```zig
-// JSON
-return c.json(.{ .id = 1, .name = "Alice" }, .{});
-
-// JSON with custom status
-return c.json(.{ .error = "not found" }, .{ .status = .not_found });
-
-// JSON with custom headers
-return c.json(.{ .ok = true }, .{
-    .headers = &.{.{ "X-Powered-By", "Spider" }},
-});
-
-// Plain text
-return c.text("Hello!", .{});
-
-// HTML
-return c.html("<h1>Hello</h1>", .{});
-
-// Redirect
-return c.redirect("/dashboard");
-
-// Render template by name (auto-detects .html/.md extension)
-return c.view("users/index", .{ .users = users }, .{});
-
-// Render template string directly
-return c.render("Hello { name }!", .{ .name = "World" }, .{});
-```
-
-### Reading Requests
-
-```zig
-// URL parameter: /users/:id
-const id = c.param("id") orelse "unknown";
-
-// Query string: /search?q=zig
-const q = c.query("q") orelse "";
-
-// Request header
-const ua = c.header("User-Agent") orelse "";
-
-// Cookie
-const session = c.cookie("token") orelse "";
-
-// Raw body
-const raw = c.getBody() orelse "";
-
-// Parse JSON body
-const User = struct { name: []const u8, email: []const u8 };
-const user = try c.bodyJson(User);
-
-// Parse form body (auto-detects url-encoded and multipart)
-const input = try c.parseForm(FormInput);
-
-// Parse multipart form (when you need file uploads)
-const mp = try c.parseMultipart();
-const title = mp.getValue("title") orelse "";
-const files = mp.getFile("avatar") orelse &.{};
-```
-
-### Arena Allocator
-
-```zig
-// Allocate freely — Spider cleans up after each request
-const msg = try std.fmt.allocPrint(c.arena, "Hello, {s}!", .{name});
-return c.json(.{ .message = msg }, .{});
-```
-
-### HTMX Detection
-
-```zig
-fn handler(c: *spider.Ctx) !spider.Response {
-    if (c.isHtmx()) {
-        // return partial HTML fragment
-        return c.view("users/_list", data, .{});
-    }
-    // return full page
-    return c.view("users/index", data, .{});
-}
-```
-
-### Cookies
-
-```zig
-// Read a cookie
-const token = c.cookie("session") orelse "";
-
-// Set a cookie (returns the Set-Cookie string)
-const cookie = try c.setCookie("session", jwt, .{
-    .http_only = true,
-    .secure = true,
-    .same_site = "Lax",
-    .path = "/",
-    .max_age = 86400 * 7,
-});
-
-// Set a cookie via ResponseOptions helper
-const opts = try c.withCookie("session", jwt, .{
-    .max_age = 86400,
-});
-
-// Include cookie in response
-return c.json(.{ .ok = true }, .{
-    .headers = &.{.{ "Set-Cookie", cookie }},
-});
-```
-
-### Database inside Context
-
-```zig
-// If you've registered a database via server.db(), use c.db()
-pub fn handler(c: *spider.Ctx) !spider.Response {
-    const users = try c.db().query(User, "SELECT * FROM users WHERE active = $1", .{true});
-    return c.json(users, .{});
-}
-```
+Each feature exposes `routes.build()` (and any other zero-argument function
+returning a `spider.Group`), optionally `pub const jobs = .{spider.every(ms, fn)}`
+and `pub fn boot(b: spider.Boot) !void`. `server.mountFeatures(features)` mounts
+them all; `spider routes` prints the result.
 
 ---
 
 ## Routing
 
 ```zig
-server
-    .get("/", homeHandler)
-    .post("/users", createUser)
-    .get("/users/:id", getUser)
-    .put("/users/:id", updateUser)
-    .delete("/users/:id", deleteUser)
-    .patch("/users/:id", patchUser)
-    .head("/users/:id", headUser);
+_ = server
+    .get("/", home, .{ .public = true })
+    .post("/users", createUser, .{ .roles = &.{"admin"} })
+    .get("/users/:id", getUser, .{ .authenticated = true })
+    .put("/users/:id", updateUser, .{ .roles = &.{"admin"} })
+    .delete("/users/:id", deleteUser, .{ .roles = &.{"admin"} })
+    .patch("/users/:id", patchUser, .{ .roles = &.{"admin"} })
+    .head("/users/:id", headUser, .{});
 ```
 
-### Route Groups
+Every builder method returns `*Server`: chain calls, or write `_ = server.x(...);`
+as a statement. Paths: `/users/:id` params, a trailing `/*` wildcard.
 
-Groups allow sharing middleware across a set of routes.
+### Route config (third argument)
+
+`.{}` or any of these (unknown keys are compile errors):
+
+| Key | Meaning |
+|-----|---------|
+| `.roles = &.{"admin"}` | Any of these roles, else 403 |
+| `.org_roles = &.{"admin"}` | Role in the active organization, else 403 |
+| `.authenticated = true` | Any logged-in user, else 401 |
+| `.public = true` | No login: auth middlewares let it through |
+| `.policy = spider.policy("name", check)` | Any other rule (see [Authorization](#authorization)) |
+| `.quiet_log = true` | Successful requests aren't logged (errors are) |
+| `.allow_http = true` | Exempt from `spider.forceHttps` |
+
+Handlers read them with `c.route()`. `.public` together with roles or
+`.authenticated` doesn't compile.
+
+### Groups and features
 
 ```zig
-fn dashboardRoutes(s: *spider.Server, prefix: []const u8, mws: []const spider.MiddlewareFn) void {
-    s.addRoute(.GET, "/dashboard", mws, dashHandler);
-    s.addRoute(.GET, "/dashboard/users", mws, usersHandler);
+var admin = spider.Group.init("/admin");
+_ = admin
+    .defaults(.{ .roles = &.{"admin"} })       // before the routes; inherited
+    .use(audit)                                // every route of the group, after RBAC
+    .get("/users", listUsers, .{})             // GET /admin/users, admin only
+    .get("/status", status, .{ .public = true, .quiet_log = true }); // replaces the defaults
+_ = server.mount(admin);
+```
+
+A route that declares `.roles`/`.org_roles`/`.public`/`.authenticated`/`.policy`
+replaces the group's defaults; `.quiet_log`/`.allow_http` override one by one.
+`sseWith(path, handler, config)` takes the same config for SSE routes. Route
+matching doesn't depend on registration order.
+
+### Typed handler parameters
+
+```zig
+fn getPost(id: spider.Path(i64, "id"), c: *spider.Ctx) !spider.Response {
+    return c.json(.{ .id = id.value }, .{}); // "/posts/abc" → 400
 }
 
-server
-    .group("/dashboard", &.{authMiddleware}, dashboardRoutes)
-    .get("/login", loginHandler);
+const PostForm = struct { title: []const u8, body: []const u8 };
+fn savePost(form: spider.Form(PostForm), c: *spider.Ctx) !spider.Response {
+    return c.json(.{ .title = form.value.title }, .{});
+}
 ```
 
-### Route-specific Middleware
+`spider.Loaded(T)` receives the record a `resourcePolicy` loaded (see
+[Authorization](#authorization)).
+
+---
+
+## Context — `c: *spider.Ctx`
+
+### Responses
 
 ```zig
-// Register a route with specific middlewares
-server.addRoute(.POST, "/admin/users", &.{authMiddleware, adminMiddleware}, createUser);
+return c.json(.{ .name = "Alice" }, .{});
+return c.json(.{ .@"error" = "not found" }, .{ .status = .not_found });
+return c.text("Hello", .{});
+return c.html("<h1>Hello</h1>", .{});
+return c.view("users/index", .{ .users = users }, .{});          // a view by name
+return c.viewFragment("users/index", "UserRow", data, .{});     // one component (htmx partial)
+return c.render("<p>{ name }</p>", .{ .name = "Ana" }, .{});    // a template string
+return c.redirect("/login");
+return error.NotFound;                                           // → 404 (onError / default mapping)
 ```
+
+`ResponseOptions`: `.status`, `.headers = &.{.{ "X-Custom", "v" }}`, `.cookies`.
+Errors map to statuses by default: `NotFound` 404, `Unauthorized` 401,
+`Forbidden` 403, `BadRequest` 400, …; `c.setErrorDetail(msg)` adds a message.
+
+### Reading requests
+
+```zig
+const id = c.params.get("id");            // path param (or a spider.Path parameter)
+const page = c.query("page");             // query string value (not percent-decoded)
+const auth = c.header("Authorization");
+const token = c.cookie("session");
+const input = try c.bodyJson(Input);      // JSON body
+const form = try c.parseForm(Input);      // application/x-www-form-urlencoded
+const ip = c.clientIp();                  // client IP (see Security)
+const rid = c.requestId();                // X-Request-Id
+```
+
+### Arena allocator
+
+`c.arena` is per request and reset after it — allocate freely, don't free.
+
+### htmx
+
+```zig
+if (c.isHtmx()) return c.viewFragment("posts/index", "PostList", data, .{});
+switch (c.requestKind()) { .fragment => {}, .boosted => {}, .full => {} } // htmx 2 and 4
+
+// Response headers, typed:
+return c.view("posts/_form", data, .{
+    .status = .unprocessable_entity,
+    .headers = try c.htmx(.{
+        .retarget = "#form",
+        .reswap = .outerHTML,
+        .trigger = try c.hxEvent("spider:toast", .{ .message = "Check the form", .type = "warning" }),
+    }),
+});
+```
+
+`c.htmx` also takes `.trigger_after_swap`, `.trigger_after_settle`, `.reselect`,
+`.push_url`, `.replace_url`, `.redirect`, `.location`, `.refresh`.
+`server.use(spider.varyHtmx)` adds `Vary: HX-Request` to HTML responses.
+
+### Cookies
+
+```zig
+// Set-Cookie string (defaults: HttpOnly, Secure, SameSite=Lax, Path=/)
+const cookie = try c.setCookie("session", token, .{ .max_age = 3600 });
+return c.redirect("/"); // or put it in .headers = &.{.{ "Set-Cookie", cookie }}
+
+// Or as ResponseOptions
+const opts = try c.withCookie("theme", "dark", .{ .http_only = false });
+return c.json(.{ .ok = true }, opts);
+
+// Remove (same path/domain it was set with)
+const gone = try c.deleteCookie("session", .{});
+```
+
+`CookieOptions`: `.http_only`, `.secure`, `.same_site`, `.path`, `.max_age`,
+`.domain` (default host-only). `;`, CR/LF or control characters in a name, value
+or attribute are `error.InvalidCookie`.
+
+### Identity
+
+Auth providers fill the identity from the token. When users or roles live in
+your database, set them from a middleware registered after the auth one:
+
+```zig
+fn loadRoles(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
+    if (c.userId()) |id| {
+        for (try rolesOf(c.arena, id)) |r| try c.addRole(r); // or c.setRoles(list)
+        // try c.addOrgRole(.{ .org_id = "7", .role = "admin" });
+    }
+    return next(c);
+}
+```
+
+Also `c.setUser(.{ .id, .email, .name })` (apps with their own login),
+`c.roles()`, `c.hasRole(r)`, `c.activeOrgId()`, `c.setActiveOrg(id)`.
+`.authenticated`, `.roles`, `.org_roles` and policies read this, whatever the source.
 
 ---
 
 ## Middleware
 
 ```zig
-// Global — applies to all routes
-server.use(loggerMiddleware);
-
-// By path prefix
-server.useAt("/api/*", apiMiddleware);
-
-// Per group
-server.group("/admin", &.{authMiddleware, adminMiddleware}, adminRoutes);
-
-// Global error handler
-server.onError(errorHandler);
+_ = server.use(loggerMiddleware);              // every request
+_ = server.useAt("/api/*", apiMiddleware);     // a path prefix
+_ = server.mount(group);                       // Group.use(mw): a group's routes
+_ = server.onError(spider.errorHandler(.{}));  // or your own fn(*Ctx, anyerror) !Response
 ```
 
-### Writing Middleware
+### Writing middleware
 
 ```zig
-fn loggerMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
-    std.log.info("{s} {s}", .{ c.getMethod(), c.getPath() });
-    const res = try next(c);
-    std.log.info("  → {d}", .{@intFromEnum(res.status)});
-    return res;
-}
-
-fn authMiddleware(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
-    const token = c.cookie("token") orelse
+fn requireLogin(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
+    const token = c.cookie("token") orelse return c.redirect("/login");
+    _ = spider.auth.jwtVerify(spider.auth.Claims, c.arena, c._io, token, secret) catch
         return c.redirect("/login");
-    _ = try spider.auth.jwtVerify(spider.auth.Claims, c.arena, c._io, token, secret);
     return next(c);
 }
 ```
 
-### Built-in Logger Middleware
-
-Spider includes a colorized request logger:
+### Ready-made
 
 ```zig
-server.use(spider.logger);
-// GET  /users  200  12ms
-// POST /api    401  3µs
+_ = server
+    .use(spider.logger)
+    // .use(spider.loggerWith(.{ .quiet_paths = &.{"/keepalive"} }))
+    .use(spider.forceHttps(.{ .default_base_url = "https://example.com" }))
+    .use(spider.varyHtmx)
+    .use(spider.gzip)
+    .onError(spider.errorHandler(.{ .unauthorized_redirect = "/login", .template_not_found_is_404 = true }));
 ```
+
+- `spider.logger`: `2026-09-26T17:36:33.178Z [200] GET /users 12.0ms rid=… user=- org=-`.
+- `spider.errorHandler`: JSON `{error, request_id}` for JSON clients, an htmx
+  toast (`HX-Trigger`) for htmx requests, a page otherwise.
+- `spider.forceHttps`: redirects when `X-Forwarded-Proto: http`; honors `.allow_http`.
 
 ---
 
-## Templates
+## Authorization
 
-Spider's template engine uses an **AST parser** with support for variables, loops, conditions, includes, layout inheritance, **components** (PascalCase), **named slots**, and **Markdown**.
+Route config declares who may call each route:
 
-### Template Syntax
+```zig
+_ = server
+    .get("/admin", admin, .{ .roles = &.{"admin"} })
+    .get("/org", org, .{ .org_roles = &.{"manager"} })
+    .get("/me", me, .{ .authenticated = true })
+    .get("/beta", beta, .{ .policy = spider.policy("beta_tester", isBetaTester) });
 
-```html
-<!-- views/layout.html -->
-<!DOCTYPE html>
-<html>
-<body>
-<nav>My App</nav>
-<main>{ slot }</main>
-</body>
-</html>
-```
-
-```html
-<!-- views/users/index.html -->
-extends "layout"
-<h1>Users</h1>
-for (users) |user| {
-  <li>{ user.name } — { user.email }</li>
+fn isBetaTester(c: *spider.Ctx) bool { // or !bool
+    return c.hasRole("beta");
 }
 ```
 
+A policy that says no gives 403, or 401 when nobody is logged in.
+
+### Rules about a record: `resourcePolicy`
+
 ```zig
-// Handler — just the name, Spider handles the rest
-fn usersHandler(c: *spider.Ctx) !spider.Response {
-    const users = try db.query(User, "SELECT * FROM users", .{});
-    return c.view("users/index", .{ .users = users }, .{});
+.post("/posts/:id/edit", edit, .{ .policy = spider.resourcePolicy("post_owner", Post, .{
+    .load = loadPost,     // fn (*Ctx) ?Post | !?Post | !Post — missing → 404
+    .check = isOwner,     // fn (*Ctx, *const Post) bool | !bool — false → 403
+    .deny = .not_found,   // optional: 404 instead of 403 (ids can't be probed)
+}) })
+
+fn edit(post: spider.Loaded(Post), c: *spider.Ctx) !spider.Response { // or c.loaded(Post)
+    return c.json(.{ .title = post.value.title }, .{});
 }
 ```
 
-### Conditionals
+Anonymous requests get 401 before anything is loaded; the record reaches the
+handler loaded once. Scope the loader to the tenant (e.g. `WHERE id = $1 AND
+org_id = $2`) and a record of another tenant is simply "not found".
 
-```html
-if (user.active) {
-  <span class="badge">Active</span>
-} else {
-  <span class="badge muted">Inactive</span>
-}
-// else if chains
-if (role == "admin") {
-  <li>Admin Panel</li>
-} else if (role == "moderator") {
-  <li>Moderator Tools</li>
-} else {
-  <li>Standard User</li>
-}
-```
-
-### Coalescing (defaults)
-
-```html
-<p>Hello, { name ?? "Guest" }</p>
-```
-
-### List length
-
-```html
-if (users.len > 0) {
-  <p>{ users.len } users found</p>
-}
-```
-
-### Components (PascalCase)
-
-Create reusable components with PascalCase naming:
-
-```html
-<!-- views/components/UserInfo.html -->
-<div class="user-card">
-<h3>{ name }</h3>
-<p>{ email }</p>
-{ slot }
-</div>
-```
-
-```html
-<!-- Usage in another template -->
-<UserInfo name="Alice" email="alice@spider.dev">
-  <p>Extra content here</p>
-</UserInfo>
-<!-- Self-closing (no slot content) -->
-<UserInfo name="Bob" email="bob@spider.dev" />
-```
-
-### Named Slots
-
-```html
-<!-- views/components/PageLayout.html -->
-<header>{ slot_header }</header>
-<main>{ slot }</main>
-<aside>{ slot_sidebar }</aside>
-<!-- Usage -->
-<PageLayout>
-  <h1 slot="header">Dashboard</h1>
-  <p>Welcome back!</p>
-  <nav slot="sidebar">...</nav>
-</PageLayout>
-```
-
-### Markdown Support
-
-Spider auto-detects Markdown files via `--doc` signature in frontmatter:
-
-```markdown
-<!-- views/docs/api.md -->
---doc
-title: API Documentation
-layout: docs_layout
---
-# API Reference
-Welcome to the API docs...
-```
+### All rules of a model: `policySet`
 
 ```zig
-// Handler — auto-detects .md extension
-return c.view("docs/api", .{}, .{});
-```
-
-### Template Tags
-
-| Tag | Description |
-|-----|-------------|
-| `{ variable }` | Variable interpolation |
-| `{ variable ?? "default" }` | Coalescing operator (default value) |
-| `if (condition) { ... }` | Conditional |
-| `if (a) { ... } else if (b) { ... } else { ... }` | If / else if / else |
-| `for (items) \|item\| { ... }` | Loop with capture |
-| `extends "layout"` | Layout inheritance (top of file) |
-| `<ComponentName prop="value">` | PascalCase component (with slot) |
-| `<ComponentName prop="value" />` | Self-closing component |
-| `{ slot }` | Default slot content |
-| `{ slot_name }` | Named slot content |
-
-#### HTML escaping
-
-`{ variable }` is HTML-escaped (`& < > " '`), in text and in attribute
-values alike, so data from users can't inject markup or break out of an
-attribute. What is emitted verbatim is the template's own markup: slots,
-literal component props (`<Badge label="A &amp; B" />`), helper calls, and
-values your code explicitly marks as trusted with `spider.RawHtml`:
-
-```zig
-// Only for markup your code built (or already escaped) — never user input.
-return c.view("page", .{ .qr = spider.RawHtml{ .html = svg } }, .{});
-```
-
-`RawHtml` also works as an optional (`?RawHtml`) and inside structs and
-slices. `<script>`/`<style>` bodies are never interpolated.
-
-### Template Modes
-
-Spider has two template modes. Both produce **byte-identical output** — the only difference is when templates are loaded.
-
-**Embed mode** — templates compiled into the binary (recommended for production):
-
-```zig
-// root.zig or main.zig — one line enables embed mode
-pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
-```
-
-Spider automatically generates `embedded_templates.zig` on every `zig build` by scanning `src/` recursively for `.html` and `.md` files. The build helper (`spider_build.setup`) handles this automatically.
-
-**Runtime mode** — reads from disk at request time (useful in development):
-
-```zig
-// main.zig — nothing needed, just don't declare spider_templates
-// Spider scans views_dir and serves templates from disk
-```
-
-Detection uses `@hasDecl(@import("root"), "spider_templates")` — same pattern as `std_options` in the Zig stdlib.
-
-#### spider.config.zig
-
-When using runtime mode, create `spider.config.zig` in your project root to configure the template directory:
-
-```zig
-// spider.config.zig
-const spider = @import("spider");
-
-pub const config = spider.Config{
-    .views_dir = "./src",   // point to where your .html/.md files live
-    .layout = "layout",
-    .env = .development,
-    .port = 3000,
-    .host = "0.0.0.0",
-};
-```
-
-Spider prints warnings to help diagnose issues:
-
-```
-[spider] WARNING: views_dir "./views" not found.
-[spider]          Templates will not load in runtime mode.
-
-[spider] runtime templates: 5 loaded from "./src"
-```
-
-#### Template name normalization
-
-| File path (relative to views_dir) | Normalized name | Call with |
-|---|---|---|
-| `views/bills/index.html` | `bills_index` | `c.view("bills/index", ...)` |
-| `views/home/index.html` | `home_index` | `c.view("home/index", ...)` |
-| `shared/templates/layout.html` | `layout` | layout (auto, via config) |
-| `shared/templates/Card.html` | `Card` | `c.view("Card", ...)` |
-| `shared/templates/site-nav.html` | `site_nav` | `<SiteNav />` in templates |
-
-Rules: strip extension → use segment after `views/` or `templates/` → replace `/` and `-` with `_`.
-
----
-
-## Database
-
-### PostgreSQL (Pure Zig)
-
-Spider's PostgreSQL driver is **pure Zig** — no libpq dependency required. It uses a connection pool with retry logic (5 attempts, exponential backoff) and supports parameterized queries (`$1`, `$2`, ...).
-
-> Obrigado ao [karlseguin](https://github.com/karlseguin) pelo excelente [pg.zig](https://github.com/karlseguin/pg.zig) — projeto que serviu de base para o driver PostgreSQL do Spider. Utilizamos um fork customizado para atender às necessidades do framework.
-
-
-```zig
-const std = @import("std");
-const spider = @import("spider");
-const db = spider.pg;
-
-pub fn main() !void {
-    // Initialize — reads env vars with fallback defaults
-    var threaded = std.Io.Threaded.init_single_threaded;
-    const io = threaded.io();
-    try db.init(io, .{});
-    defer db.deinit();
-
-    var server = spider.app(.{});
-    defer server.deinit();
-
-    server
-        .get("/users", listUsers)
-        .listen(.{ .port = 3000 }) catch {};
-}
-```
-
-All `DbConfig` fields are optional — they fall back to environment variables:
-
-| Field | Env var | Default |
-|-------|---------|---------|
-| `.host` | `PG_HOST` | `"localhost"` |
-| `.port` | `PG_PORT` | `5432` |
-| `.user` | `PG_USER` | `"spider"` |
-| `.password` | `PG_PASSWORD` | `"spider"` |
-| `.database` | `PG_DB` | `"spider_db"` |
-| `.pool_size` | — | `10` |
-
-So `try db.init(io, .{});` reads everything from your `.env` file.
-
-#### Queries
-
-`db.query(T, arena, sql, params)` returns `[]T` for structs, `i32` for counts, `void` for INSERT/UPDATE/DELETE.
-
-```zig
-const User = struct { id: i32, name: []const u8, email: []const u8 };
-
-// SELECT — returns []User allocated in c.arena
-fn listUsers(c: *spider.Ctx) !spider.Response {
-    const users = try db.query(User, c.arena,
-        "SELECT id, name, email FROM users WHERE active = $1",
-        .{true},
-    );
-    return c.json(users, .{});
-}
-
-// SELECT one row — returns ?User
-fn getUser(c: *spider.Ctx) !spider.Response {
-    const id = try std.fmt.parseInt(i32, c.param("id") orelse "0", 10);
-    const user = try db.queryOne(User, c.arena,
-        "SELECT id, name, email FROM users WHERE id = $1",
-        .{id},
-    ) orelse return c.json(.{ .error = "not found" }, .{ .status = .not_found });
-    return c.json(user, .{});
-}
-
-// COUNT — returns i32
-fn countUsers(c: *spider.Ctx) !spider.Response {
-    const count = try db.query(i32, c.arena, "SELECT COUNT(*) FROM users", .{});
-    return c.json(.{ .count = count }, .{});
-}
-
-// INSERT — void
-fn createUser(c: *spider.Ctx) !spider.Response {
-    const Input = struct { name: []const u8, email: []const u8 };
-    const body = try c.bodyJson(Input);
-    try db.query(void, c.arena,
-        "INSERT INTO users (name, email) VALUES ($1, $2)",
-        .{ body.name, body.email },
-    );
-    return c.json(.{ .created = true }, .{ .status = .created });
-}
-```
-
-#### ANY() with array()
-
-```zig
-fn batchUsers(c: *spider.Ctx) !spider.Response {
-    const ids = [_]i32{ 1, 2, 3 };
-    const rows = try db.query(User, c.arena,
-        "SELECT id, name, email FROM users WHERE id = ANY($1)",
-        .{db.array(i32, &ids)},
-    );
-    return c.json(rows, .{});
-}
-```
-
-#### Transactions
-
-```zig
-fn transferHandler(c: *spider.Ctx) !spider.Response {
-    var tx = try db.begin();
-    defer tx.rollback();
-
-    try tx.query(void, c.arena,
-        "UPDATE accounts SET balance = balance - $1 WHERE id = $2",
-        .{ amount, from_id },
-    );
-    try tx.query(void, c.arena,
-        "UPDATE accounts SET balance = balance + $1 WHERE id = $2",
-        .{ amount, to_id },
-    );
-    try tx.commit();
-
-    return c.json(.{ .ok = true }, .{});
-}
-```
-
-#### Raw SQL (no params)
-
-```zig
-// Execute multiple statements separated by ';'
-try db.queryExecute(void, c.arena,
-    "CREATE TEMP TABLE foo (id int); INSERT INTO foo VALUES (1)"
-);
-
-// Raw query returning rows
-const rows = try db.queryExecute(User, c.arena, "SELECT * FROM users");
-
-// Single row raw query
-const user = try db.queryOneExecute(User, c.arena, "SELECT * FROM users LIMIT 1");
-```
-
-### SQLite (via libsqlite3)
-
-Requires a C compiler (uses `@import("c_sqlite")`).
-
-```zig
-try spider.sqlite.init(arena, .{ .filename = "app.db" });
-defer spider.sqlite.deinit();
-
-const Row = struct { id: i32, title: []const u8 };
-const rows = try spider.sqlite.query(Row, c.arena,
-    "SELECT * FROM todos WHERE done = ?", .{false},
-);
-```
-
-### MySQL (Pure Zig)
-
-Spider's MySQL driver is **pure Zig** — no libmysqlclient required.
-
-```zig
-try spider.mysql.init(arena, io, .{
-    .host = "localhost",
-    .database = "myapp",
-    .user = "root",
-    .password = "",
+pub const Tickets = spider.policySet(Ticket, .{
+    .name = "ticket",
+    .load = loadTicket,
+    .deny = .not_found,
+    .rules = .{
+        .view = canView,
+        .update = isOwner,
+        .delete = .{ .check = isAdmin, .deny = .forbidden },
+    },
 });
-defer spider.mysql.deinit();
 
-const Row = struct { id: i32, name: []const u8 };
-const rows = try spider.mysql.query(Row, c.arena,
-    "SELECT * FROM products WHERE price > ?", .{100},
-);
+// routes:   .{ .policy = Tickets.route(.update) }
+// handlers: const can_edit = try Tickets.can(c, .update, ticket);
 ```
 
-### Database Driver Interface (ORM-friendly)
+An action missing from `.rules` doesn't compile.
 
-Spider provides a vtable-based database interface for driver-agnostic code:
+### Keeping access reviewed
 
-```zig
-// Register the database with the server
-const driver = spider.pg.PgDriver{};
-server.db(driver.database());
-
-// Use it from any handler via c.db()
-fn handler(c: *spider.Ctx) !spider.Response {
-    // Works with any registered driver (pg, mysql, etc.)
-    const users = try c.db().query(User, "SELECT * FROM users", .{});
-    return c.json(users, .{});
-}
-
-// Execute raw SQL on the registered driver
-try c.db().exec("CREATE INDEX idx_users_email ON users(email)");
-```
+- `spider routes` prints method, path, access (`public`, `authenticated`,
+  `roles:…`, `org:…`, `policy:…`, or `-`) and flags.
+- `spider routes --lock` writes `routes.lock` (commit it); `spider routes --diff`
+  exits 1 when a route or its access changed; `--check` fails when the app has
+  auth and a route declares no access.
+- `spider.testing.expectRoutes(routes.build(), &.{ .{ "GET", "/posts", "roles:editor" }, ... })`
+  pins a feature's table in a test.
+- `server.requireRouteAccess()` (or `.require_route_access = true`): `listen()`
+  refuses routes that declare no access.
 
 ---
 
 ## Authentication
 
-### JWT
+### Keycloak (recommended)
+
+`spider generate auth` adds the whole flow. By hand:
 
 ```zig
-const auth = spider.auth;
-
-// Sign
-const token = try auth.jwtSign(c.arena, .{
-    .sub = user.id,
-    .email = user.email,
-    .name = user.name,
-    .exp = 9999999999,
-}, spider.env.getOr("JWT_SECRET", "changeme"));
-
-// Verify (note: requires c._io)
-const Claims = struct { sub: i32, email: []const u8, name: []const u8, exp: i64 };
-const claims = try auth.jwtVerify(Claims, c.arena, c._io, token, secret);
-
-// Set cookie
-const cookie = try c.setCookie("token", token, .{});
-return c.json(.{ .ok = true }, .{
-    .headers = &.{.{ "Set-Cookie", cookie }},
-});
-
-// Clear cookie (logout)
-const cookie = try c.setCookie("token", "", .{ .max_age = 0 });
-```
-
-```zig
-// Legacy cookie helpers (still available in auth module)
-const cookie = try auth.cookieSet(c.arena, token);
-const clear = try auth.cookieClear(c.arena);
-```
-
-### Auth Middleware
-
-```zig
-var gAuth = spider.auth.Auth.init(.{
-    .secret = spider.env.getOr("JWT_SECRET", "changeme"),
-    .public_paths = &.{ "/login", "/auth/*" },
-    .redirect_to = "/login",
-    .secure_cookie = false, // true in production
-});
-
-server
-    .get("/login", loginHandler)
-    .group("/dashboard", &.{gAuth.asFn()}, dashboardRoutes);
-```
-
-### Google OAuth
-
-```zig
-const google = spider.google;
-
-const googleConfig = google.GoogleConfig{
-    .client_id     = spider.env.getOr("GOOGLE_CLIENT_ID", ""),
-    .client_secret = spider.env.getOr("GOOGLE_CLIENT_SECRET", ""),
-    .redirect_uri  = spider.env.getOr("GOOGLE_REDIRECT_URI", ""),
-};
-
-// Redirect to Google
-fn loginHandler(c: *spider.Ctx) !spider.Response {
-    const url = try google.authUrl(c.arena, googleConfig);
-    return c.redirect(url);
-}
-
-// Handle callback
-fn callbackHandler(c: *spider.Ctx) !spider.Response {
-    const code = c.query("code") orelse return c.redirect("/login");
-    const profile = try google.fetchProfile(c, code, googleConfig);
-
-    const token = try spider.auth.jwtSign(c.arena, .{
-        .sub = 0,
-        .email = profile.email,
-        .name = profile.name,
-        .exp = 9999999999,
-    }, spider.env.getOr("JWT_SECRET", "changeme"));
-
-    const cookie = try c.setCookie("token", token, .{});
-    return c.redirect("/");
-}
-```
-
-### Clerk OAuth
-
-```zig
-const clerk = try spider.clerk.Clerk.init(c.arena, c._io, .{
-    .publishable_key = spider.env.getOr("CLERK_PUBLISHABLE_KEY", ""),
-    .secret_key = spider.env.getOr("CLERK_SECRET_KEY", ""),
-    .redirect_uri = "http://localhost:3000/auth/callback",
-});
-defer clerk.deinit();
-
-server
-    .get("/login", userLoginHandler)
-    .get("/auth/callback", clerk.callbackHandler())
-    .group("/dashboard", &.{clerk.middleware()}, dashboardRoutes);
-
-fn userLoginHandler(c: *spider.Ctx) !spider.Response {
-    const url = try clerk.authUrl(c.arena);
-    return c.redirect(url);
-}
-```
-
-### Keycloak OAuth (with Refresh Token)
-
-```zig
-const kc = try spider.keycloak.Keycloak.init(c.arena, c._io, .{
-    .base_url = spider.env.getOr("KEYCLOAK_URL", "http://localhost:8080"),
-    .realm = spider.env.getOr("KEYCLOAK_REALM", "myapp"),
-    .client_id = spider.env.getOr("KEYCLOAK_CLIENT_ID", ""),
-    .client_secret = spider.env.getOr("KEYCLOAK_CLIENT_SECRET", ""),
-    .redirect_uri = "http://localhost:3000/auth/callback",
-});
+var kc = try spider.keycloak.Keycloak.init(allocator, io, spider.keycloak.KeycloakConfig.fromEnv());
 defer kc.deinit();
 
-server
-    .get("/auth/login", kc.loginHandler())
-    .get("/auth/callback", kc.callbackHandler())
-    .get("/auth/refresh", kc.refreshHandler()) // auto-refresh expired tokens
-    .group("/dashboard", &.{kc.middleware()}, dashboardRoutes);
+_ = server
+    .use(kc.middleware())
+    .get("/auth/login", kc.loginHandler(), .{ .public = true })
+    .get("/auth/callback", kc.callbackHandler(), .{ .public = true })
+    .get("/auth/refresh", kc.refreshHandler(), .{ .public = true });
 ```
 
-### JWKS-based Auth (Generic)
+`fromEnv()` reads `KEYCLOAK_BASE_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`,
+`KEYCLOAK_CLIENT_SECRET`, `KEYCLOAK_REDIRECT_URI`. Tokens must be issued to this
+client (`.audience`, default `client_id`). `loginHandler`/`authorize()` set and
+check the OAuth `state`. An expired token redirects to `refresh_path`; htmx and
+SSE requests get 401 instead. Google login: add Google as an identity provider
+in Keycloak.
 
-For any provider that exposes JWKS endpoints (Auth0, Firebase, etc.):
+### Any OIDC provider (JWKS)
 
 ```zig
-const jwks = try spider.jwks.JwksAuth.init(c.arena, c._io, .{
+var jwks_auth = try spider.jwks.JwksAuth.init(allocator, io, .{
     .jwks_url = "https://example.com/.well-known/jwks.json",
     .issuer = "https://example.com/",
-    .cookie_name = "__session",
-    .login_path = "/login",
-    .refresh_path = "/auth/refresh",
+    .audience = "my-api",                          // reject tokens for other clients
+    .roles_claim = "https://myapp.example/roles",  // Auth0; "cognito:groups", "roles", ...
+    .org_claims = .none,
+    .api_mode = true,                              // 401 JSON instead of redirects
 });
-defer jwks.deinit();
-
-server
-    .group("/api", &.{jwks.middleware()}, apiRoutes);
+defer jwks_auth.deinit();
+_ = server.useAt("/api/*", jwks_auth.middleware());
 ```
+
+Where the token carries roles and organizations (also on `KeycloakConfig`):
+
+- `.roles_claim`: a claim name or a dotted path (default Keycloak's
+  `"realm_access.roles"`; `"resource_access.<client>.roles"` for client roles).
+- `.org_claims`: `.phase_two` (default, Keycloak Phase Two organizations),
+  `.clerk`, `.none`.
+- `.map_claims = fn (c: *spider.Ctx, claims: std.json.ObjectMap) !void`: map
+  anything else with `c.addRole` / `c.addOrgRole` / `c.setActiveOrg`.
+
+### Clerk
+
+```zig
+var clerk_auth: spider.clerk.Clerk = undefined; // file scope
+
+pub fn main(init: std.process.Init) !void {
+    clerk_auth = try spider.clerk.Clerk.init(init.gpa, init.io, .{
+        .publishable_key = spider.env.getOr("CLERK_PUBLISHABLE_KEY", ""),
+        .secret_key = spider.env.getOr("CLERK_SECRET_KEY", ""),
+        // .roles_claim = "roles", // Clerk has no roles claim by default
+    });
+    defer clerk_auth.deinit();
+
+    var server = spider.app(.{});
+    defer server.deinit();
+    try server
+        .use(clerk_auth.middleware())
+        .get("/login", clerkLogin, .{ .public = true })
+        .get("/auth/callback", clerk_auth.callbackHandler(), .{ .public = true })
+        .listen(.{});
+}
+
+fn clerkLogin(c: *spider.Ctx) !spider.Response {
+    return c.redirect(try clerk_auth.authUrl(c.arena));
+}
+```
+
+The active organization's role (Clerk `o.rol` / `org_role`) feeds `.org_roles`.
+
+### HS256 JWT (your own login)
+
+```zig
+const secret = spider.env.getOr("JWT_SECRET", "");
+const token = try spider.auth.jwtSign(c.arena, .{
+    .sub = 42, .email = "a@b.c", .name = "Ana", .exp = now + 3600, // spider.auth.Claims
+}, secret);
+const claims = try spider.auth.jwtVerify(spider.auth.Claims, c.arena, c._io, token, secret);
+```
+
+`spider.auth.Auth.init(.{ .secret = secret }).asFn()` is a middleware that
+verifies the `token` cookie, skips `.public` routes and sets the user id
+(`c.userId()`).
+
+### Google
+
+`spider.google.authUrl(arena, cfg)` and `spider.google.fetchProfile(c, code, cfg)`
+give you the Google profile. They don't send or verify an OAuth `state`: for
+production, prefer Keycloak with Google as identity provider.
 
 ---
 
-## WebSocket
+## Security defaults
 
-Spider's WebSocket support uses the `server.ws()` method for a clean handler interface:
+| Config | Default | What it does |
+|--------|---------|--------------|
+| `origin_check` | on | A cross-site POST/PUT/PATCH/DELETE or WebSocket upgrade from a browser gets 403 before routing (`Sec-Fetch-Site` same-origin/none pass; else `Origin` must match `Host` or be trusted). Requests without those headers (webhooks, servers) pass. `.trusted_origins`, `.exempt_paths` (e.g. a form_post callback), `.enabled = false`. |
+| `max_body_bytes` | 10 MiB | A larger `Content-Length` gets 413 before anything is read. |
+| `trusted_proxies` | none | Proxies whose `X-Forwarded-For` `c.clientIp()` believes (`&.{"10.0.0.0/8"}`); without them the header is ignored. |
 
-```zig
-fn chatHandler(w: *spider.Ws) !void {
-    // Join a channel
-    try w.join("room:general");
+Static files are served before routing and middleware: they are always public.
 
-    while (try w.next()) |msg| {
-        switch (msg.type) {
-            .text => {
-                // Send to specific user
-                try w.send("Message received");
+---
 
-                // Broadcast to channel
-                w.broadcastTo("room:general", msg.data);
+## Templates
 
-                // Broadcast to all connected clients
-                w.broadcast(msg.data);
-            },
-            .binary => {},
-        }
-    }
+Spider's engine: variables, conditions, loops, layout inheritance (`extends`),
+components (PascalCase files), named layout slots and Markdown views. `{ … }` is
+HTML-escaped.
+
+### Syntax
+
+```html
+<h1>{ title }</h1>
+<p>{ user.name } — { user.address.city }</p>
+<p>{ bio ?? "No bio yet" }</p>
+
+if (user.is_admin) {
+  <span class="badge">Admin</span>
+} else if (user.role == "editor") {
+  <span>Editor</span>
+} else {
+  <span>Member</span>
 }
 
-server.ws("/ws/chat", chatHandler);
-```
-
-### WebSocket API
-
-| Method | Description |
-|--------|-------------|
-| `w.next()` | Wait for next message (returns `?Message`) |
-| `w.send(text)` | Send text message to this connection |
-| `w.broadcast(text)` | Broadcast to all connections |
-| `w.broadcastTo(channel, text)` | Broadcast to a channel |
-| `w.broadcastFmt(fmt, args)` | Broadcast formatted text |
-| `w.broadcastToFmt(channel, fmt, args)` | Broadcast formatted to channel |
-| `w.join(channel)` | Join a channel |
-| `w.joinUser(user_id)` | Join user-specific channel (`user:{id}`) |
-
-### WebSocket with Interval (Heartbeat / Periodic Broadcast)
-
-```zig
-fn broadcastStats(hub: *spider.Hub) void {
-    hub.broadcast("heartbeat");
+for (users) |user| {
+  <li>{ loop.index }: { user.name }</li>
 }
 
-server.wsInterval("/ws/stats", 5000, broadcastStats);
-```
-
-This creates a WebSocket endpoint that automatically broadcasts the callback result every `N` milliseconds.
-
-### Direct Hub Access
-
-From any handler, access the WebSocket hub to broadcast externally:
-
-```zig
-fn someHandler(c: *spider.Ctx) !spider.Response {
-    const hub = c.wsHub();
-    hub.broadcast("Event from HTTP handler!");
-    hub.broadcastToChannel("room:admin", "Admin notification");
-    hub.notifyUser(42, "private_msg", .{ .text = "Secret!" });
-    return c.json(.{ .ok = true }, .{});
+if (users.len > 0) {
+  <p>Users found</p>
 }
 ```
+
+- Conditions: `==`/`!=` against a literal, `<`, `<=`, `>`, `>=`, `and`, `or`, `!x`,
+  `list.len` (`.len` works in conditions only; pass counts as data).
+- `??` applies when the value is missing, empty or `false`.
+- `{{ … }}` outputs a literal `{ … }` (Alpine `x-data`); `<script>`/`<style>`
+  bodies are never interpolated.
+- Data: a struct literal — strings, ints, floats, bools, optionals, nested
+  structs, slices of structs. `spider.RawHtml{ .html = s }` is inserted verbatim.
+
+### Boolean attributes and conditional classes
+
+```html
+<input name="q" { disabled if (locked) } { required if (need) }>
+<a class="ui-btn { "ui-btn-active" if (tab == "home") }">Home</a>
+```
+
+The word or string is printed only when the condition holds. Don't write
+`disabled="{ locked }"`: the attribute is present — so on — even when the value
+is `false`; `spider check` flags it (`bool-attr`).
+
+### Components
+
+```html
+<!-- views/components/UserInfo.html -->
+<div class="user">
+  <strong>{ name }</strong> — { role }
+  { slot }
+</div>
+
+<!-- a view -->
+<UserInfo name="{ user.name }" role="admin">
+  <p>Extra content goes to { slot }.</p>
+</UserInfo>
+```
+
+Props are literals or `{ expressions }` (escaped). A component has one
+`{ slot }`. `<SiteNav />` finds `SiteNav` or `site_nav`. Nesting is capped
+(`spider.template_max_component_depth`).
+
+### Layouts and named slots
+
+```html
+<!-- layout.html -->
+<header>{ slot_header }</header>
+<main>{ slot }</main>
+
+<!-- page.html -->
+extends "layout"
+<p>Welcome back!</p>      <!-- goes to { slot } -->
+{ slot_header }
+<h1>Dashboard</h1>        <!-- goes to { slot_header } -->
+```
+
+`extends "layout"` must be the first line. Named slots are for layouts.
+
+### Markdown views
+
+A view whose first line is `-- doc` is rendered as Markdown and returned as is —
+no `{ }` processing, no layout:
+
+```markdown
+-- doc
+# API Reference
+Welcome to the API docs...
+```
+
+### Template helpers
+
+`{ asset_url("css/app.css") }` calls a `pub fn` of your `template_helpers`
+module (`spider_mod.addImport("template_helpers", …)`; each is
+`fn (std.mem.Allocator, []const []const u8) ![]const u8`). Arguments are string
+literals; the result is inserted without escaping.
+
+### Embedded and runtime modes
+
+- **Embedded** (production): a `spider new` project's build runs
+  `generate-templates`, writing `src/embedded_templates.zig`; `main.zig` declares
+  `pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;`.
+- **Runtime**: without `spider_templates`, views are read from `views_dir`
+  (`spider.config.zig`; default `"./views"`, `null` → `"src"`).
+
+View names come from paths:
+
+| File | Name | Use |
+|------|------|-----|
+| `features/home/views/index.html` | `home_index` | `c.view("home/index", ...)` |
+| `features/users/views/users.html` | `users` | `c.view("users", ...)` |
+| `views/components/UserInfo.html` | `components_UserInfo` (+ `UserInfo`) | `<UserInfo />` |
+
+---
+
+## Database
+
+### PostgreSQL (pure Zig)
+
+Needs `.pg = true` on the spider dependency. A connection pool (default 5),
+retry on connection failures (5 attempts, 1s→8s backoff; auth errors fail at once).
+
+> Thanks to [karlseguin](https://github.com/karlseguin) for [pg.zig](https://github.com/karlseguin/pg.zig), the base of Spider's PostgreSQL driver (we use a customized fork).
+
+```zig
+const db = spider.pg;
+
+pub fn main(init: std.process.Init) !void {
+    try db.init(init.arena.allocator(), init.io, .{}); // unset fields: PG_* env / .env
+    defer db.deinit();
+
+    var server = spider.app(.{});
+    defer server.deinit();
+    try server.get("/users", listUsers, .{}).listen(.{ .port = 3000 });
+}
+```
+
+| Field | Env | Default |
+|-------|-----|---------|
+| `.host` | `PG_HOST` | `localhost` |
+| `.port` | `PG_PORT` | `5432` |
+| `.user` | `PG_USER` | `postgres` |
+| `.password` | `PG_PASSWORD` | `postgres` |
+| `.database` | `PG_DB` | `postgres` |
+| `.pool_size` | — | `5` |
+| `.mapping` | — | `.fail` (missing column / NULL into a non-optional field → error; `.warn` logs once) |
+
+#### Queries
+
+```zig
+const User = struct { id: i32, name: []const u8, email: ?[]const u8 };
+
+fn listUsers(c: *spider.Ctx) !spider.Response {
+    const users = try db.query(User, c.arena, "SELECT id, name, email FROM users", .{});
+    return c.json(users, .{});
+}
+
+fn getUser(c: *spider.Ctx) !spider.Response {
+    const id = c.params.get("id") orelse return error.NotFound;
+    const user = try db.queryOne(User, c.arena, "SELECT id, name, email FROM users WHERE id = $1", .{id})
+        orelse return error.NotFound;
+    return c.json(user, .{});
+}
+```
+
+`db.query(T, arena, sql, params)` returns `[]T` for structs (fields matched by
+column name; `?T` for nullable columns), `i32`/`i64` for a single scalar, `void`
+for statements. `queryOne` returns `?T`. Params `$1..$n` are bound, never
+interpolated. `queryExecute(T, arena, sql)` runs SQL without params (with `void`,
+several `;`-separated statements on one connection).
+
+#### Transactions
+
+```zig
+var tx = try db.begin();
+defer tx.rollback(); // no-op after commit
+_ = try tx.query(void, c.arena, "INSERT INTO accounts (name) VALUES ($1)", .{"Ana"});
+try tx.commit();
+```
+
+Or `db.transaction(R, context, body)`: commit on return, rollback on error. Each
+`db.*` call uses its own pooled connection, so `BEGIN` through `db.query` is
+refused (`error.UseBeginForTransactions`).
+
+#### Errors
+
+```zig
+db.query(void, c.arena, "INSERT INTO users (email) VALUES ($1)", .{email}) catch |err| switch (err) {
+    error.UniqueViolation => return c.json(.{ .@"error" = "email taken" }, .{ .status = .conflict }),
+    else => return err,
+};
+```
+
+Unhandled database errors map to 409 (unique/foreign key), 400 (bad input,
+NOT NULL/CHECK), 422 (`RAISE`) and 503 (deadlock, serialization, lock timeout).
+`exec`, `execRaw`, `queryWith`, `queryRow`, `queryAs`… are deprecated: use
+`query`/`queryOne`/`queryExecute`.
+
+### SQLite
+
+Needs `.sqlite = true` on the spider dependency (bundled sqlite3, links libc):
+
+```zig
+try spider.sqlite.init(allocator, io, .{ .path = "app.db" }); // null → SQLITE_PATH env, else "db.sqlite"
+defer spider.sqlite.deinit();
+```
+
+Same `query`/`queryOne`/`queryExecute`/`begin()` API; the scalar type is `i64`.
 
 ---
 
 ## Server-Sent Events (SSE)
 
 ```zig
-fn sseHandler(sse: *spider.Sse) !void {
-    try sse.join("notifications");
-
-    while (true) {
-        try sse.send("ping", .{ .time = "2024-01-01T00:00:00Z" });
-        // Keep connection alive
-        sse.wait();
-    }
+fn events(sse: *spider.Sse) !void {
+    try sse.joinWithReplay("notifications"); // resend what was missed (Last-Event-ID)
+    try sse.send("hello", .{ .time = "now" });
+    sse.wait(); // until the client disconnects; hub events reach it meanwhile
 }
 
-server.sse("/events", sseHandler);
+_ = server
+    .sseWith("/events", events, .{ .authenticated = true })
+    .sseHeartbeat(null); // ": heartbeat" every 30 s
 ```
-
-### SSE API
 
 | Method | Description |
 |--------|-------------|
-| `s.send(event, data)` | Send an event (data is JSON-serialized) |
-| `s.join(channel)` | Join a channel |
-| `s.joinUser(user_id)` | Join user-specific channel |
-| `s.wait()` | Block until connection closes |
-| `s.param(key)` | Access URL parameters |
+| `s.send(event, data)` | Send JSON |
+| `s.sendHtml(event, html)` | Send HTML as is (htmx `sse-swap`) |
+| `s.join(channel)` / `s.joinWithReplay(channel)` | Join a channel (replaces previous) |
+| `s.subscribe(channel)` / `s.subscribeWithReplay(channels)` | Add channels |
+| `s.joinUser(id)` | Receive `hub.notifyUser(id, …)` |
+| `s.setRetry(ms)` | Client reconnect delay |
+| `s.param` / `s.header` / `s.cookie` / `s.lastEventId()` | Request data |
+| `s.wait()` | Block until the client disconnects |
 
-### Hub Events (Structured Messages)
-
-The Hub supports structured event/data messages for SSE:
+From any handler or job, through the hub:
 
 ```zig
-const hub = c.sseHub();
-
-// Emit to all SSE connections
-hub.emit("notification", .{ .title = "New message", .body = "Hello!" });
-
-// Emit to a channel
-hub.emitTo("user:42", "private", .{ .msg = "Secret" });
-
-// Notify a specific user
-hub.notifyUser(42, "alert", .{ .type = "info" });
+const hub = c.sseHub(); // needs at least one sse route
+hub.emitTo("notifications", "new_post", .{ .id = 42 });      // JSON, recorded for replay
+hub.emitHtmlTo("notifications", "badge", "<span>3</span>");  // HTML for sse-swap, recorded
+hub.notifyUser(42, "private_msg", .{ .text = "Hi" });
+hub.broadcast("plain message");
 ```
+
+Multi-line data goes out as one `data:` line per line. `emitHtmlTo` renders once
+for everyone on the channel: keep per-user data out of it. Periodic work:
+`server.sseInterval(ms, fn (*spider.Hub) void)`, or `pub const jobs =
+.{spider.every(ms, fn)}` in a feature.
 
 ---
 
-## Web Push Notifications
-
-Spider includes a full Web Push implementation (RFC 8291, RFC 8292) with VAPID.
-
-### Generate VAPID Keys
+## WebSocket
 
 ```zig
-var threaded = std.Io.Threaded.init_single_threaded;
-const io = threaded.io();
-const keys = spider.push.WebPush.generateKeys(io);
-// Store keys.private_key and keys.public_key
-```
-
-Or via CLI:
-
-```bash
-spider generate-vapid mailto:admin@example.com
-```
-
-### Send Push Notification
-
-```zig
-const wp = spider.push.WebPush.init(.{
-    .subject = "mailto:admin@example.com",
-    .private_key = spider.env.getOr("VAPID_PRIVATE_KEY", ""),
-    .public_key = spider.env.getOr("VAPID_PUBLIC_KEY", ""),
-});
-
-// Or load from env
-const wp = spider.push.WebPush.initFromEnv();
-
-// From a handler
-try wp.send(c, .{
-    .endpoint = "https://fcm.googleapis.com/...",
-    .p256dh = "...",
-    .auth = "...",
-}, "Hello Push!", 3600);
-```
-
-**Requirements:** Uses `spider.http_client` (pacman) under the hood — no external dependencies.
-
----
-
-## Cloudflare R2 Object Storage
-
-Spider provides a full R2 client with AWS Signature V4.
-
-```zig
-const r2 = spider.r2.R2.init(.{
-    .account_id = spider.env.getOr("R2_ACCOUNT_ID", ""),
-    .access_key = spider.env.getOr("R2_ACCESS_KEY", ""),
-    .secret_key = spider.env.getOr("R2_SECRET_KEY", ""),
-    .bucket = spider.env.getOr("R2_BUCKET", ""),
-    .pub_url = spider.env.getOr("R2_PUBLIC_URL", ""),
-});
-
-// Or load from env
-const r2 = spider.r2.R2.initFromEnv();
-```
-
-### Operations
-
-```zig
-// Upload
-try r2.put(c, "folder/file.txt", file_content, "text/plain");
-
-// Download
-const data = try r2.get(c, "folder/file.txt");
-
-// Delete
-try r2.delete(c, "folder/file.txt");
-
-// Check existence
-const exists = try r2.head(c, "folder/file.txt");
-
-// Presigned URL for direct browser upload
-const url = try r2.presignedPut(c.arena, "uploads/file.pdf", "application/pdf", 3600);
-
-// Public URL
-const pub = try r2.publicUrl(c.arena, "folder/file.txt");
-```
-
----
-
-## Multipart Uploads
-
-Spider supports `multipart/form-data` parsing for file uploads.
-
-### Parsing Uploaded Files
-
-```zig
-fn uploadHandler(c: *spider.Ctx) !spider.Response {
-    const mp = try c.parseMultipart();
-    defer mp.deinit();
-
-    // Access text fields
-    const description = mp.getValue("description") orelse "";
-
-    // Access uploaded files
-    const files = mp.getFile("avatar") orelse &.{};
-    for (files) |file| {
-        std.log.info("upload: {s} ({d} bytes, {s})", .{
-            file.filename, file.size, file.content_type,
-        });
-        // file.data contains the raw bytes
+fn chat(ws: *spider.Ws) !void {
+    try ws.join("room:1");
+    while (try ws.next()) |msg| {
+        ws.broadcastTo("room:1", msg.data);
     }
+}
 
-    return c.json(.{ .uploaded = files.len }, .{});
+_ = server.ws("/ws/chat", chat);
+```
+
+| Method | Description |
+|--------|-------------|
+| `w.next()` | Next message (`.data`, `.type`), null when closed |
+| `w.send(text)` | Send to this connection |
+| `w.join(channel)` / `w.joinUser(id)` | Join a channel / a user's channel |
+| `w.broadcast(text)` / `w.broadcastTo(channel, text)` | Send to all / a channel (`…Fmt` variants too) |
+| `w.param(key)` | Path parameter |
+
+`server.wsInterval(path, ms, fn (*spider.Hub) void)` calls the function with that
+endpoint's hub every `ms`. Cross-site upgrades are refused (`origin_check`).
+`ws()` takes no route config: global and `useAt` middleware still apply.
+
+---
+
+## Web Push
+
+```zig
+var wp = spider.push.WebPush.initFromEnv(); // VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
+try wp.send(c, subscription, payload_json, 3600);
+```
+
+`spider generate-vapid mailto:admin@example.com` prints the keys. Outside a
+handler (jobs): `wp.sendRaw(arena, io, sub, payload, ttl)`. A 410 answer is
+`error.PushSubscriptionExpired`: delete that subscription.
+
+---
+
+## Cloudflare R2
+
+Needs `.r2 = true` on the spider dependency:
+
+```zig
+var r2 = try spider.r2.R2.initFromEnv(io); // or spider.r2.R2.init(io, .{ ... })
+defer r2.deinit();
+
+try r2.put(c, "folder/file.txt", body, "text/plain");
+const data = try r2.get(c, "folder/file.txt");
+const exists = try r2.head(c, "folder/file.txt");
+try r2.delete(c, "folder/file.txt");
+const upload_url = try r2.presignedPut(c.arena, "uploads/a.png", "image/png", 600);
+const public_url = try r2.publicUrl(c.arena, "folder/file.txt");
+```
+
+For large uploads, let the browser `PUT` to a presigned URL instead of going
+through the app.
+
+---
+
+## Multipart uploads
+
+```zig
+fn upload(c: *spider.Ctx) !spider.Response {
+    var mp = try c.parseMultipart();
+    defer mp.deinit();
+    const title = mp.getValue("title") orelse "";
+    const files = mp.getFile("photo") orelse return error.BadRequest;
+    return c.json(.{ .title = title, .size = files[0].data.len }, .{});
 }
 ```
 
-### Typed Form Parsing (auto-detects multipart vs url-encoded)
-
-```zig
-const FormInput = struct {
-    name: []const u8,
-    email: []const u8,
-    age: i32,
-};
-
-fn formHandler(c: *spider.Ctx) !spider.Response {
-    const input = try c.parseForm(FormInput);
-    return c.json(.{ .name = input.name, .email = input.email }, .{});
-}
-```
+Bodies over `max_body_bytes` (10 MiB by default) get 413.
 
 ---
 
-## Dependency Injection (Decorators)
-
-Spider supports automatic dependency injection into handlers using `spider.app(decorations)`:
+## HTTP client
 
 ```zig
-const AppDeps = struct {
-    pool: *PgPool,
-    email: *EmailService,
-    config: AppConfig,
-};
+const http = spider.http_client;
+// in a handler: io = c._io (the server's Io, required on the zio backend), arena = c.arena
 
-fn main() !void {
-    const deps = AppDeps{
-        .pool = &pool,
-        .email = &email_service,
-        .config = app_config,
-    };
+var res = try http.get(io, arena, "https://api.example.com/users", .{});
+defer res.deinit();
+const users = try res.json([]User);
+defer users.deinit();
 
-    var server = spider.app(deps);
-    defer server.deinit();
+const payload = try std.json.Stringify.valueAlloc(arena, .{ .name = "Alice" }, .{});
+var created = try http.post(io, arena, "https://api.example.com/users", .{ .body = .{ .json = payload } });
+defer created.deinit();
 
-    server
-        .get("/", homeHandler)
-        .listen(.{ .port = 3000 }) catch {};
-}
-
-// Handler receives dependencies automatically — no manual wiring needed
-fn homeHandler(c: *spider.Ctx, pool: *PgPool, email: *EmailService) !spider.Response {
-    const users = try pool.query(...);
-    try email.sendWelcome(...);
-    return c.json(.{ .ok = true }, .{});
-}
-```
-
-Up to **4 extra parameters** beyond `*spider.Ctx` are supported. The type of each parameter must match a field in the decorations struct — otherwise you get a clear compile error.
-
----
-
-## Static Files
-
-Spider automatically serves `./public/` at `/` — no configuration needed.
-
-```
-public/
-├── css/
-│   └── app.css       → GET /css/app.css
-├── js/
-│   └── app.js        → GET /js/app.js
-└── logo.png          → GET /logo.png
-```
-
-Path traversal (`../../etc/passwd`) is blocked automatically.
-
-### Custom Static Directory
-
-```zig
-// Serve from a different directory
-server.staticDir("./assets");
-
-// Serve with a different prefix
-server.staticAt("./uploads", "/media");
-// /media/images/logo.png → ./uploads/images/logo.png
-```
-
----
-
-## Live Reload
-
-Spider auto-injects WebSocket live reload in development mode:
-
-```zig
-// spider.config.zig
-pub const config = spider.Config{
-    .env = .development, // enables live reload
-};
-```
-
-When you save a template or static file, the browser refreshes automatically. No configuration needed — just run `zig build run` in dev mode.
-
----
-
-## Health Endpoints
-
-When using `spider.app()` or `spider.appWithConfig()`, two health endpoints are registered automatically:
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /up` | Simple health check — returns `"OK"` |
-| `GET /_spider/health` | JSON with status and uptime in seconds |
-
-In development mode, a live-reload WebSocket is also registered at `/_spider/reload`.
-
----
-
-## Metrics
-
-Spider provides global request metrics:
-
-```zig
-const snapshot = spider.metrics.snapshot(io);
-std.log.info("requests: {d}, errors: {d}", .{
-    snapshot.total_requests,
-    snapshot.errors,
+var token = try http.post(io, arena, "https://auth.example.com/token", .{
+    .body = .{ .form = &.{ .{ "grant_type", "client_credentials" } } },
 });
+defer token.deinit();
 ```
 
-Metrics tracked: total requests, errors, bytes in/out, slow requests, WebSocket clients.
+Client certificates: `spider.http_client_mtls`.
 
 ---
 
-## Environment Configuration
-
-Spider automatically loads `.env` files on startup with priority order:
-
-1. `.env` — base configuration
-2. `.env.development` or `.env.production` — environment-specific
-3. `.env.local` — local overrides (highest priority)
-
-```bash
-# .env
-DATABASE_URL=postgres://localhost/myapp
-JWT_SECRET=my-secret-key
-PORT=3000
-DEBUG=true
-GOOGLE_CLIENT_ID=your-client-id
-```
+## Dependency injection (decorations)
 
 ```zig
-// Access anywhere in your app
-const host = spider.env.getOr("DB_HOST", "localhost");
-const port = spider.env.getInt(u16, "PORT", 3000);
-const debug = spider.env.getBool("DEBUG", false);
-const secret = spider.env.get("JWT_SECRET"); // returns ?[]const u8
+const App = struct { db: *Db, mailer: *Mailer };
+
+pub fn main(init: std.process.Init) !void {
+    var db: Db = .{};
+    var mailer: Mailer = .{};
+    var server = spider.app(App{ .db = &db, .mailer = &mailer });
+    defer server.deinit();
+    try server.get("/", home, .{}).listen(.{ .port = 3000 });
+    _ = init;
+}
+
+fn home(c: *spider.Ctx, db: *Db) !spider.Response { // parameters matched by type
+    _ = db;
+    return c.text("ok", .{});
+}
 ```
+
+Checked at compile time. Server-level routes only (not `Group` routes), and not
+mixed with `spider.Path`/`Form`/`Loaded` in the same handler.
+
+---
+
+## Static files
+
+Files under `./public` are served at `/`:
+
+```zig
+_ = server.staticDir("./assets");           // replaces ./public
+_ = server.staticAt("./uploads", "/media");  // or with a URL prefix (one static root)
+```
+
+Every file gets an `ETag`; a matching `If-None-Match` gets 304. URLs with
+`?v=...` (e.g. from an `asset_url` helper) get `Cache-Control: public,
+max-age=31536000, immutable`; others `no-cache`. Files over 10 MiB aren't
+served. Static files skip routing and middleware — they are always public.
+
+---
+
+## Health and live reload
+
+- `GET /up` → `200 OK`, `GET /_spider/health` → `{"status":"ok","uptime_seconds":N}`
+  (both `.public` and `.quiet_log`).
+- In development (`.env = .development`, the default) Spider registers a
+  WebSocket at `/_spider/reload`. Put `spider.livereload.SCRIPT` in your layout
+  (as a `spider.RawHtml`) and the page reloads when the server comes back after
+  a restart. Spider doesn't watch files. Use `.env = .production` in production.
 
 ---
 
 ## Configuration
 
-Create `spider.config.zig` in your project root:
+### `spider.config.zig`
 
 ```zig
-// spider.config.zig
 const spider = @import("spider");
 
 pub const config = spider.Config{
     .port = 3000,
-    .host = "127.0.0.1",
-    .views_dir = "./src",
-    .layout = "layout",
-    .static_dir = "./public",
-    .env = .development,
-    .workers = null, // defaults to CPU count
-    // Connection deadlines (ms, 0 = off) — idle/stalled clients can't hold
-    // file descriptors forever. Never applied while a handler runs, so SSE,
-    // WebSocket and slow handlers are unaffected.
-    .keepalive_timeout_ms = 120_000, // waiting for the next request
-    .header_timeout_ms = 30_000, // first byte -> complete request head
-    .body_timeout_ms = 60_000, // longest silence while receiving a body
+    .host = "0.0.0.0",
+    .views_dir = "./src",          // runtime template mode
+    .env = .development,           // .development adds the live-reload route
+    .keepalive_timeout_ms = 120_000,
+    .header_timeout_ms = 30_000,
+    .body_timeout_ms = 60_000,
+    .stream_write_timeout_ms = 10_000,
+    .max_body_bytes = 10 * 1024 * 1024,
+    .origin_check = .{ .trusted_origins = &.{}, .exempt_paths = &.{} },
+    .trusted_proxies = &.{},       // e.g. &.{"10.0.0.0/8"}
+    .require_route_access = false,
 };
 ```
 
-Or configure inline via `spider.appWithConfig()`:
+It is read by `spider.app(...)` only when the app's `build.zig` registers it as
+the `spider_config` import of the spider module (`spider new` does; see
+[Manual Install](#manual-install)). `spider.appWithConfig(cfg)` uses `cfg`
+instead. `static_dir` and `workers` exist but aren't read: use
+`server.staticDir(dir)`; the threaded backend runs one accept thread per CPU.
 
-```zig
-var server = spider.appWithConfig(spider.Config{
-    .port = 8080,
-    .env = .production,
-});
-```
+### Environment (`.env`)
 
----
+Loaded when the server is created (or on the first `spider.env.get`):
 
-## CLI Tool
-
-Spider ships with a `spider` CLI for project scaffolding:
+1. `.env` — base (never overrides variables already set in the process)
+2. `.env.<SPIDER_ENV>` — e.g. `.env.production` when `SPIDER_ENV=production` (default `development`)
+3. `.env.local` — local overrides (highest priority)
 
 ```bash
-# Create a new project
-spider new myapp
-spider new myapp --daisyui                       # With DaisyUI preset
-spider new myapp --skip-downloads                # Skip binary downloads (tailwindcss, alpine, htmx)
-
-# Generate code
-spider generate feature <name>                   # Full CRUD feature
-spider generate auth --provider=keycloak         # Auth with Keycloak
-spider generate auth --provider=google           # Auth with Google
-
-# Generate VAPID keys for Web Push
-spider generate-vapid mailto:admin@example.com
-
-# Run migrations
-spider migrate
-
-# Show version
-spider version
-# spider v0.6.9
+PG_HOST=localhost
+PG_PORT=5432
+PG_USER=postgres
+PG_PASSWORD=postgres
+PG_DB=myapp_development
+SQLITE_PATH=db.sqlite
+JWT_SECRET=my-secret-key
 ```
-
----
-
-## HTTP Client
-
-Spider bundles a full HTTP client (`pacman`) accessible via:
 
 ```zig
-const http = spider.http_client;
+const host = spider.env.getOr("PG_HOST", "localhost");
+const port = spider.env.getInt(u16, "PORT", 3000); // PORT is yours: Spider doesn't read it
+const debug = spider.env.getBool("DEBUG", false);
+const maybe = spider.env.get("OPTIONAL_KEY");      // ?[]const u8
+```
 
-var res = try http.get(io, arena, "https://api.example.com/users", .{});
-defer res.deinit();
+### I/O backend
 
-// Parse JSON response
-const data = try res.json(ResponseType);
-defer data.deinit();
+Chosen at build time: `threaded` (default: OS threads, blocking sockets) or
+`zio` (fibers on an event loop). In the app's `build.zig` (generated apps have
+both lines, one commented):
 
-// POST with JSON body
-var res = try http.post(io, arena, "https://api.example.com/users", .{
-    .body = .{ .json = .{ .name = "Alice" } },
+```zig
+const spider_dep = b.dependency("spider", .{
+    .target = target,
+    .io_backend = .threaded, // or .zio
 });
+```
 
-// POST with form data
-var res = try http.post(io, arena, "https://api.example.com/token", .{
-    .body = .{ .form = &.{
-        .{ "grant_type", "authorization_code" },
-        .{ "code", code },
-    } },
-});
+Code that writes to sockets must use the server's Io (`c._io` in handlers).
+With `zio`, handlers run on several threads: guard shared state.
+
+---
+
+## CLI
+
+```bash
+# New project (HTML views + SQLite by default)
+spider new myapp
+spider new myapp --pg                 # PostgreSQL instead of SQLite
+spider new myapp --no-db              # no database
+spider new myapp --api                # JSON API, no HTML views
+spider new myapp --ui=tailwind        # UI kit: daisyui (default) or tailwind
+spider new myapp --pwa                # installable PWA
+spider new myapp --skip-downloads     # don't download tailwindcss, alpine, htmx, icons now
+
+# Generate code (alias: spider g)
+spider g feature posts [--api]        # CRUD feature + migration
+spider g auth [--provider=keycloak] [--api]
+
+spider migrate                        # apply src/core/db/migrations/*.sql
+
+# Routes and conventions
+spider routes                         # method, path, access, flags
+spider routes --json | --check | --lock | --diff
+spider check [--strict]               # conventions report with file:line and fix
+
+# Frontend
+spider ui                             # the UI kit; spider ui use tailwind|daisyui [--force]
+spider icons                          # icon sets; spider icons add|remove heroicons|lucide|tabler
+spider add pwa | spider remove pwa
+spider install                        # tailwindcss, alpine, htmx, daisyUI, icon sets
+
+spider generate-vapid mailto:admin@example.com
+spider update                         # bump the spider dependency in build.zig.zon
+spider self-update                    # update the CLI
+spider version                        # also --version, -v
+spider help <command>                 # or spider <command> --help
 ```
 
 ---
 
-## Project Structure
+## Testing
+
+```zig
+// src/features/posts/routes_test.zig — pins the feature's access table
+test "posts routes" {
+    try spider.testing.expectRoutes(routes.build(), &.{
+        .{ "GET", "/posts", "roles:editor" },
+        .{ "POST", "/posts/:id/delete", "roles:admin" },
+    });
+}
+```
+
+Generated apps also run `spider.testing.expectConventions()` (the `spider check`
+rules) and `expectAllTestsDiscovered` in `zig build test`.
+
+---
+
+## Spider source layout
 
 ```
 src/
-├── spider.zig              — Public API (all exports)
-├── core/
-│   ├── app.zig             — Server, routing, workers, DI, WebSocket/SSE handlers
-│   ├── context.zig         — Ctx, Response, ResponseOptions, CookieOptions
-│   └── database.zig        — Database vtable interface
-├── routing/
-│   ├── router.zig          — Trie router (static + dynamic routes)
-│   └── group.zig           — Route groups
-├── modules/
-│   ├── auth/auth.zig       — JWT sign/verify, cookie helpers, Auth middleware
-│   ├── static.zig          — Static file serving
-│   ├── dashboard.zig       — Built-in metrics dashboard
-│   ├── livereload.zig      — Live reload (dev mode)
-│   ├── health.zig          — /up and /_spider/health endpoints
-│   ├── push.zig            — Web Push (RFC 8291/8292)
-│   ├── r2.zig              — Cloudflare R2 (AWS SigV4)
-│   └── logger.zig          — Colorized request logger middleware
-├── drivers/
-│   ├── pg/pg.zig           — PostgreSQL driver (pure Zig, pool-based)
-│   ├── sqlite/sqlite.zig   — SQLite driver (via libsqlite3 C binding)
-│   └── mysql/              — MySQL driver (pure Zig wire protocol)
-├── render/
-│   ├── template.zig        — Template engine entry point
-│   ├── views.zig           — Template resolver (embed + runtime)
-│   ├── ast.zig             — AST node types
-│   ├── parser.zig          — Template parser
-│   ├── renderer.zig        — Template renderer
-│   ├── context.zig         — Template rendering context
-│   └── zmd/                — Markdown to HTML renderer
-├── internal/
-│   ├── config.zig          — spider.Config
-│   ├── env.zig             — .env loader
-│   ├── logger.zig          — Structured logging
-│   ├── metrics.zig         — Request/error metrics
-│   └── buffer_pool.zig     — Buffer pooling
-├── ws/
-│   ├── websocket.zig       — WebSocket protocol (RFC 6455)
-│   ├── hub.zig             — Broadcast hub (WebSocket + SSE)
-│   ├── ws.zig              — Ws handler interface (next, send, broadcast, join)
-│   └── sse.zig             — SSE handler interface (send, join, wait)
-├── binding/
-│   ├── form.zig            — URL-encoded form parsing
-│   ├── form_parser.zig     — Typed form binding (struct mapping)
-│   └── multipart.zig       — Multipart/form-data parsing
-├── providers/
-│   ├── google.zig          — Google OAuth
-│   ├── clerk.zig           — Clerk OAuth + JWKS middleware
-│   ├── jwks.zig            — JWKS key fetching + JWT verification
-│   └── keycloak.zig        — Keycloak OAuth + refresh token
-├── cli/
-│   ├── main.zig            — CLI entry point
-│   ├── new.zig             — `spider new` project scaffolding
-│   ├── generate.zig        — `spider generate` code generation
-│   ├── migrate.zig         — `spider migrate` runner
-│   ├── generate_vapid.zig  — VAPID key generation
-│   └── templates/          — Scaffolding templates
-├── features/               — Built-in features (scaffolded code)
-├── build_helpers.zig       — spider_build.setup() helper
-└── generate_templates.zig  — embedded_templates.zig generator
+├── spider.zig              — public API + test discovery
+├── testing.zig             — expectRoutes, expectConventions, expectAllTestsDiscovered
+├── conventions.zig         — app convention rules (spider check)
+├── core/                   — app.zig (Server, request lifecycle), context.zig (Ctx),
+│                             handler.zig, extractors.zig, watchdog.zig, origin.zig,
+│                             client_ip.zig, database.zig, http_client_mtls.zig
+├── routing/                — router.zig, group.zig, route_config.zig, expect_routes.zig
+├── middlewares/            — gzip, https (forceHttps), vary (varyHtmx), dbg_*
+├── modules/                — auth/ (HS256), rbac, errors, static, health, livereload,
+│                             push, logger, auth_marker
+├── render/                 — template engine (parser, ast, renderer, views) + zmd/
+├── internal/               — config, env, logfmt, logger, url, …
+├── ws/                     — websocket.zig, hub.zig, ws.zig, sse.zig
+├── binding/                — form, multipart
+├── providers/              — jwks, keycloak, google, clerk
+└── cli/                    — the spider CLI + templates/
+modules/                    — pg (pure Zig), sqlite, r2, qrcode
 ```
 
----
-
-## API Reference
-
-### `spider.Ctx` Methods
-
-| Method | Description |
-|--------|-------------|
-| `c.json(data, opts)` | JSON response |
-| `c.text(content, opts)` | Plain text response |
-| `c.html(content, opts)` | HTML response |
-| `c.view(name, data, opts)` | Render template by name |
-| `c.render(tmpl, data, opts)` | Render template string directly |
-| `c.redirect(url)` | HTTP redirect (302) |
-| `c.param(name)` | URL parameter |
-| `c.query(name)` | Query string parameter |
-| `c.header(name)` | Request header |
-| `c.cookie(name)` | Request cookie |
-| `c.getBody()` | Raw request body |
-| `c.bodyJson(T)` | Parse JSON body into struct |
-| `c.parseForm(T)` | Parse form body (auto-detects url-encoded + multipart) |
-| `c.parseMultipart()` | Parse multipart/form-data (returns MultipartData) |
-| `c.setCookie(name, value, opts)` | Build Set-Cookie string |
-| `c.withCookie(name, value, opts)` | Build ResponseOptions with cookie |
-| `c.isHtmx()` | True if HX-Request header present |
-| `c.isBoosted()` | True if HX-Boosted header present |
-| `c.db()` | DatabaseCtx for driver-agnostic queries |
-| `c.wsHub()` | WebSocket Hub (must be in ws route) |
-| `c.sseHub()` | SSE Hub (must be in sse route) |
-| `c.getPath()` | Request path |
-| `c.getMethod()` | Request method string |
-| `c.arena` | Per-request arena allocator |
-
-### `spider.ResponseOptions`
-
-```zig
-pub const ResponseOptions = struct {
-    status: std.http.Status = .ok,
-    headers: []const [2][]const u8 = &.{},
-    cookies: []const [2][]const u8 = &.{},
-};
-```
-
-### `spider.CookieOptions`
-
-```zig
-pub const CookieOptions = struct {
-    value: []const u8 = "",
-    http_only: bool = true,
-    secure: bool = true,
-    same_site: []const u8 = "Lax",
-    path: []const u8 = "/",
-    max_age: ?u32 = null,
-};
-```
-
-### `spider.Server` Methods
-
-| Method | Description |
-|--------|-------------|
-| `server.get(path, handler)` | Register GET route |
-| `server.post(path, handler)` | Register POST route |
-| `server.put(path, handler)` | Register PUT route |
-| `server.delete(path, handler)` | Register DELETE route |
-| `server.patch(path, handler)` | Register PATCH route |
-| `server.head(path, handler)` | Register HEAD route |
-| `server.ws(path, handler)` | Register WebSocket route |
-| `server.wsInterval(path, ms, callback)` | WebSocket with periodic broadcast |
-| `server.sse(path, handler)` | Register SSE route |
-| `server.use(middleware)` | Global middleware |
-| `server.useAt(path, middleware)` | Path-scoped middleware |
-| `server.group(prefix, mws, fn)` | Route group with middleware |
-| `server.onError(handler)` | Global error handler |
-| `server.addRoute(method, path, mws, handler)` | Route with middleware |
-| `server.db(database)` | Register database driver |
-| `server.staticDir(dir)` | Set static files directory |
-| `server.staticAt(dir, prefix)` | Static dir with custom prefix |
-| `server.health(path, handler)` | Alias for server.get |
-| `server.listen(options)` | Start server |
-
-### `spider.pg` Methods (aliased as `const db = spider.pg`)
-
-| Method | Description |
-|--------|-------------|
-| `db.init(io, config)` | Initialize pool (DbConfig with optional overrides) |
-| `db.deinit()` | Shutdown pool |
-| `db.query(T, arena, sql, params)` | Parameterized query → `[]T`, `i32`, or `void` |
-| `db.queryOne(T, arena, sql, params)` | Parameterized query → `?T` (single row) |
-| `db.queryExecute(T, arena, sql)` | Raw SQL without params |
-| `db.queryOneExecute(T, arena, sql)` | Raw SQL single row |
-| `db.array(T, values)` | Create array param for `ANY($1)` |
-| `db.begin()` | Start transaction → `Transaction` |
-| `tx.query(T, arena, sql, params)` | Query inside transaction |
-| `tx.queryOne(T, arena, sql, params)` | Single row inside transaction |
-| `tx.commit()` | Commit transaction |
-| `tx.rollback()` | Rollback transaction |
-
-### `spider.Ws` Methods
-
-| Method | Description |
-|--------|-------------|
-| `w.next()` | Wait for next message (`?Message`) |
-| `w.send(text)` | Send text to this connection |
-| `w.broadcast(text)` | Broadcast to all connections |
-| `w.broadcastTo(channel, text)` | Broadcast to channel |
-| `w.broadcastFmt(fmt, args)` | Broadcast formatted text |
-| `w.broadcastToFmt(channel, fmt, args)` | Broadcast formatted to channel |
-| `w.join(channel)` | Join a channel |
-| `w.joinUser(user_id)` | Join user channel (`user:{id}`) |
-
-### `spider.Sse` Methods
-
-| Method | Description |
-|--------|-------------|
-| `s.send(event, data)` | Send an event (JSON data) |
-| `s.join(channel)` | Join a channel |
-| `s.joinUser(user_id)` | Join user channel |
-| `s.wait()` | Block until connection closes |
-
-### `spider.Hub` Methods
-
-| Method | Description |
-|--------|-------------|
-| `hub.broadcast(msg)` | Broadcast to all WS + SSE connections |
-| `hub.broadcastToChannel(channel, msg)` | Broadcast to channel |
-| `hub.broadcastFmt(fmt, args)` | Broadcast formatted |
-| `hub.emit(event, data)` | Emit JSON event (SSE) |
-| `hub.emitTo(channel, event, data)` | Emit JSON event to channel |
-| `hub.notifyUser(user_id, event, data)` | Notify user `user:{id}` |
-
----
-
-## Examples
-
-- 🚀 **[SpiderStack](examples/spiderstack/)** — ~~Full-featured starter kit with Google OAuth, PostgreSQL, HTMX, Tailwind, and DaisyUI~~ **Desatualizado — não recomendado no momento**
-- 📦 **[local_first](examples/local_first/)** — Local-first architecture example
-- 🏗️ **[embed_templates](examples/embed_templates/)** — Template embed mode example
-- 🔧 **[c_import_zig_017](examples/c_import_zig_017/)** — C imports with Zig 0.17
-- 🔄 **[hot_relead](examples/hot_relead/)** — Hot reload example
+The complete API: [`llms.txt`](llms.txt).
 
 ---
 
 ## Zig Version Policy
 
-Spider tracks Zig `master` — always.
-
-We follow Zig's development branch closely, migrating ahead of each stable release. This means Spider is ready for the new version before it ships, and breaking changes are handled as they happen — not after.
-
-| Version | Status |
-|---------|--------|
-| `0.17.0-dev` | ✅ current |
-| `0.16.0` | ✅ migrated before release |
-| `0.15.0` | ✅ migrated before release |
-
-If you're on a stable Zig release and Spider doesn't compile, check the git history — the migration is usually already done.
+Spider follows Zig's development branch and migrates ahead of each stable
+release. It is developed and tested with one pinned build — currently
+`0.17.0-dev.956+2dca73595` (see [Requirements](#requirements)); `build.zig.zon`
+declares an older `minimum_zig_version`. Newer master builds may break until
+Spider catches up.
 
 ---
 
