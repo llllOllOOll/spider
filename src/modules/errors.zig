@@ -1,7 +1,8 @@
 //! spider.errorHandler(.{ ... }): a ready-made `onError` that answers each
 //! kind of caller the way it can use the error:
 //!
-//!   - fetch()/JSON callers (c.wantsJson()):  { "<json_key>": message, "request_id": rid }
+//!   - fetch()/JSON callers (c.wantsJson()), or every caller with
+//!     `always_json` (APIs):  { "<json_key>": message, "request_id": rid }
 //!   - htmx requests: the status is kept, nothing is swapped (HX-Reswap:
 //!     none) and an HX-Trigger event (`toast_event`) carries
 //!     { message, type: "warning" | "error" } for the page to show;
@@ -38,6 +39,9 @@ pub const Options = struct {
     unauthorized_redirect: ?[]const u8 = null,
     /// Key of the message in JSON error bodies.
     json_key: []const u8 = "error",
+    /// Answer JSON to every request, whatever its Accept header says (for
+    /// API-only apps: a client that sends no Accept still gets JSON).
+    always_json: bool = false,
     /// htmx event name raised through HX-Trigger.
     toast_event: []const u8 = "spider:toast",
     /// View rendered for a full-page 403, with `.user_name` (the auth name
@@ -70,7 +74,7 @@ pub fn errorHandler(comptime opts: Options) ErrorHandler {
 
             const message = try userMessage(c, err, status);
 
-            if (c.wantsJson()) {
+            if (opts.always_json or c.wantsJson()) {
                 var out: std.Io.Writer.Allocating = .init(c.arena);
                 var js: std.json.Stringify = .{ .writer = &out.writer };
                 try js.beginObject();

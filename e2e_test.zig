@@ -1047,6 +1047,46 @@ test "errorHandler: pages get text; 400 uses the error detail; Unauthorized redi
     }
 }
 
+fn runJsonApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null });
+    s.get("/e/forbidden", eForbidden, .{})
+        .get("/e/boom", eBoom, .{})
+        .onError(spider.errorHandler(.{ .always_json = true }))
+        .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("json app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+var json_port: ?u16 = null;
+fn jsonAppPort(io: std.Io) !u16 {
+    try app_once_mutex.lock(io);
+    defer app_once_mutex.unlock(io);
+    if (json_port) |p| return p;
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runJsonApp, .{port})).detach();
+    try waitForPort(io, port);
+    json_port = port;
+    return port;
+}
+
+test "errorHandler: always_json answers JSON without an Accept header, htmx included" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try jsonAppPort(io);
+    const a = env.arena.allocator();
+    for ([_][]const []const u8{ &.{}, &.{htmx} }) |hdrs| {
+        const r = try request(io, a, port, "/e/forbidden", .{ .headers = hdrs });
+        try std.testing.expectEqual(@as(u16, 403), r.status);
+        try std.testing.expectEqualStrings("application/json", r.header("Content-Type").?);
+        const rid = r.header("X-Request-Id").?;
+        try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{{\"error\":\"You don't have permission to do this.\",\"request_id\":\"{s}\"}}", .{rid}), r.body);
+    }
+    const b = try request(io, a, port, "/e/boom", .{});
+    try std.testing.expectEqual(@as(u16, 500), b.status);
+    try std.testing.expectEqualStrings("application/json", b.header("Content-Type").?);
+}
+
 test "forceHttps: redirects plain HTTP, except .allow_http routes and allow_http_paths" {
     var env = TestEnv.init();
     defer env.deinit();
