@@ -211,6 +211,26 @@ fn ownsPost(c: *spider.Ctx) !bool {
     return std.mem.eql(u8, id, "10") and std.mem.eql(u8, c.userId() orelse "", "1");
 }
 
+const Doc = struct { id: u32, owner: []const u8, title: []const u8 };
+
+/// Docs 10 (user 1's) and 11 (user 2's), as if from the database.
+fn loadDoc(c: *spider.Ctx) !?Doc {
+    const id = std.fmt.parseInt(u32, c.params.get("id") orelse return null, 10) catch return null;
+    return switch (id) {
+        10 => .{ .id = 10, .owner = "1", .title = "plan" },
+        11 => .{ .id = 11, .owner = "2", .title = "budget" },
+        else => null,
+    };
+}
+
+fn ownsDoc(c: *spider.Ctx, doc: *const Doc) bool {
+    return std.mem.eql(u8, doc.owner, c.userId() orelse "");
+}
+
+fn showDoc(doc: spider.Loaded(Doc), c: *spider.Ctx) !spider.Response {
+    return c.text(try std.fmt.allocPrint(c.arena, "doc {d}: {s}", .{ doc.value.id, doc.value.title }), .{});
+}
+
 fn runApp(port: u16) void {
     var s = spider.app(.{});
 
@@ -240,7 +260,9 @@ fn runApp(port: u16) void {
         .get("/me", ok, .{})
         .get("/editor", ok, .{ .roles = &.{"editor"} })
         .get("/org", ok, .{ .org_roles = &.{"manager"} })
-        .post("/posts/:id/edit", ok, .{ .policy = spider.policy("post_owner", ownsPost) });
+        .post("/posts/:id/edit", ok, .{ .policy = spider.policy("post_owner", ownsPost) })
+        .get("/docs/:id", showDoc, .{ .policy = spider.resourcePolicy("doc_owner", Doc, .{ .load = loadDoc, .check = ownsDoc }) })
+        .get("/private/:id", showDoc, .{ .policy = spider.resourcePolicy("doc_owner", Doc, .{ .load = loadDoc, .check = ownsDoc, .deny = .not_found }) });
 
     var g = spider.Group.init("/g");
     _ = g
@@ -427,6 +449,26 @@ test "policy: 401 anonymous, 403 for another user, 200 for the owner" {
     try expectStatus(403, &env, "/own/posts/10/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Session: 2"} });
     try expectStatus(200, &env, "/own/posts/10/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Session: 1"} });
     try expectStatus(403, &env, "/own/posts/11/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Session: 1"} });
+}
+
+test "resourcePolicy: 401 anonymous, 404 missing, 403 someone else's, the owner's handler gets the loaded doc" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(401, &env, "/own/docs/10", .{});
+    try expectStatus(401, &env, "/own/docs/99", .{}); // anonymous can't tell missing from existing
+    try expectStatus(404, &env, "/own/docs/99", .{ .headers = &.{"X-Session: 1"} });
+    try expectStatus(403, &env, "/own/docs/11", .{ .headers = &.{"X-Session: 1"} });
+    try expectStatus(200, &env, "/own/docs/10", .{ .headers = &.{"X-Session: 1"} });
+    const res = try request(env.io(), env.arena.allocator(), try appPort(env.io()), "/own/docs/11", .{ .headers = &.{"X-Session: 2"} });
+    try std.testing.expectEqualStrings("doc 11: budget", res.body);
+}
+
+test "resourcePolicy with .deny = .not_found: someone else's doc looks missing" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    try expectStatus(404, &env, "/own/private/11", .{ .headers = &.{"X-Session: 1"} });
+    try expectStatus(404, &env, "/own/private/99", .{ .headers = &.{"X-Session: 1"} });
+    try expectStatus(200, &env, "/own/private/10", .{ .headers = &.{"X-Session: 1"} });
 }
 
 // ── active org (item 3) ─────────────────────────────────────────────────

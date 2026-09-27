@@ -89,6 +89,11 @@ auth. Fix the code, not the check — and don't delete that test.
   the auth one) can load them from the database with `c.setUser`,
   `c.addRole`, `c.addOrgRole`; the route checks read them the same way.
   Access checks go in the route config or a policy, not inside handlers.
+- A rule about the record a route works on (owner, same tenant) is a
+  `spider.resourcePolicy("post_owner", Post, .{ .load = loadPost, .check =
+  isOwner })`: it loads the record (404 if missing), checks it (403, or 404
+  with `.deny = .not_found`) and the handler takes `post: spider.Loaded(Post)`
+  instead of loading it again.
 - Roles only mean something once requests are authenticated (`spider g auth`
   adds the provider's middleware). Without auth every route is open and a
   route with `.roles` answers 403 to everyone. That's why generated features

@@ -82,6 +82,10 @@ pub const Ctx = struct {
     _route: RouteMeta = .{},
     /// Human-readable detail for the error the handler/extractor returned.
     _error_detail: ?[]const u8 = null,
+    /// The resource a route's resourcePolicy loaded (see loaded()), and a
+    /// marker of its type.
+    _loaded: ?*anyopaque = null,
+    _loaded_type: ?*const anyopaque = null,
 
     /// Id correlating every log line and the response of this request: the
     /// incoming `X-Request-Id` when it looks sane (e.g. set by a proxy),
@@ -820,6 +824,22 @@ pub const Ctx = struct {
         try self.params.put(a, "_auth_orgs_count", try std.fmt.allocPrint(a, "{d}", .{n + 1}));
     }
 
+    /// The resource the route's `spider.resourcePolicy` loaded and allowed,
+    /// when it is a `T` (handlers can also take `spider.Loaded(T)`). Null
+    /// when the route has none, or it is of another type.
+    pub fn loaded(self: *Ctx, comptime T: type) ?*T {
+        if (self._loaded_type != typeMarker(T)) return null;
+        return @ptrCast(@alignCast(self._loaded.?));
+    }
+
+    /// Hands `value` (allocated for the request, e.g. in `arena`) on to the
+    /// handler as `loaded(T)`. resourcePolicy calls it; so can an app's own
+    /// middleware that loads what a route works on.
+    pub fn setLoaded(self: *Ctx, comptime T: type, value: *T) void {
+        self._loaded = value;
+        self._loaded_type = typeMarker(T);
+    }
+
     fn authCount(self: *Ctx, key: []const u8) usize {
         return std.fmt.parseInt(usize, self.params.get(key) orelse return 0, 10) catch 0;
     }
@@ -892,4 +912,20 @@ pub fn statusForError(err: anyerror) std.http.Status {
         => .service_unavailable,
         else => .internal_server_error,
     };
+}
+
+/// A distinct address per type (a variable declared inside a generic
+/// instantiation exists once per `T`).
+fn typeMarker(comptime T: type) *const anyopaque {
+    const S = struct {
+        const Of = T;
+        var marker: u8 = 0;
+    };
+    return &S.marker;
+}
+
+test "typeMarker: one per type" {
+    try std.testing.expect(typeMarker(u8) == typeMarker(u8));
+    try std.testing.expect(typeMarker(u8) != typeMarker(u16));
+    try std.testing.expect(typeMarker(struct { a: u8 }) != typeMarker(struct { a: u8 }));
 }

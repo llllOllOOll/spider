@@ -105,7 +105,9 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 ## Routes and features (how apps are structured)
 
 - Route config (3rd argument, required): `.roles`, `.org_roles`, `.public`,
-  `.authenticated`, `.policy` (`spider.policy(name, fn)`), `.quiet_log`, `.allow_http` — validated at compile time
+  `.authenticated`, `.policy` (`spider.policy(name, fn)`, or
+  `spider.resourcePolicy(name, T, .{ .load, .check })`, whose resource the
+  handler takes as `spider.Loaded(T)`), `.quiet_log`, `.allow_http` — validated at compile time
   (routing/route_config.zig). It travels with the route as `RouteMeta`
   (`c.route()`): jwks/keycloak and HS256 auth skip `.public`, the logger
   skips successful `.quiet_log`, `spider.forceHttps` skips `.allow_http`.

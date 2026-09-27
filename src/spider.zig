@@ -18,6 +18,8 @@ pub const Response = @import("core/context.zig").Response;
 pub const statusForError = @import("core/context.zig").statusForError;
 pub const Path = @import("core/extractors.zig").Path;
 pub const Form = @import("core/extractors.zig").Form;
+/// Handler parameter: the resource the route's spider.resourcePolicy loaded.
+pub const Loaded = @import("core/extractors.zig").Loaded;
 pub const Database = @import("core/database.zig").Database;
 pub const DatabaseCtx = @import("core/context.zig").DatabaseCtx;
 pub const Config = @import("internal/config.zig").Config;
@@ -50,6 +52,9 @@ pub const rbac = @import("modules/rbac.zig");
 /// with `fn isPostOwner(c: *spider.Ctx) !bool`. See modules/rbac.zig.
 pub const policy = rbac.policy;
 pub const Policy = rbac.Policy;
+/// A policy that loads the route's resource (404 when missing), checks it,
+/// and hands it to the handler (spider.Loaded(T) / c.loaded(T)).
+pub const resourcePolicy = rbac.resourcePolicy;
 pub const r2 = @import("spider_r2");
 pub const qrcode = @import("spider_qrcode");
 pub const push = @import("modules/push.zig");

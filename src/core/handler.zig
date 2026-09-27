@@ -1,5 +1,5 @@
 //! Turning handler functions into the router's `Handler`: typed extractors
-//! (spider.Path / spider.Form) and plain `fn (*Ctx) !Response`. Shared by
+//! (spider.Path / spider.Form / spider.Loaded) and plain `fn (*Ctx) !Response`. Shared by
 //! Server (core/app.zig) and Group (routing/group.zig).
 
 const std = @import("std");
@@ -77,13 +77,18 @@ pub fn buildAutoWrapper(comptime handler: anytype) Handler {
                             return err;
                         };
                         args[i] = .{ .value = parsed };
+                    } else if (PT.spider_kind == .loaded) {
+                        args[i] = .{ .value = ctx.loaded(PT.Inner) orelse {
+                            ctx.setErrorDetail("no " ++ @typeName(PT.Inner) ++ " loaded: the route needs .policy = spider.resourcePolicy(name, " ++ @typeName(PT.Inner) ++ ", ...)");
+                            return error.ResourceNotLoaded;
+                        } };
                     } else {
                         @compileError("unsupported spider extractor kind on " ++ @typeName(PT));
                     }
                 } else {
                     @compileError(
                         "buildAutoWrapper only supports *Ctx and extractor params " ++
-                            "(spider.Path(...), spider.Form(...)); handler parameter `" ++
+                            "(spider.Path(...), spider.Form(...), spider.Loaded(...)); handler parameter `" ++
                             @typeName(PT) ++ "` is neither. For loose-type decoration " ++
                             "parameters, use the classic fn(*Ctx, T) !Response signature instead.",
                     );

@@ -30,3 +30,15 @@ pub fn Form(comptime T: type) type {
         value: T,
     };
 }
+
+/// The resource the route's `spider.resourcePolicy(name, T, ...)` loaded and
+/// allowed: `fn edit(post: spider.Loaded(Post), c: *spider.Ctx)`, then
+/// `post.value`. A route without such a policy fails with
+/// error.ResourceNotLoaded (a 500: the route is wired wrong).
+pub fn Loaded(comptime T: type) type {
+    return struct {
+        pub const spider_kind = .loaded;
+        pub const Inner = T;
+        value: *T,
+    };
+}

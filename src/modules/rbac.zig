@@ -110,3 +110,73 @@ pub fn requirePolicy(comptime p: Policy) MiddlewareFn {
     };
     return S.mw;
 }
+
+/// What a resourcePolicy answers when its check says no.
+pub const Deny = enum {
+    /// 403: the caller learns the resource exists.
+    forbidden,
+    /// 404, like a missing one: ids can't be probed (GitHub's approach
+    /// for private repositories).
+    not_found,
+};
+
+/// A policy about the one resource a route works on (a post, a ticket):
+///
+///     .policy = spider.resourcePolicy("post_owner", Post, .{
+///         .load = loadPost,   // fn (*Ctx) ?Post, !?Post or !Post — from c.params etc.
+///         .check = isOwner,   // fn (*Ctx, *const Post) bool or !bool
+///         .deny = .forbidden, // or .not_found (optional)
+///     })
+///
+/// In order: an anonymous request on a non-public route is refused (401)
+/// before anything is loaded; a missing resource is error.NotFound (404);
+/// then `check` decides (403, or 404 with .deny = .not_found). An allowed
+/// resource reaches the handler, loaded once, as `spider.Loaded(Post)` or
+/// `c.loaded(Post)`. SSE handlers (`*Sse`) don't see it.
+pub fn resourcePolicy(comptime name: []const u8, comptime T: type, comptime opts: anytype) Policy {
+    const O = @TypeOf(opts);
+    comptime {
+        for (@typeInfo(O).@"struct".field_names) |f| {
+            if (!std.mem.eql(u8, f, "load") and !std.mem.eql(u8, f, "check") and !std.mem.eql(u8, f, "deny"))
+                @compileError("spider.resourcePolicy(\"" ++ name ++ "\"): unknown option `." ++ f ++ "` (known: .load, .check, .deny)");
+        }
+        if (!@hasField(O, "load") or !@hasField(O, "check"))
+            @compileError("spider.resourcePolicy(\"" ++ name ++ "\"): needs .load and .check");
+        const load_info = @typeInfo(@TypeOf(opts.load));
+        if (load_info != .@"fn" or load_info.@"fn".param_types.len != 1 or load_info.@"fn".param_types[0] != *Ctx)
+            @compileError("spider.resourcePolicy(\"" ++ name ++ "\"): .load must be fn (*spider.Ctx) ?" ++ @typeName(T) ++ " (or !?T, !T)");
+        const R = load_info.@"fn".return_type.?;
+        const Payload = if (@typeInfo(R) == .error_union) @typeInfo(R).error_union.payload else R;
+        if (Payload != T and Payload != ?T)
+            @compileError("spider.resourcePolicy(\"" ++ name ++ "\"): .load returns " ++ @typeName(R) ++ ", expected ?" ++ @typeName(T) ++ ", !?" ++ @typeName(T) ++ " or !" ++ @typeName(T));
+        const check_info = @typeInfo(@TypeOf(opts.check));
+        if (check_info != .@"fn" or check_info.@"fn".param_types.len != 2 or check_info.@"fn".param_types[0] != *Ctx or check_info.@"fn".param_types[1] != *const T)
+            @compileError("spider.resourcePolicy(\"" ++ name ++ "\"): .check must be fn (*spider.Ctx, *const " ++ @typeName(T) ++ ") bool or !bool");
+    }
+    const deny: Deny = if (@hasField(O, "deny")) opts.deny else .forbidden;
+    const S = struct {
+        fn load(c: *Ctx) anyerror!?T {
+            const r = opts.load(c);
+            if (@typeInfo(@TypeOf(r)) == .error_union) {
+                const v = try r;
+                return v;
+            }
+            return r;
+        }
+        fn check(c: *Ctx) anyerror!bool {
+            if (c.userId() == null and !c.route().public) return false;
+            const value = (try load(c)) orelse return error.NotFound;
+            const res = try c.arena.create(T);
+            res.* = value;
+            const allowed: anyerror!bool = opts.check(c, res);
+            if (!try allowed) {
+                if (deny == .not_found) return error.NotFound;
+                return false;
+            }
+            c.setLoaded(T, res);
+            return true;
+        }
+    };
+    // The name rules and the (*Ctx) bool shape are policy()'s.
+    return policy(name, S.check);
+}

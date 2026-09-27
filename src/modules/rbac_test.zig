@@ -271,3 +271,97 @@ test "rbac.routeMiddlewares: the policy runs after roles and org_roles" {
     try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(mws[0], &c)); // no staff role
     try std.testing.expectEqual(@as(?anyerror, null), failure(mws[1], &c));
 }
+
+// --- resourcePolicy ----------------------------------------------------------
+
+const Post = struct { id: u32, owner: []const u8, title: []const u8 };
+const Other = struct { x: u8 };
+
+var load_calls: usize = 0;
+
+/// Posts 10 (user 1's) and 11 (user 2's); anything else doesn't exist.
+fn loadPost(c: *Ctx) !?Post {
+    load_calls += 1;
+    const id = std.fmt.parseInt(u32, c.params.get("id") orelse return null, 10) catch return null;
+    return switch (id) {
+        10 => .{ .id = 10, .owner = "1", .title = "mine" },
+        11 => .{ .id = 11, .owner = "2", .title = "theirs" },
+        else => null,
+    };
+}
+fn loadPostPlain(c: *Ctx) ?Post {
+    _ = c;
+    return .{ .id = 1, .owner = "1", .title = "plain" };
+}
+fn loadPostOrError(c: *Ctx) !Post {
+    _ = c;
+    return error.DatabaseDown;
+}
+fn ownsLoaded(c: *Ctx, post: *const Post) bool {
+    return std.mem.eql(u8, post.owner, c.userId() orelse "");
+}
+
+fn postCtx(a: std.mem.Allocator, user: ?[]const u8, id: []const u8) !Ctx {
+    var c = bareCtx(a);
+    if (user) |u| try c.setUser(.{ .id = u });
+    try c.params.put(a, "id", id);
+    return c;
+}
+
+test "resourcePolicy: loads the resource once and hands it to the request" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const mw = rbac.requirePolicy(rbac.resourcePolicy("post_owner", Post, .{ .load = loadPost, .check = ownsLoaded }));
+    var c = try postCtx(arena.allocator(), "1", "10");
+    load_calls = 0;
+    try std.testing.expectEqual(@as(?anyerror, null), failure(mw, &c));
+    try std.testing.expectEqual(@as(usize, 1), load_calls);
+    try std.testing.expectEqualStrings("mine", c.loaded(Post).?.title);
+    try std.testing.expect(c.loaded(Other) == null);
+}
+
+test "resourcePolicy: 404 when missing, 403 for someone else's, 404 with .deny = .not_found" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const owner = rbac.requirePolicy(rbac.resourcePolicy("post_owner", Post, .{ .load = loadPost, .check = ownsLoaded }));
+    const hidden = rbac.requirePolicy(rbac.resourcePolicy("post_owner", Post, .{ .load = loadPost, .check = ownsLoaded, .deny = .not_found }));
+
+    var missing = try postCtx(a, "1", "99");
+    try std.testing.expectEqual(@as(?anyerror, error.NotFound), failure(owner, &missing));
+    var theirs = try postCtx(a, "1", "11");
+    try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(owner, &theirs));
+    try std.testing.expect(theirs.loaded(Post) == null); // denied: nothing handed on
+    var theirs_hidden = try postCtx(a, "1", "11");
+    try std.testing.expectEqual(@as(?anyerror, error.NotFound), failure(hidden, &theirs_hidden));
+}
+
+test "resourcePolicy: anonymous gets 401 before any lookup, unless the route is public" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const mw = rbac.requirePolicy(rbac.resourcePolicy("post_owner", Post, .{ .load = loadPost, .check = ownsLoaded }));
+    var anon = try postCtx(a, null, "10");
+    load_calls = 0;
+    try std.testing.expectEqual(@as(?anyerror, error.Unauthorized), failure(mw, &anon));
+    try std.testing.expectEqual(@as(usize, 0), load_calls);
+    // Same answer for a post that doesn't exist: anonymous callers can't probe ids.
+    var anon_missing = try postCtx(a, null, "99");
+    try std.testing.expectEqual(@as(?anyerror, error.Unauthorized), failure(mw, &anon_missing));
+
+    var public = try postCtx(a, null, "10");
+    public._route.public = true;
+    try std.testing.expectEqual(@as(?anyerror, error.Unauthorized), failure(mw, &public)); // check said no
+    try std.testing.expectEqual(@as(usize, 1), load_calls);
+}
+
+test "resourcePolicy: loaders returning ?T, !?T or !T; loader errors propagate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c = try postCtx(a, "1", "1");
+    try std.testing.expectEqual(@as(?anyerror, null), failure(rbac.requirePolicy(rbac.resourcePolicy("plain", Post, .{ .load = loadPostPlain, .check = ownsLoaded })), &c));
+    try std.testing.expectEqualStrings("plain", c.loaded(Post).?.title);
+    var d = try postCtx(a, "1", "1");
+    try std.testing.expectEqual(@as(?anyerror, error.DatabaseDown), failure(rbac.requirePolicy(rbac.resourcePolicy("err", Post, .{ .load = loadPostOrError, .check = ownsLoaded })), &d));
+}

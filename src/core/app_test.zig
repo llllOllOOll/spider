@@ -502,3 +502,53 @@ test "Group: a route's .policy replaces the group's defaults() like .roles does,
     try std.testing.expect(list.meta.policy == null);
     try std.testing.expectEqual(@as(usize, 1), list.meta.roles.len);
 }
+
+// --- spider.Loaded(T): the resource a resourcePolicy loaded ------------------
+
+const rbac_mod = @import("../modules/rbac.zig");
+const Loaded = extractors.Loaded;
+const Note = struct { id: u32, owner: []const u8, text: []const u8 };
+
+fn loadNote(c: *Ctx) !?Note {
+    const id = std.fmt.parseInt(u32, c.params.get("id") orelse return null, 10) catch return null;
+    return if (id == 7) .{ .id = 7, .owner = "1", .text = "hello" } else null;
+}
+fn ownsNote(c: *Ctx, n: *const Note) bool {
+    return std.mem.eql(u8, n.owner, c.userId() orelse "");
+}
+fn showNote(note: Loaded(Note), c: *Ctx) !Response {
+    return c.text(try std.fmt.allocPrint(c.arena, "{d}:{s}", .{ note.value.id, note.value.text }), .{});
+}
+
+/// dispatch() through the route's own middlewares (its RBAC / policy).
+fn dispatchChain(s: *Server(NoDeco), method: std.http.Method, path: []const u8, alc: std.mem.Allocator, user: ?[]const u8) !Response {
+    const match = (try s.router.match(method, path, alc)).?;
+    var ctx = Ctx{ .request = undefined, .arena = alc, .params = match.params, .body = null, ._route = match.meta };
+    if (user) |u| try ctx.setUser(.{ .id = u });
+    try std.testing.expectEqual(@as(usize, 1), match.middlewares.len);
+    return match.middlewares[0](&ctx, match.handler);
+}
+
+test "Loaded extractor: the handler gets the resource the route's resourcePolicy loaded" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.get("/notes/:id", showNote, .{ .policy = rbac_mod.resourcePolicy("note_owner", Note, .{ .load = loadNote, .check = ownsNote }) });
+    const resp = try dispatchChain(&s, .GET, "/notes/7", arena.allocator(), "1");
+    try std.testing.expectEqualStrings("7:hello", resp.body.?);
+    try std.testing.expectError(error.Forbidden, dispatchChain(&s, .GET, "/notes/7", arena.allocator(), "2"));
+    try std.testing.expectError(error.NotFound, dispatchChain(&s, .GET, "/notes/8", arena.allocator(), "1"));
+}
+
+test "Loaded extractor: without a resourcePolicy for that type -> error.ResourceNotLoaded (500) with detail" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.get("/notes/:id", showNote, .{});
+    const r = try dispatchErr(NoDeco, &s, .GET, "/notes/7", arena.allocator(), null);
+    try std.testing.expectEqual(error.ResourceNotLoaded, r.err);
+    try std.testing.expect(std.mem.indexOf(u8, r.detail.?, "Note") != null);
+    try std.testing.expectEqual(std.http.Status.internal_server_error, context_mod.statusForError(r.err));
+}
