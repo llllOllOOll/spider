@@ -1,2 +1,7 @@
 @import "tailwindcss";
-@plugin "../bin/daisyui.mjs";
+
+/* UI kit (ui-* classes): see ui.css. Switch with `spider ui use <kit>`. */
+@import "./ui.css";
+
+/* Icon sets: one @plugin per set. Manage with `spider icons add|remove <set>`. */
+@plugin "../bin/icons/heroicons.mjs";

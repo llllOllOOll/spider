@@ -1,17 +1,17 @@
-<div id="{{feature}}-{ id }" class="card bg-base-200 p-4 mb-3 flex justify-between items-center">
+<div id="{{feature}}-{ id }" class="ui-card flex-row p-4 mb-3 justify-between items-center">
     <p>{ name }</p>
     <div class="flex gap-2">
-        <button class="btn btn-ghost btn-sm"
+        <button class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-square" aria-label="Edit"
                 hx-get="/{{plural}}/{ id }/edit"
                 hx-target="#modal-content"
                 hx-swap="innerHTML"
                 @click="$dispatch('open-edit')">
-            ✏️
+            <span class="hero-pencil-square size-5"></span>
         </button>
-        <button class="btn btn-ghost btn-sm text-error"
+        <button class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-square text-error" aria-label="Delete"
                 data-task-id="{ id }"
                 @click="$dispatch('open-delete', $event.currentTarget.dataset.taskId)">
-            ✕
+            <span class="hero-trash size-5"></span>
         </button>
     </div>
 </div>

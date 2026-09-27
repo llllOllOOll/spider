@@ -1,35 +1,35 @@
-<div class="btm-nav btm-nav-sm lg:hidden bg-base-200 border-t border-base-300 z-30">
-        <a href="/" class="active text-lime-400">
-            <i class="ti ti-layout-dashboard text-xl"></i>
-            <span class="btm-nav-label text-xs">Home</span>
-        </a>
-        <!-- SPIDER:BOTTOM_NAV_ITEMS -->
-        <a href="/analytics">
-            <i class="ti ti-chart-bar text-xl"></i>
-            <span class="btm-nav-label text-xs">Analytics</span>
-        </a>
-        <a href="/leads">
-            <i class="ti ti-users text-xl"></i>
-            <span class="btm-nav-label text-xs">Leads</span>
-        </a>
-        <button @click="moreOpen = !moreOpen">
-            <i class="ti ti-dots text-xl"></i>
-            <span class="btm-nav-label text-xs">More</span>
-        </button>
-    </div>
+<nav x-data class="lg:hidden fixed bottom-0 inset-x-0 z-30 h-16 grid grid-cols-4 text-xs bg-base-200 border-t border-base-300">
+    <a href="/" class="flex flex-col items-center justify-center gap-1 text-primary">
+        <span class="hero-squares-2x2 size-5"></span>
+        Home
+    </a>
+    <!-- SPIDER:BOTTOM_NAV_ITEMS -->
+    <a href="/analytics" class="flex flex-col items-center justify-center gap-1">
+        <span class="hero-chart-bar size-5"></span>
+        Analytics
+    </a>
+    <a href="/leads" class="flex flex-col items-center justify-center gap-1">
+        <span class="hero-users size-5"></span>
+        Leads
+    </a>
+    <button type="button" class="flex flex-col items-center justify-center gap-1 cursor-pointer"
+            @click="$store.layout.moreOpen = !$store.layout.moreOpen">
+        <span class="hero-ellipsis-horizontal size-5"></span>
+        More
+    </button>
+</nav>
 
-<div x-show="moreOpen"
-         @click.self="moreOpen = false"
-         class="lg:hidden fixed inset-0 bg-black/60 z-40"
-         style="display:none;">
-        <div class="absolute bottom-16 left-0 right-0 bg-base-200 rounded-t-2xl border-t border-base-300 pb-4">
-            <div class="w-8 h-1 bg-base-300 rounded-full mx-auto mt-3 mb-3"></div>
-            <!-- SPIDER:MORE_ITEMS -->
-            <ul class="menu menu-sm px-3 gap-0.5">
-                <li><a href="/transactions"><i class="ti ti-arrows-exchange"></i>Transactions</a></li>
-                <li><a href="/calendar"><i class="ti ti-calendar"></i>Calendar</a></li>
-                <li><a href="/settings"><i class="ti ti-settings"></i>Settings</a></li>
-                <li><a href="/logout" class="text-error"><i class="ti ti-logout"></i>Logout</a></li>
-            </ul>
-        </div>
+<div x-data x-show="$store.layout.moreOpen" x-cloak
+     @click.self="$store.layout.moreOpen = false"
+     class="lg:hidden fixed inset-0 z-40 bg-black/60">
+    <div class="absolute bottom-16 inset-x-0 pb-4 rounded-t-2xl bg-base-200 border-t border-base-300">
+        <div class="w-8 h-1 mx-auto my-3 rounded-full bg-base-300"></div>
+        <!-- SPIDER:MORE_ITEMS -->
+        <ul class="ui-menu ui-menu-sm px-3">
+            <li><a href="/transactions"><span class="hero-arrows-right-left size-5"></span>Transactions</a></li>
+            <li><a href="/calendar"><span class="hero-calendar size-5"></span>Calendar</a></li>
+            <li><a href="/settings"><span class="hero-cog-6-tooth size-5"></span>Settings</a></li>
+            <li><a href="/logout" class="text-error"><span class="hero-arrow-right-start-on-rectangle size-5"></span>Logout</a></li>
+        </ul>
     </div>
+</div>

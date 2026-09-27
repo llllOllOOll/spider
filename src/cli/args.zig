@@ -13,6 +13,8 @@ pub const Command = enum {
     generate,
     migrate,
     routes,
+    ui,
+    icons,
     install,
     update,
     self_update,
@@ -27,6 +29,8 @@ pub const Command = enum {
             .{ "g", .generate },
             .{ "migrate", .migrate },
             .{ "routes", .routes },
+            .{ "ui", .ui },
+            .{ "icons", .icons },
             .{ "install", .install },
             .{ "update", .update },
             .{ "self-update", .self_update },
@@ -70,21 +74,32 @@ pub fn decide(args: []const []const u8) Action {
 
 pub const NewOptions = struct {
     app_name: []const u8,
-    daisyui: bool = false,
+    /// UI kit name (ui.zig kits): --ui=<kit>.
+    ui: []const u8 = @import("ui.zig").default_kit,
+    /// --daisyui was given: an alias of --ui=daisyui (the default), kept
+    /// for old scripts.
+    daisyui_alias: bool = false,
     skip_downloads: bool = false,
     api: bool = false,
     no_db: bool = false,
     pg: bool = false,
 };
 
-pub const NewError = error{ MissingAppName, UnknownOption, ExtraArgument };
+pub const NewError = error{ MissingAppName, UnknownOption, ExtraArgument, UnknownUiKit };
 
 /// `args` are the ones after `new`. `bad` receives the offending argument.
 pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions {
     var o: NewOptions = .{ .app_name = "" };
     for (args) |a| {
         if (std.mem.eql(u8, a, "--daisyui")) {
-            o.daisyui = true;
+            o.ui = "daisyui";
+            o.daisyui_alias = true;
+        } else if (std.mem.startsWith(u8, a, "--ui=")) {
+            o.ui = a["--ui=".len..];
+            if (@import("ui.zig").find(o.ui) == null) {
+                bad.* = a;
+                return error.UnknownUiKit;
+            }
         } else if (std.mem.eql(u8, a, "--skip-downloads")) {
             o.skip_downloads = true;
         } else if (std.mem.eql(u8, a, "--api")) {
@@ -117,6 +132,8 @@ pub const overview =
     \\  generate, g           Generate code: feature <name>, auth
     \\  migrate               Run pending database migrations
     \\  routes                List the app's routes (method, path, access, flags)
+    \\  ui                    Show or switch the UI kit (daisyui, tailwind)
+    \\  icons                 Show, add or remove icon sets (heroicons, lucide, tabler)
     \\  install               Download frontend assets (tailwindcss, alpine, htmx, icons)
     \\  update                Update the spider dependency in this project
     \\  self-update           Update the spider CLI itself
@@ -139,7 +156,9 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\  --pg              Use PostgreSQL instead of SQLite
         \\  --no-db           No database
         \\  --api             API-only project (JSON, no HTML views)
-        \\  --daisyui         Include the DaisyUI preset
+        \\  --ui=<kit>        UI kit: daisyui (default) or tailwind (plain, no library).
+        \\                    Switch later with `spider ui use <kit>`.
+        \\  --daisyui         Same as --ui=daisyui (the default)
         \\  --skip-downloads  Don't download tailwindcss, alpine, htmx, icons now
         \\
         ,
@@ -184,11 +203,38 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\           exit 2 if there is no routes.lock
         \\
         ,
+        .ui =>
+        \\Usage: spider ui [use <kit> [--force]]
+        \\
+        \\Templates use ui-* classes (ui-btn, ui-input, ui-card, ui-menu, ...)
+        \\defined in src/ui.css; only that file knows the UI kit. Without
+        \\arguments: the kit in use and the available ones.
+        \\
+        \\  use <kit>   rewrite src/ui.css for <kit>: daisyui (daisyUI 5) or
+        \\              tailwind (plain Tailwind, same color names). Refuses if
+        \\              you edited src/ui.css, unless --force. Lists template
+        \\              lines that still use the old kit's classes directly.
+        \\
+        ,
+        .icons =>
+        \\Usage: spider icons [add|remove <set>]
+        \\
+        \\Icons are classes: <span class="hero-home size-5"></span>. Each set's
+        \\SVGs are downloaded to bin/icons/<set>/ (spider install) and src/styles.css
+        \\loads one @plugin per set. Without arguments: the sets in use.
+        \\
+        \\Sets: heroicons (hero-*, the default), lucide (lucide-*), tabler (tabler-*).
+        \\
+        \\  add <set>      add the set's @plugin to src/styles.css and download it
+        \\  remove <set>   remove it; lists template lines still using its classes
+        \\
+        ,
         .install =>
         \\Usage: spider install
         \\
-        \\Download the frontend assets (tailwindcss, alpine, htmx, icons) into
-        \\the current project.
+        \\Download the frontend assets into the current project: tailwindcss,
+        \\alpine, htmx, daisyUI (when the UI kit uses it) and the icon sets in
+        \\src/styles.css.
         \\
         ,
         .update =>

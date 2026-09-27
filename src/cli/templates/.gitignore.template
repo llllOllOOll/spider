@@ -7,10 +7,9 @@ zig-pkg/
 .env.development
 .env.production
 
-# Spider generated assets (run: spider install)
+# Spider generated assets (run: spider install): tailwind, daisyUI and icon
+# sets under bin/, compiled CSS and JS libraries under public/
 bin/
 public/css/app.css
-public/css/tabler-icons.min.css
-public/fonts/
 public/js/alpine.min.js
 public/js/htmx.min.js

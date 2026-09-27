@@ -1,84 +1,87 @@
-<div class="drawer-side z-20" style="top:56px;">
-             <label for="drawer-toggle" aria-label="close sidebar" class="drawer-overlay"></label>
-             <aside class="bg-base-200 border-r border-base-300 min-h-full flex flex-col w-64 lg:w-64">
+<!-- Overlay behind the drawer on small screens -->
+<div x-data x-show="$store.layout.drawerOpen" x-cloak @click="$store.layout.drawerOpen = false"
+     class="lg:hidden fixed inset-0 top-14 z-10 bg-black/50"></div>
 
-                 <ul class="menu menu-sm px-3 py-4 gap-0.5 flex-1">
+<aside x-data x-cloak
+       :class="$store.layout.drawerOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'"
+       class="fixed top-14 bottom-0 left-0 z-20 w-64 flex flex-col transition-transform bg-base-200 border-r border-base-300">
 
-                     <li class="menu-title text-xs opacity-40 mb-1">MAIN</li>
-                     <li>
-                         <a href="/" class="flex items-center gap-3 text-lime-400 bg-base-300 font-medium">
-                             <i class="ti ti-layout-dashboard text-base"></i>
-                             Dashboard
-                         </a>
-                     </li>
-                     <li>
-                         <a href="/leads" class="flex items-center gap-3">
-                             <i class="ti ti-users text-base"></i>
-                             Leads
-                             <span class="badge badge-sm badge-primary ml-auto">New</span>
-                         </a>
-                     </li>
-                     <li>
-                         <a href="/transactions" class="flex items-center gap-3">
-                             <i class="ti ti-arrows-exchange text-base"></i>
-                             Transactions
-                         </a>
-                     </li>
-                     <li>
-                         <a href="/analytics" class="flex items-center gap-3">
-                             <i class="ti ti-chart-bar text-base"></i>
-                             Analytics
-                         </a>
-                     </li>
-                     <li>
-                         <a href="/calendar" class="flex items-center gap-3">
-                             <i class="ti ti-calendar text-base"></i>
-                             Calendar
-                         </a>
-                     </li>
+    <ul class="ui-menu ui-menu-sm px-3 py-4 flex-1 overflow-y-auto">
 
-                     <!-- SPIDER:NAV_ITEMS -->
+        <li class="ui-menu-title">Main</li>
+        <li>
+            <a href="/" class="text-primary bg-base-300 font-medium">
+                <span class="hero-squares-2x2 size-5"></span>
+                Dashboard
+            </a>
+        </li>
+        <li>
+            <a href="/leads">
+                <span class="hero-users size-5"></span>
+                Leads
+                <span class="ui-badge ui-badge-sm ui-badge-primary ml-auto">New</span>
+            </a>
+        </li>
+        <li>
+            <a href="/transactions">
+                <span class="hero-arrows-right-left size-5"></span>
+                Transactions
+            </a>
+        </li>
+        <li>
+            <a href="/analytics">
+                <span class="hero-chart-bar size-5"></span>
+                Analytics
+            </a>
+        </li>
+        <li>
+            <a href="/calendar">
+                <span class="hero-calendar size-5"></span>
+                Calendar
+            </a>
+        </li>
 
-                     <li class="menu-title text-xs opacity-40 mt-3 mb-1">PAGES</li>
-                     <li>
-                         <details>
-                             <summary class="flex items-center gap-3">
-                                 <i class="ti ti-file text-base"></i>
-                                 Pages
-                             </summary>
-                             <ul class="ml-4 mt-1 gap-0.5">
-                                 <li><a href="/pages/about">About</a></li>
-                                 <li><a href="/pages/pricing">Pricing</a></li>
-                                 <li><a href="/pages/contact">Contact</a></li>
-                             </ul>
-                         </details>
-                     </li>
-                     <li>
-                         <details>
-                             <summary class="flex items-center gap-3">
-                                 <i class="ti ti-settings text-base"></i>
-                                 Settings
-                             </summary>
-                             <ul class="ml-4 mt-1 gap-0.5">
-                                 <li><a href="/settings/profile">Profile</a></li>
-                                 <li><a href="/settings/billing">Billing</a></li>
-                                 <li><a href="/settings/team">Team</a></li>
-                             </ul>
-                         </details>
-                     </li>
-                     <li>
-                         <a href="/docs" class="flex items-center gap-3">
-                             <i class="ti ti-book text-base"></i>
-                             Documentation
-                         </a>
-                     </li>
-                 </ul>
+        <!-- SPIDER:NAV_ITEMS -->
 
-                 <div class="p-3 border-t border-base-300">
-                     <a href="/logout" class="btn btn-ghost btn-sm w-full justify-start gap-2 text-error">
-                         <i class="ti ti-logout text-base"></i>
-                         Logout
-                     </a>
-                 </div>
-             </aside>
-         </div>
+        <li class="ui-menu-title">Pages</li>
+        <li>
+            <details>
+                <summary>
+                    <span class="hero-document size-5"></span>
+                    Pages
+                </summary>
+                <ul>
+                    <li><a href="/pages/about">About</a></li>
+                    <li><a href="/pages/pricing">Pricing</a></li>
+                    <li><a href="/pages/contact">Contact</a></li>
+                </ul>
+            </details>
+        </li>
+        <li>
+            <details>
+                <summary>
+                    <span class="hero-cog-6-tooth size-5"></span>
+                    Settings
+                </summary>
+                <ul>
+                    <li><a href="/settings/profile">Profile</a></li>
+                    <li><a href="/settings/billing">Billing</a></li>
+                    <li><a href="/settings/team">Team</a></li>
+                </ul>
+            </details>
+        </li>
+        <li>
+            <a href="/docs">
+                <span class="hero-book-open size-5"></span>
+                Documentation
+            </a>
+        </li>
+    </ul>
+
+    <div class="p-3 border-t border-base-300">
+        <a href="/logout" class="ui-btn ui-btn-ghost ui-btn-sm w-full justify-start text-error">
+            <span class="hero-arrow-right-start-on-rectangle size-5"></span>
+            Logout
+        </a>
+    </div>
+</aside>

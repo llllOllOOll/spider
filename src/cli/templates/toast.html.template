@@ -4,9 +4,8 @@
          x-show="show"
          x-transition
          x-cloak
-         style="display:none"
-         class="toast toast-top toast-end z-50">
-        <div :class="type === 'success' ? 'alert alert-success' : 'alert alert-error'">
+         class="ui-toast z-50">
+        <div :class="type === 'success' ? 'ui-alert ui-alert-success' : 'ui-alert ui-alert-error'">
             <span x-text="message"></span>
         </div>
     </div>

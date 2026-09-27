@@ -1,0 +1,94 @@
+/* spider-ui: tailwind
+ *
+ * The UI kit: plain Tailwind, no component library. Templates use the ui-*
+ * classes below, so `spider ui use <kit>` only has to rewrite this file.
+ * The theme defines the same color names daisyUI uses (base-100..300,
+ * base-content, primary, error, ...), so bg-base-200, text-primary or
+ * text-base-content/50 work in every kit.
+ *
+ * Add your own ui-* classes here.
+ */
+@theme {
+  --color-base-100: oklch(0.21 0.006 285.9);
+  --color-base-200: oklch(0.25 0.007 285.9);
+  --color-base-300: oklch(0.32 0.008 285.9);
+  --color-base-content: oklch(0.96 0.003 285.9);
+  --color-primary: oklch(0.62 0.19 259.8);
+  --color-primary-content: oklch(0.98 0.01 259.8);
+  --color-secondary: oklch(0.65 0.2 330);
+  --color-secondary-content: oklch(0.98 0.01 330);
+  --color-accent: oklch(0.77 0.15 180);
+  --color-accent-content: oklch(0.2 0.03 180);
+  --color-neutral: oklch(0.37 0.01 285.9);
+  --color-neutral-content: oklch(0.96 0.003 285.9);
+  --color-info: oklch(0.7 0.14 235);
+  --color-info-content: oklch(0.2 0.03 235);
+  --color-success: oklch(0.72 0.17 150);
+  --color-success-content: oklch(0.2 0.04 150);
+  --color-warning: oklch(0.82 0.16 85);
+  --color-warning-content: oklch(0.25 0.05 85);
+  --color-error: oklch(0.64 0.21 25);
+  --color-error-content: oklch(0.98 0.01 25);
+}
+
+@layer components {
+  /* Buttons (modifiers after the base, so they win) */
+  .ui-btn {
+    @apply inline-flex items-center justify-center gap-2 h-10 px-4 rounded-md text-sm font-medium
+      bg-base-300 text-base-content hover:bg-base-content/15 transition-colors cursor-pointer select-none
+      disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary;
+  }
+  .ui-btn-primary { @apply bg-primary text-primary-content hover:bg-primary/85; }
+  .ui-btn-ghost { @apply bg-transparent hover:bg-base-content/10; }
+  .ui-btn-error { @apply bg-error text-error-content hover:bg-error/85; }
+  .ui-btn-sm { @apply h-8 px-3 text-xs; }
+  .ui-btn-square { @apply px-0 aspect-square; }
+
+  /* Forms: <label class="ui-field"><span class="ui-label">Name</span><input class="ui-input"></label> */
+  .ui-field { @apply flex flex-col gap-1.5; }
+  .ui-label { @apply text-sm font-medium opacity-80; }
+  .ui-input,
+  .ui-select {
+    @apply w-full h-10 px-3 rounded-md bg-base-100 border border-base-300 text-sm
+      placeholder:text-base-content/40 focus:outline-2 focus:outline-primary focus:border-transparent;
+  }
+  .ui-textarea {
+    @apply w-full min-h-24 px-3 py-2 rounded-md bg-base-100 border border-base-300 text-sm
+      placeholder:text-base-content/40 focus:outline-2 focus:outline-primary focus:border-transparent;
+  }
+
+  /* Surfaces */
+  .ui-card { @apply flex flex-col rounded-xl bg-base-200; }
+  .ui-navbar { @apply flex items-center; }
+
+  /* Badges */
+  .ui-badge {
+    @apply inline-flex items-center justify-center rounded-full h-5 px-2 text-xs font-medium
+      bg-base-300 text-base-content;
+  }
+  .ui-badge-primary { @apply bg-primary text-primary-content; }
+  .ui-badge-sm { @apply h-4 px-1.5 text-[0.65rem]; }
+  .ui-badge-xs { @apply h-3.5 px-1 text-[0.6rem]; }
+
+  /* Menus: <ul class="ui-menu"><li class="ui-menu-title">..</li><li><a>..</a></li></ul> */
+  .ui-menu { @apply flex flex-col gap-0.5 w-full text-sm; }
+  .ui-menu :where(li > a, li > details > summary) {
+    @apply flex items-center gap-3 rounded-md px-3 py-2 cursor-pointer hover:bg-base-content/10;
+  }
+  .ui-menu :where(li > details > summary) { @apply list-none; }
+  .ui-menu :where(li > details > summary)::-webkit-details-marker { display: none; }
+  .ui-menu :where(li > details > summary)::after {
+    content: "";
+    @apply ml-auto size-1.5 border-r-2 border-b-2 border-current rotate-45 opacity-60 transition-transform;
+  }
+  .ui-menu :where(li > details[open] > summary)::after { @apply -rotate-135; }
+  .ui-menu :where(li ul) { @apply ml-4 mt-0.5 flex flex-col gap-0.5; }
+  .ui-menu-sm { @apply text-xs; }
+  .ui-menu-title { @apply px-3 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide opacity-40; }
+
+  /* Feedback */
+  .ui-alert { @apply flex items-center gap-3 rounded-lg px-4 py-3 text-sm bg-base-300; }
+  .ui-alert-success { @apply bg-success text-success-content; }
+  .ui-alert-error { @apply bg-error text-error-content; }
+  .ui-toast { @apply fixed top-4 right-4 flex flex-col gap-2; }
+}

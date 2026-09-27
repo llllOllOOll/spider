@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const downloader = @import("downloader.zig");
 const chmod = @import("chmod.zig");
 const fs_utils = @import("fs_utils.zig");
+const icons = @import("icons.zig");
 
 // Asset versions — update when creating a new Spider release
 const TAILWIND_VERSION = "4.3.0";
@@ -22,7 +23,7 @@ fn getTailwindUrl() []const u8 {
     return base ++ "linux-x64";
 }
 
-fn getCacheDir(allocator: std.mem.Allocator) ![]const u8 {
+pub fn getCacheDir(allocator: std.mem.Allocator) ![]const u8 {
     if (std.c.getenv("XDG_CACHE_HOME")) |xdg| {
         const s = std.mem.span(xdg);
         if (s.len > 0) return std.fmt.allocPrint(allocator, "{s}/spider", .{s});
@@ -101,6 +102,12 @@ fn downloadWithCache(
     return true;
 }
 
+fn usesTablerWebfont(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) bool {
+    const layout = project_dir.readFileAlloc(io, "src/shared/templates/layout.html", allocator, .limited(1024 * 1024)) catch return false;
+    defer allocator.free(layout);
+    return std.mem.indexOf(u8, layout, "tabler-icons.min.css") != null;
+}
+
 pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !void {
     // verify we're in a Spider project before downloading anything
     project_dir.access(io, "spider.config.zig", .{}) catch {
@@ -110,16 +117,39 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !v
         return error.NotASpiderProject;
     };
 
-    // Asset definitions — URLs use hardcoded versions for reproducible builds and caching
-    const assets = .{
-        .{ getTailwindUrl(), "bin/tailwindcss", "tailwindcss-" ++ TAILWIND_VERSION },
-        .{ "https://github.com/saadeghi/daisyui/releases/download/v" ++ DAISYUI_VERSION ++ "/daisyui.mjs", "bin/daisyui.mjs", "daisyui-" ++ DAISYUI_VERSION ++ ".mjs" },
-        .{ "https://github.com/saadeghi/daisyui/releases/download/v" ++ DAISYUI_VERSION ++ "/daisyui-theme.mjs", "bin/daisyui-theme.mjs", "daisyui-theme-" ++ DAISYUI_VERSION ++ ".mjs" },
-        .{ "https://cdn.jsdelivr.net/npm/alpinejs@" ++ ALPINE_VERSION ++ "/dist/cdn.min.js", "public/js/alpine.min.js", "alpine-" ++ ALPINE_VERSION ++ ".min.js" },
-        .{ "https://unpkg.com/htmx.org@" ++ HTMX_VERSION ++ "/dist/htmx.min.js", "public/js/htmx.min.js", "htmx-" ++ HTMX_VERSION ++ ".min.js" },
-        .{ "https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@" ++ TABLER_VERSION ++ "/dist/tabler-icons.min.css", "public/css/tabler-icons.min.css", "tabler-icons-" ++ TABLER_VERSION ++ ".css" },
-        .{ "https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@" ++ TABLER_VERSION ++ "/dist/fonts/tabler-icons.woff2", "public/fonts/tabler-icons.woff2", "tabler-icons-" ++ TABLER_VERSION ++ ".woff2" },
-    };
+    const Asset = struct { url: []const u8, dest: []const u8, cache_name: []const u8 };
+    var assets: std.ArrayListUnmanaged(Asset) = .empty;
+    defer assets.deinit(allocator);
+    // URLs use pinned versions for reproducible builds and caching.
+    try assets.appendSlice(allocator, &.{
+        .{ .url = getTailwindUrl(), .dest = "bin/tailwindcss", .cache_name = "tailwindcss-" ++ TAILWIND_VERSION },
+        .{ .url = "https://cdn.jsdelivr.net/npm/alpinejs@" ++ ALPINE_VERSION ++ "/dist/cdn.min.js", .dest = "public/js/alpine.min.js", .cache_name = "alpine-" ++ ALPINE_VERSION ++ ".min.js" },
+        .{ .url = "https://unpkg.com/htmx.org@" ++ HTMX_VERSION ++ "/dist/htmx.min.js", .dest = "public/js/htmx.min.js", .cache_name = "htmx-" ++ HTMX_VERSION ++ ".min.js" },
+    });
+
+    const styles = project_dir.readFileAlloc(io, "src/styles.css", allocator, .limited(1024 * 1024)) catch "";
+    defer if (styles.len > 0) allocator.free(styles);
+    const ui_css = project_dir.readFileAlloc(io, "src/ui.css", allocator, .limited(1024 * 1024)) catch "";
+    defer if (ui_css.len > 0) allocator.free(ui_css);
+
+    // daisyUI only when the UI kit (src/ui.css, or styles.css in apps made
+    // before UI kits) loads it.
+    if (std.mem.indexOf(u8, ui_css, "daisyui.mjs") != null or std.mem.indexOf(u8, styles, "daisyui.mjs") != null) {
+        try assets.appendSlice(allocator, &.{
+            .{ .url = "https://github.com/saadeghi/daisyui/releases/download/v" ++ DAISYUI_VERSION ++ "/daisyui.mjs", .dest = "bin/daisyui.mjs", .cache_name = "daisyui-" ++ DAISYUI_VERSION ++ ".mjs" },
+            .{ .url = "https://github.com/saadeghi/daisyui/releases/download/v" ++ DAISYUI_VERSION ++ "/daisyui-theme.mjs", .dest = "bin/daisyui-theme.mjs", .cache_name = "daisyui-theme-" ++ DAISYUI_VERSION ++ ".mjs" },
+        });
+    }
+
+    // The Tabler webfont, for apps generated before SVG icons (their layout
+    // links /css/tabler-icons.min.css). The CSS loads its font from
+    // ./fonts/ next to it: public/css/fonts/.
+    if (usesTablerWebfont(io, allocator, project_dir)) {
+        try assets.appendSlice(allocator, &.{
+            .{ .url = "https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@" ++ TABLER_VERSION ++ "/dist/tabler-icons.min.css", .dest = "public/css/tabler-icons.min.css", .cache_name = "tabler-icons-" ++ TABLER_VERSION ++ ".css" },
+            .{ .url = "https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@" ++ TABLER_VERSION ++ "/dist/fonts/tabler-icons.woff2", .dest = "public/css/fonts/tabler-icons.woff2", .cache_name = "tabler-icons-" ++ TABLER_VERSION ++ ".woff2" },
+        });
+    }
 
     // Try to setup global cache
     const cache_path = getCacheDir(allocator) catch null;
@@ -131,20 +161,32 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !v
 
     var downloaded: usize = 0;
 
-    inline for (assets) |asset| {
+    for (assets.items) |asset| {
         if (cache_dir) |cd| {
-            const did_download = downloadWithCache(io, allocator, asset[0], project_dir, asset[1], cd, asset[2]) catch |err| blk: {
-                std.debug.print("  warning: {s} failed: {s}\n", .{ asset[2], @errorName(err) });
+            const did_download = downloadWithCache(io, allocator, asset.url, project_dir, asset.dest, cd, asset.cache_name) catch |err| blk: {
+                std.debug.print("  warning: {s} failed: {s}\n", .{ asset.cache_name, @errorName(err) });
                 break :blk false;
             };
             if (did_download) downloaded += 1;
         } else {
-            const did_download = downloadToProject(io, allocator, asset[0], project_dir, asset[1], asset[2]) catch |err| blk: {
-                std.debug.print("  warning: {s} download failed: {s}\n", .{ asset[2], @errorName(err) });
+            const did_download = downloadToProject(io, allocator, asset.url, project_dir, asset.dest, asset.cache_name) catch |err| blk: {
+                std.debug.print("  warning: {s} download failed: {s}\n", .{ asset.cache_name, @errorName(err) });
                 break :blk false;
             };
             if (did_download) downloaded += 1;
         }
+    }
+
+    // Icon sets listed in src/styles.css (spider icons add|remove).
+    const active = icons.activeSets(allocator, styles) catch &.{};
+    defer if (active.len > 0) allocator.free(active);
+    for (active) |name| {
+        const set = icons.find(name) orelse {
+            std.debug.print("  warning: unknown icon set '{s}' in src/styles.css\n", .{name});
+            continue;
+        };
+        icons.install(io, allocator, project_dir, set, cache_dir) catch |err|
+            std.debug.print("  warning: icons {s} failed: {s}\n", .{ name, @errorName(err) });
     }
 
     if (cache_dir) |cd| {

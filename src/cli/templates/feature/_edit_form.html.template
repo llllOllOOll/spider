@@ -2,14 +2,13 @@
 <form hx-post="/{{plural}}/{ id }/update"
       hx-target="#{{feature}}-{ id }"
       hx-swap="outerHTML">
-    <div class="form-control mb-4">
-        <label class="label"><span class="label-text">Name</span></label>
-        <input class="input input-bordered w-full"
-               name="name" value="{ name }" />
-    </div>
-    <div class="modal-action">
-        <button type="button" class="btn btn-ghost"
+    <label class="ui-field mb-4">
+        <span class="ui-label">Name</span>
+        <input class="ui-input" name="name" value="{ name }" />
+    </label>
+    <div class="flex gap-2 justify-end">
+        <button type="button" class="ui-btn ui-btn-ghost"
                 @click="editModal = false">Cancel</button>
-        <button class="btn btn-primary" type="submit">Save</button>
+        <button class="ui-btn ui-btn-primary" type="submit">Save</button>
     </div>
 </form>

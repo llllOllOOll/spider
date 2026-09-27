@@ -1,18 +1,17 @@
-<div class="card bg-base-200 p-4 mt-4">
+<div class="ui-card p-4 mt-4">
     <form hx-post="/{{plural}}/create"
           hx-target="#{{feature}}-list"
           hx-swap="afterbegin"
-          hx-on::after-request="if(event.detail.successful) this.closest('.card').remove()">
+          hx-on::after-request="if(event.detail.successful) this.closest('.ui-card').remove()">
 
-        <div class="form-control mb-3">
-            <label class="label"><span class="label-text">Name</span></label>
-            <input class="input input-bordered w-full"
-                   name="name" placeholder="{{Feature}} name..." />
-        </div>
+        <label class="ui-field mb-3">
+            <span class="ui-label">Name</span>
+            <input class="ui-input" name="name" placeholder="{{Feature}} name..." />
+        </label>
         <div class="flex gap-2 justify-end">
-            <button type="button" class="btn btn-ghost btn-sm"
-                    @click="$el.closest('.card').remove()">Cancel</button>
-            <button class="btn btn-primary btn-sm" type="submit">Save</button>
+            <button type="button" class="ui-btn ui-btn-ghost ui-btn-sm"
+                    @click="$el.closest('.ui-card').remove()">Cancel</button>
+            <button class="ui-btn ui-btn-primary ui-btn-sm" type="submit">Save</button>
         </div>
     </form>
 </div>

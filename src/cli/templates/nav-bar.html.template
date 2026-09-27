@@ -1,23 +1,20 @@
-<div class="navbar bg-base-200 border-b border-base-300 fixed top-0 left-0 right-0 z-30 min-h-0 h-14 px-4 gap-2">
-        <label for="drawer-toggle" class="btn btn-ghost btn-sm btn-square lg:hidden">
-            <i class="ti ti-menu-2 text-xl"></i>
-        </label>
-        <div class="flex items-center gap-2">
-            <img src="/images/logo.png" alt="Spider Logo" class="w-7 h-7 rounded object-cover">
-            <span class="text-sm font-semibold text-base-content">{{app_name}}</span>
-        </div>
-        <div class="ml-auto flex items-center gap-1">
-            <button class="btn btn-ghost btn-sm btn-square">
-                <i class="ti ti-bell text-lg"></i>
-                <span class="badge badge-xs badge-primary indicator-item">3</span>
-            </button>
-            <button class="btn btn-ghost btn-sm gap-2">
-                <div class="avatar placeholder">
-                    <div class="bg-lime-400 text-black rounded-full w-7">
-                        <span class="text-xs font-bold">JD</span>
-                    </div>
-                </div>
-                <span class="text-sm hidden sm:block">John Doe</span>
-            </button>
-        </div>
+<header x-data class="ui-navbar fixed top-0 inset-x-0 z-30 h-14 px-4 gap-2 bg-base-200 border-b border-base-300">
+    <button type="button" class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-square lg:hidden" aria-label="Menu"
+            @click="$store.layout.drawerOpen = !$store.layout.drawerOpen">
+        <span class="hero-bars-3"></span>
+    </button>
+    <a href="/" class="flex items-center gap-2">
+        <img src="/images/logo.png" alt="" class="w-7 h-7 rounded object-cover">
+        <span class="text-sm font-semibold">{{app_name}}</span>
+    </a>
+    <div class="ml-auto flex items-center gap-1">
+        <button type="button" class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-square relative" aria-label="Notifications">
+            <span class="hero-bell size-5"></span>
+            <span class="ui-badge ui-badge-primary ui-badge-xs absolute -top-0.5 -right-0.5">3</span>
+        </button>
+        <button type="button" class="ui-btn ui-btn-ghost ui-btn-sm">
+            <span class="grid place-items-center w-7 h-7 rounded-full bg-primary text-primary-content text-xs font-bold">JD</span>
+            <span class="text-sm hidden sm:block">John Doe</span>
+        </button>
     </div>
+</header>

@@ -27,8 +27,8 @@ const stores_js_tmpl = @embedFile("templates/stores.js.template");
 const spider_logo_png = @embedFile("assets/spider_logo.png");
 const favicon_png = @embedFile("assets/favicon.png");
 const favicon_ico = @embedFile("assets/favicon.ico");
-const layout_daisyui_html_tmpl = @embedFile("templates/layout_daisyui.html.template");
-const home_daisyui_index_tmpl = @embedFile("templates/home_daisyui_index.html.template");
+const app_layout_html_tmpl = @embedFile("templates/app_layout.html.template");
+const ui_mod = @import("ui.zig");
 const build_zig_pg_tmpl = @embedFile("templates/build.zig.pg.template");
 const build_zig_sqlite_tmpl = @embedFile("templates/build.zig.sqlite.template");
 const main_zig_pg_tmpl = @embedFile("templates/main.zig.pg.template");
@@ -175,7 +175,7 @@ fn writeFile(io: std.Io, dir: std.Io.Dir, path: []const u8, content: []const u8)
     try writer.interface.flush();
 }
 
-pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, use_daisyui: bool, skip_downloads: bool, api_only: bool, no_db: bool, use_pg: bool) !void {
+pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_kit: ui_mod.Kit, skip_downloads: bool, api_only: bool, no_db: bool, use_pg: bool) !void {
     // check zig is available
     const zig_result = std.process.run(allocator, io, .{
         .argv = &.{ "zig", "version" },
@@ -260,8 +260,6 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, use_d
 
     std.debug.print("Creating {s}...\n", .{app_name});
 
-    const selected_layout_tmpl = if (use_daisyui) layout_daisyui_html_tmpl else layout_html_tmpl;
-    const selected_home_index_tmpl = if (use_daisyui) home_daisyui_index_tmpl else home_index_tmpl;
     const selected_build_zig_tmpl = if (api_only) build_zig_api_tmpl else if (effective_no_db) build_zig_tmpl else if (use_pg) build_zig_pg_tmpl else build_zig_sqlite_tmpl;
     const selected_main_zig_tmpl = if (api_only and effective_no_db) main_zig_api_tmpl else if (api_only) main_zig_api_sqlite_tmpl else if (effective_no_db) main_zig_tmpl else if (use_pg) main_zig_pg_tmpl else main_zig_sqlite_tmpl;
     const selected_env_example_tmpl = if (effective_no_db or !use_pg) env_example_tmpl else env_example_pg_tmpl;
@@ -279,13 +277,14 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, use_d
         .{ "src/core/mod.zig", core_mod_tmpl },
         .{ "src/features/mod.zig", features_mod_tmpl },
         .{ "src/features/home/mod.zig", home_mod_tmpl },
-        .{ "src/shared/templates/layout.html", selected_layout_tmpl },
+        .{ "src/shared/templates/layout.html", layout_html_tmpl },
+        .{ "src/shared/templates/app.html", app_layout_html_tmpl },
         .{ "src/shared/templates/nav-bar.html", nav_bar_tmpl },
         .{ "src/shared/templates/side-bar.html", side_bar_tmpl },
         .{ "src/shared/templates/mobile-nav.html", mobile_nav_tmpl },
         .{ "src/shared/templates/toast.html", toast_tmpl },
         .{ "public/js/stores.js", stores_js_tmpl },
-        .{ "src/features/home/views/index.html", selected_home_index_tmpl },
+        .{ "src/features/home/views/index.html", home_index_tmpl },
         .{ "src/features/home/controller.zig", home_controller_tmpl },
         .{ "src/features/home/routes.zig", home_routes_tmpl },
         .{ "Dockerfile", dockerfile_tmpl },
@@ -343,6 +342,15 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, use_d
             };
             std.debug.print("  create  {s}/{s}\n", .{ app_name, path });
         }
+    }
+
+    if (!api_only) {
+        // UI kit layer: templates use ui-* classes defined here (spider ui).
+        writeFile(io, project_dir, "src/ui.css", ui_kit.css) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        std.debug.print("  create  {s}/src/ui.css (UI kit: {s})\n", .{ app_name, ui_kit.name });
     }
 
     {

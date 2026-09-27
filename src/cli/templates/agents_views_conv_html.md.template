@@ -3,3 +3,20 @@
   trusted markup built in Zig as `spider.RawHtml{ .html = s }`. htmx partials:
   `c.viewFragment("posts/index", "PostsList", data, .{})`.
 - Templates are compiled into the binary: rebuild (and restart) after editing.
+- **Styling: ui-* classes + Tailwind utilities, nothing else.** Components come
+  from `src/ui.css`: `ui-btn` (+ `ui-btn-primary`, `ui-btn-ghost`,
+  `ui-btn-error`, `ui-btn-sm`, `ui-btn-square`), forms as
+  `<label class="ui-field"><span class="ui-label">Name</span><input class="ui-input" name="name"></label>`
+  (`ui-textarea`, `ui-select`), `ui-card`, `ui-badge`, `ui-menu` /
+  `ui-menu-title`, `ui-alert` (+ `-success`, `-error`), `ui-toast`. Never use a
+  kit's own classes (`btn`, `card`, `input`, ...): only `src/ui.css` knows the
+  kit, and `spider ui use <kit>` swaps it. Need a new reusable style? Add a
+  `ui-*` class to `src/ui.css`. Colors use the theme names every kit defines:
+  `bg-base-100/200/300`, `text-base-content` (`/50` for muted), `primary`,
+  `error`, `success`, `warning`. No inline `style=` for layout or color.
+- **Icons are classes:** `<span class="hero-pencil-square size-5"></span>`
+  (Heroicons; `-solid`, `-mini`, `-micro` variants; names at heroicons.com).
+  They take the text color. Never paste `<svg>` markup or use emoji as icons.
+  Other sets: `spider icons add lucide` (`lucide-*`) / `tabler` (`tabler-*`).
+- Interactivity: htmx attributes for server round-trips, Alpine (`x-data`,
+  `@click`, `$store.toast.fire(msg)`, `$store.layout`) for local UI state.

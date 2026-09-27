@@ -16,12 +16,12 @@ extends "layout"
                style="border-right: 1px solid rgba(255,255,255,0.08);">
                 <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40"
                      style="background: rgba(255,255,255,0.05);">
-                    <i class="ti ti-book-2 text-lg" aria-hidden="true"></i>
+                    <span class="hero-book-open size-5" aria-hidden="true"></span>
                 </div>
                 <div>
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-sm font-medium">Documentation</span>
-                        <i class="ti ti-arrow-right text-sm text-base-content/20 group-hover:text-base-content/50 transition-colors" aria-hidden="true"></i>
+                        <span class="hero-arrow-right size-4 text-base-content/20 group-hover:text-base-content/50 transition-colors" aria-hidden="true"></span>
                     </div>
                     <p class="text-xs text-base-content/40 leading-relaxed">
                         Everything you need to build with Spider. Routing, templates, middleware, and HTMX patterns.
@@ -33,12 +33,12 @@ extends "layout"
                class="group flex flex-col gap-5 p-8 bg-base-200 hover:bg-base-300 transition-colors">
                 <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40"
                      style="background: rgba(255,255,255,0.05);">
-                    <i class="ti ti-terminal-2 text-lg" aria-hidden="true"></i>
+                    <span class="hero-command-line size-5" aria-hidden="true"></span>
                 </div>
                 <div>
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-sm font-medium">Quick start</span>
-                        <i class="ti ti-arrow-right text-sm text-base-content/20 group-hover:text-base-content/50 transition-colors" aria-hidden="true"></i>
+                        <span class="hero-arrow-right size-4 text-base-content/20 group-hover:text-base-content/50 transition-colors" aria-hidden="true"></span>
                     </div>
                     <p class="text-xs text-base-content/40 leading-relaxed">
                         Get a Spider project running in minutes. Install Zig, clone the starter,
@@ -56,12 +56,12 @@ extends "layout"
                style="border-right: 1px solid rgba(255,255,255,0.08);">
                 <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40"
                      style="background: rgba(255,255,255,0.05);">
-                    <i class="ti ti-brand-github text-lg" aria-hidden="true"></i>
+                    <span class="hero-code-bracket size-5" aria-hidden="true"></span>
                 </div>
                 <div>
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-sm font-medium">GitHub</span>
-                        <i class="ti ti-arrow-right text-sm text-base-content/20 group-hover:text-base-content/50 transition-colors" aria-hidden="true"></i>
+                        <span class="hero-arrow-right size-4 text-base-content/20 group-hover:text-base-content/50 transition-colors" aria-hidden="true"></span>
                     </div>
                     <p class="text-xs text-base-content/40 leading-relaxed">
                         Browse the source, open issues, and contribute. Spider is open source and built in the open.
@@ -73,12 +73,12 @@ extends "layout"
                class="group flex flex-col gap-5 p-8 bg-base-200 hover:bg-base-300 transition-colors">
                 <div class="w-10 h-10 rounded-lg flex items-center justify-center text-base-content/40"
                      style="background: rgba(255,255,255,0.05);">
-                    <i class="ti ti-world text-lg" aria-hidden="true"></i>
+                    <span class="hero-globe-alt size-5" aria-hidden="true"></span>
                 </div>
                 <div>
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-sm font-medium">Ecosystem</span>
-                        <i class="ti ti-arrow-right text-sm text-base-content/20 group-hover:text-base-content/50 transition-colors" aria-hidden="true"></i>
+                        <span class="hero-arrow-right size-4 text-base-content/20 group-hover:text-base-content/50 transition-colors" aria-hidden="true"></span>
                     </div>
                     <p class="text-xs text-base-content/40 leading-relaxed">
                         HTMX, Alpine.js, and Zig's standard library work seamlessly
@@ -94,8 +94,8 @@ extends "layout"
     <div class="flex items-center gap-4 mt-8 text-xs font-mono opacity-20">
         <span>Spider v0.6.4 · Zig 0.17.0-dev.667+0569f1f6a</span>
         <a href="https://discord.gg/Z9aMYY6g" target="_blank"
-           class="hover:opacity-60 transition-opacity">
-            <i class="ti ti-brand-discord" aria-hidden="true"></i>
+           class="inline-flex items-center gap-1 hover:opacity-60 transition-opacity">
+            <span class="hero-chat-bubble-left-right size-4" aria-hidden="true"></span>
             Discord
         </a>
     </div>
