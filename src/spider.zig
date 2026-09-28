@@ -137,6 +137,7 @@ test {
     _ = @import("render/zmd/zmd.zig");
     _ = @import("render/template_test.zig");
     _ = @import("render/template_safety_test.zig");
+    _ = @import("render/embedded_test.zig");
     _ = @import("core/watchdog.zig");
     _ = @import("core/context_test.zig");
     _ = @import("core/app_test.zig");

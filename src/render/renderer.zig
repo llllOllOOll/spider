@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const ast = @import("ast.zig");
 const ctx_mod = @import("context.zig");
 const parser_mod = @import("parser.zig");
+const embedded = @import("embedded.zig");
 
 const Node = ast.Node;
 const freeNode = ast.freeNode;
@@ -22,6 +23,8 @@ pub const max_component_depth: usize = 32;
 /// Per-render state threaded through renderNode.
 pub const RenderState = struct {
     components: ?std.StringHashMapUnmanaged([]const u8),
+    /// Shared read-only components, looked up after `components`.
+    base: ?*const embedded.Map = null,
     /// Component name -> parsed body, so a component used N times in one
     /// render (e.g. inside a `for`) is parsed once, not N times.
     parsed: std.StringHashMapUnmanaged([]Node) = .{},
@@ -29,8 +32,16 @@ pub const RenderState = struct {
     stack: [max_component_depth][]const u8 = undefined,
     depth: usize = 0,
 
-    pub fn init(components: ?std.StringHashMapUnmanaged([]const u8)) RenderState {
-        return .{ .components = components };
+    pub fn init(components: ?std.StringHashMapUnmanaged([]const u8), base: ?*const embedded.Map) RenderState {
+        return .{ .components = components, .base = base };
+    }
+
+    fn lookup(self: *const RenderState, name: []const u8) ?[]const u8 {
+        if (self.components) |comps| {
+            if (comps.get(name)) |src| return src;
+        }
+        if (self.base) |base| return base.get(name);
+        return null;
     }
 
     pub fn deinit(self: *RenderState, alc: std.mem.Allocator) void {
@@ -46,8 +57,8 @@ pub const RenderState = struct {
     /// Parsed body of component `name`, or null when it isn't registered.
     fn componentNodes(self: *RenderState, alc: std.mem.Allocator, name: []const u8) !?[]Node {
         if (self.parsed.get(name)) |nodes| return nodes;
-        const comps = self.components orelse return null;
-        const template_str = comps.get(name) orelse blk: {
+        if (self.components == null and self.base == null) return null;
+        const template_str = self.lookup(name) orelse blk: {
             // PascalCase -> snake_case fallback ("UserCard" -> "user_card").
             var field_buf: [256]u8 = undefined;
             var field_len: usize = 0;
@@ -64,7 +75,7 @@ pub const RenderState = struct {
                 }
                 field_len += 1;
             }
-            break :blk comps.get(field_buf[0..field_len]);
+            break :blk self.lookup(field_buf[0..field_len]);
         } orelse return null;
 
         var comp_parser = Parser.init(alc, template_str);

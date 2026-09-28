@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Embedded templates are one map built at compile time
+  (`src/render/embedded.zig`). `c.view()` / `c.viewFragment()` no longer
+  walk every template inside the generic view function or copy every
+  template into the request arena: lookup, components and `-- doc` pages
+  are handled by non-generic code, and only rendering depends on `data`.
+  In Orbitx (297 templates) the Debug binary went from 632 MB to 355 MB, and
+  an edited `.html` rebuilds in ~1 s under `zig build --watch -fincremental`
+  (was 10–12 s). Rendered pages are unchanged.
+- `Template.base_components`: a read-only component map looked up after
+  `components` (inline components still win).
+- A template name longer than 256 bytes is `error.TemplateNotFound` instead
+  of overflowing a buffer.
+
 ## [0.7.0] - 2026-09-27
 
 ### Breaking changes

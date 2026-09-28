@@ -5,12 +5,15 @@ const views_mod = @import("../render/views.zig");
 const Database = @import("database.zig").Database;
 pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 const zmd = @import("../render/zmd/zmd.zig");
+const embedded = @import("../render/embedded.zig");
 const Hub = @import("../ws/hub.zig").Hub;
 const Watchdog = @import("watchdog.zig").Watchdog;
 const RouteMeta = @import("../routing/router.zig").RouteMeta;
 
 const root = @import("root");
 pub const has_embed = @hasDecl(root, "spider_templates");
+/// The app's embedded templates as one map (see render/embedded.zig).
+const embedded_templates: embedded.Map = if (has_embed) embedded.buildMap(root.spider_templates) else .initComptime(.{});
 
 pub const ViewsMode = enum { runtime, embed };
 
@@ -194,76 +197,62 @@ pub const Ctx = struct {
     }
 
     pub fn view(self: *Ctx, name: []const u8, data: anytype, opts: ResponseOptions) !Response {
-        const vc = self._views orelse return error.ViewsNotConfigured;
-
-        const io = vc.io;
-
-        if (has_embed) {
-            const Templates = root.spider_templates;
-
-            // First, try to find the template in EmbeddedTemplates
-            const view_content = blk: {
-                var buf: [256]u8 = undefined;
-                var j: usize = 0;
-                for (name) |c| {
-                    buf[j] = if (c == '/' or c == '-') '_' else c;
-                    j += 1;
-                }
-                const normalized = buf[0..j];
-                @setEvalBranchQuota(10000);
-                inline for (@typeInfo(Templates).@"struct".field_names) |fname| {
-                    if (std.mem.eql(u8, fname, normalized)) {
-                        const instance: Templates = .{};
-                        break :blk @field(instance, fname);
-                    }
-                }
-                self._last_template = name;
-                return error.TemplateNotFound;
-            };
-
-            // Check for -- doc signature - if present, convert and return directly (no template processing)
-            if (std.mem.startsWith(u8, view_content, "-- doc")) {
-                const md_body = view_content["-- doc".len..];
-                const md_html = try zmd.parse(self.arena, md_body, zmd.Formatters{});
-                return Response{
-                    .status = opts.status,
-                    .body = md_html,
-                    .content_type = "text/html; charset=utf-8",
-                    .headers = opts.headers,
-                    .cookies = opts.cookies,
-                };
-            }
-
-            self._last_template = name;
-
-            var components = std.StringHashMapUnmanaged([]const u8){};
-
-            const embed_inst: Templates = .{};
-            @setEvalBranchQuota(10000);
-            inline for (@typeInfo(Templates).@"struct".field_names) |fname| {
-                const content: []const u8 = @field(embed_inst, fname);
-                try components.put(self.arena, try self.arena.dupe(u8, fname), try self.arena.dupe(u8, content));
-                if (comptime std.mem.startsWith(u8, fname, "components_")) {
-                    const alias = fname["components_".len..];
-                    try components.put(self.arena, try self.arena.dupe(u8, alias), try self.arena.dupe(u8, content));
-                }
-            }
-
-            var tmpl_instance = try Template.init(self.arena, view_content);
-            defer tmpl_instance.deinit();
-            tmpl_instance.components = components;
-
-            const rendered_html = try tmpl_instance.render(data, self.arena);
-
-            return Response{
-                .status = opts.status,
-                .body = rendered_html,
-                .content_type = "text/html; charset=utf-8",
-                .headers = opts.headers,
-                .cookies = opts.cookies,
-            };
+        switch (try self.prepareView(name, opts)) {
+            .done => |resp| return resp,
+            .template => |t| {
+                var tmpl = t;
+                defer tmpl.deinit();
+                return htmlResponse(try tmpl.render(data, self.arena), opts);
+            },
         }
+    }
 
+    pub fn viewFragment(self: *Ctx, template_name: []const u8, component_name: []const u8, data: anytype, opts: ResponseOptions) !Response {
+        switch (try self.prepareView(template_name, opts)) {
+            .done => |resp| return resp,
+            .template => |t| {
+                var tmpl = t;
+                defer tmpl.deinit();
+                return htmlResponse(try tmpl.renderFragment(component_name, data, self.arena), opts);
+            },
+        }
+    }
+
+    /// What view()/viewFragment() need before rendering: the parsed
+    /// template with its components, or the finished response of a
+    /// `-- doc` page. Not generic on purpose: view() is instantiated once
+    /// per `data` type, and everything that depends on the templates
+    /// themselves lives here, compiled once.
+    pub const PreparedView = union(enum) {
+        done: Response,
+        template: Template,
+    };
+
+    fn prepareView(self: *Ctx, name: []const u8, opts: ResponseOptions) !PreparedView {
+        const vc = self._views orelse return error.ViewsNotConfigured;
+        if (has_embed) return self.prepareEmbedded(&embedded_templates, name, opts);
+        return self.prepareRuntime(vc, name, opts);
+    }
+
+    /// Embedded mode: template and components come from `map` (static
+    /// memory, not copied per request).
+    pub fn prepareEmbedded(self: *Ctx, map: *const embedded.Map, name: []const u8, opts: ResponseOptions) !PreparedView {
+        self._last_template = name;
+        var buf: [embedded.max_name_len]u8 = undefined;
+        const key = embedded.normalizeName(&buf, name) orelse return error.TemplateNotFound;
+        const content = map.get(key) orelse return error.TemplateNotFound;
+
+        if (try self.docResponse(content, opts)) |resp| return .{ .done = resp };
+
+        var tmpl = try Template.init(self.arena, content);
+        tmpl.base_components = map;
+        return .{ .template = tmpl };
+    }
+
+    /// Runtime mode: reads the template, and every indexed template as a
+    /// component, from disk.
+    fn prepareRuntime(self: *Ctx, vc: ViewsConfig, name: []const u8, opts: ResponseOptions) !PreparedView {
+        const io = vc.io;
         const view_path = if (vc.index) |idx|
             idx.get(name) orelse {
                 self._last_template = name;
@@ -285,18 +274,7 @@ pub const Ctx = struct {
             return err;
         };
 
-        // Check for -- doc signature - if present, convert and return directly (no template processing)
-        if (std.mem.startsWith(u8, view_content, "-- doc")) {
-            const md_body = view_content["-- doc".len..];
-            const md_html = try zmd.parse(self.arena, md_body, zmd.Formatters{});
-            return Response{
-                .status = opts.status,
-                .body = md_html,
-                .content_type = "text/html; charset=utf-8",
-                .headers = opts.headers,
-                .cookies = opts.cookies,
-            };
-        }
+        if (try self.docResponse(view_content, opts)) |resp| return .{ .done = resp };
 
         var components = std.StringHashMapUnmanaged([]const u8){};
 
@@ -316,148 +294,23 @@ pub const Ctx = struct {
             }
         }
 
-        var tmpl_instance = try Template.init(self.arena, view_content);
-        defer tmpl_instance.deinit();
-        tmpl_instance.components = components;
-
-        const rendered = try tmpl_instance.render(data, self.arena);
-
-        return Response{
-            .status = opts.status,
-            .body = rendered,
-            .content_type = "text/html; charset=utf-8",
-            .headers = opts.headers,
-            .cookies = opts.cookies,
-        };
+        var tmpl = try Template.init(self.arena, view_content);
+        tmpl.components = components;
+        return .{ .template = tmpl };
     }
-    pub fn viewFragment(self: *Ctx, template_name: []const u8, component_name: []const u8, data: anytype, opts: ResponseOptions) !Response {
-        const vc = self._views orelse return error.ViewsNotConfigured;
-        const io = vc.io;
 
-        if (has_embed) {
-            const Templates = root.spider_templates;
+    /// A template starting with `-- doc` is Markdown: rendered to HTML as is,
+    /// no template processing.
+    fn docResponse(self: *Ctx, content: []const u8, opts: ResponseOptions) !?Response {
+        if (!std.mem.startsWith(u8, content, "-- doc")) return null;
+        const md_html = try zmd.parse(self.arena, content["-- doc".len..], zmd.Formatters{});
+        return htmlResponse(md_html, opts);
+    }
 
-            const view_content = blk: {
-                var buf: [256]u8 = undefined;
-                var j: usize = 0;
-                for (template_name) |c| {
-                    buf[j] = if (c == '/' or c == '-') '_' else c;
-                    j += 1;
-                }
-                const normalized = buf[0..j];
-                @setEvalBranchQuota(10000);
-                inline for (@typeInfo(Templates).@"struct".field_names) |fname| {
-                    if (std.mem.eql(u8, fname, normalized)) {
-                        const instance: Templates = .{};
-                        break :blk @field(instance, fname);
-                    }
-                }
-                self._last_template = template_name;
-                return error.TemplateNotFound;
-            };
-
-            if (std.mem.startsWith(u8, view_content, "-- doc")) {
-                const md_body = view_content["-- doc".len..];
-                const md_html = try zmd.parse(self.arena, md_body, zmd.Formatters{});
-                return Response{
-                    .status = opts.status,
-                    .body = md_html,
-                    .content_type = "text/html; charset=utf-8",
-                    .headers = opts.headers,
-                    .cookies = opts.cookies,
-                };
-            }
-
-            self._last_template = template_name;
-
-            var components = std.StringHashMapUnmanaged([]const u8){};
-
-            const embed_inst: Templates = .{};
-            @setEvalBranchQuota(10000);
-            inline for (@typeInfo(Templates).@"struct".field_names) |fname| {
-                const content: []const u8 = @field(embed_inst, fname);
-                try components.put(self.arena, try self.arena.dupe(u8, fname), try self.arena.dupe(u8, content));
-                if (comptime std.mem.startsWith(u8, fname, "components_")) {
-                    const alias = fname["components_".len..];
-                    try components.put(self.arena, try self.arena.dupe(u8, alias), try self.arena.dupe(u8, content));
-                }
-            }
-
-            var tmpl_instance = try Template.init(self.arena, view_content);
-            defer tmpl_instance.deinit();
-            tmpl_instance.components = components;
-
-            const rendered_html = try tmpl_instance.renderFragment(component_name, data, self.arena);
-
-            return Response{
-                .status = opts.status,
-                .body = rendered_html,
-                .content_type = "text/html; charset=utf-8",
-                .headers = opts.headers,
-                .cookies = opts.cookies,
-            };
-        }
-
-        const view_path = if (vc.index) |idx|
-            idx.get(template_name) orelse {
-                self._last_template = template_name;
-                return error.TemplateNotFound;
-            }
-        else
-            try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, template_name });
-
-        const view_content = std.Io.Dir.cwd().readFileAlloc(
-            io,
-            view_path,
-            self.arena,
-            .limited(512 * 1024),
-        ) catch |err| {
-            if (err == error.FileNotFound) {
-                self._last_template = template_name;
-                return error.TemplateNotFound;
-            }
-            return err;
-        };
-
-        if (std.mem.startsWith(u8, view_content, "-- doc")) {
-            const md_body = view_content["-- doc".len..];
-            const md_html = try zmd.parse(self.arena, md_body, zmd.Formatters{});
-            return Response{
-                .status = opts.status,
-                .body = md_html,
-                .content_type = "text/html; charset=utf-8",
-                .headers = opts.headers,
-                .cookies = opts.cookies,
-            };
-        }
-
-        var components = std.StringHashMapUnmanaged([]const u8){};
-
-        if (vc.index) |idx| {
-            for (idx.entries) |entry| {
-                const content = std.Io.Dir.cwd().readFileAlloc(
-                    io,
-                    entry.path,
-                    self.arena,
-                    .limited(512 * 1024),
-                ) catch continue;
-                try components.put(self.arena, try self.arena.dupe(u8, entry.name), content);
-                if (std.mem.startsWith(u8, entry.name, "components_")) {
-                    const alias = entry.name["components_".len..];
-                    try components.put(self.arena, try self.arena.dupe(u8, alias), try self.arena.dupe(u8, content));
-                }
-            }
-        }
-
-        var tmpl_instance = try Template.init(self.arena, view_content);
-        defer tmpl_instance.deinit();
-        tmpl_instance.components = components;
-
-        const rendered = try tmpl_instance.renderFragment(component_name, data, self.arena);
-
+    fn htmlResponse(body: []const u8, opts: ResponseOptions) Response {
         return Response{
             .status = opts.status,
-            .body = rendered,
+            .body = body,
             .content_type = "text/html; charset=utf-8",
             .headers = opts.headers,
             .cookies = opts.cookies,

@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const ctx_mod = @import("context.zig");
 const parser_mod = @import("parser.zig");
 const renderer_mod = @import("renderer.zig");
+const embedded = @import("embedded.zig");
 
 const Node = ast.Node;
 const freeNode = ast.freeNode;
@@ -30,6 +31,10 @@ pub const Template = struct {
     // (e.g. Ctx.view()) supplies `components` up front, ownership stays with
     // the caller and this flag remains false.
     owns_components: bool = false,
+    /// Read-only components shared by every render (Ctx.view() passes the
+    /// embedded templates here). Looked up after `components`, so inline
+    /// components still take precedence; never modified or freed.
+    base_components: ?*const embedded.Map = null,
 
     pub fn init(alc: std.mem.Allocator, template_str: []const u8) !Template {
         var parser = Parser.init(alc, template_str);
@@ -70,6 +75,15 @@ pub const Template = struct {
         }
     }
 
+    /// Component source by name: `components` first, then `base_components`.
+    pub fn findComponent(self: *const Template, name: []const u8) ?[]const u8 {
+        if (self.components) |comps| {
+            if (comps.get(name)) |src| return src;
+        }
+        if (self.base_components) |base| return base.get(name);
+        return null;
+    }
+
     /// Collect inline components: merges `inline_components` from the parser
     /// into the main `components` map (phase 1), then registers any
     /// `<Name>...</Name>` root-level definition nodes whose name is not yet
@@ -80,12 +94,20 @@ pub const Template = struct {
             if (self.components) |*comps| {
                 var iter = inline_comps.iterator();
                 while (iter.next()) |entry| {
-                    if (comps.get(entry.key_ptr.*) != null) {
+                    if (self.findComponent(entry.key_ptr.*) != null) {
                         std.debug.print("[spider] warning: inline component \"{s}\" shadows file component\n", .{entry.key_ptr.*});
                     }
                     try comps.put(alc, try alc.dupe(u8, entry.key_ptr.*), try alc.dupe(u8, entry.value_ptr.*));
                 }
             } else {
+                if (self.base_components) |base| {
+                    var iter = inline_comps.iterator();
+                    while (iter.next()) |entry| {
+                        if (base.get(entry.key_ptr.*) != null) {
+                            std.debug.print("[spider] warning: inline component \"{s}\" shadows file component\n", .{entry.key_ptr.*});
+                        }
+                    }
+                }
                 self.components = self.inline_components;
                 self.owns_components = true;
             }
@@ -101,10 +123,7 @@ pub const Template = struct {
             for (original_nodes) |node| {
                 if (node == .component and !node.component.self_closing and node.component.slot_content != null) {
                     const name = node.component.name;
-                    const already_registered = if (self.components) |comps|
-                        comps.get(name) != null
-                    else
-                        false;
+                    const already_registered = self.findComponent(name) != null;
                     if (!already_registered) {
                         // This is an inline component definition — register it.
                         const key = try self.allocator.dupe(u8, name);
@@ -136,67 +155,65 @@ pub const Template = struct {
         var ctx = try structToContext(alc, context);
         defer ctx.deinit(alc);
 
-        var state = RenderState.init(self.components);
+        var state = RenderState.init(self.components, self.base_components);
         defer state.deinit(alc);
 
         if (self.layout) |layout_name| {
-            if (self.components) |comps| {
-                if (comps.get(layout_name)) |layout_template| {
-                    var slot_bufs = std.StringHashMapUnmanaged(std.ArrayList(u8)){};
-                    defer {
-                        var iter = slot_bufs.iterator();
-                        while (iter.next()) |entry| {
-                            entry.value_ptr.*.deinit(alc);
-                            alc.free(entry.key_ptr.*);
-                        }
-                        slot_bufs.deinit(alc);
-                    }
-
-                    var cur_buf = std.ArrayList(u8).empty;
-                    var cur_key: []const u8 = "slot";
-
-                    for (self.nodes) |node| {
-                        if (node == .interpolation) {
-                            const expr = node.interpolation;
-                            if (std.mem.startsWith(u8, expr, "slot_")) {
-                                const key = try alc.dupe(u8, cur_key);
-                                try slot_bufs.put(alc, key, cur_buf);
-                                cur_key = expr;
-                                cur_buf = std.ArrayList(u8).empty;
-                                continue;
-                            }
-                        }
-                        try renderNode(node, &ctx, alc, &cur_buf, &state);
-                    }
-                    {
-                        const key = try alc.dupe(u8, cur_key);
-                        try slot_bufs.put(alc, key, cur_buf);
-                    }
-
-                    var layout_ctx = try ctx.clone(alc);
-                    defer layout_ctx.deinit(alc);
-
+            if (self.findComponent(layout_name)) |layout_template| {
+                var slot_bufs = std.StringHashMapUnmanaged(std.ArrayList(u8)){};
+                defer {
                     var iter = slot_bufs.iterator();
                     while (iter.next()) |entry| {
-                        try layout_ctx.set(alc, entry.key_ptr.*, Value{ .html = try alc.dupe(u8, entry.value_ptr.*.items) });
+                        entry.value_ptr.*.deinit(alc);
+                        alc.free(entry.key_ptr.*);
                     }
-
-                    var layout_parser = Parser.init(alc, layout_template);
-                    const layout_result = try layout_parser.parse();
-                    defer {
-                        for (layout_result.nodes) |n| freeNode(n, alc);
-                        alc.free(layout_result.nodes);
-                    }
-
-                    var layout_result_bytes: std.ArrayList(u8) = .empty;
-                    defer layout_result_bytes.deinit(alc);
-
-                    for (layout_result.nodes) |n| {
-                        try renderNode(n, &layout_ctx, alc, &layout_result_bytes, &state);
-                    }
-
-                    return layout_result_bytes.toOwnedSlice(alc);
+                    slot_bufs.deinit(alc);
                 }
+
+                var cur_buf = std.ArrayList(u8).empty;
+                var cur_key: []const u8 = "slot";
+
+                for (self.nodes) |node| {
+                    if (node == .interpolation) {
+                        const expr = node.interpolation;
+                        if (std.mem.startsWith(u8, expr, "slot_")) {
+                            const key = try alc.dupe(u8, cur_key);
+                            try slot_bufs.put(alc, key, cur_buf);
+                            cur_key = expr;
+                            cur_buf = std.ArrayList(u8).empty;
+                            continue;
+                        }
+                    }
+                    try renderNode(node, &ctx, alc, &cur_buf, &state);
+                }
+                {
+                    const key = try alc.dupe(u8, cur_key);
+                    try slot_bufs.put(alc, key, cur_buf);
+                }
+
+                var layout_ctx = try ctx.clone(alc);
+                defer layout_ctx.deinit(alc);
+
+                var iter = slot_bufs.iterator();
+                while (iter.next()) |entry| {
+                    try layout_ctx.set(alc, entry.key_ptr.*, Value{ .html = try alc.dupe(u8, entry.value_ptr.*.items) });
+                }
+
+                var layout_parser = Parser.init(alc, layout_template);
+                const layout_result = try layout_parser.parse();
+                defer {
+                    for (layout_result.nodes) |n| freeNode(n, alc);
+                    alc.free(layout_result.nodes);
+                }
+
+                var layout_result_bytes: std.ArrayList(u8) = .empty;
+                defer layout_result_bytes.deinit(alc);
+
+                for (layout_result.nodes) |n| {
+                    try renderNode(n, &layout_ctx, alc, &layout_result_bytes, &state);
+                }
+
+                return layout_result_bytes.toOwnedSlice(alc);
             }
         }
 
@@ -216,12 +233,7 @@ pub const Template = struct {
     pub fn renderFragment(self: *Template, component_name: []const u8, context: anytype, alc: std.mem.Allocator) ![]const u8 {
         try self.collectInline(alc);
 
-        const template_str = if (self.components) |comps|
-            comps.get(component_name)
-        else
-            null;
-
-        const comp_template = template_str orelse return error.ComponentNotFound;
+        const comp_template = self.findComponent(component_name) orelse return error.ComponentNotFound;
 
         var comp_parser = Parser.init(alc, comp_template);
         const comp_nodes = try comp_parser.parse();
@@ -233,7 +245,7 @@ pub const Template = struct {
         var comp_ctx = try structToContext(alc, context);
         defer comp_ctx.deinit(alc);
 
-        var state = RenderState.init(self.components);
+        var state = RenderState.init(self.components, self.base_components);
         defer state.deinit(alc);
 
         var result: std.ArrayList(u8) = .empty;

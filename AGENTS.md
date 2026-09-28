@@ -142,6 +142,11 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `<script>`/`<style>` bodies are never interpolated. Components are PascalCase
   files; `extends "layout"` for layouts. Recursion is capped
   (`template_max_component_depth`).
+  Embedded templates (`spider_templates`) are one comptime map
+  (`render/embedded.zig`) read by non-generic code in `Ctx.prepareView`;
+  keep anything that depends on template contents out of generic
+  (`anytype`) functions — each `data` type instantiates `view()`, so it
+  multiplies binary size and invalidates every view on a template edit.
 - **io backends**: `threaded` (default; Io.Threaded, blocking sockets) and `zio`
   (fibers, non-blocking sockets, `-Dio_backend=zio`). Anything
   that writes to a socket must use the server's `Io` — a separate Io.Threaded on
