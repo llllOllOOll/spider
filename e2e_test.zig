@@ -846,6 +846,70 @@ test "body limit: a body within max_body_bytes is read as before" {
     try std.testing.expect(std.mem.endsWith(u8, r.bytes, "1024"));
 }
 
+// ── Large bodies keep the request head intact ────────────────────────────
+// Path, headers and request id were slices into the connection's read
+// buffer; reading a body larger than that buffer overwrote them. The route
+// then failed to match (no `.public` meta, so an auth middleware redirected)
+// and headers read back body bytes. Seen in production with Intelbras
+// devices posting events with a photo: every one got 302 to the login.
+
+fn requirePublic(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
+    if (!c.route().public) return c.text("unauthenticated", .{ .status = .unauthorized });
+    return next(c);
+}
+
+fn deviceEcho(c: *spider.Ctx) !spider.Response {
+    const len = if (c.body) |b| b.len else 0;
+    const last: u8 = if (c.body) |b| (if (b.len > 0) b[b.len - 1] else '-') else '-';
+    return c.text(try std.fmt.allocPrint(c.arena, "path={s} device={s} type={s} rid={s} len={d} last={c}", .{
+        c.getPath(), c.header("X-Device") orelse "-", c.header("Content-Type") orelse "-", c.requestId(), len, last,
+    }), .{});
+}
+
+fn runLargeBodyApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null });
+    _ = s.use(requirePublic)
+        .post("/device/event", deviceEcho, .{ .public = true })
+        .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("large body app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+var large_body_port: ?u16 = null;
+fn largeBodyAppPort(io: std.Io) !u16 {
+    try app_once_mutex.lock(io);
+    defer app_once_mutex.unlock(io);
+    if (large_body_port) |p| return p;
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runLargeBodyApp, .{port})).detach();
+    try waitForPort(io, port);
+    large_body_port = port;
+    return port;
+}
+
+test "large body: route, headers and request id survive reading a 300 KB body" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const a = env.arena.allocator();
+    const stream = try connectTo(io, try largeBodyAppPort(io));
+    defer stream.close(io);
+
+    const body = try a.alloc(u8, 300 * 1024);
+    @memset(body, 'b');
+    body[body.len - 1] = 'Z';
+    const head = try std.fmt.allocPrint(a, "POST /device/event HTTP/1.1\r\nHost: x\r\nX-Device: gate-1\r\n" ++
+        "X-Request-Id: device-req-42\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{body.len});
+    try send(io, stream, head);
+    try send(io, stream, body);
+
+    const r = try readUntilClose(io, a, stream);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 200"));
+    const expected = try std.fmt.allocPrint(a, "path=/device/event device=gate-1 type=application/json rid=device-req-42 len={d} last=Z", .{body.len});
+    try std.testing.expect(std.mem.endsWith(u8, r.bytes, expected));
+    try std.testing.expect(std.mem.indexOf(u8, r.bytes, "X-Request-Id: device-req-42") != null);
+}
+
 test "deadline: a slow but steady body is not cut" {
     var env = TestEnv.init();
     defer env.deinit();

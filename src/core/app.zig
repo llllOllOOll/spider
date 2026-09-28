@@ -327,14 +327,28 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         var request = http.receiveHead() catch break;
         watch.disarm();
 
-        const target = request.head.target;
+        // The head (target, header names and values) lives in the
+        // connection's read buffer, which reading the body reuses: a body
+        // larger than that buffer overwrote them, so the route stopped
+        // matching and headers read back body bytes. Copy them into the
+        // request arena before anything reads the body.
+        const target = arena.dupe(u8, request.head.target) catch break;
+        request.head.target = target;
         const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
 
         var headers_map: std.StringHashMapUnmanaged([]const u8) = .{};
         {
             var hdr_iter = request.iterateHeaders();
             while (hdr_iter.next()) |h| {
-                headers_map.put(arena, h.name, h.value) catch |err| {
+                const name = arena.dupe(u8, h.name) catch |err| {
+                    std.log.err("{s} {s}: dropped header {s} ({s})", .{ @tagName(request.head.method), path, h.name, @errorName(err) });
+                    continue;
+                };
+                const value = arena.dupe(u8, h.value) catch |err| {
+                    std.log.err("{s} {s}: dropped header {s} ({s})", .{ @tagName(request.head.method), path, h.name, @errorName(err) });
+                    continue;
+                };
+                headers_map.put(arena, name, value) catch |err| {
                     std.log.err("{s} {s}: dropped header {s} ({s})", .{ @tagName(request.head.method), path, h.name, @errorName(err) });
                 };
             }
@@ -359,13 +373,11 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         const body: ?[]const u8 = blk: {
             const cl = request.head.content_length orelse break :blk null;
             if (cl == 0) break :blk null;
-            const target_copy = arena.dupe(u8, target) catch |err| {
-                body_error = err;
-                break :blk null;
-            };
             var body_io_buf: [4096]u8 = undefined;
             const body_reader = request.readerExpectNone(&body_io_buf);
-            request.head.target = target_copy;
+            // readerExpectNone invalidates the head strings; target is the
+            // arena copy above (Ctx.query/getPath read it).
+            request.head.target = target;
             break :blk readBody(body_reader, arena, cl, &watch, ctx.config.body_timeout_ms) catch |err| {
                 body_error = err;
                 break :blk null;

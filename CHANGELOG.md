@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A request with a body larger than the connection's read buffer (e.g. an
+  access device posting an event with a photo) lost its path, headers and
+  request id: they pointed into that buffer, which reading the body reused.
+  The route stopped matching (no `.public`, so auth middlewares redirected
+  to the login) and `c.header()` read body bytes. The head is now copied
+  into the request arena before the body is read.
+
 ### Changed
 
 - Embedded templates are one map built at compile time
