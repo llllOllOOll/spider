@@ -323,6 +323,7 @@ Errors map to statuses by default: `NotFound` 404, `Unauthorized` 401,
 ```zig
 const id = c.params.get("id");            // path param (or a spider.Path parameter)
 const page = c.query("page");             // query string value (not percent-decoded)
+const q = c.queryDecoded("q");            // decoded once like a form field: "Jo%C3%A3o+Silva" → "João Silva"
 const auth = c.header("Authorization");
 const token = c.cookie("session");
 const input = try c.bodyJson(Input);      // JSON body

@@ -186,6 +186,11 @@ fn tagGroup(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
 }
 
 /// Echoes what the matched route declared (c.route()).
+/// Both query accessors side by side: raw (as documented) and decoded once.
+fn queryEcho(c: *spider.Ctx) !spider.Response {
+    return c.text(try std.fmt.allocPrint(c.arena, "raw=[{s}] decoded=[{s}]", .{ c.query("q") orelse "-", c.queryDecoded("q") orelse "-" }), .{});
+}
+
 fn metaEcho(c: *spider.Ctx) !spider.Response {
     const m = c.route();
     return c.text(try std.fmt.allocPrint(c.arena, "public={} quiet_log={} allow_http={} org_roles={d}", .{ m.public, m.quiet_log, m.allow_http, m.org_roles.len }), .{});
@@ -294,6 +299,7 @@ fn runApp(port: u16) void {
         .use(fakeAuth)
         .use(yieldingMiddleware)
         .useAt("/own", dbSession)
+        .get("/q/echo", queryEcho, .{ .public = true })
         .get("/chain/a", chainA, .{})
         .get("/chain/b", chainB, .{})
         .get("/r/static", ok, .{ .roles = admin })
@@ -371,6 +377,25 @@ fn expectStatus(expected: u16, env: *TestEnv, target: []const u8, opts: RequestO
 }
 
 // ── RBAC on routes (item 1) ─────────────────────────────────────────────
+
+test "queryDecoded: + is a space, %2B stays a plus, UTF-8 escapes decode once; query() stays raw" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const cases = [_][2][]const u8{
+        .{ "/q/echo?q=Paulo+Ficks", "raw=[Paulo+Ficks] decoded=[Paulo Ficks]" },
+        .{ "/q/echo?q=%2B55%2075", "raw=[%2B55%2075] decoded=[+55 75]" },
+        .{ "/q/echo?q=Jo%C3%A3o", "raw=[Jo%C3%A3o] decoded=[Jo\u{e3}o]" },
+        .{ "/q/echo?q=%252F", "raw=[%252F] decoded=[%2F]" },
+        .{ "/q/echo?q=100%", "raw=[100%] decoded=[100%]" },
+        .{ "/q/echo?other=1", "raw=[-] decoded=[-]" },
+    };
+    for (cases) |tc| {
+        const res = try request(env.io(), env.arena.allocator(), port, tc[0], .{});
+        try std.testing.expectEqual(@as(u16, 200), res.status);
+        try std.testing.expectEqualStrings(tc[1], res.body);
+    }
+}
 
 test "rbac: static route denies without role and allows with it" {
     var env = TestEnv.init();

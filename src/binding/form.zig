@@ -125,7 +125,10 @@ fn addToArray(allocator: std.mem.Allocator, fields: *std.StringHashMap(FormValue
     }
 }
 
-fn urlDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+/// application/x-www-form-urlencoded value decoding: `+` → space, `%xx` →
+/// byte; an invalid escape is kept as typed. Also used by `Ctx.queryDecoded`,
+/// so query strings and form bodies decode the same way.
+pub fn urlDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     if (std.mem.indexOfScalar(u8, input, '%') == null and std.mem.indexOfScalar(u8, input, '+') == null) {
         return allocator.dupe(u8, input);
     }

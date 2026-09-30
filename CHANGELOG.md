@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `c.queryDecoded(name)`: the query string value decoded once, with the same
+  rules as form fields (`+` → space, `%2B` → "+", `%C3%A3` → "ã"; an invalid
+  escape is kept as typed). `c.query(name)` is unchanged and still returns the
+  raw value, as documented, so apps that decode it themselves are not
+  decoded twice. Use `queryDecoded` for text a user typed: with `query`, a
+  search for "João Silva" arrived as "Jo%C3%A3o+Silva" (Orbitx matched the
+  "20" of "%20" against CPF digits).
+
 ### Fixed
 
 - A request with a body larger than the connection's read buffer (e.g. an

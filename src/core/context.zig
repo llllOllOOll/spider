@@ -505,18 +505,21 @@ pub const Ctx = struct {
         return self.setCookie(name, "", o);
     }
 
+    /// The query string value of `name` exactly as it came in the URL: NOT
+    /// percent-decoded (`?q=Jo%C3%A3o+Silva` gives "Jo%C3%A3o+Silva"). For
+    /// text a user typed (a search box, a name) use `queryDecoded`.
     pub fn query(self: *Ctx, name: []const u8) ?[]const u8 {
-        const q = self.request.head.target;
-        const start = std.mem.indexOfScalar(u8, q, '?') orelse return null;
-        var iter = std.mem.splitScalar(u8, q[start + 1 ..], '&');
-        while (iter.next()) |pair| {
-            if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
-                if (std.mem.eql(u8, pair[0..eq], name)) {
-                    return pair[eq + 1 ..];
-                }
-            }
-        }
-        return null;
+        return queryValue(self.request.head.target, name);
+    }
+
+    /// The query string value of `name`, decoded once like a form field:
+    /// `+` → space, `%2B` → "+", `%C3%A3` → "ã"; an invalid escape is kept as
+    /// typed. Don't decode the result again (a literal "%2F" would become
+    /// "/"). Allocated in the request arena; on allocation failure the raw
+    /// value is returned.
+    pub fn queryDecoded(self: *Ctx, name: []const u8) ?[]const u8 {
+        const raw = self.query(name) orelse return null;
+        return decodeFormValue(self.arena, raw) catch raw;
     }
 
     pub fn header(self: *Ctx, name: []const u8) ?[]const u8 {
@@ -847,6 +850,40 @@ fn typeMarker(comptime T: type) *const anyopaque {
         var marker: u8 = 0;
     };
     return &S.marker;
+}
+
+/// Raw value of `name` in a request target's query string (first match;
+/// a key without `=` has no value).
+fn queryValue(target: []const u8, name: []const u8) ?[]const u8 {
+    const start = std.mem.indexOfScalar(u8, target, '?') orelse return null;
+    var iter = std.mem.splitScalar(u8, target[start + 1 ..], '&');
+    while (iter.next()) |pair| {
+        if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
+            if (std.mem.eql(u8, pair[0..eq], name)) return pair[eq + 1 ..];
+        }
+    }
+    return null;
+}
+
+fn decodeFormValue(alc: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    return @import("../binding/form.zig").urlDecode(alc, raw);
+}
+
+test "queryValue/decodeFormValue: lookup is raw, decoding follows form rules and happens once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const target = "/s?page=2&q=ZZ+Teste%2B1&flag&name=Jo%C3%A3o&bad=100%";
+    try std.testing.expectEqualStrings("2", queryValue(target, "page").?);
+    try std.testing.expectEqualStrings("ZZ+Teste%2B1", queryValue(target, "q").?);
+    try std.testing.expect(queryValue(target, "flag") == null);
+    try std.testing.expect(queryValue(target, "missing") == null);
+    try std.testing.expect(queryValue("/s", "q") == null);
+    try std.testing.expectEqualStrings("ZZ Teste+1", try decodeFormValue(a, queryValue(target, "q").?));
+    try std.testing.expectEqualStrings("Jo\u{e3}o", try decodeFormValue(a, queryValue(target, "name").?));
+    try std.testing.expectEqualStrings("100%", try decodeFormValue(a, queryValue(target, "bad").?));
+    // Once: an encoded percent stays encoded.
+    try std.testing.expectEqualStrings("%2F", try decodeFormValue(a, "%252F"));
 }
 
 test "typeMarker: one per type" {
