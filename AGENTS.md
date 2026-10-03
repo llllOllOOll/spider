@@ -24,13 +24,14 @@ All from the repo root.
 | Same, zio backend | `zig build test-e2e -Dio_backend=zio` | — |
 | zio integration test | `zig build test-zio-backend -Dio_backend=zio` | step only exists with that flag |
 | Postgres wrapper tests | `PG_HOST=127.0.0.1 PG_PORT=5435 PG_USER=postgres PG_PASSWORD=postgres PG_DB=postgres zig build test-pg` | a **disposable** Postgres (see below) |
+| HTTP client tests | `zig build test-pacman` | network access (most tests call httpbingo.org) |
 | SQLite tests | `zig build test-sqlite` | **currently fails to compile** (`no module named 'spider'`) — known, see traps |
 | Format | `zig fmt <the files you touched>` | never `zig fmt src` (reformats unrelated files) |
 
 Disposable Postgres for `test-pg`: `docker compose -f docker-compose.test.yml up -d`
 (postgres/postgres on 5435, tmpfs). Without the `PG_*` vars the tests target
 localhost:5432 as spider/spider — don't point them at a database you care about.
-First build fetches dependencies (pacman, zio) over the network.
+First build fetches dependencies (zio) over the network.
 
 Before calling a change done: `zig build test`, and for anything under
 `src/core/`, `src/ws/`, `src/routing/` or `src/providers/` also `test-e2e` on
@@ -88,6 +89,8 @@ src/modules/          rbac, logger, static files, health, push (Web Push), auth 
 src/internal/         config (spider.Config), env (.env loading), logfmt
 src/cli/              `spider` CLI; src/cli/templates/*.template = files it generates
 modules/pg|sqlite|r2|qrcode   separate packages re-exported as spider.pg etc.
+modules/pacman        the HTTP client (spider.http_client), always present; its
+                      SOCKS5 path needs a Zig with the http/Client.zig patch
 e2e_test.zig, e2e/    end-to-end tests; zio_backend_test.zig
 ```
 

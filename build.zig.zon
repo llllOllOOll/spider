@@ -5,8 +5,7 @@
     .minimum_zig_version = "0.17.0-dev.956+2dca73595",
     .dependencies = .{
         .pacman = .{
-            .url = "git+https://github.com/llllOllOOll/pacman#6e0074ddba77311dacd61fb342a25c5b93112583",
-            .hash = "pacman-0.1.0-SPnstR0NAQCXI7e12b6ngxaJWIs7-PpfZeLCUbzr1pEZ",
+            .path = "modules/pacman",
         },
         // Not lazy: a lazy dependency of a dependency is only fetched if
         // the ROOT project's own build.zig.zon also lists it (Zig's fetch

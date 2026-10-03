@@ -1,0 +1,7 @@
+.{
+    .name = .pacman,
+    .version = "0.1.0",
+    .paths = .{""},
+    .fingerprint = 0xa1c2e4b8b5ecf948,
+    .dependencies = .{},
+}

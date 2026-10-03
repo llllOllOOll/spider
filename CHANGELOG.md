@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The HTTP client (pacman, `spider.http_client`) now lives in the monorepo
+  (`modules/pacman`) instead of being fetched from its own repository: one
+  dependency less to download on the first build. Its sources are the
+  standalone repository's at 1c68d77, which adds a fix for an arena leaked
+  when a request failed. `zig build test-pacman` runs its tests (they need
+  network access).
 - Embedded templates are one map built at compile time
   (`src/render/embedded.zig`). `c.view()` / `c.viewFragment()` no longer
   walk every template inside the generic view function or copy every

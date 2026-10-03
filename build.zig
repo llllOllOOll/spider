@@ -242,6 +242,21 @@ pub fn build(b: *std.Build) void {
     const test_e2e_step = b.step("test-e2e", "Run end-to-end tests against a real listening Server");
     test_e2e_step.dependOn(&run_e2e_test.step);
 
+    // test-pacman — the HTTP client's own tests (modules/pacman). Most of
+    // them call httpbingo.org, so they need network access.
+    const pacman_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("modules/pacman/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_pacman_test = b.addRunArtifact(pacman_test);
+    run_pacman_test.has_side_effects = true;
+    const test_pacman_step = b.step("test-pacman", "Run the HTTP client tests (needs network access)");
+    test_pacman_step.dependOn(&run_pacman_test.step);
+
     // test-pg — pg wrapper integration tests (requires PostgreSQL)
     const pg_lib_mod = pg_dep.module("pg");
 
