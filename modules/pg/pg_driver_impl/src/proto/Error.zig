@@ -61,7 +61,8 @@ pub fn parse(data: []const u8) Error {
             'F' => err.file = value,
             'L' => err.line = value,
             'R' => err.routine = value,
-            else => unreachable,
+            // a field we don't know: skip it, as the protocol asks
+            else => {},
         }
         pos = value_end + 1;
     }
@@ -124,4 +125,14 @@ test "Error: parse" {
         try t.expectString("L-value", err.line.?);
         try t.expectString("R-value", err.routine.?);
     }
+}
+
+test "Error: parse ignores unknown fields" {
+    // "Since more field types might be added in future, frontends should
+    // silently ignore fields of unrecognized type." (protocol docs)
+    const err = Error.parse("SERROR\x00C42501\x00Xa field from the future\x00Mthe message\x00\x01also unknown\x00Rroutine\x00\x00");
+    try t.expectString("ERROR", err.severity);
+    try t.expectString("42501", err.code);
+    try t.expectString("the message", err.message);
+    try t.expectString("routine", err.routine.?);
 }
