@@ -257,6 +257,38 @@ pub fn build(b: *std.Build) void {
     const test_pacman_step = b.step("test-pacman", "Run the HTTP client tests (needs network access)");
     test_pacman_step.dependOn(&run_pacman_test.step);
 
+    // test-pacman-local — the HTTP client against scripted local servers
+    // (timeouts, cut bodies, oversized responses). No network needed. Runs
+    // on the backend chosen with -Dio_backend: threaded by default, zio
+    // with -Dio_backend=zio (the one production uses).
+    {
+        const local_opts = b.addOptions();
+        local_opts.addOption(bool, "zio", io_backend == .zio);
+        const local_mod = b.createModule(.{
+            .root_source_file = b.path("modules/pacman/local_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "pacman", .module = pacman_dep.module("pacman") },
+            },
+        });
+        local_mod.addOptions("local_test_options", local_opts);
+        if (io_backend == .zio) {
+            const zio_local_dep = b.dependency("zio", .{
+                .target = target,
+                .optimize = optimize,
+                .backend = @as(?[]const u8, "epoll"),
+            });
+            local_mod.addImport("zio", zio_local_dep.module("zio"));
+        }
+        const pacman_local_test = b.addTest(.{ .root_module = local_mod });
+        const run_pacman_local_test = b.addRunArtifact(pacman_local_test);
+        run_pacman_local_test.has_side_effects = true;
+        const test_pacman_local_step = b.step("test-pacman-local", "Run the HTTP client tests against scripted local servers (no network)");
+        test_pacman_local_step.dependOn(&run_pacman_local_test.step);
+    }
+
     // test-pg — pg wrapper integration tests (requires PostgreSQL)
     const pg_lib_mod = pg_dep.module("pg");
 

@@ -1,0 +1,266 @@
+// The HTTP client against scripted local servers: no network needed.
+//
+//   zig build test-pacman-local                    # threaded backend
+//   zig build test-pacman-local -Dio_backend=zio   # zio (what production runs)
+//
+// Each test starts a tiny server on 127.0.0.1 that follows a script per
+// connection — send these bytes, pause, hold the connection open, hang up —
+// so the test controls exactly what the client sees and when. The server
+// runs on its own OS thread with its own blocking Io, whatever backend the
+// client under test is using.
+const std = @import("std");
+const pacman = @import("pacman");
+const options = @import("local_test_options");
+const Io = std.Io;
+const t = std.testing;
+
+// ── the Io under test ───────────────────────────────────────────────────
+
+const Backend = if (options.zio) struct {
+    const zio = @import("zio");
+    rt: *zio.Runtime,
+
+    fn init() !@This() {
+        return .{ .rt = try zio.Runtime.init(std.heap.smp_allocator, .{ .executors = .auto }) };
+    }
+    fn deinit(self: *@This()) void {
+        self.rt.deinit();
+    }
+    fn io(self: *@This()) Io {
+        return self.rt.io();
+    }
+} else struct {
+    threaded: Io.Threaded,
+
+    fn init() !@This() {
+        return .{ .threaded = .init(std.heap.smp_allocator, .{}) };
+    }
+    fn deinit(self: *@This()) void {
+        self.threaded.deinit();
+    }
+    fn io(self: *@This()) Io {
+        return self.threaded.io();
+    }
+};
+
+const backend_name = if (options.zio) "zio" else "threaded";
+
+// ── scripted server ─────────────────────────────────────────────────────
+
+const Step = union(enum) {
+    /// Send these bytes.
+    send: []const u8,
+    /// Wait before the next step.
+    pause_ms: u32,
+    /// Keep the connection open and wait for the CLIENT to close it, for at
+    /// most `hold_limit_ms`. Records whether the client did.
+    hold,
+};
+
+/// What the server does on one accepted connection, after reading the
+/// request. The connection is closed when the script ends.
+const Script = []const Step;
+
+const hold_limit_ms = 3000;
+
+const Server = struct {
+    threaded: Io.Threaded,
+    listener: Io.net.Server,
+    port: u16,
+    scripts: []const Script,
+    thread: std.Thread,
+    accepted: std.atomic.Value(usize) = .init(0),
+    /// Connections the CLIENT closed while the server was holding them.
+    closed_by_client: std.atomic.Value(usize) = .init(0),
+    /// Holds that ran out the clock with the client still connected.
+    hold_expired: std.atomic.Value(usize) = .init(0),
+    stopping: std.atomic.Value(bool) = .init(false),
+
+    fn start(scripts: []const Script) !*Server {
+        const self = try std.heap.smp_allocator.create(Server);
+        errdefer std.heap.smp_allocator.destroy(self);
+        self.* = .{
+            .threaded = .init(std.heap.smp_allocator, .{}),
+            .listener = undefined,
+            .port = 0,
+            .scripts = scripts,
+            .thread = undefined,
+        };
+        const io = self.threaded.io();
+        var addr = try Io.net.IpAddress.parseIp4("127.0.0.1", 0);
+        self.listener = try addr.listen(io, .{ .reuse_address = true });
+        self.port = self.listener.socket.address.getPort();
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        return self;
+    }
+
+    /// Stops the server even if fewer connections arrived than scripted.
+    fn stop(self: *Server) void {
+        const io = self.threaded.io();
+        self.stopping.store(true, .seq_cst);
+        // Wake a pending accept().
+        if (Io.net.IpAddress.parseIp4("127.0.0.1", self.port)) |addr| {
+            if (addr.connect(io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        } else |_| {}
+        self.thread.join();
+        self.listener.deinit(io);
+        self.threaded.deinit();
+        std.heap.smp_allocator.destroy(self);
+    }
+
+    fn url(self: *const Server, buf: []u8, path: []const u8) []const u8 {
+        return std.fmt.bufPrint(buf, "http://127.0.0.1:{d}{s}", .{ self.port, path }) catch unreachable;
+    }
+
+    fn run(self: *Server) void {
+        const io = self.threaded.io();
+        for (self.scripts) |script| {
+            const stream = self.listener.accept(io) catch return;
+            defer stream.close(io);
+            if (self.stopping.load(.seq_cst)) return;
+            _ = self.accepted.fetchAdd(1, .seq_cst);
+
+            var buf: [8192]u8 = undefined;
+            if ((readSome(io, stream, &buf) catch 0) == 0) continue;
+
+            for (script) |step| switch (step) {
+                .send => |bytes| writeAll(io, stream, bytes) catch break,
+                .pause_ms => |ms| Io.sleep(io, .fromMilliseconds(ms), .awake) catch {},
+                .hold => {
+                    switch (waitForClose(stream, hold_limit_ms)) {
+                        .closed => _ = self.closed_by_client.fetchAdd(1, .seq_cst),
+                        .still_open => _ = self.hold_expired.fetchAdd(1, .seq_cst),
+                    }
+                    break;
+                },
+            };
+        }
+    }
+
+    /// Waits until the peer closes the connection, for at most `ms`. Plain
+    /// poll + read on the descriptor: this must not depend on the Io
+    /// machinery the test is about.
+    fn waitForClose(stream: Io.net.Stream, ms: u32) enum { closed, still_open } {
+        const fd = stream.socket.handle;
+        var waited: u32 = 0;
+        var discard: [1024]u8 = undefined;
+        while (waited < ms) : (waited += 50) {
+            var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+            const ready = std.posix.poll(&fds, 50) catch return .closed;
+            if (ready == 0) continue;
+            const n = std.posix.read(fd, &discard) catch return .closed;
+            if (n == 0) return .closed;
+        }
+        return .still_open;
+    }
+
+    fn readSome(io: Io, stream: Io.net.Stream, buf: []u8) !usize {
+        var vecs: [1][]u8 = .{buf};
+        var reader = stream.reader(io, &.{});
+        return reader.interface.readVec(&vecs);
+    }
+
+    fn writeAll(io: Io, stream: Io.net.Stream, data: []const u8) !void {
+        var wbuf: [1024]u8 = undefined;
+        var writer = stream.writer(io, &wbuf);
+        try writer.interface.writeAll(data);
+        try writer.interface.flush();
+    }
+};
+
+fn elapsedMs(io: Io, since: Io.Timestamp) i64 {
+    return since.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
+}
+
+const ok_response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+
+// ── phase 0: does racing a clock actually interrupt a blocked request? ──
+// These two tests race the request against a clock HERE, in the test, to
+// answer the question before the client grows a timeout of its own. They
+// stay as the direct proof that cancelation interrupts a blocked network
+// read on this backend — the property the client's timeout is built on.
+
+const Race = union(enum) {
+    response: anyerror!pacman.Response,
+    clock: Io.Cancelable!void,
+};
+
+fn fetchNoTimeout(io: Io, url: []const u8) anyerror!pacman.Response {
+    return pacman.get(io, std.heap.smp_allocator, url, .{});
+}
+
+/// Returns true if the clock won and canceling the request returned
+/// promptly.
+fn raceAgainstClock(io: Io, url: []const u8, ms: u32) !bool {
+    var buf: [2]Race = undefined;
+    var select: Io.Select(Race) = .init(io, &buf);
+    try select.concurrent(.response, fetchNoTimeout, .{ io, url });
+    try select.concurrent(.clock, Io.sleep, .{ io, Io.Duration.fromMilliseconds(ms), Io.Clock.awake });
+
+    const first = try select.await();
+    var clock_won = false;
+    switch (first) {
+        .clock => clock_won = true,
+        .response => |r| if (r) |resp| {
+            var owned = resp;
+            owned.deinit();
+        } else |_| {},
+    }
+    // Cancel whatever is left and wait for it. If canceling could NOT
+    // interrupt the blocked read, this is where the test would sit until
+    // the server gave up.
+    while (select.cancel()) |rest| switch (rest) {
+        .response => |r| if (r) |resp| {
+            var owned = resp;
+            owned.deinit();
+        } else |_| {},
+        .clock => {},
+    };
+    return clock_won;
+}
+
+test "phase 0: canceling interrupts a request blocked waiting for the response head" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{&.{.hold}});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+
+    const started = Io.Timestamp.now(io, .awake);
+    try t.expect(try raceAgainstClock(io, server.url(&url_buf, "/"), 300));
+    const took = elapsedMs(io, started);
+    std.debug.print("[{s}] blocked on the head: canceled after {d} ms (server would hold {d} ms)\n", .{ backend_name, took, hold_limit_ms });
+    try t.expect(took < 1500);
+}
+
+test "phase 0: canceling interrupts a request blocked in the middle of the body" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{&.{
+        .{ .send = "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nonly the beginning" },
+        .hold,
+    }});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+
+    const started = Io.Timestamp.now(io, .awake);
+    try t.expect(try raceAgainstClock(io, server.url(&url_buf, "/"), 300));
+    const took = elapsedMs(io, started);
+    std.debug.print("[{s}] blocked on the body: canceled after {d} ms\n", .{ backend_name, took });
+    try t.expect(took < 1500);
+}
+
+test "phase 0: control — a server that answers is not canceled" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{&.{.{ .send = ok_response }}});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+    try t.expect(!(try raceAgainstClock(io, server.url(&url_buf, "/"), 2000)));
+}
