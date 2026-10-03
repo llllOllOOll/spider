@@ -322,15 +322,11 @@ test "real timeout functionality" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    // This test will need to be updated when timeout functionality is implemented
-    // For now, it just verifies that the request completes successfully
-    var res = try get(io, allocator, "https://httpbingo.org/delay/1", .{
-        .timeout_ms = 500, // 500ms timeout - should timeout if implemented
-    });
-    defer res.deinit();
-
-    // Currently timeout is not implemented, so request should succeed
-    try std.testing.expect(res.status == .ok);
+    // The server takes 1 s to answer; the deadline is 500 ms. (The scripted,
+    // network-free version of this lives in ../local_test.zig.)
+    try std.testing.expectError(error.Timeout, get(io, allocator, "https://httpbingo.org/delay/1", .{
+        .timeout_ms = 500,
+    }));
 }
 
 test "Client.delete()" {

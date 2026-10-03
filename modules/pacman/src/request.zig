@@ -14,7 +14,12 @@ pub const FetchOptions = struct {
     query: []const [2][]const u8 = &.{},
     params: []const [2][]const u8 = &.{}, // URL path parameters
     uri: ?std.Uri = null, // pre-built URI (skips std.Uri.parse)
-    timeout_ms: u32 = 0, // 0 = no timeout
+    /// Deadline for the WHOLE request, in milliseconds: connecting, the TLS
+    /// handshake, sending, waiting for the response and reading its body.
+    /// When it passes, the request is canceled, its connection is closed
+    /// (never returned to a pool) and the call fails with `error.Timeout`.
+    /// 0 = no deadline: the call waits for as long as the server takes.
+    timeout_ms: u32 = 0,
     /// Explicit HTTP(S) proxy URL (e.g. "http://user:pass@host:8080").
     /// If omitted, falls back to environment variables (http_proxy/https_proxy/
     /// all_proxy, honoring no_proxy) — if none of those are set either, no
@@ -99,7 +104,45 @@ fn hasContentType(headers: []const http.Header) bool {
 /// `pacman.Client` — reused across many requests instead of created fresh
 /// here. This function never destroys it; ownership stays with the caller
 /// (see Response.owns_http_client).
+/// The outcome of the race between a request and its deadline.
+const Race = union(enum) {
+    response: anyerror!Response,
+    deadline: Io.Cancelable!void,
+};
+
+fn discard(outcome: Race) void {
+    switch (outcome) {
+        .response => |r| if (r) |res| {
+            var owned = res;
+            owned.deinit();
+        } else |_| {},
+        .deadline => {},
+    }
+}
+
 pub fn request(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*http.Client) !Response {
+    if (opts.timeout_ms == 0) return requestNoDeadline(io, allocator, url, opts, existing_client);
+
+    // The request runs as a task of its own, raced against a clock. Whoever
+    // loses is canceled: cancelation interrupts a network read that is
+    // blocked (see local_test.zig, "phase 0"), and the request's own error
+    // paths close the connection.
+    var buf: [2]Race = undefined;
+    var select: Io.Select(Race) = .init(io, &buf);
+    // Nothing may be left running, whichever way this function returns. A
+    // request that finished in the meantime owns memory and a socket.
+    defer while (select.cancel()) |leftover| discard(leftover);
+
+    try select.concurrent(.response, requestNoDeadline, .{ io, allocator, url, opts, existing_client });
+    try select.concurrent(.deadline, Io.sleep, .{ io, Io.Duration.fromMilliseconds(opts.timeout_ms), Io.Clock.awake });
+
+    return switch (try select.await()) {
+        .response => |r| r,
+        .deadline => error.Timeout,
+    };
+}
+
+fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*http.Client) anyerror!Response {
     var arena = try allocator.create(std.heap.ArenaAllocator);
     arena.* = .init(allocator);
     errdefer {
@@ -318,6 +361,16 @@ pub fn request(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: Fetc
         .extra_headers = extra_headers,
         .connection = explicit_connection,
     });
+    // A request that fails or is canceled midway closes its connection: it
+    // is not left open (it used to be, until the process ended) and a
+    // persistent client never reuses it. Marked as closing BEFORE deinit()
+    // on purpose — otherwise deinit() tries to read the rest of the
+    // response to keep the connection reusable, and that read can block for
+    // as long as the server likes.
+    errdefer {
+        if (req.connection) |connection| connection.closing = true;
+        req.deinit();
+    }
 
     // Send the request
     if (payload_opt) |payload| {

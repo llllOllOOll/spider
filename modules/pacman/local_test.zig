@@ -264,3 +264,133 @@ test "phase 0: control — a server that answers is not canceled" {
     var url_buf: [64]u8 = undefined;
     try t.expect(!(try raceAgainstClock(io, server.url(&url_buf, "/"), 2000)));
 }
+
+// ── phase 1: timeout_ms is a deadline for the whole request ─────────────
+
+test "timeout: a server that accepts and never answers" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{&.{.hold}});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+
+    const started = Io.Timestamp.now(io, .awake);
+    try t.expectError(error.Timeout, pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{ .timeout_ms = 300 }));
+    const took = elapsedMs(io, started);
+    try t.expect(took >= 250 and took < 1500);
+}
+
+test "timeout: a server that sends the head and stalls in the body" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{&.{
+        .{ .send = "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nonly the beginning" },
+        .hold,
+    }});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+
+    const started = Io.Timestamp.now(io, .awake);
+    try t.expectError(error.Timeout, pacman.post(io, t.allocator, server.url(&url_buf, "/"), .{ .timeout_ms = 300, .body = .{ .raw = "{}" } }));
+    try t.expect(elapsedMs(io, started) < 1500);
+}
+
+test "timeout: a slow server inside the deadline is not cut" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{&.{ .{ .pause_ms = 300 }, .{ .send = ok_response } }});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+
+    var res = try pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{ .timeout_ms = 3000 });
+    defer res.deinit();
+    try t.expectEqual(std.http.Status.ok, res.status);
+    try t.expectEqualStrings("hello", res.text());
+}
+
+test "timeout: timeout_ms = 0 keeps waiting, as before" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{&.{ .{ .pause_ms = 700 }, .{ .send = ok_response } }});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+
+    const started = Io.Timestamp.now(io, .awake);
+    var res = try pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{});
+    defer res.deinit();
+    try t.expectEqualStrings("hello", res.text());
+    try t.expect(elapsedMs(io, started) >= 650);
+}
+
+test "timeout: the connection is closed when the deadline passes" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{&.{.hold}});
+    var url_buf: [64]u8 = undefined;
+    try t.expectError(error.Timeout, pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{ .timeout_ms = 300 }));
+
+    // The server notices the close well before its own hold runs out.
+    Io.sleep(io, .fromMilliseconds(500), .awake) catch {};
+    const closed = server.closed_by_client.load(.seq_cst);
+    const expired = server.hold_expired.load(.seq_cst);
+    server.stop();
+    try t.expectEqual(@as(usize, 1), closed);
+    try t.expectEqual(@as(usize, 0), expired);
+}
+
+test "timeout: a persistent Client does not reuse the connection that timed out" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    // First connection: never answers. Second: answers.
+    const server = try Server.start(&.{ &.{.hold}, &.{.{ .send = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello" }} });
+    var base_buf: [64]u8 = undefined;
+    var client = try pacman.Client.init(io, t.allocator, .{ .base_url = server.url(&base_buf, "") });
+    defer client.deinit();
+
+    try t.expectError(error.Timeout, client.get("/first", .{ .timeout_ms = 300 }));
+    var res = try client.get("/second", .{ .timeout_ms = 3000 });
+    defer res.deinit();
+    try t.expectEqualStrings("hello", res.text());
+
+    Io.sleep(io, .fromMilliseconds(300), .awake) catch {};
+    const accepted = server.accepted.load(.seq_cst);
+    const closed = server.closed_by_client.load(.seq_cst);
+    server.stop();
+    // A second connection was opened, and the first one was closed.
+    try t.expectEqual(@as(usize, 2), accepted);
+    try t.expectEqual(@as(usize, 1), closed);
+}
+
+test "a request that fails midway returns at once and closes its connection" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    // A redirect is something this client does not follow: the request
+    // fails after the response head arrived, with the server still holding
+    // the connection open. No deadline here — the failure itself must not
+    // wait for the server.
+    const server = try Server.start(&.{&.{ .{ .send = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/elsewhere\r\nContent-Length: 0\r\n\r\n" }, .hold }});
+    var url_buf: [64]u8 = undefined;
+
+    const started = Io.Timestamp.now(io, .awake);
+    try t.expectError(error.HttpRedirectLocationOversize, pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{}));
+    try t.expect(elapsedMs(io, started) < 500);
+
+    Io.sleep(io, .fromMilliseconds(300), .awake) catch {};
+    const closed = server.closed_by_client.load(.seq_cst);
+    server.stop();
+    try t.expectEqual(@as(usize, 1), closed);
+}
