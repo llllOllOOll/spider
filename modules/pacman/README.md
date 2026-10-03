@@ -35,6 +35,31 @@ A request that fails or times out closes its connection; a persistent
 Not supported: following redirects (a 3xx with a `Location` fails with
 `error.HttpRedirectLocationOversize`) and streaming the response body.
 
+## Known gaps
+
+Open items from the timeout / size-limit work (2026-10). None is fixed yet.
+
+- **Cancelation is not tested over TLS.** The scripted servers in
+  `local_test.zig` speak plain HTTP. That a deadline interrupts a request
+  blocked inside a TLS read, on both backends, is assumed from the plain
+  case, not measured. Needs a scripted TLS server.
+- **The 64 MiB default can break large R2 downloads.** `modules/r2` calls
+  this client with the default options, so an object larger than
+  `default_max_response_bytes` now fails with `error.ResponseTooLarge`. The
+  size of the objects applications actually store was not measured. Before
+  an application takes this version: measure, and have `modules/r2` pass a
+  limit that fits (or stream the download).
+- **`modules/r2` and every other caller still pass no `timeout_ms`.** The
+  deadline exists but is opt-in; nothing got one by default.
+- **A test asserts on httpbingo's latency.** "concurrent async requests with
+  Client methods" (`src/root.zig`) expects two 1 s requests to finish in
+  under 2.5 s against a public server; it failed once in seven runs. It
+  should leave the default network suite, or become a local scripted test.
+- **A body with no declared length cannot be checked for truncation.** When
+  the response has neither `Content-Length` nor chunked encoding, the body
+  is whatever arrives until the server closes; a connection dropped midway
+  is indistinguishable from the end.
+
 ## Tests
 
 - `zig build test-pacman-local` — against scripted local servers
