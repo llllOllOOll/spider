@@ -394,3 +394,53 @@ test "a request that fails midway returns at once and closes its connection" {
     server.stop();
     try t.expectEqual(@as(usize, 1), closed);
 }
+
+// ── phase 2: a body cut in the middle is an error ───────────────────────
+
+fn expectCutBody(io: Io, script: Script) !void {
+    const server = try Server.start(&.{script});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+    if (pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{})) |res| {
+        var owned = res;
+        defer owned.deinit();
+        std.debug.print("got a response instead of an error: status {d}, {d} bytes: \"{s}\"\n", .{ @intFromEnum(owned.status), owned.text().len, owned.text() });
+        return error.PartialBodyReturnedAsSuccess;
+    } else |err| {
+        try t.expectEqual(error.HttpBodyCutShort, err);
+    }
+}
+
+test "cut body: Content-Length promised more than the server sent" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    try expectCutBody(backend.io(), &.{.{ .send = "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nonly the beginning" }});
+}
+
+test "cut body: chunked response that ends before the last chunk" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    try expectCutBody(backend.io(), &.{.{ .send = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n400\r\nstart of a big chunk" }});
+}
+
+test "cut body: control — complete bodies still arrive whole" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{
+        &.{.{ .send = ok_response }},
+        &.{.{ .send = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n" }},
+        // No length at all: the body is whatever arrives until the server
+        // hangs up. There is nothing to compare against, so this is whole.
+        &.{.{ .send = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nuntil the end" }},
+    });
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+
+    inline for (.{ "hello", "hello world", "until the end" }) |expected| {
+        var res = try pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{});
+        defer res.deinit();
+        try t.expectEqualStrings(expected, res.text());
+    }
+}

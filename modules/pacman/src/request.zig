@@ -440,9 +440,23 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
     // Read body in chunks
     while (true) {
         var chunk: [4096]u8 = undefined;
-        const bytes_read = reader.*.readSliceShort(&chunk) catch break;
+        // A read that fails in the middle of the body is an error, not the
+        // end of the body: returning what arrived so far would hand the
+        // caller a truncated response with the original (successful) status.
+        const bytes_read = reader.*.readSliceShort(&chunk) catch return error.HttpBodyCutShort;
         if (bytes_read == 0) break;
         try body_list.appendSlice(aa, chunk[0..bytes_read]);
+    }
+
+    // A server that promised Content-Length bytes and hung up early ends the
+    // stream without a read error. Only comparable when the body was not
+    // compressed (the length is of the bytes on the wire) and the response
+    // has a body at all.
+    if (response.head.content_length) |promised| {
+        const has_body = opts.method != .HEAD and response.head.status != .no_content and response.head.status != .not_modified;
+        if (has_body and response.head.content_encoding == .identity and body_list.items.len < promised) {
+            return error.HttpBodyCutShort;
+        }
     }
 
     const body_text = try body_list.toOwnedSlice(aa);
