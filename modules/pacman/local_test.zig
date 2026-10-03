@@ -444,3 +444,89 @@ test "cut body: control — complete bodies still arrive whole" {
         try t.expectEqualStrings(expected, res.text());
     }
 }
+
+// ── phase 3: a response larger than the limit is refused ────────────────
+
+const gz_2mib = @embedFile("testdata/2mib_of_a.gz"); // 2 MiB of 'a', ~2 KB gzipped
+const two_mib = 2 * 1024 * 1024;
+
+fn gzipResponse(comptime close: bool) []const u8 {
+    return std.fmt.comptimePrint("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {d}\r\n{s}\r\n", .{
+        gz_2mib.len,
+        if (close) "Connection: close\r\n" else "",
+    }) ++ gz_2mib;
+}
+
+fn bigResponse(a: std.mem.Allocator, comptime head: []const u8, n: usize) ![]const u8 {
+    const body = try a.alloc(u8, n);
+    @memset(body, 'x');
+    return std.fmt.allocPrint(a, head ++ "{s}", .{body});
+}
+
+test "size limit: a body over max_response_bytes is refused" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
+
+    const with_length = try bigResponse(arena.allocator(), "HTTP/1.1 200 OK\r\nContent-Length: 5000\r\nConnection: close\r\n\r\n", 5000);
+    const no_length = try bigResponse(arena.allocator(), "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", 5000);
+    const server = try Server.start(&.{
+        &.{.{ .send = with_length }}, &.{.{ .send = no_length }},
+        &.{.{ .send = with_length }}, &.{.{ .send = with_length }},
+    });
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+    const url = server.url(&url_buf, "/");
+
+    // Declared length over the limit, and an undeclared one that runs over.
+    try t.expectError(error.ResponseTooLarge, pacman.get(io, t.allocator, url, .{ .max_response_bytes = 1000 }));
+    try t.expectError(error.ResponseTooLarge, pacman.get(io, t.allocator, url, .{ .max_response_bytes = 1000 }));
+    // Exactly at the limit is fine; and so is the default.
+    inline for (.{ pacman.FetchOptions{ .max_response_bytes = 5000 }, pacman.FetchOptions{} }) |opts| {
+        var res = try pacman.get(io, t.allocator, url, opts);
+        defer res.deinit();
+        try t.expectEqual(@as(usize, 5000), res.text().len);
+    }
+}
+
+test "size limit: counts the body AFTER decompression" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{ &.{.{ .send = comptime gzipResponse(true) }}, &.{.{ .send = comptime gzipResponse(true) }} });
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+    const url = server.url(&url_buf, "/");
+
+    // ~2 KB on the wire, 2 MiB once inflated: over a 64 KiB limit.
+    try t.expect(gz_2mib.len < 4096);
+    try t.expectError(error.ResponseTooLarge, pacman.get(io, t.allocator, url, .{ .max_response_bytes = 64 * 1024 }));
+    // Control: the same response under a limit that fits it.
+    var res = try pacman.get(io, t.allocator, url, .{ .max_response_bytes = 4 * 1024 * 1024 });
+    defer res.deinit();
+    try t.expectEqual(@as(usize, two_mib), res.text().len);
+    try t.expectEqual(@as(u8, 'a'), res.text()[two_mib - 1]);
+}
+
+test "size limit: a declared length over the limit is refused before the body is read" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    // Promises 10 GB and then sends nothing: the refusal must not wait for it.
+    const server = try Server.start(&.{&.{ .{ .send = "HTTP/1.1 200 OK\r\nContent-Length: 10000000000\r\n\r\n" }, .hold }});
+    defer server.stop();
+    var url_buf: [64]u8 = undefined;
+
+    const started = Io.Timestamp.now(io, .awake);
+    try t.expectError(error.ResponseTooLarge, pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{}));
+    try t.expect(elapsedMs(io, started) < 500);
+}
+
+test "size limit: the default is generous" {
+    try t.expect(pacman.default_max_response_bytes >= 32 * 1024 * 1024);
+    try t.expectEqual(pacman.default_max_response_bytes, (pacman.FetchOptions{}).max_response_bytes);
+}

@@ -7,6 +7,11 @@ const proxy = @import("proxy.zig");
 const Headers = @import("headers.zig").Headers;
 const Response = @import("response.zig").Response;
 
+/// Default for `FetchOptions.max_response_bytes`: generous enough for a
+/// file download, small enough that a misbehaving server can't exhaust the
+/// process's memory.
+pub const default_max_response_bytes: usize = 64 * 1024 * 1024;
+
 pub const FetchOptions = struct {
     method: http.Method = .GET,
     headers: []const http.Header = &.{},
@@ -20,6 +25,12 @@ pub const FetchOptions = struct {
     /// (never returned to a pool) and the call fails with `error.Timeout`.
     /// 0 = no deadline: the call waits for as long as the server takes.
     timeout_ms: u32 = 0,
+    /// Largest response body accepted, in bytes, counted AFTER
+    /// decompression (a small gzip body can inflate to a huge one). A
+    /// larger body fails the call with `error.ResponseTooLarge`; nothing
+    /// past the limit is kept. Raise it for a known-large download; use
+    /// `std.math.maxInt(usize)` for no limit.
+    max_response_bytes: usize = default_max_response_bytes,
     /// Explicit HTTP(S) proxy URL (e.g. "http://user:pass@host:8080").
     /// If omitted, falls back to environment variables (http_proxy/https_proxy/
     /// all_proxy, honoring no_proxy) — if none of those are set either, no
@@ -429,6 +440,15 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
 
     response_headers = try header_list.toOwnedSlice(aa);
 
+    // A declared length over the limit is refused before reading a byte of
+    // it. (Only when not compressed: otherwise the declared length is of the
+    // compressed bytes, and the limit is checked as the body inflates.)
+    if (response.head.content_length) |declared| {
+        if (response.head.content_encoding == .identity and declared > opts.max_response_bytes) {
+            return error.ResponseTooLarge;
+        }
+    }
+
     // Read the response body
     var body_list = std.ArrayList(u8).initCapacity(aa, 4096) catch unreachable;
 
@@ -445,6 +465,8 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
         // caller a truncated response with the original (successful) status.
         const bytes_read = reader.*.readSliceShort(&chunk) catch return error.HttpBodyCutShort;
         if (bytes_read == 0) break;
+        // `reader` is the decompressing one: this counts inflated bytes.
+        if (bytes_read > opts.max_response_bytes - body_list.items.len) return error.ResponseTooLarge;
         try body_list.appendSlice(aa, chunk[0..bytes_read]);
     }
 

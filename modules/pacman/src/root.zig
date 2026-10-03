@@ -7,6 +7,7 @@ pub const Headers = @import("headers.zig").Headers;
 pub const Response = @import("response.zig").Response;
 pub const Client = @import("client.zig").Client;
 pub const FetchOptions = @import("request.zig").FetchOptions;
+pub const default_max_response_bytes = @import("request.zig").default_max_response_bytes;
 /// Low-level entry point, for callers that need full per-call control (own
 /// method/headers/uri) while still reusing a persistent http.Client's
 /// connection pool — e.g. a caller with its own request-signing scheme
