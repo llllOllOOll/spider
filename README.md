@@ -915,6 +915,58 @@ handler (jobs): `wp.sendRaw(arena, io, sub, payload, ttl)`. A 410 answer is
 
 ---
 
+## Mail
+
+A client of mail providers' HTTP APIs (not a mail server: it does not deliver
+to inboxes itself and does not receive mail).
+
+```zig
+var mailer = try spider.mail.Mailer.fromEnv(); // once, at startup
+
+_ = try mailer.send(c, .{
+    .to = &.{.{ .name = "Ada", .address = "ada@example.com" }},
+    .subject = "Welcome",
+    .html = "<h1>Welcome!</h1>",
+    .text = "Welcome!",
+});
+```
+
+`fromEnv()` reads `MAIL_TRANSPORT` (`brevo`, `resend`, `postmark` or `log`,
+the default), `MAIL_FROM` (`App <no-reply@example.com>`, the sender of a mail
+that sets no `.from`), the transport's key (`BREVO_API_KEY`, `RESEND_API_KEY`
+or `POSTMARK_SERVER_TOKEN`) and optionally `MAIL_BASE_URL`. The `log`
+transport delivers nothing and writes the message to the log (development).
+Without the environment: `spider.mail.Mailer{ .backend = .{ .brevo = .{ .api_key = key } }, .from = .{ .address = "no-reply@example.com" } }`.
+
+A mail also takes `.from`, `.cc`, `.bcc` and `.reply_to`. `send` returns a
+`Receipt` (`.message_id`, null when the provider gave none): the provider
+accepted the message, which is not inbox delivery. Outside a handler (jobs):
+`mailer.sendWith(arena, io, mail)`.
+
+Errors: `MailMissingFrom`, `MailMissingRecipients`, `MailMissingBody`,
+`MailInvalidAddress`, `MailInvalidHeader` (nothing was sent);
+`MailUnauthorized` (API key refused), `MailRejected` (the provider refused
+this message), `MailDeliveryFailed` (network, rate limit or provider failure:
+worth retrying). `send` waits for the provider's answer and has no timeout
+and no retry of its own.
+
+In tests, the memory backend keeps the messages instead of sending them:
+
+```zig
+var outbox: spider.mail.Outbox = .init(std.testing.allocator);
+defer outbox.deinit();
+const mailer: spider.mail.Mailer = .{ .backend = .{ .memory = &outbox } };
+// ... run the code that sends ...
+try std.testing.expectEqualStrings("Welcome", outbox.last().?.subject);
+```
+
+Another provider: `.backend = .{ .custom = .{ .ptr = &state, .sendFn = mySend } }`
+with `fn mySend(ptr: *anyopaque, arena: std.mem.Allocator, io: std.Io, mail: spider.mail.Mail) anyerror!spider.mail.Receipt`
+(the mail is already validated, with `.from` set). The Resend transport sends
+recipients as bare addresses (their display names are dropped).
+
+---
+
 ## Cloudflare R2
 
 Needs `.r2 = true` on the spider dependency:

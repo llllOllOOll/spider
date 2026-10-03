@@ -60,6 +60,8 @@ pub const policySet = rbac.policySet;
 pub const r2 = @import("spider_r2");
 pub const qrcode = @import("spider_qrcode");
 pub const push = @import("modules/push.zig");
+/// Sending mail through a provider (Brevo, Resend, Postmark) — see modules/mail/mail.zig.
+pub const mail = @import("modules/mail/mail.zig");
 pub const logger = @import("modules/logger.zig").middleware;
 /// Request logger with options (quiet paths, stream opens) — see modules/logger.zig.
 pub const loggerWith = @import("modules/logger.zig").with;
@@ -157,6 +159,14 @@ test {
     _ = @import("providers/jwks.zig");
     _ = @import("testing.zig");
     _ = @import("middlewares/https.zig");
+    _ = @import("modules/mail/mail.zig");
+    _ = @import("modules/mail/message.zig");
+    _ = @import("modules/mail/http.zig");
+    _ = @import("modules/mail/brevo.zig");
+    _ = @import("modules/mail/resend.zig");
+    _ = @import("modules/mail/postmark.zig");
+    _ = @import("modules/mail/memory.zig");
+    _ = @import("modules/mail/log.zig");
 }
 
 test "every file with tests is part of the unit test binary" {

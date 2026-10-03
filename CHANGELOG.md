@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `spider.mail`: sending mail through a provider's HTTP API. A `Mail`
+  (`from`, `to`, `cc`, `bcc`, `reply_to`, `subject`, `html`, `text`) goes to a
+  `Mailer`, whose backend is Brevo, Resend, Postmark, `log` (development:
+  writes the message to the log), `memory` (tests: an `Outbox` to inspect) or
+  the app's own `Transport`. `Mailer.fromEnv()` picks it from `MAIL_TRANSPORT`,
+  so handlers never name a provider. `send(c, mail)` in a handler,
+  `sendWith(arena, io, mail)` in jobs. Messages are validated before they
+  leave (sender, recipients, body, address shape, no CR/LF in headers), and
+  provider answers map to `MailUnauthorized`, `MailRejected` and
+  `MailDeliveryFailed`. Not a mail server; no SMTP and no attachments yet.
 - `c.queryDecoded(name)`: the query string value decoded once, with the same
   rules as form fields (`+` → space, `%2B` → "+", `%C3%A3` → "ã"; an invalid
   escape is kept as typed). `c.query(name)` is unchanged and still returns the

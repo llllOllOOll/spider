@@ -83,7 +83,8 @@ src/render/           template engine: parser → AST → renderer; escaping, Ra
 src/ws/               Hub (SSE/WS fan-out, channels, replay), Sse, Ws
 src/binding/          form + multipart parsing
 src/providers/        jwks (JWT via JWKS), keycloak, google, clerk
-src/modules/          rbac, logger, static files, health, push (Web Push), auth (HS256)
+src/modules/          rbac, logger, static files, health, push (Web Push), auth (HS256),
+                      mail/ (Mailer + provider transports: brevo, resend, postmark, log, memory)
 src/internal/         config (spider.Config), env (.env loading), logfmt
 src/cli/              `spider` CLI; src/cli/templates/*.template = files it generates
 modules/pg|sqlite|r2|qrcode   separate packages re-exported as spider.pg etc.
