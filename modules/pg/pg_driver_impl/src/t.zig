@@ -240,3 +240,88 @@ pub fn scalar(c: *Conn, sql: []const u8) i32 {
     result.drain() catch unreachable;
     return value;
 }
+
+// A scripted Postgres for tests that need to control exactly which bytes
+// arrive in which packet — something a real server won't promise.
+//
+// It accepts one connection. For each stage it waits for the client to write
+// something, then sends the stage's chunks one at a time with a pause in
+// between, so each chunk reaches the client in its own read.
+pub const FakeServer = struct {
+    port: u16,
+    stages: []const Stage,
+    server: std.Io.net.Server,
+    thread: std.Thread,
+
+    pub const Stage = []const []const u8;
+
+    const pause_ms = 40;
+    var next_port = std.atomic.Value(u16).init(54710);
+
+    pub fn start(stages: []const Stage) !*FakeServer {
+        const port = next_port.fetchAdd(1, .seq_cst);
+        const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", port);
+
+        const self = try allocator.create(FakeServer);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .port = port,
+            .stages = stages,
+            .server = try address.listen(io, .{ .reuse_address = true }),
+            .thread = undefined,
+        };
+        errdefer self.server.deinit(io);
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        return self;
+    }
+
+    // Call after the client connection is closed.
+    pub fn stop(self: *FakeServer) void {
+        self.thread.join();
+        self.server.deinit(io);
+        allocator.destroy(self);
+    }
+
+    pub fn connect(self: *const FakeServer) !Conn {
+        return Conn.open(io, allocator, .{ .tls = .off, .host = "127.0.0.1", .port = self.port });
+    }
+
+    fn run(self: *FakeServer) void {
+        const stream = self.server.accept(io) catch return;
+        defer stream.close(io);
+
+        var buf: [4096]u8 = undefined;
+        for (self.stages) |chunks| {
+            if ((readSome(stream, &buf) catch 0) == 0) return;
+            for (chunks, 0..) |chunk, i| {
+                if (i > 0) std.Io.sleep(io, .fromMilliseconds(pause_ms), .awake) catch {};
+                writeAll(stream, chunk) catch return;
+            }
+        }
+        // stay around until the client hangs up
+        while ((readSome(stream, &buf) catch 0) != 0) {}
+    }
+
+    fn readSome(stream: std.Io.net.Stream, buf: []u8) !usize {
+        var vecs: [1][]u8 = .{buf};
+        var reader = stream.reader(io, &.{});
+        return reader.interface.readVec(&vecs);
+    }
+
+    fn writeAll(stream: std.Io.net.Stream, data: []const u8) !void {
+        var wbuf: [1024]u8 = undefined;
+        var writer = stream.writer(io, &wbuf);
+        try writer.interface.writeAll(data);
+        try writer.interface.flush();
+    }
+};
+
+// One backend message: type byte, length (which counts itself), payload.
+pub fn message(comptime typ: u8, comptime payload: []const u8) []const u8 {
+    comptime {
+        var len: [4]u8 = undefined;
+        std.mem.writeInt(u32, &len, @intCast(payload.len + 4), .big);
+        const all = [_]u8{typ} ++ len ++ payload[0..payload.len].*;
+        return &all;
+    }
+}

@@ -470,8 +470,16 @@ pub const Conn = struct {
     // Should not be called directly
     pub fn peekForError(self: *Conn) !void {
         const data = (try self._reader.peekForError()) orelse return;
+        // `data` points into the reader's buffer, and reading the
+        // ReadyForQuery below can land on top of it: when the error is the
+        // last thing buffered the reader rewinds to the start, so whatever
+        // comes next (a ParameterStatus, a notice, or just the ReadyForQuery
+        // when the error arrived in a packet of its own) overwrites it.
+        // Take our copy first, then read on so the state still comes from
+        // the ReadyForQuery.
+        const err = self.setErr(data);
         try self.readyForQuery();
-        return self.setErr(data);
+        return err;
     }
 
     // Should not be called directly
@@ -2048,6 +2056,58 @@ const DummyStruct = struct {
     id: i32,
     name: []const u8,
 };
+
+// What the server sends for "Parse + Describe + Sync" of a statement with no
+// parameters and no result columns.
+const fake_prepared = t.message('1', "") ++ t.message('t', &.{ 0, 0 }) ++ t.message('n', "") ++ t.message('Z', "T");
+const fake_bind_complete = t.message('2', "");
+const fake_error = t.message('E', "SERROR\x00VERROR\x00C42501\x00Mnew row violates row-level security policy for table \"x\"\x00FexecMain.c\x00L2199\x00RExecWithCheckOptions\x00\x00");
+const fake_parameter_status = t.message('S', "is_superuser\x00on\x00");
+const fake_notice = t.message('N', "SNOTICE\x00VNOTICE\x00C00000\x00Msomething the server wanted to say\x00Ffile.c\x00L1\x00Rroutine\x00\x00");
+const fake_ready_failed = t.message('Z', "E");
+
+// Runs one statement against a scripted server whose reply to Bind + Execute
+// + Sync is `chunks` (each one delivered in its own packet), and expects the
+// error to come through intact.
+fn expectErrorSurvives(chunks: t.FakeServer.Stage) !void {
+    const server = try t.FakeServer.start(&.{ &.{fake_prepared}, chunks });
+    defer server.stop();
+
+    var c = try server.connect();
+    defer c.deinit();
+
+    try t.expectError(error.PG, c.queryOpts("insert into x values (1)", .{}, .{}));
+    const err = c.err orelse return error.ErrorWasNotRecorded;
+    try t.expectString("42501", err.code);
+    try t.expectString("ERROR", err.severity);
+    try t.expectString("new row violates row-level security policy for table \"x\"", err.message);
+    try t.expectString("ExecWithCheckOptions", err.routine.?);
+    // the ReadyForQuery that follows the error was consumed and applied
+    try t.expectEqual(.fail, c._state);
+}
+
+test "Conn: execute error followed by ParameterStatus" {
+    // What Postgres sends when the failed statement rolls back a SET LOCAL of
+    // a reported setting (SET LOCAL ROLE on a superuser connection).
+    try expectErrorSurvives(&.{ fake_bind_complete ++ fake_error, fake_parameter_status ++ fake_ready_failed });
+}
+
+test "Conn: execute error followed by a notice" {
+    try expectErrorSurvives(&.{ fake_bind_complete ++ fake_error, fake_notice ++ fake_ready_failed });
+}
+
+test "Conn: execute error alone in the read buffer" {
+    // BindComplete, the error and ReadyForQuery each in their own packet.
+    try expectErrorSurvives(&.{ fake_bind_complete, fake_error, fake_ready_failed });
+}
+
+test "Conn: execute error in the same packet as ReadyForQuery" {
+    try expectErrorSurvives(&.{fake_bind_complete ++ fake_error ++ fake_ready_failed});
+}
+
+test "Conn: execute error in the same packet as BindComplete, ReadyForQuery later" {
+    try expectErrorSurvives(&.{ fake_bind_complete ++ fake_error, fake_ready_failed });
+}
 
 const DummyEnum = enum {
     val1,
