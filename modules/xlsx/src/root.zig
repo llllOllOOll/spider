@@ -27,6 +27,7 @@ pub const date = @import("date.zig");
 pub const styles = @import("styles.zig");
 pub const shared_strings = @import("shared_strings.zig");
 pub const workbook = @import("workbook.zig");
+pub const zip_reader = @import("zip_reader.zig");
 
 pub const Workbook = workbook.Workbook;
 pub const Sheet = workbook.Sheet;
@@ -79,4 +80,5 @@ test {
     _ = styles;
     _ = shared_strings;
     _ = workbook;
+    _ = zip_reader;
 }
