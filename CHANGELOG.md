@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default build does not compile it). Several sheets; text, numbers,
   booleans, dates and formulas; column widths and row heights; fonts (name,
   size, colour, bold, italic, underline), background colour, borders,
-  alignment, wrapped text and number formats; merged cells; frozen panes; a
-  filter per sheet. The file is
+  alignment, wrapped text, shrink-to-fit and number formats; merged cells;
+  links to sites and e-mail addresses; frozen panes, zoom and a filter per
+  sheet; paper, orientation, margins and repeated header rows for printing. The file is
   built in memory and returned as bytes or written to any `std.Io.Writer`.
   User text is always written as text, so it can never become a formula.
   Entries are stored uncompressed for now; no reading and no streamed

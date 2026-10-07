@@ -80,6 +80,10 @@ copied, so the caller's buffers can be reused right away.
 | `sheet.setColumnWidth(col, characters)` | Column width, 0 to 255. |
 | `sheet.setRowHeight(row, points)` | Row height, 0 to 409. |
 | `sheet.mergeCells(range)` | Merges a rectangle of cells into one. |
+| `sheet.setLink(row, col, target)` | Links a cell to a site or an e-mail address. |
+| `sheet.setZoom(percent)` | Zoom on screen, 10 to 400. |
+| `sheet.setPageSetup(.{ .paper, .orientation, .margins })` | Paper, orientation and margins for printing. |
+| `sheet.setPrintTitleRows(first, last)` | Rows repeated on every printed page. |
 | `sheet.freeze(rows, cols)` | Frozen panes; `freeze(1, 0)` pins a header. |
 | `sheet.setAutoFilter(range)` | Filter buttons on the range's first row. |
 | `wb.toOwnedSlice(allocator)` | The file as bytes. |
@@ -95,9 +99,10 @@ Style (`xlsx.Style`):
 - font: `bold`, `italic`, `underline`, `font_color` (`0xRRGGBB`),
   `font_name` (e.g. `"Times New Roman"`), `font_size` (points);
 - `fill` (`0xRRGGBB`) and `border` (`.thin`, `.medium`, `.thick`, on the
-  four sides);
+  four sides), with `border_left`, `border_right`, `border_top` and
+  `border_bottom` to set or remove one side;
 - alignment: `h_align` (`.left`, `.center`, `.right`), `v_align` (`.top`,
-  `.center`, `.bottom`), `wrap`;
+  `.center`, `.bottom`), `wrap`, `shrink`;
 - `number_format`: `.integer`, `.decimal`, `.thousands`,
   `.thousands_decimal`, `.percent`, `.percent_decimal`, `.date`, `.time`,
   `.datetime`, `.text`, or `.{ .custom = "dd/mm/yyyy" }`.
@@ -125,6 +130,13 @@ A style is a plain value: build one, copy it, change a field.
   only shows it as a new line in a cell whose style has `wrap = true`.
 - **Merged cells take their borders from every cell of the range.** Give
   the blank cells of the range the same style as the first one.
+- **Links** accept only `http://`, `https://` and `mailto:` targets, so a
+  link built from user data cannot point at a local file. A link does not
+  change how its cell looks: use `xlsx.link_style` for the usual blue,
+  underlined text.
+- **Printing**: without `setPageSetup` the reader's program chooses the
+  paper (Letter or A4, by country), so the same sheet breaks into pages
+  differently. Margins are in inches; `xlsx.cm(1.5)` converts.
 - **Document numbers and zeros on the left**: write the number with a
   custom format such as `"00000000000"`, or write it as text.
 - **Only what is used is written**: styles and texts that no cell ends up
@@ -136,10 +148,11 @@ A style is a plain value: build one, copy it, change a field.
 ## Not supported
 
 Reading files, streamed writing for very large sheets, compression, zip64
-(files or parts past 4 GiB), hyperlinks, borders that differ per side,
-shrink-to-fit, column default styles, zoom, page setup (paper size,
-orientation, margins, print titles), conditional formatting, data
-validation, protection, hidden rows and columns, rich text inside a cell,
+(files or parts past 4 GiB), links to other cells or files, border colours
+and dashed lines, column default styles, headers and footers, fit-to-page
+scaling, page breaks, print areas, columns repeated when printing,
+conditional formatting, data validation, protection, hidden rows and
+columns, rich text inside a cell,
 comments, images, charts, pivot tables, the 1904 date system, document
 properties and themes, editing an existing file.
 
@@ -157,8 +170,9 @@ apart:
 
 Parts written, in order: `[Content_Types].xml`, `_rels/.rels`,
 `xl/workbook.xml`, `xl/_rels/workbook.xml.rels`,
-`xl/worksheets/sheetN.xml`, `xl/styles.xml`, and `xl/sharedStrings.xml` when
-there is text.
+`xl/worksheets/sheetN.xml` (each followed by
+`xl/worksheets/_rels/sheetN.xml.rels` when the sheet has links),
+`xl/styles.xml`, and `xl/sharedStrings.xml` when there is text.
 
 What that leaves open:
 

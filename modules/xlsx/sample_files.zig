@@ -147,6 +147,15 @@ fn everything(gpa: std.mem.Allocator) !*xlsx.Workbook {
     try layout.setStyled(8, 2, text("Fonte Courier New"), .{ .font_name = "Courier New" });
     try layout.setStyled(9, 2, text("No alto da célula"), .{ .v_align = .top, .border = .thin });
     try layout.setRowHeight(9, 40);
+    try layout.setStyled(11, 2, text("Abrir o site de exemplo"), xlsx.link_style);
+    try layout.setLink(11, 2, "https://example.com/");
+    try layout.setStyled(12, 2, text("contato@exemplo.com.br"), xlsx.link_style);
+    try layout.setLink(12, 2, "mailto:contato@exemplo.com.br");
+    try layout.setStyled(14, 2, text("Texto que encolhe para caber na largura da coluna, sem quebrar a linha"), .{ .shrink = true, .border = .thin });
+    try layout.setStyled(16, 2, text("Só a linha de baixo"), .{ .border_bottom = .medium });
+    try layout.setStyled(18, 2, text("Sem a linha de cima"), .{ .border = .thin, .border_top = .none });
+    try layout.setZoom(120);
+    try layout.setPageSetup(.{ .paper = .a4, .orientation = .landscape, .margins = .{ .left = xlsx.cm(1.5), .right = xlsx.cm(1.5) } });
 
     // Exactly 31 characters, with accents and a dash.
     const long_name = try wb.addSheet("Relatório de ocupação — bloco A");
@@ -247,6 +256,9 @@ fn poll(gpa: std.mem.Allocator) !*xlsx.Workbook {
     }
     try votes.freeze(1, 1);
     try votes.setAutoFilter(.{ .first_row = 0, .first_col = 0, .last_row = vote_count, .last_col = 5 });
+    // Printed on A4 lying down, with the header on every page.
+    try votes.setPageSetup(.{ .paper = .a4, .orientation = .landscape });
+    try votes.setPrintTitleRows(0, 0);
     return wb;
 }
 
