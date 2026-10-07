@@ -34,6 +34,7 @@ pub const Error = workbook.Error;
 
 pub const Style = styles.Style;
 pub const Border = styles.Border;
+pub const FillPattern = styles.FillPattern;
 pub const NumberFormat = styles.NumberFormat;
 pub const HorizontalAlignment = styles.HorizontalAlignment;
 pub const VerticalAlignment = styles.VerticalAlignment;

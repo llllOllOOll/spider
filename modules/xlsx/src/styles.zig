@@ -28,9 +28,36 @@ pub const Error = error{
 /// A line drawn on the four sides of a cell.
 pub const Border = enum {
     none,
+    hair,
+    dotted,
+    dashed,
     thin,
     medium,
     thick,
+    double,
+};
+
+/// How a cell's background is painted. `solid` covers it with the
+/// `fill` colour; the others draw dots of that colour (black without
+/// one) over the plain background, from darker to lighter.
+pub const FillPattern = enum {
+    solid,
+    dark_gray,
+    medium_gray,
+    light_gray,
+    gray125,
+    gray0625,
+
+    fn xmlName(pattern: FillPattern) []const u8 {
+        return switch (pattern) {
+            .solid => "solid",
+            .dark_gray => "darkGray",
+            .medium_gray => "mediumGray",
+            .light_gray => "lightGray",
+            .gray125 => "gray125",
+            .gray0625 => "gray0625",
+        };
+    }
 };
 
 /// How a number is shown. The named ones are formats every spreadsheet
@@ -96,6 +123,7 @@ pub const Style = struct {
     font_size: ?f32 = null,
     /// Background colour as `0xRRGGBB`.
     fill: ?u24 = null,
+    fill_pattern: FillPattern = .solid,
     /// The line on the four sides of the cell.
     border: Border = .none,
     /// One side only; when set, it replaces `border` for that side
@@ -104,6 +132,9 @@ pub const Style = struct {
     border_right: ?Border = null,
     border_top: ?Border = null,
     border_bottom: ?Border = null,
+    /// Colour of the border lines as `0xRRGGBB`; null is the reader's
+    /// automatic colour (black).
+    border_color: ?u24 = null,
     number_format: NumberFormat = .general,
     h_align: HorizontalAlignment = .general,
     v_align: VerticalAlignment = .bottom,
@@ -136,10 +167,8 @@ const first_custom_format_id = 164;
 /// map key.
 const Key = struct {
     font: FontKey,
-    has_fill: bool,
-    fill: u24,
-    /// Left, right, top, bottom.
-    border: [4]Border,
+    fill: FillKey,
+    border: BorderKey,
     custom_format: bool,
     /// A built-in format id, or an index into `Registry.custom_formats`.
     format: u16,
@@ -151,9 +180,8 @@ const Key = struct {
 
     const default: Key = .{
         .font = .default,
-        .has_fill = false,
-        .fill = 0,
-        .border = @splat(.none),
+        .fill = .none,
+        .border = .none,
         .custom_format = false,
         .format = 0,
         .h_align = .general,
@@ -166,6 +194,26 @@ const Key = struct {
     fn hasAlignment(key: Key) bool {
         return key.h_align != .general or key.v_align != .bottom or key.wrap or key.shrink;
     }
+};
+
+/// One entry of the fills table.
+const FillKey = struct {
+    /// False with the solid pattern means "no fill".
+    has_color: bool,
+    color: u24,
+    pattern: FillPattern,
+
+    const none: FillKey = .{ .has_color = false, .color = 0, .pattern = .solid };
+};
+
+/// One entry of the borders table.
+const BorderKey = struct {
+    /// Left, right, top, bottom.
+    sides: [4]Border,
+    has_color: bool,
+    color: u24,
+
+    const none: BorderKey = .{ .sides = @splat(.none), .has_color = false, .color = 0 };
 };
 
 /// One entry of the fonts table.
@@ -241,13 +289,16 @@ pub const Registry = struct {
                 .name = if (style.font_name) |name| try self.internFontName(arena, name) else 0,
                 .size_tenths = if (style.font_size) |size| try self.internFontSize(size) else 0,
             },
-            .has_fill = style.fill != null,
-            .fill = style.fill orelse 0,
+            .fill = .{ .has_color = style.fill != null, .color = style.fill orelse 0, .pattern = style.fill_pattern },
             .border = .{
-                style.border_left orelse style.border,
-                style.border_right orelse style.border,
-                style.border_top orelse style.border,
-                style.border_bottom orelse style.border,
+                .sides = .{
+                    style.border_left orelse style.border,
+                    style.border_right orelse style.border,
+                    style.border_top orelse style.border,
+                    style.border_bottom orelse style.border,
+                },
+                .has_color = style.border_color != null,
+                .color = style.border_color orelse 0,
             },
             .custom_format = false,
             .format = 0,
@@ -257,6 +308,8 @@ pub const Registry = struct {
             .shrink = style.shrink,
             .unlocked = style.unlocked,
         };
+        // A colour without a line draws nothing: not a style of its own.
+        if (std.meta.eql(key.border.sides, BorderKey.none.sides)) key.border = .none;
         switch (style.number_format) {
             .custom => |code| {
                 key.custom_format = true;
@@ -315,9 +368,9 @@ pub const Registry = struct {
     /// always record 0 and must not be listed; `used[i]` becomes record
     /// `i + 1`, which is the value cells put in their `s` attribute.
     pub fn write(self: *const Registry, w: *Writer, scratch: std.mem.Allocator, used: []const u16) (Writer.Error || error{OutOfMemory})!void {
-        var fills: std.ArrayList(u24) = .empty;
+        var fills: std.ArrayList(FillKey) = .empty;
         defer fills.deinit(scratch);
-        var borders: std.ArrayList([4]Border) = .empty;
+        var borders: std.ArrayList(BorderKey) = .empty;
         defer borders.deinit(scratch);
         var formats: std.ArrayList(u16) = .empty;
         defer formats.deinit(scratch);
@@ -333,12 +386,12 @@ pub const Registry = struct {
             const key = self.keys.items[id];
             var record: Record = .{ .font = 0, .fill = 0, .border = 0, .format = key.format, .key = key };
             record.font = @intCast(try indexOrAppend(FontKey, scratch, &fonts, key.font));
-            if (key.has_fill) {
+            if (!std.meta.eql(key.fill, FillKey.none)) {
                 // Fills 0 and 1 are fixed by the format (see below).
-                record.fill = 2 + @as(u32, @intCast(try indexOrAppend(u24, scratch, &fills, key.fill)));
+                record.fill = 2 + @as(u32, @intCast(try indexOrAppend(FillKey, scratch, &fills, key.fill)));
             }
-            if (!std.meta.eql(key.border, Key.default.border)) {
-                record.border = 1 + @as(u32, @intCast(try indexOrAppend([4]Border, scratch, &borders, key.border)));
+            if (!std.meta.eql(key.border, BorderKey.none)) {
+                record.border = 1 + @as(u32, @intCast(try indexOrAppend(BorderKey, scratch, &borders, key.border)));
             }
             if (key.custom_format) {
                 record.format = first_custom_format_id + @as(u32, @intCast(try indexOrAppend(u16, scratch, &formats, key.format)));
@@ -386,8 +439,11 @@ pub const Registry = struct {
         try w.print("<fills count=\"{d}\">", .{fills.items.len + 2});
         try w.writeAll("<fill><patternFill patternType=\"none\"/></fill>");
         try w.writeAll("<fill><patternFill patternType=\"gray125\"/></fill>");
-        for (fills.items) |rgb| {
-            try w.print("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF{X:0>6}\"/><bgColor indexed=\"64\"/></patternFill></fill>", .{rgb});
+        for (fills.items) |fill| {
+            try w.print("<fill><patternFill patternType=\"{s}\"", .{fill.pattern.xmlName()});
+            if (fill.has_color) {
+                try w.print("><fgColor rgb=\"FF{X:0>6}\"/><bgColor indexed=\"64\"/></patternFill></fill>", .{fill.color});
+            } else try w.writeAll("/></fill>");
         }
         try w.writeAll("</fills>");
 
@@ -395,9 +451,11 @@ pub const Registry = struct {
         try w.writeAll("<border><left/><right/><top/><bottom/><diagonal/></border>");
         for (borders.items) |border| {
             try w.writeAll("<border>");
-            for ([_][]const u8{ "left", "right", "top", "bottom" }, border) |side, line| {
+            for ([_][]const u8{ "left", "right", "top", "bottom" }, border.sides) |side, line| {
                 if (line == .none) {
                     try w.print("<{s}/>", .{side});
+                } else if (border.has_color) {
+                    try w.print("<{s} style=\"{t}\"><color rgb=\"FF{X:0>6}\"/></{s}>", .{ side, line, border.color, side });
                 } else {
                     try w.print("<{s} style=\"{t}\"><color auto=\"1\"/></{s}>", .{ side, line, side });
                 }
@@ -737,4 +795,37 @@ test "borders can differ per side" {
         "<border><left style=\"medium\"><color auto=\"1\"/></left><right style=\"thin\"><color auto=\"1\"/></right>" ++
         "<top style=\"thin\"><color auto=\"1\"/></top><bottom style=\"thick\"><color auto=\"1\"/></bottom><diagonal/></border>" ++
         "</borders>") != null);
+}
+
+test "fill patterns, more border lines and border colour" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    // Solid is the default pattern, and a pattern needs no colour.
+    try testing.expectEqual(try registry.intern(arena, .{ .fill = 0xFFFF00 }), try registry.intern(arena, .{ .fill = 0xFFFF00, .fill_pattern = .solid }));
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{ .fill_pattern = .solid }));
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{ .border_color = 0xFF0000 }));
+    const dotted_red = try registry.intern(arena, .{ .fill = 0xFF0000, .fill_pattern = .light_gray });
+    const plain_gray = try registry.intern(arena, .{ .fill_pattern = .gray125 });
+    const double_line = try registry.intern(arena, .{ .border_bottom = .double });
+    const dotted_blue = try registry.intern(arena, .{ .border = .dotted, .border_color = 0x0000FF });
+    const hair_dashed = try registry.intern(arena, .{ .border_left = .hair, .border_right = .dashed });
+    const thin_black = try registry.intern(arena, .{ .border = .thin });
+    try testing.expect(dotted_blue != try registry.intern(arena, .{ .border = .dotted }));
+
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try registry.write(&out.writer, testing.allocator, &.{ dotted_red, plain_gray, double_line, dotted_blue, hair_dashed, thin_black });
+    const written = out.written();
+    try testing.expect(std.mem.indexOf(u8, written, "<fills count=\"4\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" ++
+        "<fill><patternFill patternType=\"lightGray\"><fgColor rgb=\"FFFF0000\"/><bgColor indexed=\"64\"/></patternFill></fill>" ++
+        "<fill><patternFill patternType=\"gray125\"/></fill></fills>") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "<borders count=\"5\"><border><left/><right/><top/><bottom/><diagonal/></border>" ++
+        "<border><left/><right/><top/><bottom style=\"double\"><color auto=\"1\"/></bottom><diagonal/></border>" ++
+        "<border><left style=\"dotted\"><color rgb=\"FF0000FF\"/></left><right style=\"dotted\"><color rgb=\"FF0000FF\"/></right>" ++
+        "<top style=\"dotted\"><color rgb=\"FF0000FF\"/></top><bottom style=\"dotted\"><color rgb=\"FF0000FF\"/></bottom><diagonal/></border>" ++
+        "<border><left style=\"hair\"><color auto=\"1\"/></left><right style=\"dashed\"><color auto=\"1\"/></right><top/><bottom/><diagonal/></border>" ++
+        "<border><left style=\"thin\"><color auto=\"1\"/></left>") != null);
 }
