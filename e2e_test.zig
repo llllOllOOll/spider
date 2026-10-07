@@ -187,6 +187,19 @@ fn tagGroup(c: *spider.Ctx, next: spider.NextFn) anyerror!spider.Response {
 
 /// Echoes what the matched route declared (c.route()).
 /// Both query accessors side by side: raw (as documented) and decoded once.
+/// Every byte value, twice: a download must arrive untouched.
+const download_bytes: [512]u8 = blk: {
+    var bytes: [512]u8 = undefined;
+    for (&bytes, 0..) |*b, i| b.* = @intCast(i % 256);
+    break :blk bytes;
+};
+
+fn downloadFile(c: *spider.Ctx) !spider.Response {
+    // The name comes from the client, as in a real app: it is hostile here.
+    const name = c.queryDecoded("name") orelse "relatório.xlsx";
+    return c.download(&download_bytes, .{ .filename = name, .content_type = spider.content_types.xlsx });
+}
+
 fn queryEcho(c: *spider.Ctx) !spider.Response {
     return c.text(try std.fmt.allocPrint(c.arena, "raw=[{s}] decoded=[{s}]", .{ c.query("q") orelse "-", c.queryDecoded("q") orelse "-" }), .{});
 }
@@ -300,6 +313,7 @@ fn runApp(port: u16) void {
         .use(yieldingMiddleware)
         .useAt("/own", dbSession)
         .get("/q/echo", queryEcho, .{ .public = true })
+        .get("/download", downloadFile, .{ .public = true })
         .get("/chain/a", chainA, .{})
         .get("/chain/b", chainB, .{})
         .get("/r/static", ok, .{ .roles = admin })
@@ -395,6 +409,32 @@ test "queryDecoded: + is a space, %2B stays a plus, UTF-8 escapes decode once; q
         try std.testing.expectEqual(@as(u16, 200), res.status);
         try std.testing.expectEqualStrings(tc[1], res.body);
     }
+}
+
+test "download: the client gets the bytes, with each header once" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+
+    const res = try request(env.io(), env.arena.allocator(), port, "/download", .{});
+    try std.testing.expectEqual(@as(u16, 200), res.status);
+    try std.testing.expectEqualSlices(u8, &download_bytes, res.body);
+    try std.testing.expectEqual(@as(usize, 1), res.headerCount("Content-Type"));
+    try std.testing.expectEqual(@as(usize, 1), res.headerCount("Content-Length"));
+    try std.testing.expectEqual(@as(usize, 1), res.headerCount("Content-Disposition"));
+    try std.testing.expectEqualStrings("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", res.header("Content-Type").?);
+    try std.testing.expectEqualStrings("512", res.header("Content-Length").?);
+    try std.testing.expectEqualStrings("attachment; filename=\"relatorio.xlsx\"; filename*=UTF-8''relat%C3%B3rio.xlsx", res.header("Content-Disposition").?);
+    try std.testing.expectEqualStrings("nosniff", res.header("X-Content-Type-Options").?);
+
+    // A name that tries to add a header and leave the folder: one header
+    // line comes back, with nothing of the attempt left in it.
+    const hostile = try request(env.io(), env.arena.allocator(), port, "/download?name=..%2F..%2Fa%0D%0ASet-Cookie%3A%20x%3D1%22.xlsx", .{});
+    try std.testing.expectEqual(@as(u16, 200), hostile.status);
+    try std.testing.expectEqual(@as(usize, 0), hostile.headerCount("Set-Cookie"));
+    try std.testing.expectEqual(@as(usize, 1), hostile.headerCount("Content-Disposition"));
+    try std.testing.expectEqualStrings("attachment; filename=\"aSet-Cookie_ x=1.xlsx\"", hostile.header("Content-Disposition").?);
+    try std.testing.expectEqualSlices(u8, &download_bytes, hostile.body);
 }
 
 test "rbac: static route denies without role and allows with it" {

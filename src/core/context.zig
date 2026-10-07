@@ -67,6 +67,27 @@ pub const ResponseOptions = struct {
     cookies: []const [2][]const u8 = &.{}, // .{ name, full_set_cookie_string }
 };
 
+const download_mod = @import("download.zig");
+/// Content types for downloads: `content_types.xlsx`, `.csv`, `.pdf`, `.binary`.
+pub const content_types = download_mod.content_types;
+
+/// Options of `Ctx.download`.
+pub const DownloadOptions = struct {
+    /// The name the browser offers to save the file under. It may come
+    /// from user data: it is cleaned before it reaches the header (see
+    /// core/download.zig), and falls back to `download` when nothing of
+    /// it can be kept.
+    filename: []const u8,
+    content_type: []const u8 = content_types.binary,
+    /// `.attachment` saves the file; `.@"inline"` lets the browser show
+    /// it (a PDF, an image).
+    disposition: download_mod.Disposition = .attachment,
+    status: std.http.Status = .ok,
+    /// Sent after the download's own headers.
+    headers: []const [2][]const u8 = &.{},
+    cookies: []const [2][]const u8 = &.{},
+};
+
 pub const Response = struct {
     status: std.http.Status = .ok,
     body: ?[]const u8 = null,
@@ -178,6 +199,32 @@ pub const Ctx = struct {
             .body = content,
             .content_type = "text/html; charset=utf-8",
             .headers = opts.headers,
+            .cookies = opts.cookies,
+        };
+    }
+
+    /// Hands `bytes` to the client as a file: `Content-Disposition` with
+    /// a safe file name, the given content type and
+    /// `X-Content-Type-Options: nosniff`, so a browser never interprets
+    /// the file as something else. `Content-Length` is written by the
+    /// server, as for every response.
+    ///
+    /// `bytes` is not copied: it must stay valid until the response is
+    /// sent. Memory from `c.arena` does, and is freed with the request.
+    ///
+    /// `error.InvalidContentType` when the content type is not a single
+    /// line of the form `type/subtype`.
+    pub fn download(self: *Ctx, bytes: []const u8, opts: DownloadOptions) !Response {
+        if (!download_mod.isValidContentType(opts.content_type)) return error.InvalidContentType;
+        const headers = try self.arena.alloc([2][]const u8, 2 + opts.headers.len);
+        headers[0] = .{ "Content-Disposition", try download_mod.contentDisposition(self.arena, opts.filename, opts.disposition) };
+        headers[1] = .{ "X-Content-Type-Options", "nosniff" };
+        @memcpy(headers[2..], opts.headers);
+        return Response{
+            .status = opts.status,
+            .body = bytes,
+            .content_type = opts.content_type,
+            .headers = headers,
             .cookies = opts.cookies,
         };
     }

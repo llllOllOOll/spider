@@ -154,3 +154,57 @@ test "statusForError: invalid or expired tokens are 401, not 500" {
     try std.testing.expectEqual(std.http.Status.unauthorized, context_mod.statusForError(error.InvalidSignature));
     try std.testing.expectEqual(std.http.Status.unauthorized, context_mod.statusForError(error.InvalidFormat));
 }
+
+test "download: the whole response, headers exactly once" {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    var ctx = try makeCtx(arena_state.allocator(), &.{});
+    const bytes = "PK\x03\x04 not really a workbook";
+
+    const res = try ctx.download(bytes, .{ .filename = "Relatório.xlsx", .content_type = context_mod.content_types.xlsx });
+    try std.testing.expectEqual(std.http.Status.ok, res.status);
+    // The body is the caller's bytes, not a copy.
+    try std.testing.expect(res.body.?.ptr == bytes.ptr and res.body.?.len == bytes.len);
+    try std.testing.expectEqualStrings("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", res.content_type);
+    try std.testing.expectEqual(@as(usize, 2), res.headers.len);
+    try std.testing.expectEqualStrings("Content-Disposition", res.headers[0][0]);
+    try std.testing.expectEqualStrings("attachment; filename=\"Relatorio.xlsx\"; filename*=UTF-8''Relat%C3%B3rio.xlsx", res.headers[0][1]);
+    try std.testing.expectEqualStrings("X-Content-Type-Options", res.headers[1][0]);
+    try std.testing.expectEqualStrings("nosniff", res.headers[1][1]);
+    // Content-Type and Content-Length are written by the server, once:
+    // the helper must not add them as extra headers.
+    for (res.headers) |h| {
+        try std.testing.expect(!std.ascii.eqlIgnoreCase(h[0], "Content-Type"));
+        try std.testing.expect(!std.ascii.eqlIgnoreCase(h[0], "Content-Length"));
+    }
+
+    // Defaults, extra headers, inline, cookies and status are passed on.
+    const plain = try ctx.download("x", .{ .filename = "dados.bin" });
+    try std.testing.expectEqualStrings("application/octet-stream", plain.content_type);
+    const shown = try ctx.download("%PDF", .{
+        .filename = "ata.pdf",
+        .content_type = context_mod.content_types.pdf,
+        .disposition = .@"inline",
+        .headers = &.{.{ "Cache-Control", "no-store" }},
+        .cookies = &.{.{ "seen", "seen=1; Path=/" }},
+    });
+    try std.testing.expectEqualStrings("inline; filename=\"ata.pdf\"", shown.headers[0][1]);
+    try std.testing.expectEqualStrings("Cache-Control", shown.headers[2][0]);
+    try std.testing.expectEqual(@as(usize, 1), shown.cookies.len);
+
+    // A content type that could split the header is refused.
+    try std.testing.expectError(error.InvalidContentType, ctx.download("x", .{ .filename = "a.txt", .content_type = "text/plain\r\nX-Injected: 1" }));
+    try std.testing.expectError(error.InvalidContentType, ctx.download("x", .{ .filename = "a.txt", .content_type = "" }));
+}
+
+test "download: running out of memory leaks nothing" {
+    const Run = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var arena_state: std.heap.ArenaAllocator = .init(gpa);
+            defer arena_state.deinit();
+            var ctx = try makeCtx(arena_state.allocator(), &.{});
+            _ = try ctx.download("bytes", .{ .filename = "Relatório \"x\".csv", .content_type = context_mod.content_types.csv, .headers = &.{.{ "Cache-Control", "no-store" }} });
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Run.run, .{});
+}

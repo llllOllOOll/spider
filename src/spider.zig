@@ -15,6 +15,10 @@ pub const NextFn = @import("core/context.zig").NextFn;
 pub const MiddlewareFn = @import("core/context.zig").MiddlewareFn;
 pub const ErrorHandler = @import("core/context.zig").ErrorHandler;
 pub const Response = @import("core/context.zig").Response;
+/// Options of `c.download(bytes, .{ .filename = …, .content_type = … })`.
+pub const DownloadOptions = @import("core/context.zig").DownloadOptions;
+/// Content types for downloads: `.xlsx`, `.csv`, `.pdf`, `.binary`.
+pub const content_types = @import("core/context.zig").content_types;
 pub const statusForError = @import("core/context.zig").statusForError;
 pub const Path = @import("core/extractors.zig").Path;
 pub const Form = @import("core/extractors.zig").Form;
@@ -144,6 +148,7 @@ test {
     _ = @import("render/embedded_test.zig");
     _ = @import("core/watchdog.zig");
     _ = @import("core/context_test.zig");
+    _ = @import("core/download.zig");
     _ = @import("core/app_test.zig");
     _ = @import("core/origin_test.zig");
     _ = @import("core/client_ip.zig");
