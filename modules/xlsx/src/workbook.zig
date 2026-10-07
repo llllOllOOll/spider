@@ -61,6 +61,8 @@ pub const Error = error{
     OverlappingMerge,
     /// A zoom outside 10 .. 400 percent.
     InvalidZoom,
+    /// A page margin that is negative, not finite or absurdly large.
+    InvalidMargin,
     /// A custom number format that is empty, too long or malformed.
     InvalidNumberFormat,
     /// A font name that is empty, too long or malformed, or a font size
@@ -92,6 +94,46 @@ pub const max_sheet_name_len = 31;
 pub const max_column_width = 255;
 /// Row height, in points.
 pub const max_row_height = 409;
+
+pub const Paper = enum(u8) {
+    letter = 1,
+    legal = 5,
+    a3 = 8,
+    a4 = 9,
+    a5 = 11,
+};
+
+pub const Orientation = enum {
+    portrait,
+    landscape,
+};
+
+/// Page margins in inches, the unit the file uses (`cm` converts). The
+/// defaults are Excel's "Normal" margins. `header` and `footer` are the
+/// distance from the paper's edge to the header and footer text.
+pub const Margins = struct {
+    left: f64 = 0.7,
+    right: f64 = 0.7,
+    top: f64 = 0.75,
+    bottom: f64 = 0.75,
+    header: f64 = 0.3,
+    footer: f64 = 0.3,
+};
+
+/// Centimetres to inches, for `Margins`.
+pub fn cm(centimetres: f64) f64 {
+    return centimetres / 2.54;
+}
+
+/// How a sheet is printed.
+pub const PageSetup = struct {
+    paper: Paper = .a4,
+    orientation: Orientation = .portrait,
+    margins: Margins = .{},
+};
+
+/// Largest margin accepted, in inches: wider than any paper above.
+const max_margin = 49;
 
 /// What a cell holds.
 pub const Value = union(enum) {
@@ -178,6 +220,9 @@ pub const Sheet = struct {
     auto_filter: ?Range = null,
     /// In percent.
     zoom: u16 = 100,
+    page_setup: ?PageSetup = null,
+    /// First and last row repeated on every printed page.
+    print_title_rows: ?[2]u32 = null,
 
     /// Sets a cell with the default style. Cells may be set in any
     /// order; setting a cell again replaces it.
@@ -282,6 +327,25 @@ pub const Sheet = struct {
         if (cols >= max_cols) return error.ColumnOutOfRange;
         self.frozen_rows = rows;
         self.frozen_cols = cols;
+    }
+
+    /// Sets paper size, orientation and margins for printing. Without
+    /// it the program that opens the file uses its own defaults, which
+    /// depend on the reader's country (Letter or A4).
+    pub fn setPageSetup(self: *Sheet, setup: PageSetup) Error!void {
+        const m = setup.margins;
+        for ([_]f64{ m.left, m.right, m.top, m.bottom, m.header, m.footer }) |margin| {
+            if (!std.math.isFinite(margin) or margin < 0 or margin > max_margin) return error.InvalidMargin;
+        }
+        self.page_setup = setup;
+    }
+
+    /// Repeats rows `first_row` to `last_row` at the top of every
+    /// printed page: the header of a long table.
+    pub fn setPrintTitleRows(self: *Sheet, first_row: u32, last_row: u32) Error!void {
+        if (first_row >= max_rows or last_row >= max_rows) return error.RowOutOfRange;
+        if (last_row < first_row) return error.InvalidRange;
+        self.print_title_rows = .{ first_row, last_row };
     }
 
     /// Sets the zoom the sheet opens with, 10 to 400 percent. It only
@@ -507,20 +571,30 @@ pub const Workbook = struct {
         }
         try w.writeAll("</sheets>");
 
-        // A filter only works in Excel if the workbook also names its
-        // range with this hidden, per-sheet defined name.
-        var any_filter = false;
+        // Built-in defined names, scoped to their sheet. A filter only
+        // works in Excel if the workbook also names its range with the
+        // hidden _FilterDatabase; Print_Titles is where the rows to
+        // repeat on each page are kept.
+        var any_name = false;
         for (self.sheets.items, 0..) |sheet, index| {
-            const range = sheet.auto_filter orelse continue;
-            if (!any_filter) try w.writeAll("<definedNames>");
-            any_filter = true;
-            try w.print("<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"{d}\" hidden=\"1\">", .{index});
-            try writeQuotedSheetName(w, sheet.name);
-            try w.writeByte('!');
-            try range.writeAbsolute(w);
-            try w.writeAll("</definedName>");
+            if (sheet.auto_filter) |range| {
+                if (!any_name) try w.writeAll("<definedNames>");
+                any_name = true;
+                try w.print("<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"{d}\" hidden=\"1\">", .{index});
+                try writeQuotedSheetName(w, sheet.name);
+                try w.writeByte('!');
+                try range.writeAbsolute(w);
+                try w.writeAll("</definedName>");
+            }
+            if (sheet.print_title_rows) |title_rows| {
+                if (!any_name) try w.writeAll("<definedNames>");
+                any_name = true;
+                try w.print("<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"{d}\">", .{index});
+                try writeQuotedSheetName(w, sheet.name);
+                try w.print("!${d}:${d}</definedName>", .{ title_rows[0] + 1, title_rows[1] + 1 });
+            }
         }
-        if (any_filter) try w.writeAll("</definedNames>");
+        if (any_name) try w.writeAll("</definedNames>");
 
         // Formulas are written without results: ask for a calculation
         // when the file is opened.
@@ -572,7 +646,7 @@ fn writeWorkbookRelationships(w: *Writer, sheet_count: usize, has_strings: bool)
 
 /// Writes a worksheet part. Element order is fixed by the format:
 /// dimension, sheetViews, sheetFormatPr, cols, sheetData, autoFilter,
-/// mergeCells.
+/// mergeCells, pageMargins, pageSetup.
 fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records: []const u32, string_indexes: []const u32) Writer.Error!void {
     try w.writeAll(xml.declaration);
     try w.writeAll("<worksheet xmlns=\"" ++ ns_main ++ "\" xmlns:r=\"" ++ ns_relationships ++ "\">");
@@ -687,6 +761,14 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
             try w.writeAll("\"/>");
         }
         try w.writeAll("</mergeCells>");
+    }
+    if (sheet.page_setup) |setup| {
+        const m = setup.margins;
+        try w.print(
+            "<pageMargins left=\"{d}\" right=\"{d}\" top=\"{d}\" bottom=\"{d}\" header=\"{d}\" footer=\"{d}\"/>",
+            .{ m.left, m.right, m.top, m.bottom, m.header, m.footer },
+        );
+        try w.print("<pageSetup paperSize=\"{d}\" orientation=\"{t}\"/>", .{ @intFromEnum(setup.paper), setup.orientation });
     }
     try w.writeAll("</worksheet>");
 }
@@ -1575,4 +1657,54 @@ test "zoom" {
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet1.xml").?, "<sheetView tabSelected=\"1\" zoomScale=\"80\" zoomScaleNormal=\"80\" workbookViewId=\"0\"><pane") != null);
     // 100% is the default and is not written.
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet2.xml").?, "<sheetView workbookViewId=\"0\"/>") != null);
+}
+
+test "page setup: paper, orientation and margins" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const a4 = try wb.addSheet("A4");
+    try a4.set(0, 0, .int(1));
+    try a4.mergeCells(.{ .first_row = 4, .first_col = 0, .last_row = 4, .last_col = 1 });
+    try a4.setPageSetup(.{});
+    const wide = try wb.addSheet("Wide");
+    try wide.setPageSetup(.{ .paper = .letter, .orientation = .landscape, .margins = .{ .left = cm(1), .right = cm(1), .top = 0.5, .bottom = 0.5, .header = 0, .footer = 0 } });
+    const untouched = try wb.addSheet("Default");
+    _ = untouched;
+
+    for ([_]f64{ -0.1, 50, std.math.nan(f64), std.math.inf(f64) }) |bad| {
+        try testing.expectError(error.InvalidMargin, a4.setPageSetup(.{ .margins = .{ .top = bad } }));
+    }
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    // Last in the part, after the merged cells.
+    try testing.expect(std.mem.endsWith(u8, recorder.part("xl/worksheets/sheet1.xml").?, "</mergeCells>" ++
+        "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>" ++
+        "<pageSetup paperSize=\"9\" orientation=\"portrait\"/></worksheet>"));
+    try testing.expect(std.mem.endsWith(u8, recorder.part("xl/worksheets/sheet2.xml").?, "<sheetData></sheetData>" ++
+        "<pageMargins left=\"0.39370078740157477\" right=\"0.39370078740157477\" top=\"0.5\" bottom=\"0.5\" header=\"0\" footer=\"0\"/>" ++
+        "<pageSetup paperSize=\"1\" orientation=\"landscape\"/></worksheet>"));
+    // A sheet without a page setup leaves the choice to the program.
+    try testing.expect(std.mem.endsWith(u8, recorder.part("xl/worksheets/sheet3.xml").?, "<sheetData></sheetData></worksheet>"));
+}
+
+test "rows repeated at the top of every printed page" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const first = try wb.addSheet("Lista d'água");
+    try first.setPrintTitleRows(2, 2);
+    try first.setAutoFilter(.{ .first_row = 2, .first_col = 0, .last_row = 9, .last_col = 3 });
+    const second = try wb.addSheet("Outra");
+    try second.setPrintTitleRows(0, 1);
+
+    try testing.expectError(error.RowOutOfRange, first.setPrintTitleRows(0, max_rows));
+    try testing.expectError(error.InvalidRange, first.setPrintTitleRows(3, 2));
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/workbook.xml").?, "<definedNames>" ++
+        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Lista d''água'!$A$3:$D$10</definedName>" ++
+        "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'Lista d''água'!$3:$3</definedName>" ++
+        "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"1\">'Outra'!$1:$2</definedName>" ++
+        "</definedNames>") != null);
 }

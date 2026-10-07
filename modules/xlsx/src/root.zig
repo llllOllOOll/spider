@@ -42,6 +42,12 @@ pub const Date = date.Date;
 pub const DateTime = date.DateTime;
 pub const Range = cell_ref.Range;
 
+pub const PageSetup = workbook.PageSetup;
+pub const Paper = workbook.Paper;
+pub const Orientation = workbook.Orientation;
+pub const Margins = workbook.Margins;
+pub const cm = workbook.cm;
+
 /// The container seam: implement `Packager` to replace the zip writer.
 pub const Packager = zip.Packager;
 pub const StoreZip = zip.StoreZip;
