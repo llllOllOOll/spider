@@ -58,6 +58,23 @@ pub const NumberFormat = union(enum) {
     custom: []const u8,
 };
 
+/// Where a cell's content sits between its left and right edges.
+/// `general` is the spreadsheet's own rule: text to the left, numbers
+/// to the right.
+pub const HorizontalAlignment = enum {
+    general,
+    left,
+    center,
+    right,
+};
+
+/// Where a cell's content sits between its top and bottom edges.
+pub const VerticalAlignment = enum {
+    bottom,
+    center,
+    top,
+};
+
 /// The formatting of one cell. The default value is a plain cell.
 pub const Style = struct {
     bold: bool = false,
@@ -65,6 +82,12 @@ pub const Style = struct {
     fill: ?u24 = null,
     border: Border = .none,
     number_format: NumberFormat = .general,
+    h_align: HorizontalAlignment = .general,
+    v_align: VerticalAlignment = .bottom,
+    /// Breaks long text into lines inside the cell instead of letting
+    /// it run over the next cells. Line breaks in the text itself also
+    /// only show when this is set.
+    wrap: bool = false,
 };
 
 /// Excel's limit on distinct cell formats.
@@ -84,6 +107,13 @@ const Key = struct {
     custom_format: bool,
     /// A built-in format id, or an index into `Registry.custom_formats`.
     format: u16,
+    h_align: HorizontalAlignment,
+    v_align: VerticalAlignment,
+    wrap: bool,
+
+    fn hasAlignment(key: Key) bool {
+        return key.h_align != .general or key.v_align != .bottom or key.wrap;
+    }
 };
 
 /// Every distinct style a workbook was given. Id 0 is the default
@@ -106,6 +136,9 @@ pub const Registry = struct {
             .border = style.border,
             .custom_format = false,
             .format = 0,
+            .h_align = style.h_align,
+            .v_align = style.v_align,
+            .wrap = style.wrap,
         };
         switch (style.number_format) {
             .custom => |code| {
@@ -157,13 +190,13 @@ pub const Registry = struct {
         defer formats.deinit(scratch);
         var any_bold = false;
 
-        const Record = struct { font: u32, fill: u32, border: u32, format: u32 };
+        const Record = struct { font: u32, fill: u32, border: u32, format: u32, key: Key };
         var records: std.ArrayList(Record) = .empty;
         defer records.deinit(scratch);
 
         for (used) |id| {
             const key = self.keys.items[id];
-            var record: Record = .{ .font = 0, .fill = 0, .border = 0, .format = key.format };
+            var record: Record = .{ .font = 0, .fill = 0, .border = 0, .format = key.format, .key = key };
             if (key.bold) {
                 any_bold = true;
                 record.font = 1;
@@ -230,7 +263,13 @@ pub const Registry = struct {
             if (record.font != 0) try w.writeAll(" applyFont=\"1\"");
             if (record.fill != 0) try w.writeAll(" applyFill=\"1\"");
             if (record.border != 0) try w.writeAll(" applyBorder=\"1\"");
-            try w.writeAll("/>");
+            if (record.key.hasAlignment()) {
+                try w.writeAll(" applyAlignment=\"1\"><alignment");
+                if (record.key.h_align != .general) try w.print(" horizontal=\"{t}\"", .{record.key.h_align});
+                if (record.key.v_align != .bottom) try w.print(" vertical=\"{t}\"", .{record.key.v_align});
+                if (record.key.wrap) try w.writeAll(" wrapText=\"1\"");
+                try w.writeAll("/></xf>");
+            } else try w.writeAll("/>");
         }
         try w.writeAll("</cellXfs>");
 
@@ -240,7 +279,17 @@ pub const Registry = struct {
 };
 
 fn defaultKey() Key {
-    return .{ .bold = false, .has_fill = false, .fill = 0, .border = .none, .custom_format = false, .format = 0 };
+    return .{
+        .bold = false,
+        .has_fill = false,
+        .fill = 0,
+        .border = .none,
+        .custom_format = false,
+        .format = 0,
+        .h_align = .general,
+        .v_align = .bottom,
+        .wrap = false,
+    };
 }
 
 /// Ids of the number formats every reader has built in.
@@ -390,4 +439,38 @@ test "the style limit is enforced" {
     // A style already known is still served, and the failed one left no trace.
     try testing.expectEqual(@as(u16, 1), try registry.intern(arena, .{ .fill = 0 }));
     try testing.expectError(error.TooManyStyles, registry.intern(arena, .{ .fill = colour }));
+}
+
+test "alignment and wrap are part of the style and of its record" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    // The defaults spelled out are still the default style.
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{ .h_align = .general, .v_align = .bottom, .wrap = false }));
+    const centered = try registry.intern(arena, .{ .h_align = .center, .v_align = .center, .wrap = true });
+    const left = try registry.intern(arena, .{ .h_align = .left });
+    const right_top = try registry.intern(arena, .{ .h_align = .right, .v_align = .top });
+    const wrapped = try registry.intern(arena, .{ .wrap = true });
+    const bold_centered = try registry.intern(arena, .{ .bold = true, .h_align = .center });
+    try testing.expectEqual(centered, try registry.intern(arena, .{ .wrap = true, .v_align = .center, .h_align = .center }));
+    try testing.expect(left != right_top and wrapped != centered and bold_centered != centered);
+
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try registry.write(&out.writer, testing.allocator, &.{ centered, left, right_top, wrapped, bold_centered });
+    try testing.expect(std.mem.indexOf(u8, out.written(), "<cellXfs count=\"6\">" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\">" ++
+        "<alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf>" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\">" ++
+        "<alignment horizontal=\"left\"/></xf>" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\">" ++
+        "<alignment horizontal=\"right\" vertical=\"top\"/></xf>" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\">" ++
+        "<alignment wrapText=\"1\"/></xf>" ++
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\">" ++
+        "<alignment horizontal=\"center\"/></xf>" ++
+        "</cellXfs>") != null);
 }
