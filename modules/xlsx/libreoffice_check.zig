@@ -9,6 +9,11 @@
 //! shown", so number formats, dates and the formula result are part of
 //! the comparison — and compares each CSV with what is expected.
 //!
+//! Then the other way round, for the reader: it reads the sample it
+//! just wrote, and it reads a workbook LibreOffice itself makes from a
+//! CSV file — a file by another producer, compressed, with its own
+//! way of writing XML.
+//!
 //! LibreOffice runs with a private profile inside the work directory,
 //! so the check neither depends on nor touches the user's settings.
 //! The sample avoids anything that depends on the reader's locale:
@@ -33,6 +38,71 @@ const votes_csv =
     \\Bloco A — 12,Não
     \\
 ;
+
+/// What the reader must give for the "Results" sheet of the sample.
+const results_read =
+    \\0: 'Opção' 'Votos' '%' 'Data'
+    \\1: 'Sim' 12 0.75 2026-10-07T00:00:00
+    \\2: 'Não, talvez' 4 0.25 2026-10-07T13:01:01
+    \\3: 'Total' =SUM(B2:B3) true '=1+1'
+    \\4: 'He said "hi"' 1234.5 '  padded  ' 'a<b&c>d'
+    \\5: 1900-03-01T00:00:00 -0.5 '+55 11 99999-0000' '@handle'
+    \\
+;
+
+/// A table as an application would receive it from a person.
+const import_csv =
+    \\Nome,Quantidade,Preço,Data,Ativo
+    \\"Tal, Fulano",12,3.5,2026-10-07,TRUE
+    \\Sicrano,0,-1250.75,2024-02-29,FALSE
+    \\"Linha 1
+    \\Linha 2",7,0.125,1999-12-31,TRUE
+    \\
+;
+
+/// What the reader must give for the workbook LibreOffice makes of it.
+const import_read =
+    \\0: 'Nome' 'Quantidade' 'Preço' 'Data' 'Ativo'
+    \\1: 'Tal, Fulano' 12 3.5 2026-10-07T00:00:00 true
+    \\2: 'Sicrano' 0 -1250.75 2024-02-29T00:00:00 false
+    \\3: 'Linha 1
+    \\Linha 2' 7 0.125 1999-12-31T00:00:00 true
+    \\
+;
+
+/// Reads the first sheet of a workbook file into one line per row.
+fn readBack(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, name: []const u8) ![]u8 {
+    const bytes = try dir.readFileAlloc(io, name, gpa, .limited(16 << 20));
+    defer gpa.free(bytes);
+    const book = try xlsx.Reader.open(gpa, bytes, .{});
+    defer book.deinit();
+    const rows = try book.rows(0, .{ .formulas = true });
+    defer rows.deinit();
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    const w = &out.writer;
+    while (try rows.next()) |row| {
+        try w.print("{d}:", .{row.number});
+        for (row.cells) |cell| {
+            try w.writeByte(' ');
+            if (cell.formula) |formula| {
+                try w.print("={s}", .{formula});
+                continue;
+            }
+            switch (cell.value) {
+                .empty => try w.writeByte('_'),
+                .text => |t| try w.print("'{s}'", .{t}),
+                .number => |n| try w.print("{d}", .{n}),
+                .boolean => |b| try w.print("{}", .{b}),
+                .date => |d| try w.print("{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}", .{ d.year, d.month, d.day, d.hour, d.minute, d.second }),
+                .time => |t| try w.print("T{d:0>2}:{d:0>2}:{d:0>2}", .{ t.hour, t.minute, t.second }),
+                .err => |e| try w.print("!{s}", .{e}),
+            }
+        }
+        try w.writeByte('\n');
+    }
+    return out.toOwnedSlice();
+}
 
 fn buildSample(gpa: std.mem.Allocator) !*xlsx.Workbook {
     const wb = try xlsx.Workbook.init(gpa);
@@ -139,6 +209,40 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(actual);
         if (!std.mem.eql(u8, actual, case[1])) {
             std.debug.print("{s}: LibreOffice saw different cells.\n--- expected\n{s}--- actual\n{s}---\n", .{ case[0], case[1], actual });
+            failed = true;
+        }
+    }
+
+    // The reader, on our own file.
+    {
+        const got = try readBack(gpa, io, work, "sample.xlsx");
+        defer gpa.free(got);
+        if (!std.mem.eql(u8, got, results_read)) {
+            std.debug.print("sample.xlsx: the reader gave different cells.\n--- expected\n{s}--- actual\n{s}---\n", .{ results_read, got });
+            failed = true;
+        }
+    }
+
+    // The reader, on a workbook made by LibreOffice from a CSV file.
+    {
+        try work.writeFile(io, .{ .sub_path = "import.csv", .data = import_csv });
+        const csv_path = try std.fmt.allocPrint(gpa, "{s}/import.csv", .{work_abs});
+        defer gpa.free(csv_path);
+        const converted = std.process.run(gpa, io, .{
+            .argv = &.{ "soffice", "--headless", "--norestore", profile, "--infilter=CSV:44,34,76,1,,1033,false,true", "--convert-to", "xlsx", "--outdir", work_abs, csv_path },
+        }) catch |err| {
+            std.debug.print("cannot run soffice: {t}\n", .{err});
+            std.process.exit(1);
+        };
+        defer gpa.free(converted.stdout);
+        defer gpa.free(converted.stderr);
+        const got = readBack(gpa, io, work, "import.xlsx") catch |err| {
+            std.debug.print("import.xlsx (made by LibreOffice): the reader failed: {t}\n--- soffice stderr\n{s}---\n", .{ err, converted.stderr });
+            std.process.exit(1);
+        };
+        defer gpa.free(got);
+        if (!std.mem.eql(u8, got, import_read)) {
+            std.debug.print("import.xlsx (made by LibreOffice): the reader gave different cells.\n--- expected\n{s}--- actual\n{s}---\n", .{ import_read, got });
             failed = true;
         }
     }
