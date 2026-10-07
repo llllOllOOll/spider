@@ -999,6 +999,10 @@ fn exportCsv(c: *spider.Ctx) !spider.Response {
 }
 ```
 
+(`buildCsv` stands for your own code: this snippet is an illustration and is
+not one of the examples compiled against Spider. The `exportPoll` example
+below is.)
+
 `c.download(bytes, opts)` answers with `Content-Disposition: attachment`, the
 content type and `X-Content-Type-Options: nosniff`.
 
