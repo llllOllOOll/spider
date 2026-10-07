@@ -143,7 +143,8 @@ pub fn cm(centimetres: f64) f64 {
 
 /// How a sheet is printed.
 pub const PageSetup = struct {
-    paper: Paper = .a4,
+    /// Null leaves the paper to the program that opens the file.
+    paper: ?Paper = .a4,
     orientation: Orientation = .portrait,
     margins: Margins = .{},
 };
@@ -214,6 +215,8 @@ const ColumnWidth = struct {
 const RowHeight = struct {
     row: u32,
     height: f64,
+    /// False for a height the program may refit to the row's content.
+    custom: bool,
 
     fn before(_: void, a: RowHeight, b: RowHeight) bool {
         return a.row < b.row;
@@ -248,6 +251,9 @@ pub const Sheet = struct {
     /// In percent.
     zoom: u16 = 100,
     page_setup: ?PageSetup = null,
+    /// In characters, like column widths.
+    default_column_width: ?f64 = null,
+    default_row_height: ?f64 = null,
     /// First and last row repeated on every printed page.
     print_title_rows: ?[2]u32 = null,
 
@@ -324,7 +330,29 @@ pub const Sheet = struct {
     pub fn setRowHeight(self: *Sheet, row: u32, points: f64) Error!void {
         if (row >= max_rows) return error.RowOutOfRange;
         if (!std.math.isFinite(points) or points < 0 or points > max_row_height) return error.InvalidRowHeight;
-        try self.row_heights.append(self.workbook.arena.allocator(), .{ .row = row, .height = points });
+        try self.row_heights.append(self.workbook.arena.allocator(), .{ .row = row, .height = points, .custom = true });
+    }
+
+    /// Records the height a row has now without fixing it: a
+    /// spreadsheet program may refit the row when its content changes
+    /// (and some refit it on opening, for wrapped text). This is how
+    /// Excel stores rows whose height nobody set by hand.
+    pub fn setRowHeightHint(self: *Sheet, row: u32, points: f64) Error!void {
+        if (row >= max_rows) return error.RowOutOfRange;
+        if (!std.math.isFinite(points) or points < 0 or points > max_row_height) return error.InvalidRowHeight;
+        try self.row_heights.append(self.workbook.arena.allocator(), .{ .row = row, .height = points, .custom = false });
+    }
+
+    /// Sets the width of every column that has no width of its own.
+    pub fn setDefaultColumnWidth(self: *Sheet, width: f64) Error!void {
+        if (!std.math.isFinite(width) or width < 0 or width > max_column_width) return error.InvalidColumnWidth;
+        self.default_column_width = width;
+    }
+
+    /// Sets the height of every row that has no height of its own.
+    pub fn setDefaultRowHeight(self: *Sheet, points: f64) Error!void {
+        if (!std.math.isFinite(points) or points < 0 or points > max_row_height) return error.InvalidRowHeight;
+        self.default_row_height = points;
     }
 
     /// Merges a rectangle of cells into one. The merged cell shows the
@@ -380,8 +408,8 @@ pub const Sheet = struct {
     }
 
     /// Sets paper size, orientation and margins for printing. Without
-    /// it the program that opens the file uses its own defaults, which
-    /// depend on the reader's country (Letter or A4).
+    /// it the sheet has Excel's default margins and the paper is the
+    /// reader's default, which depends on the country (Letter or A4).
     pub fn setPageSetup(self: *Sheet, setup: PageSetup) Error!void {
         const m = setup.margins;
         for ([_]f64{ m.left, m.right, m.top, m.bottom, m.header, m.footer }) |margin| {
@@ -791,8 +819,12 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
     // The height a row of the default font takes: 15 points for
     // Calibri 11; for other fonts, the usual 1.275 times the size.
     const styles = &sheet.workbook.styles;
-    const default_row_height: f64 = if (styles.hasBuiltinDefaultFont()) 15 else styles.defaultFontSize() * 1.275;
-    try w.print("<sheetFormatPr defaultRowHeight=\"{d}\"/>", .{default_row_height});
+    const font_row_height: f64 = if (styles.hasBuiltinDefaultFont()) 15 else styles.defaultFontSize() * 1.275;
+    try w.writeAll("<sheetFormatPr");
+    if (sheet.default_column_width) |width| try w.print(" defaultColWidth=\"{d}\"", .{fileColumnWidth(width)});
+    try w.print(" defaultRowHeight=\"{d}\"", .{sheet.default_row_height orelse font_row_height});
+    if (sheet.default_row_height != null) try w.writeAll(" customHeight=\"1\"");
+    try w.writeAll("/>");
 
     if (sheet.column_widths.items.len > 0) {
         try w.writeAll("<cols>");
@@ -813,11 +845,13 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
         if (open_row != cell.row) {
             if (open_row != null) try w.writeAll("</row>");
             while (heights.len > 0 and heights[0].row < cell.row) : (heights = heights[1..]) {
-                try w.print("<row r=\"{d}\" ht=\"{d}\" customHeight=\"1\"/>", .{ heights[0].row + 1, heights[0].height });
+                try w.print("<row r=\"{d}\"", .{heights[0].row + 1});
+                try writeRowHeight(w, heights[0]);
+                try w.writeAll("/>");
             }
             try w.print("<row r=\"{d}\"", .{cell.row + 1});
             if (heights.len > 0 and heights[0].row == cell.row) {
-                try w.print(" ht=\"{d}\" customHeight=\"1\"", .{heights[0].height});
+                try writeRowHeight(w, heights[0]);
                 heights = heights[1..];
             }
             try w.writeByte('>');
@@ -841,7 +875,9 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
     }
     if (open_row != null) try w.writeAll("</row>");
     for (heights) |height| {
-        try w.print("<row r=\"{d}\" ht=\"{d}\" customHeight=\"1\"/>", .{ height.row + 1, height.height });
+        try w.print("<row r=\"{d}\"", .{height.row + 1});
+        try writeRowHeight(w, height);
+        try w.writeAll("/>");
     }
     try w.writeAll("</sheetData>");
 
@@ -868,15 +904,24 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
         }
         try w.writeAll("</hyperlinks>");
     }
+    // Margins are always written, as Excel does: a program that finds
+    // none falls back on its own, and the pages break elsewhere.
+    const m: Margins = if (sheet.page_setup) |setup| setup.margins else .{};
+    try w.print(
+        "<pageMargins left=\"{d}\" right=\"{d}\" top=\"{d}\" bottom=\"{d}\" header=\"{d}\" footer=\"{d}\"/>",
+        .{ m.left, m.right, m.top, m.bottom, m.header, m.footer },
+    );
     if (sheet.page_setup) |setup| {
-        const m = setup.margins;
-        try w.print(
-            "<pageMargins left=\"{d}\" right=\"{d}\" top=\"{d}\" bottom=\"{d}\" header=\"{d}\" footer=\"{d}\"/>",
-            .{ m.left, m.right, m.top, m.bottom, m.header, m.footer },
-        );
-        try w.print("<pageSetup paperSize=\"{d}\" orientation=\"{t}\"/>", .{ @intFromEnum(setup.paper), setup.orientation });
+        try w.writeAll("<pageSetup");
+        if (setup.paper) |paper| try w.print(" paperSize=\"{d}\"", .{@intFromEnum(paper)});
+        try w.print(" orientation=\"{t}\"/>", .{setup.orientation});
     }
     try w.writeAll("</worksheet>");
+}
+
+fn writeRowHeight(w: *Writer, height: RowHeight) Writer.Error!void {
+    try w.print(" ht=\"{d}\"", .{height.height});
+    if (height.custom) try w.writeAll(" customHeight=\"1\"");
 }
 
 fn isSkipped(cell: Cell) bool {
@@ -988,6 +1033,7 @@ const Recorder = struct {
     }
 };
 
+const default_margins = "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>";
 const worksheet_open = xml.declaration ++ "<worksheet xmlns=\"" ++ ns_main ++ "\" xmlns:r=\"" ++ ns_relationships ++ "\">";
 const workbook_open = xml.declaration ++ "<workbook xmlns=\"" ++ ns_main ++ "\" xmlns:r=\"" ++ ns_relationships ++ "\">";
 
@@ -1040,6 +1086,7 @@ test "the smallest workbook: one empty sheet, six parts" {
         "<sheetViews><sheetView tabSelected=\"1\" workbookViewId=\"0\"/></sheetViews>" ++
         "<sheetFormatPr defaultRowHeight=\"15\"/>" ++
         "<sheetData></sheetData>" ++
+        default_margins ++
         "</worksheet>", recorder.part("xl/worksheets/sheet1.xml").?);
 }
 
@@ -1119,6 +1166,7 @@ test "a full workbook: the XML of each part" {
         "<row r=\"5\"><c r=\"A5\" s=\"3\"><v>46302</v></c><c r=\"B5\" s=\"4\"><v>46302.5</v></c></row>" ++
         "</sheetData>" ++
         "<autoFilter ref=\"A1:C3\"/>" ++
+        default_margins ++
         "</worksheet>", recorder.part("xl/worksheets/sheet1.xml").?);
 
     try testing.expectEqualStrings(worksheet_open ++
@@ -1132,6 +1180,7 @@ test "a full workbook: the XML of each part" {
         "<row r=\"2\"><c r=\"A2\" t=\"s\"><v>7</v></c><c r=\"B2\" t=\"s\"><v>3</v></c></row>" ++
         "</sheetData>" ++
         "<autoFilter ref=\"A1:B2\"/>" ++
+        default_margins ++
         "</worksheet>", recorder.part("xl/worksheets/sheet2.xml").?);
 
     try testing.expectEqualStrings(xml.declaration ++
@@ -1560,7 +1609,7 @@ test "merged cells" {
     // After the filter, in the order they were added.
     try testing.expect(std.mem.endsWith(u8, content, "</sheetData><autoFilter ref=\"A3:H6\"/>" ++
         "<mergeCells count=\"3\"><mergeCell ref=\"A1:H1\"/><mergeCell ref=\"A10:C13\"/><mergeCell ref=\"A2:H2\"/></mergeCells>" ++
-        "</worksheet>"));
+        default_margins ++ "</worksheet>"));
 }
 
 test "row heights, with and without cells in the row" {
@@ -1721,7 +1770,7 @@ test "real data: a title above the header, the filter starting on the third row,
     try testing.expect(std.mem.indexOf(u8, content, "<sheetData><row r=\"2\">") != null);
     try testing.expect(std.mem.indexOf(u8, content, "</row><row r=\"4\">") != null);
     try testing.expect(std.mem.indexOf(u8, content, "</row><row r=\"10\">") != null);
-    try testing.expect(std.mem.endsWith(u8, content, "<autoFilter ref=\"A3:C4\"/><mergeCells count=\"1\"><mergeCell ref=\"A2:C2\"/></mergeCells></worksheet>"));
+    try testing.expect(std.mem.endsWith(u8, content, "<autoFilter ref=\"A3:C4\"/><mergeCells count=\"1\"><mergeCell ref=\"A2:C2\"/></mergeCells>" ++ default_margins ++ "</worksheet>"));
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/workbook.xml").?, "'S'!$A$3:$C$4</definedName>") != null);
 }
 
@@ -1796,8 +1845,8 @@ test "page setup: paper, orientation and margins" {
     try testing.expect(std.mem.endsWith(u8, recorder.part("xl/worksheets/sheet2.xml").?, "<sheetData></sheetData>" ++
         "<pageMargins left=\"0.39370078740157477\" right=\"0.39370078740157477\" top=\"0.5\" bottom=\"0.5\" header=\"0\" footer=\"0\"/>" ++
         "<pageSetup paperSize=\"1\" orientation=\"landscape\"/></worksheet>"));
-    // A sheet without a page setup leaves the choice to the program.
-    try testing.expect(std.mem.endsWith(u8, recorder.part("xl/worksheets/sheet3.xml").?, "<sheetData></sheetData></worksheet>"));
+    // A sheet without a page setup leaves the paper to the program.
+    try testing.expect(std.mem.endsWith(u8, recorder.part("xl/worksheets/sheet3.xml").?, "<sheetData></sheetData>" ++ default_margins ++ "</worksheet>"));
 }
 
 test "rows repeated at the top of every printed page" {
@@ -1937,4 +1986,48 @@ test "the workbook's default font" {
     defer default_recorder.deinit();
     try testing.expect(std.mem.indexOf(u8, default_recorder.part("xl/styles.xml").?, "<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font></fonts>") != null);
     try testing.expect(std.mem.indexOf(u8, default_recorder.part("xl/worksheets/sheet1.xml").?, "<sheetFormatPr defaultRowHeight=\"15\"/>") != null);
+}
+
+test "every sheet carries Excel's default margins, and the sheet defaults can be set" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const plain = try wb.addSheet("Plain");
+    try plain.set(0, 0, .int(1));
+    const tuned = try wb.addSheet("Tuned");
+    try tuned.setDefaultColumnWidth(14);
+    try tuned.setDefaultRowHeight(12.75);
+    try tuned.setPageSetup(.{ .paper = null, .margins = .{ .left = 0.5, .right = 0.5 } });
+
+    try testing.expectError(error.InvalidColumnWidth, tuned.setDefaultColumnWidth(256));
+    try testing.expectError(error.InvalidColumnWidth, tuned.setDefaultColumnWidth(-1));
+    try testing.expectError(error.InvalidRowHeight, tuned.setDefaultRowHeight(410));
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    const margins = "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>";
+    // No page setup: the margins Excel itself writes, and nothing about the paper.
+    try testing.expect(std.mem.endsWith(u8, recorder.part("xl/worksheets/sheet1.xml").?, "</sheetData>" ++ margins ++ "</worksheet>"));
+    const tuned_xml = recorder.part("xl/worksheets/sheet2.xml").?;
+    try testing.expect(std.mem.indexOf(u8, tuned_xml, "<sheetFormatPr defaultColWidth=\"14.7109375\" defaultRowHeight=\"12.75\" customHeight=\"1\"/>") != null);
+    // Margins without choosing a paper size.
+    try testing.expect(std.mem.endsWith(u8, tuned_xml, "<pageMargins left=\"0.5\" right=\"0.5\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>" ++
+        "<pageSetup orientation=\"portrait\"/></worksheet>"));
+}
+
+test "a row height the program may refit" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    try sheet.set(0, 0, .int(1));
+    try sheet.setRowHeightHint(0, 25.5);
+    try sheet.setRowHeight(1, 30);
+    try sheet.setRowHeightHint(2, 12.75);
+    try sheet.setRowHeightHint(2, 13.5);
+    try testing.expectError(error.InvalidRowHeight, sheet.setRowHeightHint(0, 500));
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expectEqualStrings("<row r=\"1\" ht=\"25.5\"><c r=\"A1\"><v>1</v></c></row>" ++
+        "<row r=\"2\" ht=\"30\" customHeight=\"1\"/>" ++
+        "<row r=\"3\" ht=\"13.5\"/>", sheetData(&recorder, "xl/worksheets/sheet1.xml"));
 }
