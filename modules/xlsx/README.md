@@ -80,11 +80,18 @@ copied, so the caller's buffers can be reused right away.
 | `sheet.setRow(row, first_col, values, style)` | Sets consecutive cells of a row. |
 | `sheet.setColumnWidth(col, characters)` | Column width, 0 to 255. |
 | `sheet.setRowHeight(row, points)` | Row height, 0 to 409. |
+| `sheet.setRowHeightHint(row, points)` | A height the program may refit. |
+| `sheet.setDefaultColumnWidth(characters)` / `setDefaultRowHeight(points)` | For columns and rows without their own. |
+| `sheet.hideColumn(col)` / `hideRow(row)` | Hides a column or a row. |
 | `sheet.mergeCells(range)` | Merges a rectangle of cells into one. |
 | `sheet.setLink(row, col, target)` | Links a cell to a site or an e-mail address. |
 | `sheet.setZoom(percent)` | Zoom on screen, 10 to 400. |
-| `sheet.setPageSetup(.{ .paper, .orientation, .margins })` | Paper, orientation and margins for printing. |
+| `sheet.setPageSetup(.{ .paper, .orientation, .margins, .scale, .fit_to_width, .fit_to_height })` | How the sheet is printed. |
 | `sheet.setPrintTitleRows(first, last)` | Rows repeated on every printed page. |
+| `sheet.setPrintArea(range)` | Prints only that range. |
+| `sheet.addPageBreakBeforeRow(row)` / `addPageBreakBeforeColumn(col)` | Manual page breaks. |
+| `sheet.setHeaderFooter(.{ .header, .footer })` | Text at the top and bottom of each page (`&P`, `&N`, `&L`, `&C`, `&R`). |
+| `sheet.protect(.{ .password })` / `wb.protect(.{ .password })` | Locks the cells of a sheet / the workbook's structure. |
 | `sheet.freeze(rows, cols)` | Frozen panes; `freeze(1, 0)` pins a header. |
 | `sheet.setAutoFilter(range)` | Filter buttons on the range's first row. |
 | `wb.toOwnedSlice(allocator)` | The file as bytes. |
@@ -99,9 +106,13 @@ Style (`xlsx.Style`):
 
 - font: `bold`, `italic`, `underline`, `font_color` (`0xRRGGBB`),
   `font_name` (e.g. `"Times New Roman"`), `font_size` (points);
-- `fill` (`0xRRGGBB`) and `border` (`.thin`, `.medium`, `.thick`, on the
-  four sides), with `border_left`, `border_right`, `border_top` and
-  `border_bottom` to set or remove one side;
+- `fill` (`0xRRGGBB`), `fill_pattern` (solid by default, or grey dot
+  patterns);
+- `border` (`.hair`, `.dotted`, `.dashed`, `.thin`, `.medium`, `.thick`,
+  `.double`, on the four sides), with `border_left`, `border_right`,
+  `border_top` and `border_bottom` to set or remove one side, and
+  `border_color`;
+- `unlocked`, for cells that stay editable on a protected sheet;
 - alignment: `h_align` (`.left`, `.center`, `.right`), `v_align` (`.top`,
   `.center`, `.bottom`), `wrap`, `shrink`;
 - `number_format`: `.integer`, `.decimal`, `.thousands`,
@@ -135,9 +146,16 @@ A style is a plain value: build one, copy it, change a field.
   link built from user data cannot point at a local file. A link does not
   change how its cell looks: use `xlsx.link_style` for the usual blue,
   underlined text.
-- **Printing**: without `setPageSetup` the reader's program chooses the
-  paper (Letter or A4, by country), so the same sheet breaks into pages
-  differently. Margins are in inches; `xlsx.cm(1.5)` converts.
+- **Printing**: every sheet carries Excel's default margins. Without
+  `setPageSetup` the reader's program chooses the paper (Letter or A4, by
+  country), so the same sheet breaks into pages differently. Margins are in
+  inches; `xlsx.cm(1.5)` converts. `scale` and `fit_to_width` /
+  `fit_to_height` cannot be combined.
+- **Protection is not security.** It stops editing by accident. The file
+  is not encrypted and the password is stored as a 15-bit hash that many
+  other passwords also match.
+- **Hiding is not removing.** A hidden row or column is still in the file
+  and one click shows it again.
 - **Column widths depend on the default font.** A width is a number of
   characters of the workbook's default font, so the same value is narrower
   in a workbook whose default is Times New Roman 10 than in one that keeps
@@ -154,11 +172,11 @@ A style is a plain value: build one, copy it, change a field.
 ## Not supported
 
 Reading files, streamed writing for very large sheets, compression, zip64
-(files or parts past 4 GiB), links to other cells or files, border colours
-and dashed lines, column default styles, headers and footers, fit-to-page
-scaling, page breaks, print areas, columns repeated when printing,
-conditional formatting, data validation, protection, hidden rows and
-columns, rich text inside a cell,
+(files or parts past 4 GiB), links to other cells or files, a different
+colour per border side, column default styles, different first-page or
+even-page headers, columns repeated when printing, gridline and centring
+print options, hidden sheets, grouped rows, conditional formatting, data
+validation, encryption, rich text inside a cell,
 comments, images, charts, pivot tables, the 1904 date system, document
 properties and themes, editing an existing file.
 

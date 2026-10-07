@@ -1804,6 +1804,16 @@ fn buildAndWrite(gpa: std.mem.Allocator) !void {
     try extra.setPrintTitleRows(0, 0);
     try extra.setZoom(80);
     try extra.setStyled(1, 0, .blank, .{ .border_bottom = .thin, .shrink = true });
+    try extra.setStyled(1, 1, .blank, .{ .border = .double, .border_color = 0xFF0000, .fill_pattern = .light_gray, .unlocked = true });
+    try extra.hideColumn(5);
+    try extra.hideRow(7);
+    try extra.setRowHeightHint(8, 14);
+    try extra.setDefaultColumnWidth(12);
+    try extra.setPrintArea(.{ .first_row = 0, .first_col = 0, .last_row = 9, .last_col = 5 });
+    try extra.addPageBreakBeforeRow(5);
+    try extra.setHeaderFooter(.{ .header = "&CTitle", .footer = "&P / &N" });
+    try extra.protect(.{ .password = "secret" });
+    try wb.protect(.{});
     const bytes = try wb.toOwnedSlice(gpa);
     gpa.free(bytes);
 }

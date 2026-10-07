@@ -154,6 +154,15 @@ fn everything(gpa: std.mem.Allocator) !*xlsx.Workbook {
     try layout.setStyled(14, 2, text("Texto que encolhe para caber na largura da coluna, sem quebrar a linha"), .{ .shrink = true, .border = .thin });
     try layout.setStyled(16, 2, text("Só a linha de baixo"), .{ .border_bottom = .medium });
     try layout.setStyled(18, 2, text("Sem a linha de cima"), .{ .border = .thin, .border_top = .none });
+    try layout.setStyled(20, 2, text("Borda dupla embaixo, em vermelho"), .{ .border_bottom = .double, .border_color = 0xC00000 });
+    try layout.setStyled(22, 2, text("Borda pontilhada"), .{ .border = .dotted });
+    try layout.setStyled(24, 2, text("Fundo pontilhado cinza"), .{ .fill_pattern = .light_gray });
+    try layout.set(26, 2, text("A coluna F está oculta, e a linha 29 também"));
+    try layout.set(26, 5, text("coluna oculta"));
+    try layout.hideColumn(5);
+    try layout.set(28, 2, text("linha oculta"));
+    try layout.hideRow(28);
+    try layout.setHeaderFooter(.{ .header = "&CPlanilha de teste", .footer = "&LAparência&RPágina &P de &N" });
     try layout.setZoom(120);
     try layout.setPageSetup(.{ .paper = .a4, .orientation = .landscape, .margins = .{ .left = xlsx.cm(1.5), .right = xlsx.cm(1.5) } });
 
@@ -257,8 +266,12 @@ fn poll(gpa: std.mem.Allocator) !*xlsx.Workbook {
     try votes.freeze(1, 1);
     try votes.setAutoFilter(.{ .first_row = 0, .first_col = 0, .last_row = vote_count, .last_col = 5 });
     // Printed on A4 lying down, with the header on every page.
-    try votes.setPageSetup(.{ .paper = .a4, .orientation = .landscape });
+    // One page wide, as many pages down as it takes, numbered.
+    try votes.setPageSetup(.{ .paper = .a4, .orientation = .landscape, .fit_to_width = 1, .fit_to_height = 0 });
     try votes.setPrintTitleRows(0, 0);
+    try votes.setHeaderFooter(.{ .footer = "&CPágina &P de &N" });
+    // The result cannot be edited by accident (no password).
+    try result.protect(.{});
     return wb;
 }
 

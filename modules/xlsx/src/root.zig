@@ -14,7 +14,8 @@
 //! Scope: several sheets; text, numbers, booleans, dates and formulas;
 //! column widths and row heights; fonts, background colour, borders,
 //! alignment, wrapped text and number formats; merged cells; links;
-//! frozen panes, zoom and a filter per sheet; page setup for printing. Reading files, streamed writing,
+//! hidden rows and columns; frozen panes, zoom and a filter per sheet;
+//! page setup, print area, page breaks, header and footer; protection. Reading files, streamed writing,
 //! compression, charts and images are not implemented (see README.md).
 
 const std = @import("std");

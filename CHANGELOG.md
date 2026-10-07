@@ -15,8 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   booleans, dates and formulas; column widths and row heights; fonts (name,
   size, colour, bold, italic, underline), background colour, borders,
   alignment, wrapped text, shrink-to-fit and number formats; merged cells;
-  links to sites and e-mail addresses; frozen panes, zoom and a filter per
-  sheet; paper, orientation, margins and repeated header rows for printing. The file is
+  links to sites and e-mail addresses; hidden rows and columns; frozen
+  panes, zoom and a filter per sheet; for printing: paper, orientation,
+  margins, scale or fit-to-page, print area, page breaks, repeated header
+  rows, header and footer; sheet and workbook protection (a guard against
+  accidental edits, not security). The file is
   built in memory and returned as bytes or written to any `std.Io.Writer`.
   User text is always written as text, so it can never become a formula.
   Entries are stored uncompressed for now; no reading and no streamed
