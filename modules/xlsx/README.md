@@ -73,6 +73,7 @@ copied, so the caller's buffers can be reused right away.
 | | |
 |---|---|
 | `Workbook.init(gpa)` / `deinit()` | Creates and frees a workbook. |
+| `wb.setDefaultFont(name, size)` | The font of unstyled cells (Calibri 11 otherwise); call it first. |
 | `wb.addSheet(name)` | Adds a sheet (Excel's naming rules apply). |
 | `sheet.set(row, col, value)` | Sets a cell. |
 | `sheet.setStyled(row, col, value, style)` | Sets a cell and its style. |
@@ -137,6 +138,11 @@ A style is a plain value: build one, copy it, change a field.
 - **Printing**: without `setPageSetup` the reader's program chooses the
   paper (Letter or A4, by country), so the same sheet breaks into pages
   differently. Margins are in inches; `xlsx.cm(1.5)` converts.
+- **Column widths depend on the default font.** A width is a number of
+  characters of the workbook's default font, so the same value is narrower
+  in a workbook whose default is Times New Roman 10 than in one that keeps
+  Calibri 11. When copying the layout of an existing file, set the same
+  default font.
 - **Document numbers and zeros on the left**: write the number with a
   custom format such as `"00000000000"`, or write it as text.
 - **Only what is used is written**: styles and texts that no cell ends up

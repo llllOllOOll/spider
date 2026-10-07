@@ -20,6 +20,8 @@ pub const Error = error{
     /// A font name that is empty, longer than 31 characters, not UTF-8
     /// or holds characters XML cannot carry; or a size outside 1..409.
     InvalidFont,
+    /// The default font can only be changed before any style is used.
+    StylesAlreadyUsed,
     OutOfMemory,
 };
 
@@ -87,9 +89,10 @@ pub const Style = struct {
     font_color: ?u24 = null,
     /// A font family name such as `"Times New Roman"`. The file only
     /// carries the name: the font must exist on the reader's machine.
-    /// Null is the default font, Calibri.
+    /// Null is the workbook's default font (Calibri unless changed).
     font_name: ?[]const u8 = null,
-    /// Size in points, 1 to 409, in steps of a tenth. Null is 11.
+    /// Size in points, 1 to 409, in steps of a tenth. Null is the
+    /// workbook's default size (11 unless changed).
     font_size: ?f32 = null,
     /// Background colour as `0xRRGGBB`.
     fill: ?u24 = null,
@@ -120,9 +123,9 @@ pub const max_number_format_len = 255;
 /// Longest font name accepted, in bytes (Excel's limit is 31 characters).
 pub const max_font_name_len = 31;
 pub const max_font_size = 409;
-const default_font_name = "Calibri";
+const builtin_font_name = "Calibri";
 /// Font sizes are kept in tenths of a point.
-const default_font_size_tenths = 110;
+const builtin_font_size_tenths = 110;
 /// First id available for custom number formats; lower ids are built in.
 const first_custom_format_id = 164;
 
@@ -167,9 +170,10 @@ const FontKey = struct {
     underline: bool,
     has_color: bool,
     color: u24,
-    /// 0 is the default font; otherwise 1 + an index into
+    /// 0 is the workbook's default font; otherwise 1 + an index into
     /// `Registry.font_names`.
     name: u16,
+    /// 0 is the workbook's default size.
     size_tenths: u16,
 
     const default: FontKey = .{
@@ -179,7 +183,7 @@ const FontKey = struct {
         .has_color = false,
         .color = 0,
         .name = 0,
-        .size_tenths = default_font_size_tenths,
+        .size_tenths = 0,
     };
 };
 
@@ -192,6 +196,30 @@ pub const Registry = struct {
     custom_ids: std.StringHashMapUnmanaged(u16) = .empty,
     /// Font names other than the default, as first given.
     font_names: std.ArrayList([]const u8) = .empty,
+    /// The font of cells whose style names none. Column widths are
+    /// measured in characters of this font.
+    default_font_name: []const u8 = builtin_font_name,
+    default_font_size_tenths: u16 = builtin_font_size_tenths,
+
+    /// Changes the default font. Only before any style is registered:
+    /// styles are stored relative to the default.
+    pub fn setDefaultFont(self: *Registry, arena: std.mem.Allocator, name: []const u8, size: f32) Error!void {
+        if (self.keys.items.len > 1 or self.font_names.items.len > 0) return error.StylesAlreadyUsed;
+        try checkFontName(name);
+        const size_tenths = try fontSizeTenths(size);
+        self.default_font_name = try arena.dupe(u8, name);
+        self.default_font_size_tenths = size_tenths;
+    }
+
+    /// The default font's size in points.
+    pub fn defaultFontSize(self: *const Registry) f64 {
+        return @as(f64, @floatFromInt(self.default_font_size_tenths)) / 10.0;
+    }
+
+    pub fn hasBuiltinDefaultFont(self: *const Registry) bool {
+        return self.default_font_size_tenths == builtin_font_size_tenths and
+            std.ascii.eqlIgnoreCase(self.default_font_name, builtin_font_name);
+    }
 
     /// Returns the id of `style`, registering it if it is new. Memory
     /// comes from `arena` and is never freed individually.
@@ -206,7 +234,7 @@ pub const Registry = struct {
                 .has_color = style.font_color != null,
                 .color = style.font_color orelse 0,
                 .name = if (style.font_name) |name| try self.internFontName(arena, name) else 0,
-                .size_tenths = if (style.font_size) |size| try fontSizeTenths(size) else default_font_size_tenths,
+                .size_tenths = if (style.font_size) |size| try self.internFontSize(size) else 0,
             },
             .has_fill = style.fill != null,
             .fill = style.fill orelse 0,
@@ -256,10 +284,14 @@ pub const Registry = struct {
     }
 
     /// Font names compare without ASCII case, as font lookup does.
+    fn internFontSize(self: *const Registry, size: f32) Error!u16 {
+        const tenths = try fontSizeTenths(size);
+        return if (tenths == self.default_font_size_tenths) 0 else tenths;
+    }
+
     fn internFontName(self: *Registry, arena: std.mem.Allocator, name: []const u8) Error!u16 {
-        if (name.len == 0 or name.len > max_font_name_len) return error.InvalidFont;
-        if (!std.unicode.utf8ValidateSlice(name) or !xml.isXmlSafe(name)) return error.InvalidFont;
-        if (std.ascii.eqlIgnoreCase(name, default_font_name)) return 0;
+        try checkFontName(name);
+        if (std.ascii.eqlIgnoreCase(name, self.default_font_name)) return 0;
         for (self.font_names.items, 1..) |known, id| {
             if (std.ascii.eqlIgnoreCase(known, name)) return @intCast(id);
         }
@@ -328,18 +360,17 @@ pub const Registry = struct {
             if (font.bold) try w.writeAll("<b/>");
             if (font.italic) try w.writeAll("<i/>");
             if (font.underline) try w.writeAll("<u/>");
-            try w.print("<sz val=\"{d}", .{font.size_tenths / 10});
-            if (font.size_tenths % 10 != 0) try w.print(".{d}", .{font.size_tenths % 10});
+            const size_tenths = if (font.size_tenths == 0) self.default_font_size_tenths else font.size_tenths;
+            try w.print("<sz val=\"{d}", .{size_tenths / 10});
+            if (size_tenths % 10 != 0) try w.print(".{d}", .{size_tenths % 10});
             try w.writeAll("\"/>");
             if (font.has_color) try w.print("<color rgb=\"FF{X:0>6}\"/>", .{font.color});
-            if (font.name == 0) {
-                // Family 2 is "swiss" (sans-serif), right for Calibri only.
-                try w.writeAll("<name val=\"" ++ default_font_name ++ "\"/><family val=\"2\"/>");
-            } else {
-                try w.writeAll("<name val=\"");
-                try xml.writeAttribute(w, self.font_names.items[font.name - 1]);
-                try w.writeAll("\"/>");
-            }
+            const name = if (font.name == 0) self.default_font_name else self.font_names.items[font.name - 1];
+            try w.writeAll("<name val=\"");
+            try xml.writeAttribute(w, name);
+            try w.writeAll("\"/>");
+            // Family 2 is "swiss" (sans-serif), right for Calibri only.
+            if (font.name == 0 and std.ascii.eqlIgnoreCase(name, builtin_font_name)) try w.writeAll("<family val=\"2\"/>");
             try w.writeAll("</font>");
         }
         try w.writeAll("</fonts>");
@@ -394,6 +425,11 @@ pub const Registry = struct {
         try w.writeAll("</styleSheet>");
     }
 };
+
+fn checkFontName(name: []const u8) Error!void {
+    if (name.len == 0 or name.len > max_font_name_len) return error.InvalidFont;
+    if (!std.unicode.utf8ValidateSlice(name) or !xml.isXmlSafe(name)) return error.InvalidFont;
+}
 
 fn fontSizeTenths(size: f32) Error!u16 {
     if (!std.math.isFinite(size) or size < 1 or size > max_font_size) return error.InvalidFont;

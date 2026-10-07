@@ -76,6 +76,8 @@ pub const Error = error{
     InvalidFont,
     /// More than 65,490 distinct styles.
     TooManyStyles,
+    /// `setDefaultFont` was called after a cell was given a style.
+    StylesAlreadyUsed,
     /// A workbook must have at least one sheet to be written.
     NoSheets,
     /// The package does not fit a plain zip archive (zip64 is not
@@ -490,6 +492,17 @@ pub const Workbook = struct {
         gpa.destroy(self);
     }
 
+    /// Sets the font of every cell whose style names none (Calibri 11
+    /// otherwise). Call it before setting any cell.
+    ///
+    /// Column widths are counted in characters of the default font, so
+    /// this also changes how wide a given `setColumnWidth` value is: a
+    /// workbook copied from one that uses another default font needs
+    /// the same default to keep the same column widths.
+    pub fn setDefaultFont(self: *Workbook, name: []const u8, size: f32) Error!void {
+        try self.styles.setDefaultFont(self.arena.allocator(), name, size);
+    }
+
     /// Adds a sheet; sheets appear in the order they are added.
     ///
     /// The name follows Excel's rules: 1 to 31 characters, none of
@@ -775,7 +788,11 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
     } else try w.writeAll("/>");
     try w.writeAll("</sheetViews>");
 
-    try w.writeAll("<sheetFormatPr defaultRowHeight=\"15\"/>");
+    // The height a row of the default font takes: 15 points for
+    // Calibri 11; for other fonts, the usual 1.275 times the size.
+    const styles = &sheet.workbook.styles;
+    const default_row_height: f64 = if (styles.hasBuiltinDefaultFont()) 15 else styles.defaultFontSize() * 1.275;
+    try w.print("<sheetFormatPr defaultRowHeight=\"{d}\"/>", .{default_row_height});
 
     if (sheet.column_widths.items.len > 0) {
         try w.writeAll("<cols>");
@@ -1881,4 +1898,43 @@ test "only http, https and mailto links are accepted" {
     var recorder = try record(wb);
     defer recorder.deinit();
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/_rels/sheet1.xml.rels").?, "Target=\"https://exemplo.com.br\"") != null);
+}
+
+test "the workbook's default font" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    try wb.setDefaultFont("Times New Roman", 10);
+    const sheet = try wb.addSheet("S");
+    try sheet.set(0, 0, .{ .text = "plain" });
+    // Naming the default font again is still the default style.
+    try sheet.setStyled(0, 1, .{ .text = "same" }, .{ .font_name = "times new roman", .font_size = 10 });
+    try sheet.setStyled(0, 2, .{ .text = "bold" }, .{ .bold = true });
+    try sheet.setStyled(0, 3, .{ .text = "calibri" }, .{ .font_name = "Calibri", .font_size = 11 });
+
+    // Too late once a style exists; and the usual font checks apply.
+    try testing.expectError(error.StylesAlreadyUsed, wb.setDefaultFont("Arial", 10));
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/styles.xml").?, "<fonts count=\"3\">" ++
+        "<font><sz val=\"10\"/><name val=\"Times New Roman\"/></font>" ++
+        "<font><b/><sz val=\"10\"/><name val=\"Times New Roman\"/></font>" ++
+        "<font><sz val=\"11\"/><name val=\"Calibri\"/></font>" ++
+        "</fonts>") != null);
+    try testing.expectEqualStrings("<row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c>" ++
+        "<c r=\"C1\" s=\"1\" t=\"s\"><v>2</v></c><c r=\"D1\" s=\"2\" t=\"s\"><v>3</v></c></row>", sheetData(&recorder, "xl/worksheets/sheet1.xml"));
+    // Rows are as tall as the default font needs.
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet1.xml").?, "<sheetFormatPr defaultRowHeight=\"12.75\"/>") != null);
+
+    const other = try Workbook.init(testing.allocator);
+    defer other.deinit();
+    try testing.expectError(error.InvalidFont, other.setDefaultFont("", 10));
+    try testing.expectError(error.InvalidFont, other.setDefaultFont("Arial", 0));
+    try other.setDefaultFont("Arial", 10);
+    try other.setDefaultFont("Calibri", 11);
+    _ = try other.addSheet("S");
+    var default_recorder = try record(other);
+    defer default_recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, default_recorder.part("xl/styles.xml").?, "<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font></fonts>") != null);
+    try testing.expect(std.mem.indexOf(u8, default_recorder.part("xl/worksheets/sheet1.xml").?, "<sheetFormatPr defaultRowHeight=\"15\"/>") != null);
 }
