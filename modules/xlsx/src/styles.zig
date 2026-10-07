@@ -1,0 +1,393 @@
+//! Cell styles and the `xl/styles.xml` part.
+//!
+//! In the file format a cell does not carry its formatting: it carries
+//! an index (`s="3"`) into a table of format records (`cellXfs`), and
+//! each record points into four more tables (fonts, fills, borders,
+//! number formats). Callers never see that: they pass a `Style` value
+//! with a cell, equal styles share one record, and only the styles some
+//! cell ends up using are written.
+
+const std = @import("std");
+const Writer = std.Io.Writer;
+const xml = @import("xml.zig");
+
+pub const Error = error{
+    /// More distinct styles than a workbook can hold.
+    TooManyStyles,
+    /// A custom number format that is empty, too long, not UTF-8 or
+    /// holds characters XML cannot carry.
+    InvalidNumberFormat,
+    OutOfMemory,
+};
+
+/// A line drawn on the four sides of a cell.
+pub const Border = enum {
+    none,
+    thin,
+    medium,
+    thick,
+};
+
+/// How a number is shown. The named ones are formats every spreadsheet
+/// program has built in, so they follow the reader's locale (decimal
+/// comma, day/month order). `custom` takes a format code in Excel's
+/// syntax, written with `.` as the decimal separator, e.g.
+/// `"dd/mm/yyyy"` or `"#,##0.00"`.
+pub const NumberFormat = union(enum) {
+    general,
+    /// `0`
+    integer,
+    /// `0.00`
+    decimal,
+    /// `#,##0`
+    thousands,
+    /// `#,##0.00`
+    thousands_decimal,
+    /// `0%`
+    percent,
+    /// `0.00%`
+    percent_decimal,
+    /// The reader's short date.
+    date,
+    /// `h:mm:ss`
+    time,
+    /// The reader's short date, then `h:mm`.
+    datetime,
+    /// Shows the cell as typed, numbers included.
+    text,
+    custom: []const u8,
+};
+
+/// The formatting of one cell. The default value is a plain cell.
+pub const Style = struct {
+    bold: bool = false,
+    /// Background colour as `0xRRGGBB`.
+    fill: ?u24 = null,
+    border: Border = .none,
+    number_format: NumberFormat = .general,
+};
+
+/// Excel's limit on distinct cell formats.
+pub const max_styles = 65_490;
+/// Longest custom format code accepted, in bytes.
+pub const max_number_format_len = 255;
+/// First id available for custom number formats; lower ids are built in.
+const first_custom_format_id = 164;
+
+/// A style with its number format reduced to an id, so it can be a hash
+/// map key.
+const Key = struct {
+    bold: bool,
+    has_fill: bool,
+    fill: u24,
+    border: Border,
+    custom_format: bool,
+    /// A built-in format id, or an index into `Registry.custom_formats`.
+    format: u16,
+};
+
+/// Every distinct style a workbook was given. Id 0 is the default
+/// style; the others are handed out in the order styles are first seen.
+pub const Registry = struct {
+    keys: std.ArrayList(Key) = .empty,
+    ids: std.AutoHashMapUnmanaged(Key, u16) = .empty,
+    custom_formats: std.ArrayList([]const u8) = .empty,
+    custom_ids: std.StringHashMapUnmanaged(u16) = .empty,
+
+    /// Returns the id of `style`, registering it if it is new. Memory
+    /// comes from `arena` and is never freed individually.
+    pub fn intern(self: *Registry, arena: std.mem.Allocator, style: Style) Error!u16 {
+        if (self.keys.items.len == 0) try self.keys.append(arena, defaultKey());
+
+        var key: Key = .{
+            .bold = style.bold,
+            .has_fill = style.fill != null,
+            .fill = style.fill orelse 0,
+            .border = style.border,
+            .custom_format = false,
+            .format = 0,
+        };
+        switch (style.number_format) {
+            .custom => |code| {
+                key.custom_format = true;
+                key.format = try self.internFormat(arena, code);
+            },
+            else => |named| key.format = builtinId(named),
+        }
+        if (std.meta.eql(key, defaultKey())) return 0;
+
+        const entry = try self.ids.getOrPut(arena, key);
+        if (entry.found_existing) return entry.value_ptr.*;
+        if (self.keys.items.len >= max_styles) {
+            _ = self.ids.remove(key);
+            return error.TooManyStyles;
+        }
+        const id: u16 = @intCast(self.keys.items.len);
+        entry.value_ptr.* = id;
+        try self.keys.append(arena, key);
+        return id;
+    }
+
+    fn internFormat(self: *Registry, arena: std.mem.Allocator, code: []const u8) Error!u16 {
+        if (code.len == 0 or code.len > max_number_format_len) return error.InvalidNumberFormat;
+        if (!std.unicode.utf8ValidateSlice(code) or !xml.isXmlSafe(code)) return error.InvalidNumberFormat;
+        if (self.custom_ids.get(code)) |id| return id;
+        const owned = try arena.dupe(u8, code);
+        const id: u16 = @intCast(self.custom_formats.items.len);
+        try self.custom_formats.append(arena, owned);
+        try self.custom_ids.put(arena, owned, id);
+        return id;
+    }
+
+    /// Number of ids handed out, the default style included.
+    pub fn count(self: *const Registry) usize {
+        return @max(self.keys.items.len, 1);
+    }
+
+    /// Writes `xl/styles.xml` for the styles in `used`: registry ids in
+    /// the order their format records must appear. The default style is
+    /// always record 0 and must not be listed; `used[i]` becomes record
+    /// `i + 1`, which is the value cells put in their `s` attribute.
+    pub fn write(self: *const Registry, w: *Writer, scratch: std.mem.Allocator, used: []const u16) (Writer.Error || error{OutOfMemory})!void {
+        var fills: std.ArrayList(u24) = .empty;
+        defer fills.deinit(scratch);
+        var borders: std.ArrayList(Border) = .empty;
+        defer borders.deinit(scratch);
+        var formats: std.ArrayList(u16) = .empty;
+        defer formats.deinit(scratch);
+        var any_bold = false;
+
+        const Record = struct { font: u32, fill: u32, border: u32, format: u32 };
+        var records: std.ArrayList(Record) = .empty;
+        defer records.deinit(scratch);
+
+        for (used) |id| {
+            const key = self.keys.items[id];
+            var record: Record = .{ .font = 0, .fill = 0, .border = 0, .format = key.format };
+            if (key.bold) {
+                any_bold = true;
+                record.font = 1;
+            }
+            if (key.has_fill) {
+                // Fills 0 and 1 are fixed by the format (see below).
+                record.fill = 2 + @as(u32, @intCast(try indexOrAppend(u24, scratch, &fills, key.fill)));
+            }
+            if (key.border != .none) {
+                record.border = 1 + @as(u32, @intCast(try indexOrAppend(Border, scratch, &borders, key.border)));
+            }
+            if (key.custom_format) {
+                record.format = first_custom_format_id + @as(u32, @intCast(try indexOrAppend(u16, scratch, &formats, key.format)));
+            }
+            try records.append(scratch, record);
+        }
+
+        try w.writeAll(xml.declaration);
+        try w.writeAll("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
+
+        if (formats.items.len > 0) {
+            try w.print("<numFmts count=\"{d}\">", .{formats.items.len});
+            for (formats.items, 0..) |format, i| {
+                try w.print("<numFmt numFmtId=\"{d}\" formatCode=\"", .{first_custom_format_id + i});
+                try xml.writeAttribute(w, self.custom_formats.items[format]);
+                try w.writeAll("\"/>");
+            }
+            try w.writeAll("</numFmts>");
+        }
+
+        try w.print("<fonts count=\"{d}\">", .{@as(u8, if (any_bold) 2 else 1)});
+        try w.writeAll("<font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font>");
+        if (any_bold) try w.writeAll("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font>");
+        try w.writeAll("</fonts>");
+
+        // The first two fills are mandatory: readers assume fill 0 is
+        // "none" and fill 1 is the 12.5% grey pattern.
+        try w.print("<fills count=\"{d}\">", .{fills.items.len + 2});
+        try w.writeAll("<fill><patternFill patternType=\"none\"/></fill>");
+        try w.writeAll("<fill><patternFill patternType=\"gray125\"/></fill>");
+        for (fills.items) |rgb| {
+            try w.print("<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF{X:0>6}\"/><bgColor indexed=\"64\"/></patternFill></fill>", .{rgb});
+        }
+        try w.writeAll("</fills>");
+
+        try w.print("<borders count=\"{d}\">", .{borders.items.len + 1});
+        try w.writeAll("<border><left/><right/><top/><bottom/><diagonal/></border>");
+        for (borders.items) |border| {
+            try w.writeAll("<border>");
+            for ([_][]const u8{ "left", "right", "top", "bottom" }) |side| {
+                try w.print("<{s} style=\"{t}\"><color auto=\"1\"/></{s}>", .{ side, border, side });
+            }
+            try w.writeAll("<diagonal/></border>");
+        }
+        try w.writeAll("</borders>");
+
+        try w.writeAll("<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>");
+
+        try w.print("<cellXfs count=\"{d}\">", .{records.items.len + 1});
+        try w.writeAll("<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>");
+        for (records.items) |record| {
+            try w.print("<xf numFmtId=\"{d}\" fontId=\"{d}\" fillId=\"{d}\" borderId=\"{d}\" xfId=\"0\"", .{ record.format, record.font, record.fill, record.border });
+            if (record.format != 0) try w.writeAll(" applyNumberFormat=\"1\"");
+            if (record.font != 0) try w.writeAll(" applyFont=\"1\"");
+            if (record.fill != 0) try w.writeAll(" applyFill=\"1\"");
+            if (record.border != 0) try w.writeAll(" applyBorder=\"1\"");
+            try w.writeAll("/>");
+        }
+        try w.writeAll("</cellXfs>");
+
+        try w.writeAll("<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>");
+        try w.writeAll("</styleSheet>");
+    }
+};
+
+fn defaultKey() Key {
+    return .{ .bold = false, .has_fill = false, .fill = 0, .border = .none, .custom_format = false, .format = 0 };
+}
+
+/// Ids of the number formats every reader has built in.
+fn builtinId(format: NumberFormat) u16 {
+    return switch (format) {
+        .general => 0,
+        .integer => 1,
+        .decimal => 2,
+        .thousands => 3,
+        .thousands_decimal => 4,
+        .percent => 9,
+        .percent_decimal => 10,
+        .date => 14,
+        .time => 21,
+        .datetime => 22,
+        .text => 49,
+        .custom => unreachable,
+    };
+}
+
+fn indexOrAppend(comptime T: type, allocator: std.mem.Allocator, list: *std.ArrayList(T), value: T) error{OutOfMemory}!usize {
+    for (list.items, 0..) |item, i| {
+        if (item == value) return i;
+    }
+    try list.append(allocator, value);
+    return list.items.len - 1;
+}
+
+const testing = std.testing;
+
+fn expectStylesXml(registry: *const Registry, used: []const u16, expected_body: []const u8) !void {
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try registry.write(&out.writer, testing.allocator, used);
+    const prefix = xml.declaration ++ "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">";
+    const suffix = "</styleSheet>";
+    const written = out.written();
+    try testing.expect(std.mem.startsWith(u8, written, prefix));
+    try testing.expect(std.mem.endsWith(u8, written, suffix));
+    try testing.expectEqualStrings(expected_body, written[prefix.len .. written.len - suffix.len]);
+}
+
+const minimal_body =
+    "<fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font></fonts>" ++
+    "<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills>" ++
+    "<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>" ++
+    "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>" ++
+    "<cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs>" ++
+    "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>";
+
+test "the default style is id 0 and equal styles share an id" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{}));
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{ .number_format = .general, .border = .none }));
+    const bold = try registry.intern(arena, .{ .bold = true });
+    const money = try registry.intern(arena, .{ .number_format = .{ .custom = "#,##0.00" } });
+    try testing.expectEqual(@as(u16, 1), bold);
+    try testing.expectEqual(@as(u16, 2), money);
+    try testing.expectEqual(bold, try registry.intern(arena, .{ .bold = true }));
+    // Same code from another buffer: still the same style.
+    var code: [8]u8 = "#,##0.00".*;
+    try testing.expectEqual(money, try registry.intern(arena, .{ .number_format = .{ .custom = &code } }));
+    // Black fill is not "no fill".
+    try testing.expectEqual(@as(u16, 3), try registry.intern(arena, .{ .fill = 0x000000 }));
+    try testing.expectEqual(@as(usize, 4), registry.count());
+}
+
+test "styles.xml with no styles is the fixed minimum" {
+    const registry: Registry = .{};
+    try testing.expectEqual(@as(usize, 1), registry.count());
+    try expectStylesXml(&registry, &.{}, minimal_body);
+}
+
+test "styles.xml: fonts, fills, borders and number formats are shared between records" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    const header = try registry.intern(arena, .{ .bold = true, .fill = 0xDDEEFF, .border = .thin });
+    const percent = try registry.intern(arena, .{ .number_format = .percent_decimal });
+    const br_date = try registry.intern(arena, .{ .number_format = .{ .custom = "dd/mm/yyyy" } });
+    const total = try registry.intern(arena, .{ .bold = true, .fill = 0xDDEEFF, .border = .medium, .number_format = .{ .custom = "dd/mm/yyyy" } });
+    const unused = try registry.intern(arena, .{ .fill = 0xFF0000, .number_format = .{ .custom = "0.000" } });
+    _ = unused;
+
+    try expectStylesXml(&registry, &.{ header, percent, br_date, total }, "<numFmts count=\"1\"><numFmt numFmtId=\"164\" formatCode=\"dd/mm/yyyy\"/></numFmts>" ++
+        "<fonts count=\"2\"><font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font>" ++
+        "<font><b/><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font></fonts>" ++
+        "<fills count=\"3\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" ++
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFDDEEFF\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>" ++
+        "<borders count=\"3\"><border><left/><right/><top/><bottom/><diagonal/></border>" ++
+        "<border><left style=\"thin\"><color auto=\"1\"/></left><right style=\"thin\"><color auto=\"1\"/></right>" ++
+        "<top style=\"thin\"><color auto=\"1\"/></top><bottom style=\"thin\"><color auto=\"1\"/></bottom><diagonal/></border>" ++
+        "<border><left style=\"medium\"><color auto=\"1\"/></left><right style=\"medium\"><color auto=\"1\"/></right>" ++
+        "<top style=\"medium\"><color auto=\"1\"/></top><bottom style=\"medium\"><color auto=\"1\"/></bottom><diagonal/></border></borders>" ++
+        "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>" ++
+        "<cellXfs count=\"5\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" ++
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>" ++
+        "<xf numFmtId=\"10\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>" ++
+        "<xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyNumberFormat=\"1\"/>" ++
+        "<xf numFmtId=\"164\" fontId=\"1\" fillId=\"2\" borderId=\"2\" xfId=\"0\" applyNumberFormat=\"1\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\"/>" ++
+        "</cellXfs>" ++
+        "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>");
+}
+
+test "a custom format code is escaped as an attribute" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    var registry: Registry = .{};
+    const id = try registry.intern(arena_state.allocator(), .{ .number_format = .{ .custom = "0.0\" m<s>\" & 0" } });
+
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try registry.write(&out.writer, testing.allocator, &.{id});
+    try testing.expect(std.mem.indexOf(u8, out.written(), "formatCode=\"0.0&quot; m&lt;s&gt;&quot; &amp; 0\"") != null);
+}
+
+test "bad custom formats are refused" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    const too_long: [max_number_format_len + 1]u8 = @splat('0');
+    for ([_][]const u8{ "", &too_long, "0\x01", "\xff\xfe" }) |code| {
+        try testing.expectError(error.InvalidNumberFormat, registry.intern(arena, .{ .number_format = .{ .custom = code } }));
+    }
+    try testing.expectEqual(@as(usize, 1), registry.count());
+}
+
+test "the style limit is enforced" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    var colour: u24 = 0;
+    while (registry.count() < max_styles) : (colour += 1) {
+        _ = try registry.intern(arena, .{ .fill = colour });
+    }
+    try testing.expectError(error.TooManyStyles, registry.intern(arena, .{ .fill = colour }));
+    // A style already known is still served, and the failed one left no trace.
+    try testing.expectEqual(@as(u16, 1), try registry.intern(arena, .{ .fill = 0 }));
+    try testing.expectError(error.TooManyStyles, registry.intern(arena, .{ .fill = colour }));
+}
