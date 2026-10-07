@@ -114,6 +114,9 @@ pub const Style = struct {
     /// Makes the text smaller, when needed, so it fits the cell's width
     /// on one line. Spreadsheet programs ignore it when `wrap` is set.
     shrink: bool = false,
+    /// Lets the cell be edited when its sheet is protected (cells are
+    /// locked by default). Has no effect on an unprotected sheet.
+    unlocked: bool = false,
 };
 
 /// Excel's limit on distinct cell formats.
@@ -144,6 +147,7 @@ const Key = struct {
     v_align: VerticalAlignment,
     wrap: bool,
     shrink: bool,
+    unlocked: bool,
 
     const default: Key = .{
         .font = .default,
@@ -156,6 +160,7 @@ const Key = struct {
         .v_align = .bottom,
         .wrap = false,
         .shrink = false,
+        .unlocked = false,
     };
 
     fn hasAlignment(key: Key) bool {
@@ -250,6 +255,7 @@ pub const Registry = struct {
             .v_align = style.v_align,
             .wrap = style.wrap,
             .shrink = style.shrink,
+            .unlocked = style.unlocked,
         };
         switch (style.number_format) {
             .custom => |code| {
@@ -410,13 +416,20 @@ pub const Registry = struct {
             if (record.font != 0) try w.writeAll(" applyFont=\"1\"");
             if (record.fill != 0) try w.writeAll(" applyFill=\"1\"");
             if (record.border != 0) try w.writeAll(" applyBorder=\"1\"");
-            if (record.key.hasAlignment()) {
-                try w.writeAll(" applyAlignment=\"1\"><alignment");
-                if (record.key.h_align != .general) try w.print(" horizontal=\"{t}\"", .{record.key.h_align});
-                if (record.key.v_align != .bottom) try w.print(" vertical=\"{t}\"", .{record.key.v_align});
-                if (record.key.wrap) try w.writeAll(" wrapText=\"1\"");
-                if (record.key.shrink) try w.writeAll(" shrinkToFit=\"1\"");
-                try w.writeAll("/></xf>");
+            if (record.key.hasAlignment()) try w.writeAll(" applyAlignment=\"1\"");
+            if (record.key.unlocked) try w.writeAll(" applyProtection=\"1\"");
+            if (record.key.hasAlignment() or record.key.unlocked) {
+                try w.writeByte('>');
+                if (record.key.hasAlignment()) {
+                    try w.writeAll("<alignment");
+                    if (record.key.h_align != .general) try w.print(" horizontal=\"{t}\"", .{record.key.h_align});
+                    if (record.key.v_align != .bottom) try w.print(" vertical=\"{t}\"", .{record.key.v_align});
+                    if (record.key.wrap) try w.writeAll(" wrapText=\"1\"");
+                    if (record.key.shrink) try w.writeAll(" shrinkToFit=\"1\"");
+                    try w.writeAll("/>");
+                }
+                if (record.key.unlocked) try w.writeAll("<protection locked=\"0\"/>");
+                try w.writeAll("</xf>");
             } else try w.writeAll("/>");
         }
         try w.writeAll("</cellXfs>");

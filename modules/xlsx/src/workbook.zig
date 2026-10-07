@@ -69,6 +69,9 @@ pub const Error = error{
     /// A header or footer longer than 255 characters or with characters
     /// XML cannot carry.
     InvalidHeaderFooter,
+    /// A protection password that is empty, longer than 255 characters
+    /// or not printable ASCII.
+    InvalidPassword,
     /// A link that is not `http://`, `https://` or `mailto:`, is too
     /// long, or has spaces or control characters.
     InvalidLink,
@@ -176,6 +179,45 @@ pub const HeaderFooter = struct {
 };
 
 pub const max_header_footer_len = 255;
+
+/// Options of `Workbook.protect` and `Sheet.protect`.
+///
+/// Protection is a guard against editing by accident, not security:
+/// the file is not encrypted, anyone can read it, and the password is
+/// kept as a 15-bit hash that many other passwords also match.
+pub const Protection = struct {
+    /// Asked for when the user removes the protection. Null: no
+    /// password, protection is removed with a click.
+    password: ?[]const u8 = null,
+};
+
+/// The 16-bit hash spreadsheet programs store for a protection
+/// password (the "legacy" scheme, understood by every program).
+fn legacyPasswordHash(password: []const u8) u16 {
+    var hash: u16 = 0;
+    var i = password.len;
+    while (i > 0) {
+        i -= 1;
+        hash = ((hash >> 14) & 0x01) | ((hash << 1) & 0x7fff);
+        hash ^= password[i];
+    }
+    hash = ((hash >> 14) & 0x01) | ((hash << 1) & 0x7fff);
+    hash ^= @as(u16, @intCast(password.len));
+    hash ^= 0xCE4B;
+    return hash;
+}
+
+/// Checks a password and returns its hash, or null without one.
+fn protectionHash(protection: Protection) Error!?u16 {
+    const password = protection.password orelse return null;
+    if (password.len == 0 or password.len > 255) return error.InvalidPassword;
+    for (password) |c| {
+        if (c < 0x20 or c > 0x7e) return error.InvalidPassword;
+    }
+    return legacyPasswordHash(password);
+}
+
+const Protected = struct { hash: ?u16 };
 
 /// Largest margin accepted, in inches: wider than any paper above.
 const max_margin = 49;
@@ -321,6 +363,7 @@ pub const Sheet = struct {
     zoom: u16 = 100,
     page_setup: ?PageSetup = null,
     print_area: ?Range = null,
+    protection: ?Protected = null,
     /// Zero-based index of the first row (column) of each new page.
     row_breaks: std.ArrayList(u32) = .empty,
     column_breaks: std.ArrayList(u32) = .empty,
@@ -508,6 +551,13 @@ pub const Sheet = struct {
         self.page_setup = setup;
     }
 
+    /// Protects the sheet: cells cannot be edited, except those whose
+    /// style has `unlocked = true`. See `Protection` for what this is
+    /// and is not.
+    pub fn protect(self: *Sheet, protection: Protection) Error!void {
+        self.protection = .{ .hash = try protectionHash(protection) };
+    }
+
     /// Limits printing to `range`.
     pub fn setPrintArea(self: *Sheet, range: Range) Error!void {
         if (range.first_row >= max_rows or range.last_row >= max_rows) return error.RowOutOfRange;
@@ -636,6 +686,14 @@ pub const Workbook = struct {
     strings: shared_strings.Table = .{},
     styles: styles_mod.Registry = .{},
     has_formulas: bool = false,
+    protection: ?Protected = null,
+
+    /// Protects the workbook's structure: sheets cannot be added,
+    /// removed, renamed, moved or unhidden. Cells stay editable unless
+    /// their sheet is protected too. See `Protection`.
+    pub fn protect(self: *Workbook, protection: Protection) Error!void {
+        self.protection = .{ .hash = try protectionHash(protection) };
+    }
 
     /// Creates an empty workbook. All memory comes from `gpa` and is
     /// released by `deinit`. Text passed in is copied: the caller's
@@ -801,6 +859,11 @@ pub const Workbook = struct {
     fn writeWorkbookPart(self: *const Workbook, w: *Writer) Writer.Error!void {
         try w.writeAll(xml.declaration);
         try w.writeAll("<workbook xmlns=\"" ++ ns_main ++ "\" xmlns:r=\"" ++ ns_relationships ++ "\">");
+        if (self.protection) |protection| {
+            try w.writeAll("<workbookProtection");
+            if (protection.hash) |hash| try w.print(" workbookPassword=\"{X:0>4}\"", .{hash});
+            try w.writeAll(" lockStructure=\"1\"/>");
+        }
         try w.writeAll("<bookViews><workbookView/></bookViews>");
 
         try w.writeAll("<sheets>");
@@ -909,7 +972,7 @@ fn writeSheetRelationships(w: *Writer, sheet: *const Sheet) Writer.Error!void {
 /// Writes a worksheet part. Element order is fixed by the format:
 /// dimension, sheetViews, sheetFormatPr, cols, sheetData, autoFilter,
 /// sheetPr, dimension, sheetViews, sheetFormatPr, cols, sheetData,
-/// autoFilter, mergeCells, hyperlinks, pageMargins, pageSetup,
+/// sheetProtection, autoFilter, mergeCells, hyperlinks, pageMargins, pageSetup,
 /// headerFooter, rowBreaks, colBreaks.
 fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records: []const u32, string_indexes: []const u32) Writer.Error!void {
     try w.writeAll(xml.declaration);
@@ -1042,6 +1105,11 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
     }
     try w.writeAll("</sheetData>");
 
+    if (sheet.protection) |protection| {
+        try w.writeAll("<sheetProtection");
+        if (protection.hash) |hash| try w.print(" password=\"{X:0>4}\"", .{hash});
+        try w.writeAll(" sheet=\"1\" objects=\"1\" scenarios=\"1\"/>");
+    }
     if (sheet.auto_filter) |range| {
         try w.writeAll("<autoFilter ref=\"");
         try range.write(w);
@@ -2302,4 +2370,53 @@ test "print scale, fit to page, print area, page breaks, header and footer" {
         "<definedName name=\"_xlnm.Print_Area\" localSheetId=\"0\">'Página 7 (teste)'!$A$1:$L$77</definedName>" ++
         "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'Página 7 (teste)'!$1:$2</definedName>" ++
         "</definedNames>") != null);
+}
+
+test "protection: workbook structure, sheets, unlocked cells and the legacy password hash" {
+    // "password" hashes to 83AF: the value spreadsheet programs store
+    // for it. The one-letter case is worked out by hand from the
+    // algorithm: 0x61 rotated is 0xC2, xor the length 1, xor 0xCE4B.
+    try testing.expectEqual(@as(u16, 0x83AF), legacyPasswordHash("password"));
+    try testing.expectEqual(@as(u16, 0xCE88), legacyPasswordHash("a"));
+
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    try wb.protect(.{});
+    const open_sheet = try wb.addSheet("Open");
+    try open_sheet.set(0, 0, .int(1));
+    const locked = try wb.addSheet("Locked");
+    try locked.set(0, 0, .{ .text = "fixed" });
+    try locked.setStyled(0, 1, .int(0), .{ .unlocked = true, .h_align = .right });
+    try locked.setStyled(0, 2, .int(0), .{ .unlocked = true });
+    try locked.setAutoFilter(.{ .first_row = 0, .first_col = 0, .last_row = 0, .last_col = 2 });
+    try locked.protect(.{ .password = "password" });
+
+    try testing.expectError(error.InvalidPassword, locked.protect(.{ .password = "" }));
+    try testing.expectError(error.InvalidPassword, locked.protect(.{ .password = "senha com ç" }));
+    const long: [256]u8 = @splat('a');
+    try testing.expectError(error.InvalidPassword, wb.protect(.{ .password = &long }));
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/workbook.xml").?, "<workbookProtection lockStructure=\"1\"/><bookViews>") != null);
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet1.xml").?, "sheetProtection") == null);
+    // Between the cells and the filter.
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet2.xml").?, "</sheetData>" ++
+        "<sheetProtection password=\"83AF\" sheet=\"1\" objects=\"1\" scenarios=\"1\"/>" ++
+        "<autoFilter ") != null);
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/styles.xml").?, "<cellXfs count=\"3\">" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\" applyProtection=\"1\">" ++
+        "<alignment horizontal=\"right\"/><protection locked=\"0\"/></xf>" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyProtection=\"1\">" ++
+        "<protection locked=\"0\"/></xf>" ++
+        "</cellXfs>") != null);
+
+    const with_password = try Workbook.init(testing.allocator);
+    defer with_password.deinit();
+    _ = try with_password.addSheet("S");
+    try with_password.protect(.{ .password = "password" });
+    var second = try record(with_password);
+    defer second.deinit();
+    try testing.expect(std.mem.indexOf(u8, second.part("xl/workbook.xml").?, "<workbookProtection workbookPassword=\"83AF\" lockStructure=\"1\"/>") != null);
 }
