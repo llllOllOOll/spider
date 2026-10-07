@@ -1,0 +1,7 @@
+.{
+    .name = .spider_xlsx,
+    .version = "0.1.0",
+    .paths = .{""},
+    .fingerprint = 0xcec267a6f9fb0d61,
+    .dependencies = .{},
+}
