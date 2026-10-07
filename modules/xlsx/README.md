@@ -172,6 +172,10 @@ What that leaves open:
 - `zig build test-libreoffice` here: writes a sample workbook, has headless
   LibreOffice (`soffice`) convert it to CSV and compares the cells. Needs
   LibreOffice installed.
+- `zig build sample-files` here: writes three workbooks to
+  `zig-out/sample-files` for checking by hand in Excel, Google Sheets and
+  Numbers, which the automated tests cannot drive (every feature once, a
+  200-row poll export, and the size limits). The data is made up.
 - Spider's `zig build test` checks the opt-in: without `-Dxlsx=true` a
   probe that uses `spider.xlsx` must fail to compile; with it, the probe
   runs.

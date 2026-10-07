@@ -48,4 +48,26 @@ pub fn build(b: *std.Build) void {
 
     const test_libreoffice_step = b.step("test-libreoffice", "Open a generated workbook with headless LibreOffice and compare the cells (requires soffice installed)");
     test_libreoffice_step.dependOn(&check_run.step);
+
+    // sample-files — writes the workbooks used for checks by hand in
+    // Excel, Google Sheets and Numbers (see sample_files.zig) to
+    // zig-out/sample-files.
+    const samples_exe = b.addExecutable(.{
+        .name = "sample_files",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("sample_files.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "xlsx", .module = mod }},
+        }),
+    });
+    const samples_run = b.addRunArtifact(samples_exe);
+    const samples_dir = samples_run.addOutputDirectoryArg("sample-files");
+    const install_samples = b.addInstallDirectory(.{
+        .source_dir = samples_dir,
+        .install_dir = .prefix,
+        .install_subdir = "sample-files",
+    });
+    const sample_files_step = b.step("sample-files", "Write sample workbooks to zig-out/sample-files, for checks by hand in Excel and Google Sheets");
+    sample_files_step.dependOn(&install_samples.step);
 }
