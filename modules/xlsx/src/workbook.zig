@@ -55,6 +55,10 @@ pub const Error = error{
     DuplicateSheetName,
     /// A column width outside 0 .. 255.
     InvalidColumnWidth,
+    /// A row height outside 0 .. 409 points.
+    InvalidRowHeight,
+    /// A merged range that shares a cell with another one.
+    OverlappingMerge,
     /// A custom number format that is empty, too long or malformed.
     InvalidNumberFormat,
     /// A font name that is empty, too long or malformed, or a font size
@@ -84,6 +88,8 @@ pub const max_text_len = 32_767;
 pub const max_formula_len = 8_192;
 pub const max_sheet_name_len = 31;
 pub const max_column_width = 255;
+/// Row height, in points.
+pub const max_row_height = 409;
 
 /// What a cell holds.
 pub const Value = union(enum) {
@@ -145,6 +151,15 @@ const ColumnWidth = struct {
     }
 };
 
+const RowHeight = struct {
+    row: u32,
+    height: f64,
+
+    fn before(_: void, a: RowHeight, b: RowHeight) bool {
+        return a.row < b.row;
+    }
+};
+
 /// One sheet of a workbook. Created by `Workbook.addSheet`; rows and
 /// columns are zero-based.
 pub const Sheet = struct {
@@ -154,6 +169,8 @@ pub const Sheet = struct {
     /// False once a cell was set out of row/column order or twice.
     cells_in_order: bool = true,
     column_widths: std.ArrayList(ColumnWidth) = .empty,
+    row_heights: std.ArrayList(RowHeight) = .empty,
+    merges: std.ArrayList(Range) = .empty,
     frozen_rows: u32 = 0,
     frozen_cols: u32 = 0,
     auto_filter: ?Range = null,
@@ -225,6 +242,35 @@ pub const Sheet = struct {
         try self.column_widths.append(self.workbook.arena.allocator(), .{ .col = @intCast(col), .width = width });
     }
 
+    /// Sets a row's height in points (a default row is 15). Without it
+    /// a spreadsheet program sizes the row to its content when it draws
+    /// the sheet, wrapped text included.
+    pub fn setRowHeight(self: *Sheet, row: u32, points: f64) Error!void {
+        if (row >= max_rows) return error.RowOutOfRange;
+        if (!std.math.isFinite(points) or points < 0 or points > max_row_height) return error.InvalidRowHeight;
+        try self.row_heights.append(self.workbook.arena.allocator(), .{ .row = row, .height = points });
+    }
+
+    /// Merges a rectangle of cells into one. The merged cell shows the
+    /// value and the alignment of the range's top-left cell; borders and
+    /// fills still come from each cell of the range, so style them all
+    /// (blank cells with a style) to frame the merged cell.
+    ///
+    /// The range must cover more than one cell and cannot share a cell
+    /// with another merged range.
+    pub fn mergeCells(self: *Sheet, range: Range) Error!void {
+        if (range.first_row >= max_rows or range.last_row >= max_rows) return error.RowOutOfRange;
+        if (range.first_col >= max_cols or range.last_col >= max_cols) return error.ColumnOutOfRange;
+        if (range.last_row < range.first_row or range.last_col < range.first_col) return error.InvalidRange;
+        if (range.first_row == range.last_row and range.first_col == range.last_col) return error.InvalidRange;
+        for (self.merges.items) |other| {
+            const apart = range.last_row < other.first_row or other.last_row < range.first_row or
+                range.last_col < other.first_col or other.last_col < range.first_col;
+            if (!apart) return error.OverlappingMerge;
+        }
+        try self.merges.append(self.workbook.arena.allocator(), range);
+    }
+
     /// Keeps the first `rows` rows and the first `cols` columns in view
     /// while the rest scrolls. `freeze(1, 0)` pins a header row.
     pub fn freeze(self: *Sheet, rows: u32, cols: u32) Error!void {
@@ -271,6 +317,16 @@ pub const Sheet = struct {
             kept += 1;
         }
         self.column_widths.shrinkRetainingCapacity(kept);
+
+        std.mem.sort(RowHeight, self.row_heights.items, {}, RowHeight.before);
+        kept = 0;
+        for (self.row_heights.items, 0..) |height, i| {
+            const superseded = i + 1 < self.row_heights.items.len and self.row_heights.items[i + 1].row == height.row;
+            if (superseded) continue;
+            self.row_heights.items[kept] = height;
+            kept += 1;
+        }
+        self.row_heights.shrinkRetainingCapacity(kept);
     }
 };
 
@@ -504,7 +560,8 @@ fn writeWorkbookRelationships(w: *Writer, sheet_count: usize, has_strings: bool)
 }
 
 /// Writes a worksheet part. Element order is fixed by the format:
-/// dimension, sheetViews, sheetFormatPr, cols, sheetData, autoFilter.
+/// dimension, sheetViews, sheetFormatPr, cols, sheetData, autoFilter,
+/// mergeCells.
 fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records: []const u32, string_indexes: []const u32) Writer.Error!void {
     try w.writeAll(xml.declaration);
     try w.writeAll("<worksheet xmlns=\"" ++ ns_main ++ "\" xmlns:r=\"" ++ ns_relationships ++ "\">");
@@ -564,12 +621,23 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
     }
 
     try w.writeAll("<sheetData>");
+    // Rows come from two sorted lists: the cells, and the rows that
+    // were given a height (which may have no cell at all).
+    var heights = sheet.row_heights.items;
     var open_row: ?u32 = null;
     for (sheet.cells.items) |cell| {
         if (isSkipped(cell)) continue;
         if (open_row != cell.row) {
             if (open_row != null) try w.writeAll("</row>");
-            try w.print("<row r=\"{d}\">", .{cell.row + 1});
+            while (heights.len > 0 and heights[0].row < cell.row) : (heights = heights[1..]) {
+                try w.print("<row r=\"{d}\" ht=\"{d}\" customHeight=\"1\"/>", .{ heights[0].row + 1, heights[0].height });
+            }
+            try w.print("<row r=\"{d}\"", .{cell.row + 1});
+            if (heights.len > 0 and heights[0].row == cell.row) {
+                try w.print(" ht=\"{d}\" customHeight=\"1\"", .{heights[0].height});
+                heights = heights[1..];
+            }
+            try w.writeByte('>');
             open_row = cell.row;
         }
         try w.writeAll("<c r=\"");
@@ -589,12 +657,24 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
         }
     }
     if (open_row != null) try w.writeAll("</row>");
+    for (heights) |height| {
+        try w.print("<row r=\"{d}\" ht=\"{d}\" customHeight=\"1\"/>", .{ height.row + 1, height.height });
+    }
     try w.writeAll("</sheetData>");
 
     if (sheet.auto_filter) |range| {
         try w.writeAll("<autoFilter ref=\"");
         try range.write(w);
         try w.writeAll("\"/>");
+    }
+    if (sheet.merges.items.len > 0) {
+        try w.print("<mergeCells count=\"{d}\">", .{sheet.merges.items.len});
+        for (sheet.merges.items) |range| {
+            try w.writeAll("<mergeCell ref=\"");
+            try range.write(w);
+            try w.writeAll("\"/>");
+        }
+        try w.writeAll("</mergeCells>");
     }
     try w.writeAll("</worksheet>");
 }
@@ -1208,6 +1288,11 @@ test "writeTo reports a failing destination" {
 fn buildAndWrite(gpa: std.mem.Allocator) !void {
     const wb = try buildSample(gpa);
     defer wb.deinit();
+    const extra = try wb.addSheet("Layout");
+    try extra.setStyled(0, 0, .{ .text = "Title" }, .{ .font_name = "Times New Roman", .font_size = 12, .h_align = .center, .wrap = true });
+    try extra.mergeCells(.{ .first_row = 0, .first_col = 0, .last_row = 0, .last_col = 3 });
+    try extra.setRowHeight(0, 30);
+    try extra.setRowHeight(4, 18);
     const bytes = try wb.toOwnedSlice(gpa);
     gpa.free(bytes);
 }
@@ -1240,4 +1325,65 @@ test "the caller's buffers are not kept" {
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, "<t>texto</t>") != null);
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet1.xml").?, "<f>A1+B1</f>") != null);
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/styles.xml").?, "formatCode=\"0.00\"") != null);
+}
+
+test "merged cells" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("M");
+    try sheet.set(0, 0, .{ .text = "Title" });
+    try sheet.mergeCells(.{ .first_row = 0, .first_col = 0, .last_row = 0, .last_col = 7 });
+    try sheet.mergeCells(.{ .first_row = 9, .first_col = 0, .last_row = 12, .last_col = 2 });
+    try sheet.setAutoFilter(.{ .first_row = 2, .first_col = 0, .last_row = 5, .last_col = 7 });
+
+    // One cell is not a merge; ranges cannot share a cell; bounds apply.
+    try testing.expectError(error.InvalidRange, sheet.mergeCells(.{ .first_row = 3, .first_col = 3, .last_row = 3, .last_col = 3 }));
+    try testing.expectError(error.InvalidRange, sheet.mergeCells(.{ .first_row = 4, .first_col = 3, .last_row = 3, .last_col = 3 }));
+    try testing.expectError(error.OverlappingMerge, sheet.mergeCells(.{ .first_row = 0, .first_col = 7, .last_row = 1, .last_col = 8 }));
+    try testing.expectError(error.OverlappingMerge, sheet.mergeCells(.{ .first_row = 10, .first_col = 1, .last_row = 10, .last_col = 2 }));
+    try testing.expectError(error.OverlappingMerge, sheet.mergeCells(.{ .first_row = 8, .first_col = 0, .last_row = 20, .last_col = 9 }));
+    try testing.expectError(error.RowOutOfRange, sheet.mergeCells(.{ .first_row = 0, .first_col = 0, .last_row = max_rows, .last_col = 0 }));
+    try testing.expectError(error.ColumnOutOfRange, sheet.mergeCells(.{ .first_row = 0, .first_col = 0, .last_row = 0, .last_col = max_cols }));
+    // Touching ranges are fine.
+    try sheet.mergeCells(.{ .first_row = 1, .first_col = 0, .last_row = 1, .last_col = 7 });
+
+    var recorder: Recorder = .init();
+    defer recorder.deinit();
+    try wb.writeToPackager(recorder.packager());
+    const content = recorder.part("xl/worksheets/sheet1.xml").?;
+    // After the filter, in the order they were added.
+    try testing.expect(std.mem.endsWith(u8, content, "</sheetData><autoFilter ref=\"A3:H6\"/>" ++
+        "<mergeCells count=\"3\"><mergeCell ref=\"A1:H1\"/><mergeCell ref=\"A10:C13\"/><mergeCell ref=\"A2:H2\"/></mergeCells>" ++
+        "</worksheet>"));
+}
+
+test "row heights, with and without cells in the row" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("H");
+    try sheet.setRowHeight(0, 33);
+    try sheet.set(0, 0, .int(1));
+    try sheet.set(1, 0, .int(2));
+    try sheet.setRowHeight(3, 20);
+    try sheet.setRowHeight(3, 22.5);
+    try sheet.set(5, 1, .int(3));
+    try sheet.setRowHeight(9, 0);
+    try sheet.setRowHeight(7, max_row_height);
+
+    try testing.expectError(error.RowOutOfRange, sheet.setRowHeight(max_rows, 10));
+    try testing.expectError(error.InvalidRowHeight, sheet.setRowHeight(0, -1));
+    try testing.expectError(error.InvalidRowHeight, sheet.setRowHeight(0, 409.5));
+    try testing.expectError(error.InvalidRowHeight, sheet.setRowHeight(0, std.math.nan(f64)));
+
+    var recorder: Recorder = .init();
+    defer recorder.deinit();
+    try wb.writeToPackager(recorder.packager());
+    try testing.expectEqualStrings("<row r=\"1\" ht=\"33\" customHeight=\"1\"><c r=\"A1\"><v>1</v></c></row>" ++
+        "<row r=\"2\"><c r=\"A2\"><v>2</v></c></row>" ++
+        "<row r=\"4\" ht=\"22.5\" customHeight=\"1\"/>" ++
+        "<row r=\"6\"><c r=\"B6\"><v>3</v></c></row>" ++
+        "<row r=\"8\" ht=\"409\" customHeight=\"1\"/>" ++
+        "<row r=\"10\" ht=\"0\" customHeight=\"1\"/>", sheetData(&recorder, "xl/worksheets/sheet1.xml"));
+    // Rows that only have a height are not part of the used range.
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet1.xml").?, "<dimension ref=\"A1:B6\"/>") != null);
 }

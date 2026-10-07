@@ -55,6 +55,7 @@ pub const max_text_len = workbook.max_text_len;
 pub const max_formula_len = workbook.max_formula_len;
 pub const max_sheet_name_len = workbook.max_sheet_name_len;
 pub const max_column_width = workbook.max_column_width;
+pub const max_row_height = workbook.max_row_height;
 
 test {
     _ = zip;
