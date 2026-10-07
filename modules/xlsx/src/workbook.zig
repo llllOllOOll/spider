@@ -9,6 +9,7 @@
 //!     xl/workbook.xml              sheet names, the filter ranges
 //!     xl/_rels/workbook.xml.rels   where each sheet, styles and strings live
 //!     xl/worksheets/sheetN.xml     one per sheet: columns, rows, cells
+//!     xl/worksheets/_rels/sheetN.xml.rels   the sheet's link targets (if any)
 //!     xl/styles.xml                the formats cells point to
 //!     xl/sharedStrings.xml         the texts cells point to (if any)
 //!
@@ -63,6 +64,11 @@ pub const Error = error{
     InvalidZoom,
     /// A page margin that is negative, not finite or absurdly large.
     InvalidMargin,
+    /// A link that is not `http://`, `https://` or `mailto:`, is too
+    /// long, or has spaces or control characters.
+    InvalidLink,
+    /// More than 65,530 links on one sheet.
+    TooManyLinks,
     /// A custom number format that is empty, too long or malformed.
     InvalidNumberFormat,
     /// A font name that is empty, too long or malformed, or a font size
@@ -94,6 +100,14 @@ pub const max_sheet_name_len = 31;
 pub const max_column_width = 255;
 /// Row height, in points.
 pub const max_row_height = 409;
+/// Longest link target, in bytes.
+pub const max_link_len = 2_079;
+pub const max_links_per_sheet = 65_530;
+
+/// How spreadsheet programs draw a link: blue and underlined. A link
+/// does not style its cell; pass this (or a copy with more fields set)
+/// with the cell's value.
+pub const link_style: Style = .{ .underline = true, .font_color = 0x0563C1 };
 
 pub const Paper = enum(u8) {
     letter = 1,
@@ -204,6 +218,16 @@ const RowHeight = struct {
     }
 };
 
+const Link = struct {
+    row: u32,
+    col: u16,
+    target: []const u8,
+
+    fn before(_: void, a: Link, b: Link) bool {
+        return if (a.row != b.row) a.row < b.row else a.col < b.col;
+    }
+};
+
 /// One sheet of a workbook. Created by `Workbook.addSheet`; rows and
 /// columns are zero-based.
 pub const Sheet = struct {
@@ -215,6 +239,7 @@ pub const Sheet = struct {
     column_widths: std.ArrayList(ColumnWidth) = .empty,
     row_heights: std.ArrayList(RowHeight) = .empty,
     merges: std.ArrayList(Range) = .empty,
+    links: std.ArrayList(Link) = .empty,
     frozen_rows: u32 = 0,
     frozen_cols: u32 = 0,
     auto_filter: ?Range = null,
@@ -329,6 +354,29 @@ pub const Sheet = struct {
         self.frozen_cols = cols;
     }
 
+    /// Makes a cell a link to a site (`http://`, `https://`) or to an
+    /// e-mail address (`mailto:`). Other schemes are refused, so a link
+    /// built from user data cannot point at a local file or run
+    /// anything. The cell keeps its own value and style: set the text
+    /// to show with `setStyled(row, col, value, xlsx.link_style)`.
+    /// Setting a link again on the same cell replaces it.
+    pub fn setLink(self: *Sheet, row: u32, col: u32, target: []const u8) Error!void {
+        if (row >= max_rows) return error.RowOutOfRange;
+        if (col >= max_cols) return error.ColumnOutOfRange;
+        if (!std.unicode.utf8ValidateSlice(target)) return error.InvalidUtf8;
+        if (target.len > max_link_len) return error.InvalidLink;
+        const rest = for ([_][]const u8{ "http://", "https://", "mailto:" }) |scheme| {
+            if (std.ascii.startsWithIgnoreCase(target, scheme)) break target[scheme.len..];
+        } else return error.InvalidLink;
+        if (rest.len == 0) return error.InvalidLink;
+        for (target) |c| {
+            if (c <= ' ' or c == 0x7f) return error.InvalidLink;
+        }
+        if (self.links.items.len >= max_links_per_sheet) return error.TooManyLinks;
+        const arena = self.workbook.arena.allocator();
+        try self.links.append(arena, .{ .row = row, .col = @intCast(col), .target = try arena.dupe(u8, target) });
+    }
+
     /// Sets paper size, orientation and margins for printing. Without
     /// it the program that opens the file uses its own defaults, which
     /// depend on the reader's country (Letter or A4).
@@ -402,6 +450,17 @@ pub const Sheet = struct {
             kept += 1;
         }
         self.row_heights.shrinkRetainingCapacity(kept);
+
+        std.mem.sort(Link, self.links.items, {}, Link.before);
+        kept = 0;
+        for (self.links.items, 0..) |link, i| {
+            const superseded = i + 1 < self.links.items.len and
+                self.links.items[i + 1].row == link.row and self.links.items[i + 1].col == link.col;
+            if (superseded) continue;
+            self.links.items[kept] = link;
+            kept += 1;
+        }
+        self.links.shrinkRetainingCapacity(kept);
     }
 };
 
@@ -543,6 +602,14 @@ pub const Workbook = struct {
             var name_buffer: [48]u8 = undefined;
             const name = std.fmt.bufPrint(&name_buffer, "xl/worksheets/sheet{d}.xml", .{index + 1}) catch unreachable;
             try packager.addPart(name, part.written());
+
+            // Link targets live outside the sheet, in its relationships.
+            if (sheet.links.items.len > 0) {
+                part.clearRetainingCapacity();
+                writeSheetRelationships(w, sheet) catch return error.OutOfMemory;
+                const rels_name = std.fmt.bufPrint(&name_buffer, "xl/worksheets/_rels/sheet{d}.xml.rels", .{index + 1}) catch unreachable;
+                try packager.addPart(rels_name, part.written());
+            }
         }
 
         part.clearRetainingCapacity();
@@ -644,9 +711,22 @@ fn writeWorkbookRelationships(w: *Writer, sheet_count: usize, has_strings: bool)
     try w.writeAll("</Relationships>");
 }
 
+/// One relationship per link, numbered in cell order: `rId1` is the
+/// sheet's first `<hyperlink>`.
+fn writeSheetRelationships(w: *Writer, sheet: *const Sheet) Writer.Error!void {
+    try w.writeAll(xml.declaration);
+    try w.writeAll("<Relationships xmlns=\"" ++ ns_package_relationships ++ "\">");
+    for (sheet.links.items, 1..) |link, number| {
+        try w.print("<Relationship Id=\"rId{d}\" Type=\"" ++ ns_relationships ++ "/hyperlink\" Target=\"", .{number});
+        try xml.writeAttribute(w, link.target);
+        try w.writeAll("\" TargetMode=\"External\"/>");
+    }
+    try w.writeAll("</Relationships>");
+}
+
 /// Writes a worksheet part. Element order is fixed by the format:
 /// dimension, sheetViews, sheetFormatPr, cols, sheetData, autoFilter,
-/// mergeCells, pageMargins, pageSetup.
+/// mergeCells, hyperlinks, pageMargins, pageSetup.
 fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records: []const u32, string_indexes: []const u32) Writer.Error!void {
     try w.writeAll(xml.declaration);
     try w.writeAll("<worksheet xmlns=\"" ++ ns_main ++ "\" xmlns:r=\"" ++ ns_relationships ++ "\">");
@@ -761,6 +841,15 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
             try w.writeAll("\"/>");
         }
         try w.writeAll("</mergeCells>");
+    }
+    if (sheet.links.items.len > 0) {
+        try w.writeAll("<hyperlinks>");
+        for (sheet.links.items, 1..) |link, number| {
+            try w.writeAll("<hyperlink ref=\"");
+            try cell_ref.writeCell(w, link.row, link.col);
+            try w.print("\" r:id=\"rId{d}\"/>", .{number});
+        }
+        try w.writeAll("</hyperlinks>");
     }
     if (sheet.page_setup) |setup| {
         const m = setup.margins;
@@ -1387,6 +1476,12 @@ fn buildAndWrite(gpa: std.mem.Allocator) !void {
     try extra.mergeCells(.{ .first_row = 0, .first_col = 0, .last_row = 0, .last_col = 3 });
     try extra.setRowHeight(0, 30);
     try extra.setRowHeight(4, 18);
+    try extra.setLink(0, 0, "https://exemplo.com.br");
+    try extra.setLink(2, 1, "mailto:fulano@exemplo.com.br");
+    try extra.setPageSetup(.{ .orientation = .landscape });
+    try extra.setPrintTitleRows(0, 0);
+    try extra.setZoom(80);
+    try extra.setStyled(1, 0, .blank, .{ .border_bottom = .thin, .shrink = true });
     const bytes = try wb.toOwnedSlice(gpa);
     gpa.free(bytes);
 }
@@ -1707,4 +1802,83 @@ test "rows repeated at the top of every printed page" {
         "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'Lista d''água'!$3:$3</definedName>" ++
         "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"1\">'Outra'!$1:$2</definedName>" ++
         "</definedNames>") != null);
+}
+
+test "links to sites and e-mail addresses" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const plain = try wb.addSheet("No links");
+    try plain.set(0, 0, .int(1));
+    const sheet = try wb.addSheet("Links");
+    try sheet.setStyled(3, 6, .{ .text = "fulano@exemplo.com.br" }, link_style);
+    try sheet.setLink(3, 6, "mailto:fulano@exemplo.com.br");
+    try sheet.setLink(0, 0, "https://exemplo.com.br/busca?q=a&b=\"c\"");
+    try sheet.setLink(1, 0, "http://old.example/");
+    try sheet.setLink(1, 0, "HTTPS://exemplo.com.br/novo");
+    try sheet.mergeCells(.{ .first_row = 8, .first_col = 0, .last_row = 8, .last_col = 1 });
+    try sheet.setPageSetup(.{});
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    // The relationships part follows its sheet; a sheet without links has none.
+    try recorder.expectNames(&.{
+        "[Content_Types].xml",
+        "_rels/.rels",
+        "xl/workbook.xml",
+        "xl/_rels/workbook.xml.rels",
+        "xl/worksheets/sheet1.xml",
+        "xl/worksheets/sheet2.xml",
+        "xl/worksheets/_rels/sheet2.xml.rels",
+        "xl/styles.xml",
+        "xl/sharedStrings.xml",
+    });
+    // In cell order, the last link of a cell wins, between mergeCells and the page.
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet2.xml").?, "</mergeCells>" ++
+        "<hyperlinks><hyperlink ref=\"A1\" r:id=\"rId1\"/><hyperlink ref=\"A2\" r:id=\"rId2\"/><hyperlink ref=\"G4\" r:id=\"rId3\"/></hyperlinks>" ++
+        "<pageMargins ") != null);
+    try testing.expectEqualStrings(xml.declaration ++
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" ++
+        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://exemplo.com.br/busca?q=a&amp;b=&quot;c&quot;\" TargetMode=\"External\"/>" ++
+        "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"HTTPS://exemplo.com.br/novo\" TargetMode=\"External\"/>" ++
+        "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"mailto:fulano@exemplo.com.br\" TargetMode=\"External\"/>" ++
+        "</Relationships>", recorder.part("xl/worksheets/_rels/sheet2.xml.rels").?);
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet1.xml").?, "hyperlink") == null);
+    // The ready-made link style: blue and underlined.
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/styles.xml").?, "<font><u/><sz val=\"11\"/><color rgb=\"FF0563C1\"/>") != null);
+}
+
+test "only http, https and mailto links are accepted" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("L");
+    const too_long = "https://exemplo.com.br/" ++ @as([max_link_len]u8, @splat('a'));
+    const bad = [_][]const u8{
+        "",
+        "exemplo.com.br",
+        "/relative/path",
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "\\\\server\\share",
+        "ftp://exemplo.com.br/",
+        "data:text/html,x",
+        "https://",
+        "mailto:",
+        " https://exemplo.com.br",
+        "https://exemplo.com.br/\x01",
+        "https://exemplo.com.br/a b",
+        "https://exemplo.com.br/\nSet-Cookie",
+        too_long,
+    };
+    for (bad) |target| try testing.expectError(error.InvalidLink, sheet.setLink(0, 0, target));
+    try testing.expectError(error.InvalidUtf8, sheet.setLink(0, 0, "https://exemplo.com.br/\xff"));
+    try testing.expectError(error.RowOutOfRange, sheet.setLink(max_rows, 0, "https://exemplo.com.br"));
+    try testing.expectError(error.ColumnOutOfRange, sheet.setLink(0, max_cols, "https://exemplo.com.br"));
+    try sheet.setLink(0, 0, "https://exemplo.com.br/ação?x=1#topo");
+
+    var buffer: [22]u8 = "https://exemplo.com.br".*;
+    try sheet.setLink(1, 0, &buffer);
+    @memset(&buffer, 'x');
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/_rels/sheet1.xml.rels").?, "Target=\"https://exemplo.com.br\"") != null);
 }

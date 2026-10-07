@@ -13,8 +13,8 @@
 //!
 //! Scope: several sheets; text, numbers, booleans, dates and formulas;
 //! column widths and row heights; fonts, background colour, borders,
-//! alignment, wrapped text and number formats; merged cells; frozen
-//! panes; a filter per sheet. Reading files, streamed writing,
+//! alignment, wrapped text and number formats; merged cells; links;
+//! frozen panes, zoom and a filter per sheet; page setup for printing. Reading files, streamed writing,
 //! compression, charts and images are not implemented (see README.md).
 
 const std = @import("std");
@@ -47,6 +47,7 @@ pub const Paper = workbook.Paper;
 pub const Orientation = workbook.Orientation;
 pub const Margins = workbook.Margins;
 pub const cm = workbook.cm;
+pub const link_style = workbook.link_style;
 
 /// The container seam: implement `Packager` to replace the zip writer.
 pub const Packager = zip.Packager;
@@ -63,6 +64,8 @@ pub const max_formula_len = workbook.max_formula_len;
 pub const max_sheet_name_len = workbook.max_sheet_name_len;
 pub const max_column_width = workbook.max_column_width;
 pub const max_row_height = workbook.max_row_height;
+pub const max_link_len = workbook.max_link_len;
+pub const max_links_per_sheet = workbook.max_links_per_sheet;
 
 test {
     _ = zip;
