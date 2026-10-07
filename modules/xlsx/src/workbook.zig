@@ -223,6 +223,45 @@ const RowHeight = struct {
     }
 };
 
+fn sortUnique(comptime T: type, list: *std.ArrayList(T)) void {
+    std.mem.sort(T, list.items, {}, std.sort.asc(T));
+    var kept: usize = 0;
+    for (list.items, 0..) |item, i| {
+        if (i > 0 and list.items[i - 1] == item) continue;
+        list.items[kept] = item;
+        kept += 1;
+    }
+    list.shrinkRetainingCapacity(kept);
+}
+
+/// The attributes of rows that come from somewhere other than their
+/// cells: heights and the hidden flag, each a list sorted by row.
+const RowAttributes = struct {
+    heights: []const RowHeight,
+    hidden: []const u32,
+
+    /// The next row that has an attribute, if any.
+    fn next(self: RowAttributes) ?u32 {
+        const a: ?u32 = if (self.heights.len > 0) self.heights[0].row else null;
+        const b: ?u32 = if (self.hidden.len > 0) self.hidden[0] else null;
+        if (a != null and b != null) return @min(a.?, b.?);
+        return a orelse b;
+    }
+
+    /// Writes the attributes of `row`, consuming them.
+    fn write(self: *RowAttributes, w: *Writer, row: u32) Writer.Error!void {
+        if (self.heights.len > 0 and self.heights[0].row == row) {
+            try w.print(" ht=\"{d}\"", .{self.heights[0].height});
+            if (self.heights[0].custom) try w.writeAll(" customHeight=\"1\"");
+            self.heights = self.heights[1..];
+        }
+        if (self.hidden.len > 0 and self.hidden[0] == row) {
+            try w.writeAll(" hidden=\"1\"");
+            self.hidden = self.hidden[1..];
+        }
+    }
+};
+
 const Link = struct {
     row: u32,
     col: u16,
@@ -243,6 +282,8 @@ pub const Sheet = struct {
     cells_in_order: bool = true,
     column_widths: std.ArrayList(ColumnWidth) = .empty,
     row_heights: std.ArrayList(RowHeight) = .empty,
+    hidden_columns: std.ArrayList(u16) = .empty,
+    hidden_rows: std.ArrayList(u32) = .empty,
     merges: std.ArrayList(Range) = .empty,
     links: std.ArrayList(Link) = .empty,
     frozen_rows: u32 = 0,
@@ -341,6 +382,19 @@ pub const Sheet = struct {
         if (row >= max_rows) return error.RowOutOfRange;
         if (!std.math.isFinite(points) or points < 0 or points > max_row_height) return error.InvalidRowHeight;
         try self.row_heights.append(self.workbook.arena.allocator(), .{ .row = row, .height = points, .custom = false });
+    }
+
+    /// Hides a column. Its cells, and its width if one was set, stay
+    /// in the file: the reader can show the column again.
+    pub fn hideColumn(self: *Sheet, col: u32) Error!void {
+        if (col >= max_cols) return error.ColumnOutOfRange;
+        try self.hidden_columns.append(self.workbook.arena.allocator(), @intCast(col));
+    }
+
+    /// Hides a row; see `hideColumn`.
+    pub fn hideRow(self: *Sheet, row: u32) Error!void {
+        if (row >= max_rows) return error.RowOutOfRange;
+        try self.hidden_rows.append(self.workbook.arena.allocator(), row);
     }
 
     /// Sets the width of every column that has no width of its own.
@@ -480,6 +534,9 @@ pub const Sheet = struct {
             kept += 1;
         }
         self.row_heights.shrinkRetainingCapacity(kept);
+
+        sortUnique(u16, &self.hidden_columns);
+        sortUnique(u32, &self.hidden_rows);
 
         std.mem.sort(Link, self.links.items, {}, Link.before);
         kept = 0;
@@ -826,34 +883,49 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
     if (sheet.default_row_height != null) try w.writeAll(" customHeight=\"1\"");
     try w.writeAll("/>");
 
-    if (sheet.column_widths.items.len > 0) {
+    if (sheet.column_widths.items.len > 0 or sheet.hidden_columns.items.len > 0) {
         try w.writeAll("<cols>");
-        for (sheet.column_widths.items) |column| {
-            const number = @as(u32, column.col) + 1;
-            try w.print("<col min=\"{d}\" max=\"{d}\" width=\"{d}\" customWidth=\"1\"/>", .{ number, number, fileColumnWidth(column.width) });
+        // Two sorted lists, one <col> per column that is in either.
+        var widths = sheet.column_widths.items;
+        var hidden = sheet.hidden_columns.items;
+        while (widths.len > 0 or hidden.len > 0) {
+            const col: u16 = if (widths.len > 0 and hidden.len > 0)
+                @min(widths[0].col, hidden[0])
+            else if (widths.len > 0) widths[0].col else hidden[0];
+            const number = @as(u32, col) + 1;
+            try w.print("<col min=\"{d}\" max=\"{d}\"", .{ number, number });
+            const has_width = widths.len > 0 and widths[0].col == col;
+            if (has_width) try w.print(" width=\"{d}\"", .{fileColumnWidth(widths[0].width)});
+            if (hidden.len > 0 and hidden[0] == col) {
+                try w.writeAll(" hidden=\"1\"");
+                hidden = hidden[1..];
+            }
+            if (has_width) {
+                try w.writeAll(" customWidth=\"1\"");
+                widths = widths[1..];
+            }
+            try w.writeAll("/>");
         }
         try w.writeAll("</cols>");
     }
 
     try w.writeAll("<sheetData>");
-    // Rows come from two sorted lists: the cells, and the rows that
-    // were given a height (which may have no cell at all).
-    var heights = sheet.row_heights.items;
+    // Rows come from the cells and from the rows that were given a
+    // height or hidden (which may have no cell at all).
+    var attributes: RowAttributes = .{ .heights = sheet.row_heights.items, .hidden = sheet.hidden_rows.items };
     var open_row: ?u32 = null;
     for (sheet.cells.items) |cell| {
         if (isSkipped(cell)) continue;
         if (open_row != cell.row) {
             if (open_row != null) try w.writeAll("</row>");
-            while (heights.len > 0 and heights[0].row < cell.row) : (heights = heights[1..]) {
-                try w.print("<row r=\"{d}\"", .{heights[0].row + 1});
-                try writeRowHeight(w, heights[0]);
+            while (attributes.next()) |row| {
+                if (row >= cell.row) break;
+                try w.print("<row r=\"{d}\"", .{row + 1});
+                try attributes.write(w, row);
                 try w.writeAll("/>");
             }
             try w.print("<row r=\"{d}\"", .{cell.row + 1});
-            if (heights.len > 0 and heights[0].row == cell.row) {
-                try writeRowHeight(w, heights[0]);
-                heights = heights[1..];
-            }
+            try attributes.write(w, cell.row);
             try w.writeByte('>');
             open_row = cell.row;
         }
@@ -874,9 +946,9 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
         }
     }
     if (open_row != null) try w.writeAll("</row>");
-    for (heights) |height| {
-        try w.print("<row r=\"{d}\"", .{height.row + 1});
-        try writeRowHeight(w, height);
+    while (attributes.next()) |row| {
+        try w.print("<row r=\"{d}\"", .{row + 1});
+        try attributes.write(w, row);
         try w.writeAll("/>");
     }
     try w.writeAll("</sheetData>");
@@ -917,11 +989,6 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
         try w.print(" orientation=\"{t}\"/>", .{setup.orientation});
     }
     try w.writeAll("</worksheet>");
-}
-
-fn writeRowHeight(w: *Writer, height: RowHeight) Writer.Error!void {
-    try w.print(" ht=\"{d}\"", .{height.height});
-    if (height.custom) try w.writeAll(" customHeight=\"1\"");
 }
 
 fn isSkipped(cell: Cell) bool {
@@ -2030,4 +2097,34 @@ test "a row height the program may refit" {
     try testing.expectEqualStrings("<row r=\"1\" ht=\"25.5\"><c r=\"A1\"><v>1</v></c></row>" ++
         "<row r=\"2\" ht=\"30\" customHeight=\"1\"/>" ++
         "<row r=\"3\" ht=\"13.5\"/>", sheetData(&recorder, "xl/worksheets/sheet1.xml"));
+}
+
+test "hidden rows and columns" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    try sheet.setRow(0, 0, &.{ .int(1), .int(2), .int(3), .int(4), .int(5) }, .{});
+    try sheet.set(1, 0, .int(6));
+    try sheet.set(4, 0, .int(7));
+    try sheet.setColumnWidth(1, 20);
+    try sheet.hideColumn(1); // keeps its width for when it is shown again
+    try sheet.hideColumn(3);
+    try sheet.hideColumn(3);
+    try sheet.hideRow(1);
+    try sheet.hideRow(2); // a hidden row without cells
+    try sheet.setRowHeight(4, 30);
+    try sheet.hideRow(4);
+
+    try testing.expectError(error.ColumnOutOfRange, sheet.hideColumn(max_cols));
+    try testing.expectError(error.RowOutOfRange, sheet.hideRow(max_rows));
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    const content = recorder.part("xl/worksheets/sheet1.xml").?;
+    try testing.expect(std.mem.indexOf(u8, content, "<cols><col min=\"2\" max=\"2\" width=\"20.7109375\" hidden=\"1\" customWidth=\"1\"/>" ++
+        "<col min=\"4\" max=\"4\" hidden=\"1\"/></cols>") != null);
+    try testing.expectEqualStrings("<row r=\"1\"><c r=\"A1\"><v>1</v></c><c r=\"B1\"><v>2</v></c><c r=\"C1\"><v>3</v></c><c r=\"D1\"><v>4</v></c><c r=\"E1\"><v>5</v></c></row>" ++
+        "<row r=\"2\" hidden=\"1\"><c r=\"A2\"><v>6</v></c></row>" ++
+        "<row r=\"3\" hidden=\"1\"/>" ++
+        "<row r=\"5\" ht=\"30\" customHeight=\"1\" hidden=\"1\"><c r=\"A5\"><v>7</v></c></row>", sheetData(&recorder, "xl/worksheets/sheet1.xml"));
 }
