@@ -39,6 +39,7 @@ pub fn build(b: *std.Build) void {
     const with_r2 = b.option(bool, "r2", "Enable Cloudflare R2 support") orelse false;
     const with_sqlite = b.option(bool, "sqlite", "Enable SQLite support") orelse false;
     const with_qrcode = b.option(bool, "qrcode", "Enable QR code generation") orelse false;
+    const with_xlsx = b.option(bool, "xlsx", "Enable Excel .xlsx export") orelse false;
     const io_backend = b.option(
         IoBackend,
         "io_backend",
@@ -125,6 +126,14 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    if (with_xlsx) {
+        // Same as qrcode: std only, no dependency on spider's types.
+        if (b.lazyDependency("spider_xlsx", .{ .target = target, .optimize = optimize })) |dep| {
+            const spider_xlsx = dep.module("spider_xlsx");
+            mod.addImport("spider_xlsx", spider_xlsx);
+        }
+    }
+
     // Default spider_config fallback for projects without spider.config.zig
     const default_cfg = b.addWriteFiles();
     const default_cfg_file = default_cfg.add("spider_config.zig",
@@ -200,6 +209,25 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     // CLI argument handling (src/cli/args.zig, via src/cli/main.zig's test block).
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cli_exe.root_module })).step);
+
+    // spider.xlsx is opt-in. Without -Dxlsx=true the module is not part
+    // of the build at all, and that is checked here: the probe, which
+    // only touches spider.xlsx, must fail to compile for lack of the
+    // module. With -Dxlsx=true the same probe runs as a test.
+    const xlsx_probe = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("xlsx_optional_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "spider", .module = mod }},
+        }),
+    });
+    if (with_xlsx) {
+        test_step.dependOn(&b.addRunArtifact(xlsx_probe).step);
+    } else {
+        xlsx_probe.expect_errors = .{ .contains = "no module named 'spider_xlsx' available within module 'spider'" };
+        test_step.dependOn(&xlsx_probe.step);
+    }
 
     // test-zio-backend — integration test for the zio io_backend: starts a
     // real Server.listen() and hits it with real concurrent HTTP requests.
@@ -334,4 +362,16 @@ pub fn build(b: *std.Build) void {
     const run_sqlite_tests = b.addRunArtifact(sqlite_test);
     const test_sqlite_step = b.step("test-sqlite", "Run sqlite tests");
     test_sqlite_step.dependOn(&run_sqlite_tests.step);
+
+    // test-xlsx — the xlsx module's own unit tests (std only). They are
+    // not part of `test`: the default build does not compile the module.
+    const xlsx_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("modules/xlsx/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const test_xlsx_step = b.step("test-xlsx", "Run xlsx module tests");
+    test_xlsx_step.dependOn(&b.addRunArtifact(xlsx_test).step);
 }

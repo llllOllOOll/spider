@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
 ## Build wiring (a consumer's build.zig)
 
 ```zig
-const spider_dep = b.dependency("spider", .{ .target = target, .pg = true }); // .sqlite / .r2 / .qrcode likewise
+const spider_dep = b.dependency("spider", .{ .target = target, .pg = true }); // .sqlite / .r2 / .qrcode / .xlsx likewise
 const spider_mod = spider_dep.module("spider");
 spider_mod.addImport("spider_config", b.createModule(.{
     .root_source_file = b.path("spider.config.zig"),
@@ -127,5 +127,5 @@ Needs `.sqlite = true` on the dependency. `init(allocator, io, .{ .path = ?[]con
 `spider.forceHttps(.{ .default_base_url, .base_url_env = "BASE_URL", .proto_header = "X-Forwarded-Proto", .allow_http_paths = &.{"/exact", "/prefix*"} })` middleware; `spider.varyHtmx` (`Vary: HX-Request` on HTML).
 `spider.r2.R2`: `initFromEnv(io)`, `put(c, key, body, content_type)`, `get(c, key)`, `delete`, `head`, `copyObject`.
 `spider.mail` (client of mail providers' HTTP APIs, not a mail server): `Mailer.fromEnv() !Mailer` once at startup (`MAIL_TRANSPORT` = `brevo` | `resend` | `postmark` | `log` (default); `MAIL_FROM` "Name <addr>"; `BREVO_API_KEY` / `RESEND_API_KEY` / `POSTMARK_SERVER_TOKEN`; `MAIL_BASE_URL`), or `Mailer{ .backend = .{ .brevo = .{ .api_key } } | .{ .resend = .. } | .{ .postmark = .. } | .{ .log = .{} } | .{ .memory = &outbox } | .{ .custom = Transport{ .ptr, .sendFn } }, .from = ?Mailbox }`, or `Mailer.fromSettings(.{ .transport, .from, .api_key, .base_url })`. `mailer.send(c, mail) !Receipt`; outside a handler `mailer.sendWith(arena, io, mail)`. `Mail{ .from: ?Mailbox, .to/.cc/.bcc: []const Mailbox, .reply_to: ?Mailbox, .subject, .html: ?[]const u8, .text: ?[]const u8 }`, `Mailbox{ .name: ?[]const u8, .address }` (`Mailbox.parse("Name <addr>")`), `Receipt{ .message_id: ?[]const u8 }`. Errors: `MailMissingFrom`, `MailMissingRecipients`, `MailMissingBody`, `MailInvalidAddress`, `MailInvalidHeader` (CR/LF or control characters in a subject or name) before sending; `MailUnauthorized` (401/403), `MailRejected` (other 4xx), `MailDeliveryFailed` (network, 408/429, 5xx). No timeout, no retry, no attachments, no SMTP. Tests: `var outbox: spider.mail.Outbox = .init(allocator)` + `.memory = &outbox`, then `outbox.count()`, `outbox.sent()`, `outbox.last()`, `outbox.clear()`.
-`spider.push` (Web Push/VAPID), `spider.qrcode`, `spider.http_client` (HTTP client), `spider.http_client_mtls`, `spider.health`, `spider.zmd` (markdown).
+`spider.push` (Web Push/VAPID), `spider.qrcode`, `spider.xlsx` (write Excel files; opt-in, `modules/xlsx/README.md`), `spider.http_client` (HTTP client), `spider.http_client_mtls`, `spider.health`, `spider.zmd` (markdown).
 Internal/unstable (don't build on): `spider.ast`, `spider.form_parser`, `spider.template_max_component_depth`. Disabled: `spider.livereload` (kept for a future `spider dev`; not registered).

@@ -48,7 +48,7 @@ const spider_dep = b.dependency("spider", .{
     // I/O backend: comment one line and uncomment the other.
     .io_backend = .threaded, // OS threads, blocking sockets (default)
     // .io_backend = .zio, // fibers on an event loop (epoll)
-    // .pg = true, .sqlite = true, .r2 = true, .qrcode = true,
+    // .pg = true, .sqlite = true, .r2 = true, .qrcode = true, .xlsx = true,
 });
 const spider_mod = spider_dep.module("spider");
 
@@ -1227,7 +1227,7 @@ src/
 ├── binding/                — form, multipart
 ├── providers/              — jwks, keycloak, google, clerk
 └── cli/                    — the spider CLI + templates/
-modules/                    — pg (pure Zig), sqlite, r2, qrcode
+modules/                    — pg (pure Zig), sqlite, r2, qrcode, xlsx
 ```
 
 The complete API: [`llms.txt`](llms.txt).

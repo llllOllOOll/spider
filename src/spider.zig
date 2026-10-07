@@ -59,6 +59,8 @@ pub const resourcePolicy = rbac.resourcePolicy;
 pub const policySet = rbac.policySet;
 pub const r2 = @import("spider_r2");
 pub const qrcode = @import("spider_qrcode");
+/// Excel .xlsx export — opt-in with `-Dxlsx=true` (see modules/xlsx/README.md).
+pub const xlsx = @import("spider_xlsx");
 pub const push = @import("modules/push.zig");
 /// Sending mail through a provider (Brevo, Resend, Postmark) — see modules/mail/mail.zig.
 pub const mail = @import("modules/mail/mail.zig");

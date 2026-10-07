@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `spider.xlsx`: writing Excel `.xlsx` files, in pure Zig (`std` only), as
+  an opt-in module (`.xlsx = true` on the dependency, `-Dxlsx=true` here; the
+  default build does not compile it). Several sheets; text, numbers,
+  booleans, dates and formulas; column widths; bold, background colour,
+  borders and number formats; frozen panes; a filter per sheet. The file is
+  built in memory and returned as bytes or written to any `std.Io.Writer`.
+  User text is always written as text, so it can never become a formula.
+  Entries are stored uncompressed for now; no reading and no streamed
+  writing yet. See `modules/xlsx/README.md`.
 - `spider.mail`: sending mail through a provider's HTTP API. A `Mail`
   (`from`, `to`, `cc`, `bcc`, `reply_to`, `subject`, `html`, `text`) goes to a
   `Mailer`, whose backend is Brevo, Resend, Postmark, `log` (development:

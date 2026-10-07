@@ -42,6 +42,10 @@
             .path = "modules/qrcode",
             .lazy = true,
         },
+        .spider_xlsx = .{
+            .path = "modules/xlsx",
+            .lazy = true,
+        },
         .zqlite = .{
             .path = "modules/sqlite/sqlite_driver_impl",
         },
