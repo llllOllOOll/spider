@@ -59,6 +59,8 @@ pub const Error = error{
     InvalidRowHeight,
     /// A merged range that shares a cell with another one.
     OverlappingMerge,
+    /// A zoom outside 10 .. 400 percent.
+    InvalidZoom,
     /// A custom number format that is empty, too long or malformed.
     InvalidNumberFormat,
     /// A font name that is empty, too long or malformed, or a font size
@@ -174,6 +176,8 @@ pub const Sheet = struct {
     frozen_rows: u32 = 0,
     frozen_cols: u32 = 0,
     auto_filter: ?Range = null,
+    /// In percent.
+    zoom: u16 = 100,
 
     /// Sets a cell with the default style. Cells may be set in any
     /// order; setting a cell again replaces it.
@@ -278,6 +282,13 @@ pub const Sheet = struct {
         if (cols >= max_cols) return error.ColumnOutOfRange;
         self.frozen_rows = rows;
         self.frozen_cols = cols;
+    }
+
+    /// Sets the zoom the sheet opens with, 10 to 400 percent. It only
+    /// affects the screen, not printing.
+    pub fn setZoom(self: *Sheet, percent: u16) Error!void {
+        if (percent < 10 or percent > 400) return error.InvalidZoom;
+        self.zoom = percent;
     }
 
     /// Turns `range` into a filtered table: its first row gets the
@@ -592,6 +603,7 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
 
     try w.writeAll("<sheetViews><sheetView");
     if (selected) try w.writeAll(" tabSelected=\"1\"");
+    if (sheet.zoom != 100) try w.print(" zoomScale=\"{d}\" zoomScaleNormal=\"{d}\"", .{ sheet.zoom, sheet.zoom });
     try w.writeAll(" workbookViewId=\"0\"");
     if (sheet.frozen_rows > 0 or sheet.frozen_cols > 0) {
         try w.writeAll("><pane");
@@ -1541,4 +1553,26 @@ test "real data: a sheet of many differently styled cells shares a handful of re
     try testing.expect(std.mem.indexOf(u8, styles_xml, "<fills count=\"3\">") != null);
     try testing.expect(std.mem.indexOf(u8, styles_xml, "<borders count=\"2\">") != null);
     try testing.expect(std.mem.indexOf(u8, styles_xml, "<cellXfs count=\"4\">") != null);
+}
+
+test "zoom" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const zoomed = try wb.addSheet("Z");
+    try zoomed.setZoom(80);
+    try zoomed.freeze(1, 0);
+    const plain = try wb.addSheet("P");
+    try plain.setZoom(100);
+
+    try testing.expectError(error.InvalidZoom, zoomed.setZoom(9));
+    try testing.expectError(error.InvalidZoom, zoomed.setZoom(401));
+    try plain.setZoom(10);
+    try plain.setZoom(400);
+    try plain.setZoom(100);
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet1.xml").?, "<sheetView tabSelected=\"1\" zoomScale=\"80\" zoomScaleNormal=\"80\" workbookViewId=\"0\"><pane") != null);
+    // 100% is the default and is not written.
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet2.xml").?, "<sheetView workbookViewId=\"0\"/>") != null);
 }
