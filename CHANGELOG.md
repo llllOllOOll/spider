@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `spider.xlsx` also **reads** `.xlsx` files: `xlsx.Reader.open(gpa, bytes,
+  limits)` lists the sheets and `rows(sheet, .{})` iterates typed rows
+  (text, number, boolean, date, time, error; the number format code with
+  each cell; formula text on request, never evaluated) straight from the
+  compressed part, in bounded memory. Every read is held to limits set per
+  call (file size, zip entries, part and total size, compression ratio,
+  shared strings memory, rows, columns, cell text, XML depth and sizes),
+  with safe defaults and a `large` profile; encrypted files, .xls, .xlsb
+  and zip64 are refused with a clear error, and a `<!DOCTYPE` is never
+  accepted. It brings its own zip reader over bytes in memory (CRC-32 and
+  sizes verified) and its own streaming XML reader.
 - `spider.xlsx`: writing Excel `.xlsx` files, in pure Zig (`std` only), as
   an opt-in module (`.xlsx = true` on the dependency, `-Dxlsx=true` here; the
   default build does not compile it). Several sheets; text, numbers,
@@ -22,8 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accidental edits, not security). The file is
   built in memory and returned as bytes or written to any `std.Io.Writer`.
   User text is always written as text, so it can never become a formula.
-  Entries are stored uncompressed for now; no reading and no streamed
-  writing yet. See `modules/xlsx/README.md`.
+  Entries are stored uncompressed for now; no streamed writing yet. See
+  `modules/xlsx/README.md`.
 - `spider.mail`: sending mail through a provider's HTTP API. A `Mail`
   (`from`, `to`, `cc`, `bcc`, `reply_to`, `subject`, `html`, `text`) goes to a
   `Mailer`, whose backend is Brevo, Resend, Postmark, `log` (development:

@@ -1,8 +1,8 @@
-//! Public API — a pure-Zig writer for Excel .xlsx files. No C, no
-//! dependency besides `std`, no global state, no temporary files.
+//! Public API — pure-Zig writing and reading of Excel .xlsx files. No
+//! C, no dependency besides `std`, no global state, no temporary files.
 //!
-//! Build a `Workbook`, add sheets, set cells, then get the file as
-//! bytes or write it to any `std.Io.Writer`:
+//! Writing: build a `Workbook`, add sheets, set cells, then get the
+//! file as bytes or write it to any `std.Io.Writer`:
 //!
 //!     const wb = try xlsx.Workbook.init(allocator);
 //!     defer wb.deinit();
@@ -11,12 +11,23 @@
 //!     try sheet.setRow(1, 0, &.{ .{ .text = "Yes" }, .int(12) }, .{});
 //!     const bytes = try wb.toOwnedSlice(allocator);
 //!
-//! Scope: several sheets; text, numbers, booleans, dates and formulas;
-//! column widths and row heights; fonts, background colour, borders,
-//! alignment, wrapped text and number formats; merged cells; links;
-//! hidden rows and columns; frozen panes, zoom and a filter per sheet;
-//! page setup, print area, page breaks, header and footer; protection. Reading files, streamed writing,
-//! compression, charts and images are not implemented (see README.md).
+//! Reading: open the bytes of a file with limits and iterate the rows
+//! of a sheet, typed, in bounded memory:
+//!
+//!     const book = try xlsx.Reader.open(allocator, bytes, .{});
+//!     defer book.deinit();
+//!     const rows = try book.rows(0, .{});
+//!     defer rows.deinit();
+//!     while (try rows.next()) |row| { … }
+//!
+//! Written: several sheets; text, numbers, booleans, dates and
+//! formulas; column widths and row heights; fonts, background colour,
+//! borders, alignment, wrapped text and number formats; merged cells;
+//! links; hidden rows and columns; frozen panes, zoom and a filter per
+//! sheet; page setup, print area, page breaks, header and footer;
+//! protection. Read: sheets, rows and typed cells with their number
+//! format, cached formula results, merged ranges. Not done: streamed
+//! writing, compression, charts and images, .xls (see README.md).
 
 const std = @import("std");
 

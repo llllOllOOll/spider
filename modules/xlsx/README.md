@@ -1,8 +1,13 @@
 # spider.xlsx
 
-Writes Excel `.xlsx` files. Pure Zig, `std` only: no C, no global state, no
-temporary files. The file is built in memory and returned as bytes or written
-to any `std.Io.Writer`.
+Writes and reads Excel `.xlsx` files. Pure Zig, `std` only: no C, no global
+state, no temporary files.
+
+- **Writing** (export): the file is built in memory and returned as bytes or
+  written to any `std.Io.Writer`.
+- **Reading** (import): a file's bytes are opened with limits and each sheet
+  is read as a stream of typed rows, in bounded memory. See
+  [Reading](#reading).
 
 It is an **opt-in** module: a project that does not ask for it does not
 compile it.
@@ -169,9 +174,204 @@ A style is a plain value: build one, copy it, change a field.
 - **The file is not compressed** (see below), so it is larger than what
   Excel saves: roughly the size of its XML.
 
+## Reading
+
+```zig
+const std = @import("std");
+const xlsx = @import("spider").xlsx;
+
+fn printSheet(gpa: std.mem.Allocator, bytes: []const u8) !void {
+    const book = try xlsx.Reader.open(gpa, bytes, .{});
+    defer book.deinit();
+
+    for (book.sheets()) |sheet| std.debug.print("{s} ({t})\n", .{ sheet.name, sheet.visibility });
+
+    const rows = try book.rows(0, .{});
+    defer rows.deinit();
+    while (try rows.next()) |row| {
+        for (row.cells) |cell| switch (cell.value) {
+            .empty => {},
+            .text => |text| std.debug.print("{d}:{d} text {s}\n", .{ row.number, cell.column, text }),
+            .number => |n| std.debug.print("{d}:{d} number {d} ({s})\n", .{ row.number, cell.column, n, cell.format }),
+            .boolean => |b| std.debug.print("{d}:{d} boolean {}\n", .{ row.number, cell.column, b }),
+            .date => |d| std.debug.print("{d}:{d} date {d}-{d}-{d}\n", .{ row.number, cell.column, d.year, d.month, d.day }),
+            .time => |t| std.debug.print("{d}:{d} time {d}:{d}\n", .{ row.number, cell.column, t.hour, t.minute }),
+            .err => |e| std.debug.print("{d}:{d} error {s}\n", .{ row.number, cell.column, e }),
+        };
+    }
+}
+```
+
+`bytes` must stay valid until `book.deinit()`. A row, its cells and their
+texts are valid until the next `rows.next()`: copy what you keep.
+
+| | |
+|---|---|
+| `Reader.open(gpa, bytes, limits)` | Opens a workbook; reads the sheet list and the number formats. |
+| `Reader.openDiagnosed(gpa, bytes, limits, &diagnostic)` | The same, saying where a failure happened. |
+| `book.sheets()` | Name and visibility of each sheet, in tab order. |
+| `book.sheetIndex(name)` | Finds a sheet by name (ASCII case ignored). |
+| `book.rows(index, .{ .formulas = false })` | An iterator over the rows of a sheet. |
+| `rows.next()` | The next row the file has, or null. |
+| `rows.mergedRanges()` | The sheet's merged ranges, complete after the last row. |
+| `book.diagnostic` | Part, sheet, row, column, byte offset and limit of the last error. |
+
+What to know:
+
+- **Rows and cells are sparse.** Rows and columns the file does not have are
+  not returned: use `row.number` and `cell.column` (zero-based), not the
+  position in the iteration. A table's header is not always the first row,
+  totals and notes may follow the data, and a sheet may be empty.
+- **Empty cells are reported** (`.empty`) when the file has them: a cell
+  with a border and no content, a formula never calculated.
+- **Dates** are numbers in the file. A cell is a `.date` when its number
+  format shows a date, in the 1900 or the 1904 system; a number below 1
+  with a time format is a `.time`. Elapsed-time formats (`[h]:mm`) stay
+  numbers, in days.
+- **`cell.format`** is the number format code (`"General"`, `"0.00"`,
+  `"dd/mm/yyyy"`, `"00000000000"`). A document number stored as
+  `1234567890` with the format `"00000000000"` is the document
+  `01234567890`: pad it yourself. The same column often mixes numbers and
+  text typed by hand; expect both.
+- **Formulas are never evaluated.** A formula cell gives the value its
+  author's program last saved; with `.formulas = true`, `cell.formula` is
+  its text. A file written by this module's writer has no saved results:
+  its formula cells read as `.empty`.
+- **Text** comes as stored: it can have spaces at the edges, line breaks
+  (`\n`, sometimes `\r\n`) and control characters.
+- **Errors** are `xlsx.ReadError`: `LimitExceeded`, `InvalidZip`,
+  `InvalidXml`, `InvalidFile`, `Unsupported`, `Encrypted`, `SheetNotFound`,
+  `OutOfMemory`. After an error the diagnostic says where, without any
+  text from the file.
+
+### Limits
+
+Every limit is per call (`xlsx.ReadLimits`). The defaults are for files
+uploaded by strangers; `xlsx.ReadLimits.large` is for big files from a
+source you know.
+
+| Limit | Default | `large` | What it bounds |
+|---|---|---|---|
+| `max_file_bytes` | 16 MiB | 256 MiB | The .xlsx file itself. |
+| `max_entries` | 1,000 | 1,000 | Entries in the zip. |
+| `max_part_bytes` | 64 MiB | 1 GiB | One part, uncompressed (a sheet's XML). |
+| `max_total_bytes` | 128 MiB | 2 GiB | All parts, uncompressed. |
+| `max_compression_ratio` | 200 | 1,000 | Uncompressed/compressed, for parts over 1 MiB. |
+| `max_shared_strings_bytes` | 32 MiB | 256 MiB | Memory of the shared strings table. |
+| `max_rows` | 100,000 | 1,048,576 | Rows read from one sheet. |
+| `max_columns` | 16,384 | 16,384 | Highest column (Excel's limit). |
+| `max_cell_text` | 32,767 | 32,767 | Characters in one cell (Excel's limit). |
+| `max_merged_ranges` | 10,000 | 10,000 | Merged ranges kept per sheet. |
+| `xml.max_depth` | 64 | 64 | Nested XML elements. |
+| `xml.max_attributes` | 64 | 64 | Attributes on one element. |
+| `xml.max_name_len` | 256 | 256 | Bytes in an XML name. |
+| `xml.max_value_len` | 64 KiB | 64 KiB | Bytes in an attribute value. |
+| `xml.max_tag_len` | 256 KiB | 256 KiB | Bytes in one start tag. |
+
+What a read costs: the file's bytes (you hold them), the shared strings
+table, the number formats, a 64 KiB decompression window, a 16 KiB XML
+buffer and one row. A real export of 126,329 rows by 50 columns (6 million
+cells, 205 MB of XML in a 43 MB file, 53,559 shared strings) reads in
+about 3 seconds with the `large` profile, using about 2 MB beyond the file
+itself. With the defaults that file is refused at the first check
+(`max_file_bytes`).
+
+A sheet that claims a cell at row 4,000,000,000 is `LimitExceeded`, never
+billions of empty rows. Rows or cells out of order are `InvalidFile`. A
+`<!DOCTYPE` in any part is `InvalidXml`: no entity is ever expanded.
+
+### Importing an upload in a Spider handler
+
+```zig
+const std = @import("std");
+const spider = @import("spider");
+const xlsx = spider.xlsx;
+
+/// Limits for a register typed by a person: a few thousand rows at most.
+const import_limits: xlsx.ReadLimits = .{
+    .max_file_bytes = 10 << 20, // Spider's own body limit (Config.max_body_bytes)
+    .max_part_bytes = 32 << 20,
+    .max_total_bytes = 48 << 20,
+    .max_shared_strings_bytes = 8 << 20,
+    .max_rows = 5_000,
+    .max_columns = 50,
+};
+
+fn importPeople(c: *spider.Ctx) !spider.Response {
+    var form = try c.parseMultipart();
+    defer form.deinit();
+    const files = form.getFile("planilha") orelse return error.BadRequest;
+    if (files.len != 1) return error.BadRequest;
+
+    var diagnostic: xlsx.ReadDiagnostic = .{};
+    const book = xlsx.Reader.openDiagnosed(c.arena, files[0].data, import_limits, &diagnostic) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        // Say what is wrong in the user's terms; log the diagnostic.
+        error.Unsupported => return c.text("Envie um arquivo .xlsx (não .xls).", .{ .status = .unprocessable_entity }),
+        error.Encrypted => return c.text("O arquivo está protegido por senha.", .{ .status = .unprocessable_entity }),
+        error.LimitExceeded => return c.text("A planilha é grande demais.", .{ .status = .unprocessable_entity }),
+        else => return c.text("Não foi possível ler a planilha.", .{ .status = .unprocessable_entity }),
+    };
+    defer book.deinit();
+
+    const rows = try book.rows(0, .{});
+    defer rows.deinit();
+    var imported: usize = 0;
+    while (rows.next() catch return c.text("A planilha está danificada ou é grande demais.", .{ .status = .unprocessable_entity })) |row| {
+        if (row.number == 0) continue; // the header
+        var name: ?[]const u8 = null;
+        var document: ?u64 = null;
+        for (row.cells) |cell| switch (cell.column) {
+            0 => if (cell.value == .text) {
+                name = std.mem.trim(u8, cell.value.text, " \t\r\n");
+            },
+            // The same column holds numbers in some rows and text in others.
+            1 => document = switch (cell.value) {
+                .number => |n| if (n >= 0 and n < 1e14 and @floor(n) == n) @intFromFloat(n) else null,
+                .text => |text| std.fmt.parseInt(u64, std.mem.trim(u8, text, " .-/"), 10) catch null,
+                else => null,
+            },
+            else => {},
+        };
+        // Validate before saving: a spreadsheet is user input.
+        if (name == null or name.?.len == 0 or name.?.len > 200 or document == null) continue;
+        imported += 1; // …insert into the database here, in one transaction
+    }
+    return c.json(.{ .imported = imported }, .{});
+}
+```
+
+Advice for imports:
+
+- **Treat every cell as user input.** Check types, lengths and ranges,
+  escape on output as you would for a form field, and never build SQL,
+  HTML or a formula from a cell.
+- **Keep the limits tight.** A register has thousands of rows, not a
+  million; `max_rows` and `max_columns` are the cheap way to say so.
+- **Do the work in one transaction**, and tell the person which rows were
+  skipped and why.
+- **Read by column position or by header text, not by trust**: find the
+  header row, map its labels to fields, and refuse a file whose headers you
+  do not recognise.
+
+### Not read
+
+- **.xls** (the old binary format) and **.xlsb**: `error.Unsupported`.
+  Convert them to .xlsx first (LibreOffice does it:
+  `soffice --headless --convert-to xlsx file.xls`).
+- **Files with a password to open**: `error.Encrypted`.
+- **Macros**: an .xlsm is read as data; its macros are ignored and never
+  run.
+- zip64 archives (files past 4 GiB) and compression methods other than
+  deflate.
+- Styles other than the number format, column widths and hidden columns,
+  comments, images, charts, pivot tables, data validation, conditional
+  formatting, defined names.
+- The reader does not write: a file cannot be opened, changed and saved.
+
 ## Not supported
 
-Reading files, streamed writing for very large sheets, compression, zip64
+When writing: streamed writing for very large sheets, compression, zip64
 (files or parts past 4 GiB), links to other cells or files, a different
 colour per border side, column default styles, different first-page or
 even-page headers, columns repeated when printing, gridline and centring
@@ -210,26 +410,34 @@ What that leaves open:
   the shared strings and styles to be known late — the reason streaming
   writers use inline strings. The part functions already write to a
   `*std.Io.Writer`.
-- **Reading**: a reader is the mirror image and would live beside the
-  writer: a zip reader over bytes in memory (`std.zip` only reads from a
-  file and does not verify checksums), a small pull XML parser, then
-  `xl/workbook.xml` and its relationships to find the sheets,
-  `sharedStrings.xml` and `styles.xml` loaded first, and an iterator of rows
-  with typed cells. `cell_ref.zig`, `date.zig` (serial to date) and the
-  number-format ids in `styles.zig` are the shared pieces. It must enforce
-  limits on decompressed size, entry count, shared strings and row/column
-  references, and refuse `<!DOCTYPE`.
+- **Reading** is three layers, each usable alone: `src/zip_reader.zig`
+  (an archive in memory, checked against its central directory, read in
+  pieces with the CRC-32 verified at the end; `std.zip` only reads from a
+  file and verifies nothing), `src/xml_reader.zig` (a pull parser with a
+  small buffer that refuses `<!DOCTYPE` and undefined entities) and
+  `src/reader.zig` (workbook, relationships, number formats, shared
+  strings, and the row iterator). The decompressor is always given a
+  window buffer: without one it can stall on some inputs in the Zig
+  versions this module supports.
 
 ## Tests
 
 - `zig build test` here, or `zig build test-xlsx` at Spider's root: unit
-  tests. They fix the XML of every part, the zip bytes, dates, escaping,
-  Excel's limits, formula injection, determinism, hostile names, a round
-  trip through `std.zip` with CRC checks, and that an allocation failure at
-  any point leaks nothing.
+  tests. For the writer they fix the XML of every part, the zip bytes,
+  dates, escaping, Excel's limits, formula injection, determinism, hostile
+  names and a round trip through `std.zip` with CRC checks. For the reader:
+  a round trip with the writer, hand-written XML in the style of other
+  producers, one hostile case per limit (zip bomb, too many entries,
+  repeated and escaping names, truncation, wrong CRC and sizes, encryption,
+  zip64, DOCTYPE and entities, absurd counts and references, deep nesting,
+  huge attributes, invalid UTF-8), every prefix of a valid file, and
+  thousands of single-byte corruptions that must fail cleanly or read
+  exactly as the intact file. Both sides: an allocation failure at any
+  point leaks nothing.
 - `zig build test-libreoffice` here: writes a sample workbook, has headless
-  LibreOffice (`soffice`) convert it to CSV and compares the cells. Needs
-  LibreOffice installed.
+  LibreOffice (`soffice`) convert it to CSV and compares the cells; reads
+  that workbook back; and reads a workbook LibreOffice makes from a CSV
+  file. Needs LibreOffice installed.
 - `zig build sample-files` here: writes three workbooks to
   `zig-out/sample-files` for checking by hand in Excel, Google Sheets and
   Numbers, which the automated tests cannot drive (every feature once, a
