@@ -17,6 +17,9 @@ pub const Error = error{
     /// A custom number format that is empty, too long, not UTF-8 or
     /// holds characters XML cannot carry.
     InvalidNumberFormat,
+    /// A font name that is empty, longer than 31 characters, not UTF-8
+    /// or holds characters XML cannot carry; or a size outside 1..409.
+    InvalidFont,
     OutOfMemory,
 };
 
@@ -78,6 +81,16 @@ pub const VerticalAlignment = enum {
 /// The formatting of one cell. The default value is a plain cell.
 pub const Style = struct {
     bold: bool = false,
+    italic: bool = false,
+    underline: bool = false,
+    /// Text colour as `0xRRGGBB`.
+    font_color: ?u24 = null,
+    /// A font family name such as `"Times New Roman"`. The file only
+    /// carries the name: the font must exist on the reader's machine.
+    /// Null is the default font, Calibri.
+    font_name: ?[]const u8 = null,
+    /// Size in points, 1 to 409, in steps of a tenth. Null is 11.
+    font_size: ?f32 = null,
     /// Background colour as `0xRRGGBB`.
     fill: ?u24 = null,
     border: Border = .none,
@@ -94,13 +107,19 @@ pub const Style = struct {
 pub const max_styles = 65_490;
 /// Longest custom format code accepted, in bytes.
 pub const max_number_format_len = 255;
+/// Longest font name accepted, in bytes (Excel's limit is 31 characters).
+pub const max_font_name_len = 31;
+pub const max_font_size = 409;
+const default_font_name = "Calibri";
+/// Font sizes are kept in tenths of a point.
+const default_font_size_tenths = 110;
 /// First id available for custom number formats; lower ids are built in.
 const first_custom_format_id = 164;
 
 /// A style with its number format reduced to an id, so it can be a hash
 /// map key.
 const Key = struct {
-    bold: bool,
+    font: FontKey,
     has_fill: bool,
     fill: u24,
     border: Border,
@@ -111,9 +130,44 @@ const Key = struct {
     v_align: VerticalAlignment,
     wrap: bool,
 
+    const default: Key = .{
+        .font = .default,
+        .has_fill = false,
+        .fill = 0,
+        .border = .none,
+        .custom_format = false,
+        .format = 0,
+        .h_align = .general,
+        .v_align = .bottom,
+        .wrap = false,
+    };
+
     fn hasAlignment(key: Key) bool {
         return key.h_align != .general or key.v_align != .bottom or key.wrap;
     }
+};
+
+/// One entry of the fonts table.
+const FontKey = struct {
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    has_color: bool,
+    color: u24,
+    /// 0 is the default font; otherwise 1 + an index into
+    /// `Registry.font_names`.
+    name: u16,
+    size_tenths: u16,
+
+    const default: FontKey = .{
+        .bold = false,
+        .italic = false,
+        .underline = false,
+        .has_color = false,
+        .color = 0,
+        .name = 0,
+        .size_tenths = default_font_size_tenths,
+    };
 };
 
 /// Every distinct style a workbook was given. Id 0 is the default
@@ -123,14 +177,24 @@ pub const Registry = struct {
     ids: std.AutoHashMapUnmanaged(Key, u16) = .empty,
     custom_formats: std.ArrayList([]const u8) = .empty,
     custom_ids: std.StringHashMapUnmanaged(u16) = .empty,
+    /// Font names other than the default, as first given.
+    font_names: std.ArrayList([]const u8) = .empty,
 
     /// Returns the id of `style`, registering it if it is new. Memory
     /// comes from `arena` and is never freed individually.
     pub fn intern(self: *Registry, arena: std.mem.Allocator, style: Style) Error!u16 {
-        if (self.keys.items.len == 0) try self.keys.append(arena, defaultKey());
+        if (self.keys.items.len == 0) try self.keys.append(arena, .default);
 
         var key: Key = .{
-            .bold = style.bold,
+            .font = .{
+                .bold = style.bold,
+                .italic = style.italic,
+                .underline = style.underline,
+                .has_color = style.font_color != null,
+                .color = style.font_color orelse 0,
+                .name = if (style.font_name) |name| try self.internFontName(arena, name) else 0,
+                .size_tenths = if (style.font_size) |size| try fontSizeTenths(size) else default_font_size_tenths,
+            },
             .has_fill = style.fill != null,
             .fill = style.fill orelse 0,
             .border = style.border,
@@ -147,7 +211,7 @@ pub const Registry = struct {
             },
             else => |named| key.format = builtinId(named),
         }
-        if (std.meta.eql(key, defaultKey())) return 0;
+        if (std.meta.eql(key, Key.default)) return 0;
 
         const entry = try self.ids.getOrPut(arena, key);
         if (entry.found_existing) return entry.value_ptr.*;
@@ -172,6 +236,18 @@ pub const Registry = struct {
         return id;
     }
 
+    /// Font names compare without ASCII case, as font lookup does.
+    fn internFontName(self: *Registry, arena: std.mem.Allocator, name: []const u8) Error!u16 {
+        if (name.len == 0 or name.len > max_font_name_len) return error.InvalidFont;
+        if (!std.unicode.utf8ValidateSlice(name) or !xml.isXmlSafe(name)) return error.InvalidFont;
+        if (std.ascii.eqlIgnoreCase(name, default_font_name)) return 0;
+        for (self.font_names.items, 1..) |known, id| {
+            if (std.ascii.eqlIgnoreCase(known, name)) return @intCast(id);
+        }
+        try self.font_names.append(arena, try arena.dupe(u8, name));
+        return @intCast(self.font_names.items.len);
+    }
+
     /// Number of ids handed out, the default style included.
     pub fn count(self: *const Registry) usize {
         return @max(self.keys.items.len, 1);
@@ -188,7 +264,9 @@ pub const Registry = struct {
         defer borders.deinit(scratch);
         var formats: std.ArrayList(u16) = .empty;
         defer formats.deinit(scratch);
-        var any_bold = false;
+        var fonts: std.ArrayList(FontKey) = .empty;
+        defer fonts.deinit(scratch);
+        try fonts.append(scratch, .default);
 
         const Record = struct { font: u32, fill: u32, border: u32, format: u32, key: Key };
         var records: std.ArrayList(Record) = .empty;
@@ -197,10 +275,7 @@ pub const Registry = struct {
         for (used) |id| {
             const key = self.keys.items[id];
             var record: Record = .{ .font = 0, .fill = 0, .border = 0, .format = key.format, .key = key };
-            if (key.bold) {
-                any_bold = true;
-                record.font = 1;
-            }
+            record.font = @intCast(try indexOrAppend(FontKey, scratch, &fonts, key.font));
             if (key.has_fill) {
                 // Fills 0 and 1 are fixed by the format (see below).
                 record.fill = 2 + @as(u32, @intCast(try indexOrAppend(u24, scratch, &fills, key.fill)));
@@ -227,9 +302,27 @@ pub const Registry = struct {
             try w.writeAll("</numFmts>");
         }
 
-        try w.print("<fonts count=\"{d}\">", .{@as(u8, if (any_bold) 2 else 1)});
-        try w.writeAll("<font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font>");
-        if (any_bold) try w.writeAll("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font>");
+        // Child order is fixed by the format: b, i, u, sz, color, name, family.
+        try w.print("<fonts count=\"{d}\">", .{fonts.items.len});
+        for (fonts.items) |font| {
+            try w.writeAll("<font>");
+            if (font.bold) try w.writeAll("<b/>");
+            if (font.italic) try w.writeAll("<i/>");
+            if (font.underline) try w.writeAll("<u/>");
+            try w.print("<sz val=\"{d}", .{font.size_tenths / 10});
+            if (font.size_tenths % 10 != 0) try w.print(".{d}", .{font.size_tenths % 10});
+            try w.writeAll("\"/>");
+            if (font.has_color) try w.print("<color rgb=\"FF{X:0>6}\"/>", .{font.color});
+            if (font.name == 0) {
+                // Family 2 is "swiss" (sans-serif), right for Calibri only.
+                try w.writeAll("<name val=\"" ++ default_font_name ++ "\"/><family val=\"2\"/>");
+            } else {
+                try w.writeAll("<name val=\"");
+                try xml.writeAttribute(w, self.font_names.items[font.name - 1]);
+                try w.writeAll("\"/>");
+            }
+            try w.writeAll("</font>");
+        }
         try w.writeAll("</fonts>");
 
         // The first two fills are mandatory: readers assume fill 0 is
@@ -278,18 +371,9 @@ pub const Registry = struct {
     }
 };
 
-fn defaultKey() Key {
-    return .{
-        .bold = false,
-        .has_fill = false,
-        .fill = 0,
-        .border = .none,
-        .custom_format = false,
-        .format = 0,
-        .h_align = .general,
-        .v_align = .bottom,
-        .wrap = false,
-    };
+fn fontSizeTenths(size: f32) Error!u16 {
+    if (!std.math.isFinite(size) or size < 1 or size > max_font_size) return error.InvalidFont;
+    return @intFromFloat(@round(size * 10));
 }
 
 /// Ids of the number formats every reader has built in.
@@ -312,7 +396,7 @@ fn builtinId(format: NumberFormat) u16 {
 
 fn indexOrAppend(comptime T: type, allocator: std.mem.Allocator, list: *std.ArrayList(T), value: T) error{OutOfMemory}!usize {
     for (list.items, 0..) |item, i| {
-        if (item == value) return i;
+        if (std.meta.eql(item, value)) return i;
     }
     try list.append(allocator, value);
     return list.items.len - 1;
@@ -473,4 +557,64 @@ test "alignment and wrap are part of the style and of its record" {
         "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\">" ++
         "<alignment horizontal=\"center\"/></xf>" ++
         "</cellXfs>") != null);
+}
+
+test "fonts: name, size, colour, italic and underline, shared between records" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    // Calibri 11 spelled out is the default font, with or without case.
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{ .font_name = "Calibri", .font_size = 11 }));
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{ .font_name = "calibri" }));
+
+    const times = try registry.intern(arena, .{ .font_name = "Times New Roman", .font_size = 10 });
+    const fancy = try registry.intern(arena, .{ .bold = true, .italic = true, .underline = true, .font_color = 0x1F497D, .font_size = 10.5 });
+    const times_filled = try registry.intern(arena, .{ .font_name = "Times New Roman", .font_size = 10, .fill = 0xFFFFFF });
+    var name: [15]u8 = "times new roman".*;
+    try testing.expectEqual(times, try registry.intern(arena, .{ .font_name = &name, .font_size = 10 }));
+    // Black text is not "no colour".
+    try testing.expect(try registry.intern(arena, .{ .font_color = 0x000000 }) != 0);
+
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try registry.write(&out.writer, testing.allocator, &.{ times, fancy, times_filled });
+    const written = out.written();
+    try testing.expect(std.mem.indexOf(u8, written, "<fonts count=\"3\">" ++
+        "<font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font>" ++
+        "<font><sz val=\"10\"/><name val=\"Times New Roman\"/></font>" ++
+        "<font><b/><i/><u/><sz val=\"10.5\"/><color rgb=\"FF1F497D\"/><name val=\"Calibri\"/><family val=\"2\"/></font>" ++
+        "</fonts>") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "<cellXfs count=\"4\">" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" ++
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/>" ++
+        "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/>" ++
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\"/>" ++
+        "</cellXfs>") != null);
+}
+
+test "a font name is escaped, and bad fonts are refused" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    const id = try registry.intern(arena, .{ .font_name = "A&B \"Sans\"" });
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try registry.write(&out.writer, testing.allocator, &.{id});
+    try testing.expect(std.mem.indexOf(u8, out.written(), "<name val=\"A&amp;B &quot;Sans&quot;\"/>") != null);
+
+    const count = registry.count();
+    const too_long: [max_font_name_len + 1]u8 = @splat('a');
+    for ([_][]const u8{ "", &too_long, "Bad\x01", "\xff" }) |bad| {
+        try testing.expectError(error.InvalidFont, registry.intern(arena, .{ .font_name = bad }));
+    }
+    for ([_]f32{ 0, 0.5, 409.5, -1, std.math.nan(f32), std.math.inf(f32) }) |bad| {
+        try testing.expectError(error.InvalidFont, registry.intern(arena, .{ .font_size = bad }));
+    }
+    _ = try registry.intern(arena, .{ .font_size = 1 });
+    _ = try registry.intern(arena, .{ .font_size = 409 });
+    try testing.expectEqual(count + 2, registry.count());
 }

@@ -57,6 +57,9 @@ pub const Error = error{
     InvalidColumnWidth,
     /// A custom number format that is empty, too long or malformed.
     InvalidNumberFormat,
+    /// A font name that is empty, too long or malformed, or a font size
+    /// outside 1 .. 409 points.
+    InvalidFont,
     /// More than 65,490 distinct styles.
     TooManyStyles,
     /// A workbook must have at least one sheet to be written.
