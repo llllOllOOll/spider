@@ -45,6 +45,9 @@ pub const Limits = struct {
     ratio_grace_bytes: u64 = 1 << 20,
 };
 
+/// Which of `Limits` an archive exceeded.
+pub const LimitKind = enum { entries, part_bytes, total_bytes, compression_ratio };
+
 pub const Method = enum { store, deflate };
 
 pub const Entry = struct {
@@ -76,6 +79,12 @@ pub const Archive = struct {
     /// Reads the central directory of `bytes` and checks every entry.
     /// `bytes` must outlive the archive and its streams.
     pub fn open(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Archive {
+        var exceeded: ?LimitKind = null;
+        return openDiagnosed(gpa, bytes, limits, &exceeded);
+    }
+
+    /// Like `open`; on `error.LimitExceeded`, `exceeded` says which limit.
+    pub fn openDiagnosed(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits, exceeded: *?LimitKind) Error!Archive {
         if (bytes.len < end_record_len) return error.InvalidZip;
 
         // The end record is the last thing in the file, followed only
@@ -97,7 +106,10 @@ pub const Archive = struct {
         if (readInt(u16, bytes, end_at + 4) != 0 or readInt(u16, bytes, end_at + 6) != 0) return error.InvalidZip;
         if (readInt(u16, bytes, end_at + 8) != count) return error.InvalidZip;
         if (@as(u64, directory_offset) + directory_size != end_at) return error.InvalidZip;
-        if (count > limits.max_entries) return error.LimitExceeded;
+        if (count > limits.max_entries) {
+            exceeded.* = .entries;
+            return error.LimitExceeded;
+        }
 
         const entries = try gpa.alloc(Entry, count);
         errdefer gpa.free(entries);
@@ -156,10 +168,19 @@ pub const Archive = struct {
             }
             if (method == .store and compressed_size != size) return error.InvalidZip;
 
-            if (size > limits.max_part_bytes) return error.LimitExceeded;
+            if (size > limits.max_part_bytes) {
+                exceeded.* = .part_bytes;
+                return error.LimitExceeded;
+            }
             total += size;
-            if (total > limits.max_total_bytes) return error.LimitExceeded;
-            if (size > limits.ratio_grace_bytes and size > @as(u64, compressed_size) * limits.max_compression_ratio) return error.LimitExceeded;
+            if (total > limits.max_total_bytes) {
+                exceeded.* = .total_bytes;
+                return error.LimitExceeded;
+            }
+            if (size > limits.ratio_grace_bytes and size > @as(u64, compressed_size) * limits.max_compression_ratio) {
+                exceeded.* = .compression_ratio;
+                return error.LimitExceeded;
+            }
 
             entry.* = .{
                 .name = name,

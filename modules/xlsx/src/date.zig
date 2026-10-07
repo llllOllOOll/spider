@@ -78,6 +78,67 @@ pub const DateTime = struct {
     }
 };
 
+/// Which day a serial number counts from. A workbook says which one
+/// it uses; almost all use 1900.
+pub const DateSystem = enum {
+    /// Day 1 is 1900-01-01, and day 60 is the 1900-02-29 that never
+    /// existed.
+    excel_1900,
+    /// Day 0 is 1904-01-01; no phantom day.
+    excel_1904,
+};
+
+/// The time of day of a cell that holds no date.
+pub const TimeOfDay = struct {
+    hour: u8,
+    minute: u8,
+    second: u8,
+    millisecond: u16,
+
+    /// From the fraction of a day, rounded to the millisecond.
+    pub fn fromFraction(fraction: f64) TimeOfDay {
+        const ms: u32 = @min(86_399_999, @as(u32, @intFromFloat(@round(fraction * 86_400_000.0))));
+        return .{
+            .hour = @intCast(ms / 3_600_000),
+            .minute = @intCast(ms / 60_000 % 60),
+            .second = @intCast(ms / 1000 % 60),
+            .millisecond = @intCast(ms % 1000),
+        };
+    }
+};
+
+/// The date and time a serial number stands for, or null when it is
+/// not a date a spreadsheet can show: negative, past 9999-12-31, or
+/// the phantom day 60 of the 1900 system.
+pub fn fromSerial(serial: f64, system: DateSystem) ?DateTime {
+    if (!std.math.isFinite(serial) or serial < 0 or serial >= 2_958_466) return null;
+    var day: u32 = @intFromFloat(@floor(serial));
+    var ms: u32 = @intFromFloat(@round((serial - @floor(serial)) * 86_400_000.0));
+    if (ms >= 86_400_000) {
+        ms = 0;
+        day += 1;
+    }
+    const days_from_epoch: i32 = switch (system) {
+        .excel_1900 => days: {
+            if (day == 0 or day == 60) return null;
+            const true_count: i32 = @intCast(if (day > 60) day - 1 else day);
+            break :days daysFromCivil(1899, 12, 31) + true_count;
+        },
+        .excel_1904 => daysFromCivil(1904, 1, 1) + @as(i32, @intCast(day)),
+    };
+    const civil = civilFromDays(days_from_epoch);
+    if (civil.year > 9999) return null;
+    return .{
+        .year = @intCast(civil.year),
+        .month = civil.month,
+        .day = civil.day,
+        .hour = @intCast(ms / 3_600_000),
+        .minute = @intCast(ms / 60_000 % 60),
+        .second = @intCast(ms / 1000 % 60),
+        .millisecond = @intCast(ms % 1000),
+    };
+}
+
 fn isLeapYear(year: u32) bool {
     return (year % 4 == 0 and year % 100 != 0) or year % 400 == 0;
 }
@@ -191,4 +252,39 @@ test "Unix timestamps" {
     try testing.expectError(error.InvalidDate, DateTime.fromUnix(-2_208_988_801));
     try testing.expectError(error.InvalidDate, DateTime.fromUnix(std.math.maxInt(i64)));
     try testing.expectError(error.InvalidDate, DateTime.fromUnix(std.math.minInt(i64)));
+}
+
+test "serial numbers back to dates, in both systems" {
+    const Check = struct {
+        fn date(serial: f64, system: DateSystem) ?[3]u16 {
+            const dt = fromSerial(serial, system) orelse return null;
+            return .{ dt.year, dt.month, dt.day };
+        }
+    };
+    try testing.expectEqual(@as(?[3]u16, .{ 1900, 1, 1 }), Check.date(1, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, .{ 1900, 2, 28 }), Check.date(59, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, null), Check.date(60, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, .{ 1900, 3, 1 }), Check.date(61, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, .{ 2026, 10, 7 }), Check.date(46_302, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, .{ 9999, 12, 31 }), Check.date(2_958_465, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, null), Check.date(2_958_466, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, null), Check.date(0, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, null), Check.date(-1, .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, null), Check.date(std.math.nan(f64), .excel_1900));
+    try testing.expectEqual(@as(?[3]u16, .{ 1904, 1, 1 }), Check.date(0, .excel_1904));
+    try testing.expectEqual(@as(?[3]u16, .{ 1904, 2, 29 }), Check.date(59, .excel_1904));
+    try testing.expectEqual(@as(?[3]u16, .{ 2030, 10, 8 }), Check.date(46_302, .excel_1904));
+
+    // Every date the writer can write reads back as itself.
+    var serial: u32 = 1;
+    while (serial < 2_958_465) : (serial += 997) {
+        if (serial == 60) continue;
+        const dt = fromSerial(@floatFromInt(serial), .excel_1900).?;
+        try testing.expectEqual(serial, try (Date{ .year = dt.year, .month = dt.month, .day = dt.day }).serial());
+    }
+    // Less than half a millisecond before midnight rounds to the next day.
+    const precise = fromSerial(46_302.999_999_999_9, .excel_1900).?;
+    try testing.expectEqual(DateTime{ .year = 2026, .month = 10, .day = 8 }, precise);
+    try testing.expectEqual(TimeOfDay{ .hour = 18, .minute = 0, .second = 0, .millisecond = 0 }, TimeOfDay.fromFraction(0.75));
+    try testing.expectEqual(TimeOfDay{ .hour = 23, .minute = 59, .second = 59, .millisecond = 999 }, TimeOfDay.fromFraction(0.999_999_999));
 }

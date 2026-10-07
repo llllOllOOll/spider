@@ -29,6 +29,7 @@ pub const shared_strings = @import("shared_strings.zig");
 pub const workbook = @import("workbook.zig");
 pub const zip_reader = @import("zip_reader.zig");
 pub const xml_reader = @import("xml_reader.zig");
+pub const reader = @import("reader.zig");
 
 pub const Workbook = workbook.Workbook;
 pub const Sheet = workbook.Sheet;
@@ -54,6 +55,19 @@ pub const HeaderFooter = workbook.HeaderFooter;
 pub const Protection = workbook.Protection;
 pub const cm = workbook.cm;
 pub const link_style = workbook.link_style;
+
+// Reading. `Reader.open(gpa, bytes, .{})`, then `reader.rows(sheet, .{})`.
+pub const Reader = reader.Reader;
+pub const Rows = reader.Rows;
+pub const ReadLimits = reader.Limits;
+pub const ReadOptions = reader.Options;
+pub const ReadError = reader.Error;
+pub const ReadDiagnostic = reader.Diagnostic;
+pub const ReadRow = reader.Row;
+pub const ReadCell = reader.Cell;
+pub const ReadValue = reader.Value;
+pub const SheetInfo = reader.SheetInfo;
+pub const TimeOfDay = date.TimeOfDay;
 
 /// The container seam: implement `Packager` to replace the zip writer.
 pub const Packager = zip.Packager;
@@ -83,4 +97,5 @@ test {
     _ = workbook;
     _ = zip_reader;
     _ = xml_reader;
+    _ = reader;
 }
