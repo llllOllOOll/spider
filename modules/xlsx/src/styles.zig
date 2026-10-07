@@ -101,6 +101,9 @@ pub const Style = struct {
     /// it run over the next cells. Line breaks in the text itself also
     /// only show when this is set.
     wrap: bool = false,
+    /// Makes the text smaller, when needed, so it fits the cell's width
+    /// on one line. Spreadsheet programs ignore it when `wrap` is set.
+    shrink: bool = false,
 };
 
 /// Excel's limit on distinct cell formats.
@@ -129,6 +132,7 @@ const Key = struct {
     h_align: HorizontalAlignment,
     v_align: VerticalAlignment,
     wrap: bool,
+    shrink: bool,
 
     const default: Key = .{
         .font = .default,
@@ -140,10 +144,11 @@ const Key = struct {
         .h_align = .general,
         .v_align = .bottom,
         .wrap = false,
+        .shrink = false,
     };
 
     fn hasAlignment(key: Key) bool {
-        return key.h_align != .general or key.v_align != .bottom or key.wrap;
+        return key.h_align != .general or key.v_align != .bottom or key.wrap or key.shrink;
     }
 };
 
@@ -203,6 +208,7 @@ pub const Registry = struct {
             .h_align = style.h_align,
             .v_align = style.v_align,
             .wrap = style.wrap,
+            .shrink = style.shrink,
         };
         switch (style.number_format) {
             .custom => |code| {
@@ -361,6 +367,7 @@ pub const Registry = struct {
                 if (record.key.h_align != .general) try w.print(" horizontal=\"{t}\"", .{record.key.h_align});
                 if (record.key.v_align != .bottom) try w.print(" vertical=\"{t}\"", .{record.key.v_align});
                 if (record.key.wrap) try w.writeAll(" wrapText=\"1\"");
+                if (record.key.shrink) try w.writeAll(" shrinkToFit=\"1\"");
                 try w.writeAll("/></xf>");
             } else try w.writeAll("/>");
         }
@@ -617,4 +624,23 @@ test "a font name is escaped, and bad fonts are refused" {
     _ = try registry.intern(arena, .{ .font_size = 1 });
     _ = try registry.intern(arena, .{ .font_size = 409 });
     try testing.expectEqual(count + 2, registry.count());
+}
+
+test "shrink to fit is an alignment flag" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{ .shrink = false }));
+    const shrunk = try registry.intern(arena, .{ .shrink = true });
+    const shrunk_centered = try registry.intern(arena, .{ .shrink = true, .h_align = .center, .v_align = .center });
+    try testing.expect(shrunk != 0 and shrunk != shrunk_centered);
+
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try registry.write(&out.writer, testing.allocator, &.{ shrunk, shrunk_centered });
+    try testing.expect(std.mem.indexOf(u8, out.written(), "applyAlignment=\"1\"><alignment shrinkToFit=\"1\"/></xf>" ++
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\">" ++
+        "<alignment horizontal=\"center\" vertical=\"center\" shrinkToFit=\"1\"/></xf>") != null);
 }
