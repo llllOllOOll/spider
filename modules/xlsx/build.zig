@@ -21,4 +21,31 @@ pub fn build(b: *std.Build) void {
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const test_step = b.step("test", "Run xlsx module unit tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    // test-libreoffice — writes a sample workbook, has headless
+    // LibreOffice convert it to CSV and compares the cells (see
+    // libreoffice_check.zig), proving the file opens in a real,
+    // independent spreadsheet program. Separate
+    // from the default `test` step (same pattern as qrcode's
+    // test-decode) since it shells out to a tool that may not be
+    // installed everywhere.
+    const check_exe = b.addExecutable(.{
+        .name = "libreoffice_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libreoffice_check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "xlsx", .module = mod }},
+        }),
+    });
+
+    const check_run = b.addRunArtifact(check_exe);
+    _ = check_run.addOutputDirectoryArg("work");
+    // Cells are compared "as shown": pin the language LibreOffice uses
+    // for words such as TRUE.
+    check_run.setEnvironmentVariable("LC_ALL", "en_US.UTF-8");
+    check_run.expectExitCode(0);
+
+    const test_libreoffice_step = b.step("test-libreoffice", "Open a generated workbook with headless LibreOffice and compare the cells (requires soffice installed)");
+    test_libreoffice_step.dependOn(&check_run.step);
 }
