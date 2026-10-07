@@ -46,6 +46,7 @@ pub const PageSetup = workbook.PageSetup;
 pub const Paper = workbook.Paper;
 pub const Orientation = workbook.Orientation;
 pub const Margins = workbook.Margins;
+pub const HeaderFooter = workbook.HeaderFooter;
 pub const cm = workbook.cm;
 pub const link_style = workbook.link_style;
 

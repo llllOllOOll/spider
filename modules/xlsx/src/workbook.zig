@@ -64,6 +64,11 @@ pub const Error = error{
     InvalidZoom,
     /// A page margin that is negative, not finite or absurdly large.
     InvalidMargin,
+    /// A print scale outside 10 .. 400, or both a scale and fit-to-page.
+    InvalidPageSetup,
+    /// A header or footer longer than 255 characters or with characters
+    /// XML cannot carry.
+    InvalidHeaderFooter,
     /// A link that is not `http://`, `https://` or `mailto:`, is too
     /// long, or has spaces or control characters.
     InvalidLink,
@@ -147,7 +152,30 @@ pub const PageSetup = struct {
     paper: ?Paper = .a4,
     orientation: Orientation = .portrait,
     margins: Margins = .{},
+    /// Prints at this percentage of the real size, 10 to 400.
+    scale: ?u16 = null,
+    /// Shrinks the sheet to this many pages across; 0 means as many as
+    /// it takes. Cannot be combined with `scale`.
+    fit_to_width: ?u16 = null,
+    /// Likewise, for pages down.
+    fit_to_height: ?u16 = null,
+
+    fn fitsToPage(setup: PageSetup) bool {
+        return setup.fit_to_width != null or setup.fit_to_height != null;
+    }
 };
+
+/// Text printed at the top and bottom of every page, in Excel's
+/// notation: `&L`, `&C` and `&R` start the left, centre and right
+/// parts; `&P` is the page number, `&N` the number of pages, `&D` the
+/// date, `&A` the sheet name; `&&` is a literal `&`.
+/// Example footer: `"&LRelatório&RPágina &P de &N"`.
+pub const HeaderFooter = struct {
+    header: ?[]const u8 = null,
+    footer: ?[]const u8 = null,
+};
+
+pub const max_header_footer_len = 255;
 
 /// Largest margin accepted, in inches: wider than any paper above.
 const max_margin = 49;
@@ -292,6 +320,11 @@ pub const Sheet = struct {
     /// In percent.
     zoom: u16 = 100,
     page_setup: ?PageSetup = null,
+    print_area: ?Range = null,
+    /// Zero-based index of the first row (column) of each new page.
+    row_breaks: std.ArrayList(u32) = .empty,
+    column_breaks: std.ArrayList(u32) = .empty,
+    header_footer: HeaderFooter = .{},
     /// In characters, like column widths.
     default_column_width: ?f64 = null,
     default_row_height: ?f64 = null,
@@ -469,7 +502,47 @@ pub const Sheet = struct {
         for ([_]f64{ m.left, m.right, m.top, m.bottom, m.header, m.footer }) |margin| {
             if (!std.math.isFinite(margin) or margin < 0 or margin > max_margin) return error.InvalidMargin;
         }
+        if (setup.scale) |scale| {
+            if (scale < 10 or scale > 400 or setup.fitsToPage()) return error.InvalidPageSetup;
+        }
         self.page_setup = setup;
+    }
+
+    /// Limits printing to `range`.
+    pub fn setPrintArea(self: *Sheet, range: Range) Error!void {
+        if (range.first_row >= max_rows or range.last_row >= max_rows) return error.RowOutOfRange;
+        if (range.first_col >= max_cols or range.last_col >= max_cols) return error.ColumnOutOfRange;
+        if (range.last_row < range.first_row or range.last_col < range.first_col) return error.InvalidRange;
+        self.print_area = range;
+    }
+
+    /// Starts a new printed page at `row` (which cannot be the first).
+    pub fn addPageBreakBeforeRow(self: *Sheet, row: u32) Error!void {
+        if (row >= max_rows) return error.RowOutOfRange;
+        if (row == 0) return error.InvalidRange;
+        try self.row_breaks.append(self.workbook.arena.allocator(), row);
+    }
+
+    /// Starts a new printed page at `col` (which cannot be the first).
+    pub fn addPageBreakBeforeColumn(self: *Sheet, col: u32) Error!void {
+        if (col >= max_cols) return error.ColumnOutOfRange;
+        if (col == 0) return error.InvalidRange;
+        try self.column_breaks.append(self.workbook.arena.allocator(), col);
+    }
+
+    /// Sets the text printed at the top and bottom of every page; see
+    /// `HeaderFooter` for the notation. The text is copied.
+    pub fn setHeaderFooter(self: *Sheet, header_footer: HeaderFooter) Error!void {
+        const arena = self.workbook.arena.allocator();
+        var copy: HeaderFooter = .{};
+        inline for (.{ "header", "footer" }) |field| {
+            if (@field(header_footer, field)) |text| {
+                checkText(text, max_header_footer_len, error.InvalidHeaderFooter) catch return error.InvalidHeaderFooter;
+                if (!xml.isXmlSafe(text)) return error.InvalidHeaderFooter;
+                @field(copy, field) = try arena.dupe(u8, text);
+            }
+        }
+        self.header_footer = copy;
     }
 
     /// Repeats rows `first_row` to `last_row` at the top of every
@@ -537,6 +610,8 @@ pub const Sheet = struct {
 
         sortUnique(u16, &self.hidden_columns);
         sortUnique(u32, &self.hidden_rows);
+        sortUnique(u32, &self.row_breaks);
+        sortUnique(u32, &self.column_breaks);
 
         std.mem.sort(Link, self.links.items, {}, Link.before);
         kept = 0;
@@ -751,6 +826,15 @@ pub const Workbook = struct {
                 try range.writeAbsolute(w);
                 try w.writeAll("</definedName>");
             }
+            if (sheet.print_area) |range| {
+                if (!any_name) try w.writeAll("<definedNames>");
+                any_name = true;
+                try w.print("<definedName name=\"_xlnm.Print_Area\" localSheetId=\"{d}\">", .{index});
+                try writeQuotedSheetName(w, sheet.name);
+                try w.writeByte('!');
+                try range.writeAbsolute(w);
+                try w.writeAll("</definedName>");
+            }
             if (sheet.print_title_rows) |title_rows| {
                 if (!any_name) try w.writeAll("<definedNames>");
                 any_name = true;
@@ -824,10 +908,15 @@ fn writeSheetRelationships(w: *Writer, sheet: *const Sheet) Writer.Error!void {
 
 /// Writes a worksheet part. Element order is fixed by the format:
 /// dimension, sheetViews, sheetFormatPr, cols, sheetData, autoFilter,
-/// mergeCells, hyperlinks, pageMargins, pageSetup.
+/// sheetPr, dimension, sheetViews, sheetFormatPr, cols, sheetData,
+/// autoFilter, mergeCells, hyperlinks, pageMargins, pageSetup,
+/// headerFooter, rowBreaks, colBreaks.
 fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records: []const u32, string_indexes: []const u32) Writer.Error!void {
     try w.writeAll(xml.declaration);
     try w.writeAll("<worksheet xmlns=\"" ++ ns_main ++ "\" xmlns:r=\"" ++ ns_relationships ++ "\">");
+    if (sheet.page_setup) |setup| {
+        if (setup.fitsToPage()) try w.writeAll("<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>");
+    }
 
     // The used range. A cell with neither value nor style is not
     // written, so it does not count.
@@ -986,7 +1075,39 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
     if (sheet.page_setup) |setup| {
         try w.writeAll("<pageSetup");
         if (setup.paper) |paper| try w.print(" paperSize=\"{d}\"", .{@intFromEnum(paper)});
-        try w.print(" orientation=\"{t}\"/>", .{setup.orientation});
+        if (setup.scale) |scale| try w.print(" scale=\"{d}\"", .{scale});
+        try w.print(" orientation=\"{t}\"", .{setup.orientation});
+        if (setup.fitsToPage()) {
+            // An axis left out means one page; 0 means "as many as needed".
+            try w.print(" fitToWidth=\"{d}\" fitToHeight=\"{d}\"", .{ setup.fit_to_width orelse 1, setup.fit_to_height orelse 1 });
+        }
+        try w.writeAll("/>");
+    }
+    if (sheet.header_footer.header != null or sheet.header_footer.footer != null) {
+        try w.writeAll("<headerFooter>");
+        if (sheet.header_footer.header) |text| {
+            try w.writeAll("<oddHeader>");
+            try xml.writeText(w, text);
+            try w.writeAll("</oddHeader>");
+        }
+        if (sheet.header_footer.footer) |text| {
+            try w.writeAll("<oddFooter>");
+            try xml.writeText(w, text);
+            try w.writeAll("</oddFooter>");
+        }
+        try w.writeAll("</headerFooter>");
+    }
+    // A break is identified by the row (column) above (left of) it,
+    // counted from 1: the zero-based index of the new page's first one.
+    if (sheet.row_breaks.items.len > 0) {
+        try w.print("<rowBreaks count=\"{d}\" manualBreakCount=\"{d}\">", .{ sheet.row_breaks.items.len, sheet.row_breaks.items.len });
+        for (sheet.row_breaks.items) |row| try w.print("<brk id=\"{d}\" max=\"{d}\" man=\"1\"/>", .{ row, max_cols - 1 });
+        try w.writeAll("</rowBreaks>");
+    }
+    if (sheet.column_breaks.items.len > 0) {
+        try w.print("<colBreaks count=\"{d}\" manualBreakCount=\"{d}\">", .{ sheet.column_breaks.items.len, sheet.column_breaks.items.len });
+        for (sheet.column_breaks.items) |col| try w.print("<brk id=\"{d}\" max=\"{d}\" man=\"1\"/>", .{ col, max_rows - 1 });
+        try w.writeAll("</colBreaks>");
     }
     try w.writeAll("</worksheet>");
 }
@@ -2127,4 +2248,58 @@ test "hidden rows and columns" {
         "<row r=\"2\" hidden=\"1\"><c r=\"A2\"><v>6</v></c></row>" ++
         "<row r=\"3\" hidden=\"1\"/>" ++
         "<row r=\"5\" ht=\"30\" customHeight=\"1\" hidden=\"1\"><c r=\"A5\"><v>7</v></c></row>", sheetData(&recorder, "xl/worksheets/sheet1.xml"));
+}
+
+test "print scale, fit to page, print area, page breaks, header and footer" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const scaled = try wb.addSheet("Página 7 (teste)");
+    try scaled.set(0, 0, .int(1));
+    try scaled.setPageSetup(.{ .orientation = .landscape, .scale = 61 });
+    try scaled.setPrintArea(.{ .first_row = 0, .first_col = 0, .last_row = 76, .last_col = 11 });
+    try scaled.setPrintTitleRows(0, 1);
+    try scaled.setAutoFilter(.{ .first_row = 1, .first_col = 0, .last_row = 9, .last_col = 3 });
+    try scaled.addPageBreakBeforeRow(45);
+    try scaled.addPageBreakBeforeRow(90);
+    try scaled.addPageBreakBeforeRow(45);
+    try scaled.addPageBreakBeforeColumn(11);
+    try scaled.setHeaderFooter(.{ .header = "&CRelatório & <resumo>", .footer = "&LPágina &P de &N&R&D" });
+
+    const fitted = try wb.addSheet("Fit");
+    try fitted.setPageSetup(.{ .fit_to_width = 1, .fit_to_height = 0 });
+    try fitted.setHeaderFooter(.{ .footer = "&C&P" });
+
+    try testing.expectError(error.InvalidPageSetup, fitted.setPageSetup(.{ .scale = 9 }));
+    try testing.expectError(error.InvalidPageSetup, fitted.setPageSetup(.{ .scale = 401 }));
+    try testing.expectError(error.InvalidPageSetup, fitted.setPageSetup(.{ .scale = 80, .fit_to_width = 1 }));
+    try testing.expectError(error.InvalidRange, fitted.addPageBreakBeforeRow(0));
+    try testing.expectError(error.InvalidRange, fitted.addPageBreakBeforeColumn(0));
+    try testing.expectError(error.RowOutOfRange, fitted.addPageBreakBeforeRow(max_rows));
+    try testing.expectError(error.InvalidRange, fitted.setPrintArea(.{ .first_row = 3, .first_col = 0, .last_row = 2, .last_col = 0 }));
+    const long: [256]u8 = @splat('a');
+    try testing.expectError(error.InvalidHeaderFooter, fitted.setHeaderFooter(.{ .header = &long }));
+    try testing.expectError(error.InvalidHeaderFooter, fitted.setHeaderFooter(.{ .footer = "bad\x01" }));
+
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    const first = recorder.part("xl/worksheets/sheet1.xml").?;
+    try testing.expect(std.mem.endsWith(u8, first, default_margins ++
+        "<pageSetup paperSize=\"9\" scale=\"61\" orientation=\"landscape\"/>" ++
+        "<headerFooter><oddHeader>&amp;CRelatório &amp; &lt;resumo&gt;</oddHeader><oddFooter>&amp;LPágina &amp;P de &amp;N&amp;R&amp;D</oddFooter></headerFooter>" ++
+        "<rowBreaks count=\"2\" manualBreakCount=\"2\"><brk id=\"45\" max=\"16383\" man=\"1\"/><brk id=\"90\" max=\"16383\" man=\"1\"/></rowBreaks>" ++
+        "<colBreaks count=\"1\" manualBreakCount=\"1\"><brk id=\"11\" max=\"1048575\" man=\"1\"/></colBreaks>" ++
+        "</worksheet>"));
+    try testing.expect(std.mem.indexOf(u8, first, "<sheetPr>") == null);
+
+    const second = recorder.part("xl/worksheets/sheet2.xml").?;
+    // Fit to page is declared at the top of the part and detailed at the bottom.
+    try testing.expect(std.mem.startsWith(u8, second, worksheet_open ++ "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr><dimension"));
+    try testing.expect(std.mem.endsWith(u8, second, "<pageSetup paperSize=\"9\" orientation=\"portrait\" fitToWidth=\"1\" fitToHeight=\"0\"/>" ++
+        "<headerFooter><oddFooter>&amp;C&amp;P</oddFooter></headerFooter></worksheet>"));
+
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/workbook.xml").?, "<definedNames>" ++
+        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Página 7 (teste)'!$A$2:$D$10</definedName>" ++
+        "<definedName name=\"_xlnm.Print_Area\" localSheetId=\"0\">'Página 7 (teste)'!$A$1:$L$77</definedName>" ++
+        "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'Página 7 (teste)'!$1:$2</definedName>" ++
+        "</definedNames>") != null);
 }
