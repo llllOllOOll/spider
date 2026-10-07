@@ -93,7 +93,14 @@ pub const Style = struct {
     font_size: ?f32 = null,
     /// Background colour as `0xRRGGBB`.
     fill: ?u24 = null,
+    /// The line on the four sides of the cell.
     border: Border = .none,
+    /// One side only; when set, it replaces `border` for that side
+    /// (`.none` removes the line there).
+    border_left: ?Border = null,
+    border_right: ?Border = null,
+    border_top: ?Border = null,
+    border_bottom: ?Border = null,
     number_format: NumberFormat = .general,
     h_align: HorizontalAlignment = .general,
     v_align: VerticalAlignment = .bottom,
@@ -125,7 +132,8 @@ const Key = struct {
     font: FontKey,
     has_fill: bool,
     fill: u24,
-    border: Border,
+    /// Left, right, top, bottom.
+    border: [4]Border,
     custom_format: bool,
     /// A built-in format id, or an index into `Registry.custom_formats`.
     format: u16,
@@ -138,7 +146,7 @@ const Key = struct {
         .font = .default,
         .has_fill = false,
         .fill = 0,
-        .border = .none,
+        .border = @splat(.none),
         .custom_format = false,
         .format = 0,
         .h_align = .general,
@@ -202,7 +210,12 @@ pub const Registry = struct {
             },
             .has_fill = style.fill != null,
             .fill = style.fill orelse 0,
-            .border = style.border,
+            .border = .{
+                style.border_left orelse style.border,
+                style.border_right orelse style.border,
+                style.border_top orelse style.border,
+                style.border_bottom orelse style.border,
+            },
             .custom_format = false,
             .format = 0,
             .h_align = style.h_align,
@@ -266,7 +279,7 @@ pub const Registry = struct {
     pub fn write(self: *const Registry, w: *Writer, scratch: std.mem.Allocator, used: []const u16) (Writer.Error || error{OutOfMemory})!void {
         var fills: std.ArrayList(u24) = .empty;
         defer fills.deinit(scratch);
-        var borders: std.ArrayList(Border) = .empty;
+        var borders: std.ArrayList([4]Border) = .empty;
         defer borders.deinit(scratch);
         var formats: std.ArrayList(u16) = .empty;
         defer formats.deinit(scratch);
@@ -286,8 +299,8 @@ pub const Registry = struct {
                 // Fills 0 and 1 are fixed by the format (see below).
                 record.fill = 2 + @as(u32, @intCast(try indexOrAppend(u24, scratch, &fills, key.fill)));
             }
-            if (key.border != .none) {
-                record.border = 1 + @as(u32, @intCast(try indexOrAppend(Border, scratch, &borders, key.border)));
+            if (!std.meta.eql(key.border, Key.default.border)) {
+                record.border = 1 + @as(u32, @intCast(try indexOrAppend([4]Border, scratch, &borders, key.border)));
             }
             if (key.custom_format) {
                 record.format = first_custom_format_id + @as(u32, @intCast(try indexOrAppend(u16, scratch, &formats, key.format)));
@@ -345,8 +358,12 @@ pub const Registry = struct {
         try w.writeAll("<border><left/><right/><top/><bottom/><diagonal/></border>");
         for (borders.items) |border| {
             try w.writeAll("<border>");
-            for ([_][]const u8{ "left", "right", "top", "bottom" }) |side| {
-                try w.print("<{s} style=\"{t}\"><color auto=\"1\"/></{s}>", .{ side, border, side });
+            for ([_][]const u8{ "left", "right", "top", "bottom" }, border) |side, line| {
+                if (line == .none) {
+                    try w.print("<{s}/>", .{side});
+                } else {
+                    try w.print("<{s} style=\"{t}\"><color auto=\"1\"/></{s}>", .{ side, line, side });
+                }
             }
             try w.writeAll("<diagonal/></border>");
         }
@@ -643,4 +660,32 @@ test "shrink to fit is an alignment flag" {
     try testing.expect(std.mem.indexOf(u8, out.written(), "applyAlignment=\"1\"><alignment shrinkToFit=\"1\"/></xf>" ++
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\">" ++
         "<alignment horizontal=\"center\" vertical=\"center\" shrinkToFit=\"1\"/></xf>") != null);
+}
+
+test "borders can differ per side" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var registry: Registry = .{};
+
+    // Sides spelled out equal to `border` are the same style.
+    const all_thin = try registry.intern(arena, .{ .border = .thin });
+    try testing.expectEqual(all_thin, try registry.intern(arena, .{ .border_left = .thin, .border_right = .thin, .border_top = .thin, .border_bottom = .thin }));
+    try testing.expectEqual(@as(u16, 0), try registry.intern(arena, .{ .border_top = .none }));
+
+    const underline_only = try registry.intern(arena, .{ .border_bottom = .thin });
+    const open_top = try registry.intern(arena, .{ .border = .thin, .border_top = .none });
+    const mixed = try registry.intern(arena, .{ .border = .thin, .border_bottom = .thick, .border_left = .medium });
+
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try registry.write(&out.writer, testing.allocator, &.{ underline_only, open_top, mixed });
+    try testing.expect(std.mem.indexOf(u8, out.written(), "<borders count=\"4\">" ++
+        "<border><left/><right/><top/><bottom/><diagonal/></border>" ++
+        "<border><left/><right/><top/><bottom style=\"thin\"><color auto=\"1\"/></bottom><diagonal/></border>" ++
+        "<border><left style=\"thin\"><color auto=\"1\"/></left><right style=\"thin\"><color auto=\"1\"/></right>" ++
+        "<top/><bottom style=\"thin\"><color auto=\"1\"/></bottom><diagonal/></border>" ++
+        "<border><left style=\"medium\"><color auto=\"1\"/></left><right style=\"thin\"><color auto=\"1\"/></right>" ++
+        "<top style=\"thin\"><color auto=\"1\"/></top><bottom style=\"thick\"><color auto=\"1\"/></bottom><diagonal/></border>" ++
+        "</borders>") != null);
 }
