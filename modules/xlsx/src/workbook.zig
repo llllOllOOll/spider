@@ -1387,3 +1387,158 @@ test "row heights, with and without cells in the row" {
     // Rows that only have a height are not part of the used range.
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/worksheets/sheet1.xml").?, "<dimension ref=\"A1:B6\"/>") != null);
 }
+
+// The tests below each cover one way real spreadsheets were seen to
+// behave (a register of people with phones and document numbers). The
+// data here is made up.
+
+/// Writes a one-sheet workbook and returns the recorder holding its parts.
+fn record(wb: *Workbook) !Recorder {
+    var recorder: Recorder = .init();
+    errdefer recorder.deinit();
+    try wb.writeToPackager(recorder.packager());
+    return recorder;
+}
+
+test "real data: text with spaces at the edges and doubled inside is kept as typed" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    try sheet.setRow(0, 0, &.{ .{ .text = "Fulano de Tal " }, .{ .text = " A" }, .{ .text = "Rua  das  Flores" } }, .{});
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, "<si><t xml:space=\"preserve\">Fulano de Tal </t></si>" ++
+        "<si><t xml:space=\"preserve\"> A</t></si>" ++
+        "<si><t>Rua  das  Flores</t></si>") != null);
+}
+
+test "real data: several lines in one cell" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    try sheet.setStyled(0, 0, .{ .text = "(11) 91234-5678\n(11) 3456-7890" }, .{ .wrap = true });
+    try sheet.set(0, 1, .{ .text = "ends with a break\n" });
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, "<si><t>(11) 91234-5678\n(11) 3456-7890</t></si>" ++
+        "<si><t xml:space=\"preserve\">ends with a break\n</t></si>") != null);
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/styles.xml").?, "<alignment wrapText=\"1\"/>") != null);
+}
+
+test "real data: document numbers of 11 and 14 digits stored as numbers, shown zero-padded" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    const cpf: Style = .{ .number_format = .{ .custom = "00000000000" } };
+    const cnpj: Style = .{ .number_format = .{ .custom = "00000000000000" } };
+    try sheet.setStyled(0, 0, .int(12345678901), cpf);
+    try sheet.setStyled(1, 0, .int(1234567890), cpf); // shown as 01234567890
+    try sheet.setStyled(2, 0, .int(12345678000199), cnpj);
+    try sheet.setStyled(3, 0, .int(99999999999999), cnpj);
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    // Every digit survives: 14 digits are well inside a double's 15.
+    try testing.expectEqualStrings("<row r=\"1\"><c r=\"A1\" s=\"1\"><v>12345678901</v></c></row>" ++
+        "<row r=\"2\"><c r=\"A2\" s=\"1\"><v>1234567890</v></c></row>" ++
+        "<row r=\"3\"><c r=\"A3\" s=\"2\"><v>12345678000199</v></c></row>" ++
+        "<row r=\"4\"><c r=\"A4\" s=\"2\"><v>99999999999999</v></c></row>", sheetData(&recorder, "xl/worksheets/sheet1.xml"));
+    const styles_xml = recorder.part("xl/styles.xml").?;
+    try testing.expect(std.mem.indexOf(u8, styles_xml, "<numFmt numFmtId=\"164\" formatCode=\"00000000000\"/>" ++
+        "<numFmt numFmtId=\"165\" formatCode=\"00000000000000\"/>") != null);
+}
+
+test "real data: digits typed as text stay text, leading zeros included" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    try sheet.setRow(0, 0, &.{ .{ .text = "07" }, .{ .text = "45" }, .{ .text = "123.456.789-09" }, .{ .text = "12.345.678/0001-99" }, .{ .text = "(11) 91234-5678" } }, .{});
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    const data = sheetData(&recorder, "xl/worksheets/sheet1.xml");
+    try testing.expectEqual(@as(usize, 5), std.mem.count(u8, data, " t=\"s\">"));
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, "<si><t>07</t></si><si><t>45</t></si>" ++
+        "<si><t>123.456.789-09</t></si><si><t>12.345.678/0001-99</t></si><si><t>(11) 91234-5678</t></si>") != null);
+}
+
+test "real data: accents, a non-breaking space and markup characters" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    try sheet.setRow(0, 0, &.{ .{ .text = "FULANO AÇÃO" }, .{ .text = "Lote\u{00A0}12" }, .{ .text = "Exemplo & Teste <matriz>" } }, .{});
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, "<si><t>FULANO AÇÃO</t></si>" ++
+        "<si><t>Lote\u{00A0}12</t></si>" ++
+        "<si><t>Exemplo &amp; Teste &lt;matriz&gt;</t></si>") != null);
+}
+
+test "real data: the same text in many cells is stored once" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    for (0..600) |row| {
+        try sheet.set(@intCast(row), 0, .{ .text = if (row % 3 == 0) "Inquilino" else "Proprietário" });
+    }
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, " count=\"600\" uniqueCount=\"2\">" ++
+        "<si><t>Inquilino</t></si><si><t>Proprietário</t></si></sst>") != null);
+}
+
+test "real data: empty cells in the middle of a row keep their borders" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    const boxed: Style = .{ .border = .thin, .fill = 0xFFFFFF };
+    try sheet.setRow(0, 0, &.{ .{ .text = "A" }, .blank, .{ .text = "Nome" }, .blank, .blank, .int(7) }, boxed);
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    try testing.expectEqualStrings("<row r=\"1\"><c r=\"A1\" s=\"1\" t=\"s\"><v>0</v></c><c r=\"B1\" s=\"1\"/>" ++
+        "<c r=\"C1\" s=\"1\" t=\"s\"><v>1</v></c><c r=\"D1\" s=\"1\"/><c r=\"E1\" s=\"1\"/><c r=\"F1\" s=\"1\"><v>7</v></c></row>", sheetData(&recorder, "xl/worksheets/sheet1.xml"));
+}
+
+test "real data: a title above the header, the filter starting on the third row, rows skipped" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    try sheet.setStyled(1, 0, .{ .text = "Cadastro" }, .{ .bold = true, .h_align = .center });
+    try sheet.mergeCells(.{ .first_row = 1, .first_col = 0, .last_row = 1, .last_col = 2 });
+    try sheet.setRow(2, 0, &.{ .{ .text = "Quadra" }, .{ .text = "Lote" }, .{ .text = "Nome" } }, .{ .bold = true });
+    try sheet.setRow(3, 0, &.{ .{ .text = "A" }, .int(1), .{ .text = "Fulano" } }, .{});
+    // Rows 5 to 9 do not exist in the file; a note sits further down.
+    try sheet.set(9, 0, .{ .text = "Obs." });
+    try sheet.setAutoFilter(.{ .first_row = 2, .first_col = 0, .last_row = 3, .last_col = 2 });
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    const content = recorder.part("xl/worksheets/sheet1.xml").?;
+    try testing.expect(std.mem.indexOf(u8, content, "<dimension ref=\"A2:C10\"/>") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "<sheetData><row r=\"2\">") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "</row><row r=\"4\">") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "</row><row r=\"10\">") != null);
+    try testing.expect(std.mem.endsWith(u8, content, "<autoFilter ref=\"A3:C4\"/><mergeCells count=\"1\"><mergeCell ref=\"A2:C2\"/></mergeCells></worksheet>"));
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/workbook.xml").?, "'S'!$A$3:$C$4</definedName>") != null);
+}
+
+test "real data: a sheet of many differently styled cells shares a handful of records" {
+    const wb = try Workbook.init(testing.allocator);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("S");
+    const base: Style = .{ .font_name = "Times New Roman", .font_size = 10, .border = .thin, .fill = 0xFFFFFF, .v_align = .center };
+    var centered = base;
+    centered.h_align = .center;
+    var wrapped = base;
+    wrapped.wrap = true;
+    for (0..300) |row| {
+        try sheet.setStyled(@intCast(row), 0, .{ .text = "A" }, centered);
+        try sheet.setStyled(@intCast(row), 1, .int(row), centered);
+        try sheet.setStyled(@intCast(row), 2, .{ .text = "Nome Sobrenome" }, wrapped);
+        try sheet.setStyled(@intCast(row), 3, .blank, base);
+    }
+    var recorder = try record(wb);
+    defer recorder.deinit();
+    const styles_xml = recorder.part("xl/styles.xml").?;
+    try testing.expect(std.mem.indexOf(u8, styles_xml, "<fonts count=\"2\">") != null);
+    try testing.expect(std.mem.indexOf(u8, styles_xml, "<fills count=\"3\">") != null);
+    try testing.expect(std.mem.indexOf(u8, styles_xml, "<borders count=\"2\">") != null);
+    try testing.expect(std.mem.indexOf(u8, styles_xml, "<cellXfs count=\"4\">") != null);
+}

@@ -78,6 +78,8 @@ copied, so the caller's buffers can be reused right away.
 | `sheet.setStyled(row, col, value, style)` | Sets a cell and its style. |
 | `sheet.setRow(row, first_col, values, style)` | Sets consecutive cells of a row. |
 | `sheet.setColumnWidth(col, characters)` | Column width, 0 to 255. |
+| `sheet.setRowHeight(row, points)` | Row height, 0 to 409. |
+| `sheet.mergeCells(range)` | Merges a rectangle of cells into one. |
 | `sheet.freeze(rows, cols)` | Frozen panes; `freeze(1, 0)` pins a header. |
 | `sheet.setAutoFilter(range)` | Filter buttons on the range's first row. |
 | `wb.toOwnedSlice(allocator)` | The file as bytes. |
@@ -88,10 +90,19 @@ Values (`xlsx.Value`): `.blank`, `.{ .text = … }`, `.{ .number = … }`,
 `.int(n)`, `.{ .boolean = … }`, `.{ .date = … }`, `.{ .datetime = … }`,
 `.{ .formula = … }`.
 
-Style (`xlsx.Style`): `bold`, `fill` (`0xRRGGBB`), `border` (`.thin`,
-`.medium`, `.thick`), `number_format` (`.integer`, `.decimal`, `.thousands`,
-`.thousands_decimal`, `.percent`, `.percent_decimal`, `.date`, `.time`,
-`.datetime`, `.text`, or `.{ .custom = "dd/mm/yyyy" }`).
+Style (`xlsx.Style`):
+
+- font: `bold`, `italic`, `underline`, `font_color` (`0xRRGGBB`),
+  `font_name` (e.g. `"Times New Roman"`), `font_size` (points);
+- `fill` (`0xRRGGBB`) and `border` (`.thin`, `.medium`, `.thick`, on the
+  four sides);
+- alignment: `h_align` (`.left`, `.center`, `.right`), `v_align` (`.top`,
+  `.center`, `.bottom`), `wrap`;
+- `number_format`: `.integer`, `.decimal`, `.thousands`,
+  `.thousands_decimal`, `.percent`, `.percent_decimal`, `.date`, `.time`,
+  `.datetime`, `.text`, or `.{ .custom = "dd/mm/yyyy" }`.
+
+A style is a plain value: build one, copy it, change a field.
 
 ## What to know
 
@@ -110,6 +121,12 @@ Style (`xlsx.Style`): `bold`, `fill` (`0xRRGGBB`), `border` (`.thin`,
   per sheet name, 65,490 styles. Errors are values of `xlsx.Error`
   (`RowOutOfRange`, `TextTooLong`, `InvalidSheetName`, …); nothing is
   printed.
+- **Line breaks need `wrap`.** A `\n` in text is kept, but a spreadsheet
+  only shows it as a new line in a cell whose style has `wrap = true`.
+- **Merged cells take their borders from every cell of the range.** Give
+  the blank cells of the range the same style as the first one.
+- **Document numbers and zeros on the left**: write the number with a
+  custom format such as `"00000000000"`, or write it as text.
 - **Only what is used is written**: styles and texts that no cell ends up
   using are left out.
 - **The output is deterministic**: the same calls give the same bytes.
@@ -119,9 +136,12 @@ Style (`xlsx.Style`): `bold`, `fill` (`0xRRGGBB`), `border` (`.thin`,
 ## Not supported
 
 Reading files, streamed writing for very large sheets, compression, zip64
-(files or parts past 4 GiB), merged cells, text colour, italics, alignment,
-row heights, hyperlinks, comments, images, charts, pivot tables, the 1904
-date system, document properties and themes, editing an existing file.
+(files or parts past 4 GiB), hyperlinks, borders that differ per side,
+shrink-to-fit, column default styles, zoom, page setup (paper size,
+orientation, margins, print titles), conditional formatting, data
+validation, protection, hidden rows and columns, rich text inside a cell,
+comments, images, charts, pivot tables, the 1904 date system, document
+properties and themes, editing an existing file.
 
 ## Design notes
 

@@ -12,8 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `spider.xlsx`: writing Excel `.xlsx` files, in pure Zig (`std` only), as
   an opt-in module (`.xlsx = true` on the dependency, `-Dxlsx=true` here; the
   default build does not compile it). Several sheets; text, numbers,
-  booleans, dates and formulas; column widths; bold, background colour,
-  borders and number formats; frozen panes; a filter per sheet. The file is
+  booleans, dates and formulas; column widths and row heights; fonts (name,
+  size, colour, bold, italic, underline), background colour, borders,
+  alignment, wrapped text and number formats; merged cells; frozen panes; a
+  filter per sheet. The file is
   built in memory and returned as bytes or written to any `std.Io.Writer`.
   User text is always written as text, so it can never become a formula.
   Entries are stored uncompressed for now; no reading and no streamed

@@ -12,8 +12,9 @@
 //!     const bytes = try wb.toOwnedSlice(allocator);
 //!
 //! Scope: several sheets; text, numbers, booleans, dates and formulas;
-//! column widths; bold, background colour, borders and number formats;
-//! frozen panes; a filter per sheet. Reading files, streamed writing,
+//! column widths and row heights; fonts, background colour, borders,
+//! alignment, wrapped text and number formats; merged cells; frozen
+//! panes; a filter per sheet. Reading files, streamed writing,
 //! compression, charts and images are not implemented (see README.md).
 
 const std = @import("std");

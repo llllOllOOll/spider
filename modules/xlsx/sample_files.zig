@@ -110,6 +110,44 @@ fn everything(gpa: std.mem.Allocator) !*xlsx.Workbook {
     try numbers.set(23, 0, text("Borda grossa"));
     try numbers.setStyled(23, 1, text("grossa"), .{ .border = .thick });
 
+    const layout = try wb.addSheet("Aparência");
+    const layout_widths = [_]f64{ 12, 12, 40, 26 };
+    for (layout_widths, 0..) |width, col| try layout.setColumnWidth(@intCast(col), width);
+    const boxed: xlsx.Style = .{ .font_name = "Times New Roman", .font_size = 10, .border = .thin, .v_align = .center };
+    var title = boxed;
+    title.bold = true;
+    title.font_size = 14;
+    title.h_align = .center;
+    try layout.setRow(0, 0, &.{ text("CADASTRO DE EXEMPLO — TÍTULO MESCLADO E CENTRALIZADO"), .blank, .blank, .blank }, title);
+    try layout.mergeCells(.{ .first_row = 0, .first_col = 0, .last_row = 0, .last_col = 3 });
+    try layout.setRowHeight(0, 30);
+    var column_title = boxed;
+    column_title.bold = true;
+    column_title.fill = 0xD7E4BD;
+    column_title.h_align = .center;
+    try layout.setRow(1, 0, &.{ text("Quadra"), text("Lote"), text("Nome"), text("Telefone") }, column_title);
+    var centered = boxed;
+    centered.h_align = .center;
+    var wrapped = boxed;
+    wrapped.wrap = true;
+    var right = boxed;
+    right.h_align = .right;
+    try layout.setStyled(2, 0, text("A"), centered);
+    try layout.setStyled(2, 1, .int(12), centered);
+    try layout.setStyled(2, 2, text("Texto comprido que não cabe na largura da coluna e por isso quebra em várias linhas dentro da célula"), wrapped);
+    try layout.setStyled(2, 3, text("(11) 91234-5678\n(11) 3456-7890"), wrapped);
+    try layout.setRowHeight(2, 52);
+    try layout.setStyled(3, 0, text("B"), centered);
+    try layout.setStyled(3, 1, .int(7), centered);
+    try layout.setStyled(3, 2, text("Alinhado à direita"), right);
+    try layout.setStyled(3, 3, .blank, boxed);
+    try layout.setStyled(5, 2, text("Itálico"), .{ .italic = true });
+    try layout.setStyled(6, 2, text("Sublinhado e azul"), .{ .underline = true, .font_color = 0x0000FF });
+    try layout.setStyled(7, 2, text("Vermelho, negrito, tamanho 16"), .{ .bold = true, .font_color = 0xC00000, .font_size = 16 });
+    try layout.setStyled(8, 2, text("Fonte Courier New"), .{ .font_name = "Courier New" });
+    try layout.setStyled(9, 2, text("No alto da célula"), .{ .v_align = .top, .border = .thin });
+    try layout.setRowHeight(9, 40);
+
     // Exactly 31 characters, with accents and a dash.
     const long_name = try wb.addSheet("Relatório de ocupação — bloco A");
     try long_name.setColumnWidth(0, 60);
