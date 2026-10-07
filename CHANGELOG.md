@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `c.download(bytes, .{ .filename, .content_type })`: answers with a file.
+  It sets `Content-Disposition: attachment` (or `.disposition = .@"inline"`),
+  the content type and `X-Content-Type-Options: nosniff`. The file name may
+  come from user data: paths, control characters, line breaks and quotes
+  are removed, it is cut to 120 bytes, and accents and emoji are sent as
+  `filename*=UTF-8''…` beside an ASCII name. `spider.content_types` has
+  `xlsx`, `csv`, `pdf` and `binary`. An addition only: nothing existing
+  changes.
 - `spider.xlsx` also **reads** `.xlsx` files: `xlsx.Reader.open(gpa, bytes,
   limits)` lists the sheets and `rows(sheet, .{})` iterates typed rows
   (text, number, boolean, date, time, error; the number format code with

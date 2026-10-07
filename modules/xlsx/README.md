@@ -58,14 +58,10 @@ fn exportPoll(c: *spider.Ctx) !spider.Response {
     try sheet.freeze(1, 0); // keep the header row in view
     try sheet.setAutoFilter(.{ .first_row = 0, .first_col = 0, .last_row = 1, .last_col = 2 });
 
-    const bytes = try wb.toOwnedSlice(c.arena);
-    return .{
-        .body = bytes,
-        .headers = &.{
-            .{ "Content-Type", xlsx.content_type },
-            .{ "Content-Disposition", "attachment; filename=\"poll.xlsx\"" },
-        },
-    };
+    return c.download(try wb.toOwnedSlice(c.arena), .{
+        .filename = "poll.xlsx", // may be user data: it is made safe
+        .content_type = spider.content_types.xlsx,
+    });
 }
 ```
 

@@ -77,6 +77,7 @@ src/core/
                       writeRoutes (SPIDER_ROUTES / `spider routes`)
   handler.zig         handler wrapping shared by Server and Group (extractors)
   context.zig         Ctx (per-request API), Response, statusForError()
+  download.zig        Content-Disposition for c.download (file-name rules)
   extractors.zig      spider.Path(T, name) / spider.Form(T) handler params
   watchdog.zig        connection deadlines (idle/header/body/stream write)
 src/routing/          router (trie + static map; RouteMeta), Group (defaults, use),

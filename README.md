@@ -311,6 +311,7 @@ return c.view("users/index", .{ .users = users }, .{});          // a view by na
 return c.viewFragment("users/index", "UserRow", data, .{});     // one component (htmx partial)
 return c.render("<p>{ name }</p>", .{ .name = "Ana" }, .{});    // a template string
 return c.redirect("/login");
+return c.download(bytes, .{ .filename = "relatório.csv", .content_type = spider.content_types.csv }); // a file
 return error.NotFound;                                           // → 404 (onError / default mapping)
 ```
 
@@ -985,6 +986,50 @@ const public_url = try r2.publicUrl(c.arena, "folder/file.txt");
 
 For large uploads, let the browser `PUT` to a presigned URL instead of going
 through the app.
+
+### File downloads
+
+```zig
+fn exportCsv(c: *spider.Ctx) !spider.Response {
+    const csv = try buildCsv(c.arena); // any bytes
+    return c.download(csv, .{
+        .filename = "Relatório de março.csv", // may come from user data
+        .content_type = spider.content_types.csv,
+    });
+}
+```
+
+`c.download(bytes, opts)` answers with `Content-Disposition: attachment`, the
+content type and `X-Content-Type-Options: nosniff`.
+
+- **The file name can be anything**, including text a user typed: only the
+  last part of a path is kept, control characters, line breaks and quotes
+  are removed, it is cut to 120 bytes, and an empty result becomes
+  `download`. Accents and emoji are sent the way browsers expect
+  (`filename*=UTF-8''…`), with an ASCII version for old clients.
+- **Options**: `.filename`, `.content_type` (default
+  `spider.content_types.binary`; also `.xlsx`, `.csv`, `.pdf`, or any
+  `type/subtype` string), `.disposition = .@"inline"` to show the file in
+  the browser instead of saving it, `.status`, `.headers`, `.cookies`.
+- **The bytes are not copied**: they must live until the response is sent.
+  Memory from `c.arena` does.
+- A content type with a line break is `error.InvalidContentType`.
+
+With `spider.xlsx` (opt-in, see `modules/xlsx/README.md`):
+
+```zig
+fn exportPoll(c: *spider.Ctx) !spider.Response {
+    const wb = try spider.xlsx.Workbook.init(c.arena);
+    defer wb.deinit();
+    const sheet = try wb.addSheet("Resultado");
+    try sheet.setRow(0, 0, &.{ .{ .text = "Opção" }, .{ .text = "Votos" } }, .{ .bold = true });
+    try sheet.setRow(1, 0, &.{ .{ .text = "Sim" }, .int(12) }, .{});
+    return c.download(try wb.toOwnedSlice(c.arena), .{
+        .filename = "resultado.xlsx",
+        .content_type = spider.content_types.xlsx,
+    });
+}
+```
 
 ---
 
