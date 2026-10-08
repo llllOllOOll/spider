@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A generated app with SQLite did not link in a release build
+  (`zig build -Doptimize=ReleaseSmall`, which is what its Dockerfile runs):
+  undefined `__ubsan_handle_*` symbols. The app's `build.zig` did not pass
+  its optimize mode to Spider, so the bundled SQLite stayed in Debug. New
+  apps pass `.optimize = optimize`; in an existing app, add that line to
+  `b.dependency("spider", .{ ... })`.
 - HTTP client (`spider.http_client`):
   - A persistent `Client` opened a new connection for every request whose
     response was compressed and chunked (most APIs): the end of the body

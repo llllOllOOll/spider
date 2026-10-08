@@ -6,6 +6,9 @@ pub fn build(b: *std.Build) void {
 
     const spider_dep = b.dependency("spider", .{
         .target = target,
+        // Spider and what it builds (its drivers, the bundled SQLite) follow
+        // the app's mode. Without this they stay in Debug in a release build.
+        .optimize = optimize,
         // I/O backend: comment one line and uncomment the other.
         .io_backend = .threaded, // OS threads, blocking sockets (default)
         // .io_backend = .zio, // fibers on an event loop (epoll)
