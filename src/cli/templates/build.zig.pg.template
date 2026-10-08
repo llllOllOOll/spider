@@ -95,8 +95,10 @@ pub fn build(b: *std.Build) void {
     features_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/features", &.{}));
 
     // `spider dev` runs `zig build dev --watch`: build the app, then tell the
-    // supervisor where the new binary is.
-    _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe);
+    // supervisor where the new binary is and whether the stylesheet changed.
+    const dev = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{
+        .assets = &.{"public/css/app.css"},
+    });
 
     // Check if frontend assets are installed
     const has_assets = blk: {
@@ -116,7 +118,14 @@ pub fn build(b: *std.Build) void {
         css.step.dependOn(&install_cmd.step);
     }
 
+    // Tailwind reads the stylesheets and looks for class names in the
+    // sources: under `zig build --watch` it reruns when one of them changes.
+    spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".zig", ".js" });
+
     const css_step = b.step("css", "Build CSS with Tailwind");
     css_step.dependOn(&css.step);
-    exe.step.dependOn(&css.step);
+    // The stylesheet is served from disk, so it is built alongside the
+    // binary rather than before it, and is ready before the browser reloads.
+    b.getInstallStep().dependOn(&css.step);
+    dev.step.dependOn(&css.step);
 }

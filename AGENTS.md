@@ -175,7 +175,10 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   browser reload lives in the server, same origin, Debug builds only, on
   when SPIDER_DEV is set: script tag injected into HTML responses, plus
   `/_spider/dev.js` and the `/_spider/dev` WebSocket answered before
-  routing. Keep it same-origin (apps send `script-src 'self'`).
+  routing. Keep it same-origin (apps send `script-src 'self'`). A build
+  that changes only the assets (CSS) rewrites the reload file named in
+  SPIDER_DEV; the dev socket polls it and sends `reload`. Build helpers in
+  build.zig: `devStep` (notify step; never cached) and `watchSources`.
 - **Before routing** (`handleConnection`): `max_body_bytes` (413, checked on
   Content-Length before reading), static files (ETag; `immutable` with `?v=`;
   304), then `origin_check` (core/origin.zig: cross-site unsafe method or WS

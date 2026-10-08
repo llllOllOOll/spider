@@ -90,5 +90,5 @@ pub fn build(b: *std.Build) void {
 
     // `spider dev` runs `zig build dev --watch`: build the app, then tell the
     // supervisor where the new binary is.
-    _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe);
+    _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{});
 }

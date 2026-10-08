@@ -27,13 +27,15 @@ const fs_utils = @import("fs_utils.zig");
 /// The variable the build's notify tool reads (src/dev_notify_tool.zig).
 pub const built_env = "SPIDER_DEV_BUILT";
 
-/// Set for the app: turns on the browser reload in the server
-/// (src/modules/dev_reload.zig; Debug builds only).
+/// Set for the app, to the path of the reload file: turns on the browser
+/// reload in the server (src/modules/dev_reload.zig; Debug builds only).
 pub const app_env = "SPIDER_DEV";
 
 /// Everything `spider dev` writes, inside the project's build cache.
 const state_dir = ".zig-cache/spider-dev";
 const built_file = state_dir ++ "/built";
+/// Rewritten to ask the running app to reload its browsers.
+const reload_file = state_dir ++ "/reload";
 const lock_file = state_dir ++ "/pid";
 
 pub const Options = struct {
@@ -53,6 +55,8 @@ pub const Options = struct {
 pub const Summary = struct {
     /// How many times an app process was started.
     starts: u32 = 0,
+    /// How many times the running app was asked to reload its browsers.
+    reloads: u32 = 0,
 };
 
 /// Incremental compilation is only supported by Zig 0.17 on x86_64 Linux.
@@ -168,13 +172,26 @@ const BinaryStamp = struct {
     }
 };
 
-/// What the notify tool wrote: the executable's path and, after it, a
-/// stamp that changes on every build.
-pub fn builtExecutable(content: []const u8) ?[]const u8 {
-    const end = std.mem.indexOfScalar(u8, content, '\n') orelse return null;
-    const path = std.mem.trim(u8, content[0..end], " \r\t");
-    return if (path.len == 0) null else path;
-}
+/// What the notify tool wrote (src/dev_notify_tool.zig).
+pub const Notice = struct {
+    /// The built executable.
+    exe: []const u8,
+    /// A hash of what the page uses besides the binary; "-" when the build
+    /// names nothing.
+    assets: []const u8,
+
+    /// Line 1 is the executable, line 2 a stamp that changes on every
+    /// build, line 3 the assets.
+    pub fn parse(content: []const u8) ?Notice {
+        if (std.mem.indexOfScalar(u8, content, '\n') == null) return null;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        const exe = std.mem.trim(u8, lines.next() orelse return null, " \r\t");
+        if (exe.len == 0) return null;
+        _ = lines.next();
+        const assets = std.mem.trim(u8, lines.next() orelse "", " \r\t");
+        return .{ .exe = exe, .assets = if (assets.len == 0) "-" else assets };
+    }
+};
 
 fn say(opts: Options, comptime fmt: []const u8, args: anytype) void {
     if (opts.quiet) return;
@@ -235,7 +252,11 @@ pub fn supervise(
 
     var app_environ = try environ.clone(gpa);
     defer app_environ.deinit();
-    try app_environ.put(app_env, "1");
+    const reload_path = try std.fs.path.join(gpa, &.{ root_path, reload_file });
+    defer gpa.free(reload_path);
+    try app_environ.put(app_env, reload_path);
+    root.deleteFile(io, reload_file) catch {};
+    var reloads: u32 = 0;
 
     const build_argv = opts.build_argv orelse default_build_argv;
     say(opts, "building ({s})", .{if (opts.build_argv == null and incremental_supported) "incremental" else "watch"});
@@ -260,6 +281,9 @@ pub fn supervise(
     // binary more than once (an editor's save is often two file events, so
     // two builds): that is not a new build.
     var running_from: ?BinaryStamp = null;
+    // The assets the running app's pages were last told about.
+    var running_assets: []u8 = try gpa.dupe(u8, "");
+    defer gpa.free(running_assets);
     // The copy the running app executes; deleted when the next one starts.
     var running_copy: ?[]u8 = null;
     defer if (running_copy) |path| {
@@ -281,13 +305,28 @@ pub fn supervise(
             }
             gpa.free(seen);
             seen = content;
-            const exe = builtExecutable(content) orelse break :fresh;
+            const built = Notice.parse(content) orelse break :fresh;
+            const exe = built.exe;
             const stamp = BinaryStamp.of(io, gpa, root, exe) orelse {
                 say(opts, "the build reported {s}, which is not there", .{exe});
                 break :fresh;
             };
             if (app) |proc| {
-                if (!proc.hasExited() and stamp.eql(running_from)) break :fresh;
+                if (!proc.hasExited() and stamp.eql(running_from)) {
+                    // Same binary. If what the page loads changed (the
+                    // stylesheet), the app stays and its browsers reload.
+                    if (!std.mem.eql(u8, built.assets, running_assets)) {
+                        gpa.free(running_assets);
+                        running_assets = try gpa.dupe(u8, built.assets);
+                        reloads += 1;
+                        var count_buf: [16]u8 = undefined;
+                        const count = std.fmt.bufPrint(&count_buf, "{d}\n", .{reloads}) catch unreachable;
+                        fs_utils.writeFile(io, root, reload_file, count) catch {};
+                        summary.reloads += 1;
+                        say(opts, "page assets changed: reloading the browser", .{});
+                    }
+                    break :fresh;
+                }
             }
 
             if (app) |proc| {
@@ -307,6 +346,8 @@ pub fn supervise(
             }
             running_copy = copy;
             running_from = stamp;
+            gpa.free(running_assets);
+            running_assets = try gpa.dupe(u8, built.assets);
 
             const copy_abs = try std.fs.path.join(gpa, &.{ root_path, copy });
             defer gpa.free(copy_abs);
@@ -340,11 +381,16 @@ pub fn supervise(
 
 const testing = std.testing;
 
-test "builtExecutable: the first line of the notice" {
-    try testing.expectEqualStrings("/p/.zig-cache/o/abc/app", builtExecutable("/p/.zig-cache/o/abc/app\n17\n").?);
-    try testing.expectEqual(@as(?[]const u8, null), builtExecutable(""));
-    try testing.expectEqual(@as(?[]const u8, null), builtExecutable("no newline yet"));
-    try testing.expectEqual(@as(?[]const u8, null), builtExecutable("\n17\n"));
+test "Notice.parse: the executable and the assets" {
+    const full = Notice.parse("/p/.zig-cache/o/abc/app\n17\n00ff00ff00ff00ff\n").?;
+    try testing.expectEqualStrings("/p/.zig-cache/o/abc/app", full.exe);
+    try testing.expectEqualStrings("00ff00ff00ff00ff", full.assets);
+    // A build that names no assets, and the two-line notice of an older tool.
+    try testing.expectEqualStrings("-", Notice.parse("/p/app\n17\n-\n").?.assets);
+    try testing.expectEqualStrings("-", Notice.parse("/p/app\n17\n").?.assets);
+    try testing.expectEqual(@as(?Notice, null), Notice.parse(""));
+    try testing.expectEqual(@as(?Notice, null), Notice.parse("no newline yet"));
+    try testing.expectEqual(@as(?Notice, null), Notice.parse("\n17\n"));
 }
 
 /// A project directory with a scripted "build": a shell script that plays
@@ -423,8 +469,8 @@ const Fixture = struct {
 /// the path it was started from in its command line); `notify NAME` is what
 /// the notify tool does.
 const script_prelude =
-    \\app() { printf '#!/bin/sh\necho %s >> runs.log\necho "dev=$SPIDER_DEV" > app-env\nwhile :; do sleep 0.05; done\n' "$1" > "bin-$1"; chmod +x "bin-$1"; }
-    \\notify() { printf '%s\n%s\n' "$PWD/bin-$1" "$2" > "$SPIDER_DEV_BUILT.tmp"; mv "$SPIDER_DEV_BUILT.tmp" "$SPIDER_DEV_BUILT"; }
+    \\app() { printf '#!/bin/sh\necho %s >> runs.log\ncase "$SPIDER_DEV" in */.zig-cache/spider-dev/reload) echo dev=reload-file > app-env;; *) echo "dev=$SPIDER_DEV" > app-env;; esac\nwhile :; do sleep 0.05; done\n' "$1" > "bin-$1"; chmod +x "bin-$1"; }
+    \\notify() { printf '%s\n%s\n%s\n' "$PWD/bin-$1" "$2" "${3:--}" > "$SPIDER_DEV_BUILT.tmp"; mv "$SPIDER_DEV_BUILT.tmp" "$SPIDER_DEV_BUILT"; }
     \\
 ;
 
@@ -448,8 +494,9 @@ test "supervise: starts the app on a build notice and replaces it on the next on
     try fx.start();
 
     try fx.expectFile("runs.log", "one\n");
-    // The app is told it runs under `spider dev`.
-    try fx.expectFile("app-env", "dev=1\n");
+    // The app is told it runs under `spider dev`, and where reload
+    // requests will show up.
+    try fx.expectFile("app-env", "dev=reload-file\n");
     // The app runs from a copy, not from the file the build wrote.
     try fx.tmp.dir.access(testing.io, state_dir ++ "/app-1", .{});
 
@@ -488,6 +535,40 @@ test "supervise: the same binary reported twice does not restart the app" {
 
     const summary = try fx.finish();
     try testing.expectEqual(@as(u32, 1), summary.starts);
+    try fx.expectFile("runs.log", "one\n");
+}
+
+test "supervise: same binary, new assets: the app stays and is asked to reload" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const fx = try Fixture.init(script_prelude ++
+        \\app one; notify one 1 aaaa
+        \\while [ ! -f go ]; do sleep 0.02; done
+        \\notify one 2 bbbb
+        \\while [ ! -f go2 ]; do sleep 0.02; done
+        \\notify one 3 bbbb
+        \\echo done > build-result
+        \\exec sleep 30
+        \\
+    );
+    defer fx.deinit();
+    try fx.start();
+
+    try fx.expectFile("runs.log", "one\n");
+    // Nothing to reload yet.
+    try testing.expectError(error.FileNotFound, fx.tmp.dir.access(testing.io, reload_file, .{}));
+
+    try fs_utils.writeFile(testing.io, fx.tmp.dir, "go", "");
+    try fx.expectFile(reload_file, "1\n");
+
+    // The same assets again (a save is often two builds): no second request.
+    try fs_utils.writeFile(testing.io, fx.tmp.dir, "go2", "");
+    try fx.expectFile("build-result", "done\n");
+    Io.sleep(testing.io, .fromMilliseconds(100), .awake) catch {};
+    try fx.expectFile(reload_file, "1\n");
+
+    const summary = try fx.finish();
+    try testing.expectEqual(@as(u32, 1), summary.starts);
+    try testing.expectEqual(@as(u32, 1), summary.reloads);
     try fx.expectFile("runs.log", "one\n");
 }
 

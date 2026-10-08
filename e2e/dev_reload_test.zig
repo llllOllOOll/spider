@@ -73,45 +73,71 @@ const Env = struct {
     }
 };
 
-/// Opens the dev WebSocket and returns the first text message (the boot
-/// id), leaving the connection to the caller.
-fn openSocket(io: std.Io, port: u16, out: *[16]u8) !std.Io.net.Stream {
-    const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
-    const stream = try address.connect(io, .{ .mode = .stream });
-    errdefer stream.close(io);
-    const tv = std.posix.timeval{ .sec = 3, .usec = 0 };
-    try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
+/// The dev WebSocket from the browser's side: unmasked text frames from
+/// the server, read with a receive timeout so a missing message fails the
+/// test instead of hanging it.
+const Socket = struct {
+    stream: std.Io.net.Stream,
+    reader: std.Io.net.Stream.Reader,
+    rbuf: [1024]u8,
+    seen: [2048]u8,
+    len: usize,
+    /// Where the next unread frame starts in `seen`.
+    at: usize,
 
-    var wbuf: [512]u8 = undefined;
-    var w = stream.writer(io, &wbuf);
-    try w.interface.writeAll("GET " ++ dev_reload.socket_path ++ " HTTP/1.1\r\nHost: 127.0.0.1\r\n" ++
-        "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" ++
-        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n");
-    try w.interface.flush();
+    fn open(self: *Socket, io: std.Io, port: u16) !void {
+        const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
+        self.stream = try address.connect(io, .{ .mode = .stream });
+        errdefer self.stream.close(io);
+        const tv = std.posix.timeval{ .sec = 3, .usec = 0 };
+        try std.posix.setsockopt(self.stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
 
-    var rbuf: [1024]u8 = undefined;
-    var reader = stream.reader(io, &rbuf);
-    var seen: [1024]u8 = undefined;
-    var len: usize = 0;
-    // The 101 response, then one unmasked text frame: 0x81, length 16, id.
-    while (true) {
-        if (std.mem.indexOf(u8, seen[0..len], "\r\n\r\n")) |head_end| {
-            const frame = seen[head_end + 4 .. len];
-            if (frame.len >= 18) {
-                try std.testing.expect(std.mem.startsWith(u8, seen[0..len], "HTTP/1.1 101"));
-                try std.testing.expectEqual(@as(u8, 0x81), frame[0]);
-                try std.testing.expectEqual(@as(u8, 16), frame[1]);
-                out.* = frame[2..18].*;
-                return stream;
-            }
-        }
-        if (len == seen.len) return error.TestUnexpectedResult;
-        var vecs: [1][]u8 = .{seen[len..]};
-        const n = try reader.interface.readVec(&vecs);
-        if (n == 0) return error.EndOfStream;
-        len += n;
+        var wbuf: [512]u8 = undefined;
+        var w = self.stream.writer(io, &wbuf);
+        try w.interface.writeAll("GET " ++ dev_reload.socket_path ++ " HTTP/1.1\r\nHost: 127.0.0.1\r\n" ++
+            "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" ++
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n");
+        try w.interface.flush();
+
+        self.reader = self.stream.reader(io, &self.rbuf);
+        self.len = 0;
+        while (std.mem.indexOf(u8, self.seen[0..self.len], "\r\n\r\n") == null) try self.more();
+        try std.testing.expect(std.mem.startsWith(u8, self.seen[0..self.len], "HTTP/1.1 101"));
+        self.at = std.mem.indexOf(u8, self.seen[0..self.len], "\r\n\r\n").? + 4;
     }
-}
+
+    fn more(self: *Socket) !void {
+        if (self.len == self.seen.len) return error.TestUnexpectedResult;
+        var vecs: [1][]u8 = .{self.seen[self.len..]};
+        const n = try self.reader.interface.readVec(&vecs);
+        if (n == 0) return error.EndOfStream;
+        self.len += n;
+    }
+
+    /// The next text message (short ones only: 2-byte frame header).
+    fn next(self: *Socket) ![]const u8 {
+        while (self.len - self.at < 2) try self.more();
+        try std.testing.expectEqual(@as(u8, 0x81), self.seen[self.at]);
+        const size: usize = self.seen[self.at + 1];
+        try std.testing.expect(size < 126);
+        while (self.len - self.at < 2 + size) try self.more();
+        const text = self.seen[self.at + 2 .. self.at + 2 + size];
+        self.at += 2 + size;
+        return text;
+    }
+
+    /// The next message that is not the keep-alive.
+    fn nextEvent(self: *Socket) ![]const u8 {
+        while (true) {
+            const text = try self.next();
+            if (!std.mem.eql(u8, text, "ping")) return text;
+        }
+    }
+
+    fn close(self: *Socket, io: std.Io) void {
+        self.stream.close(io);
+    }
+};
 
 test "dev reload: an HTML page gets the script tag before </body>" {
     if (!dev_reload.compiled_in) return error.SkipZigTest;
@@ -151,18 +177,55 @@ test "dev reload: the socket sends this process's boot id, the same to everyone"
     defer e.deinit();
     const io = std.testing.io;
 
-    var first: [16]u8 = undefined;
-    const a = try openSocket(io, port_on, &first);
+    var a: Socket = undefined;
+    try a.open(io, port_on);
     defer a.close(io);
-    var second: [16]u8 = undefined;
-    const b = try openSocket(io, port_on, &second);
+    var b: Socket = undefined;
+    try b.open(io, port_on);
     defer b.close(io);
 
-    try std.testing.expectEqualStrings(&first, &second);
-    try std.testing.expectEqualStrings(dev_reload.bootId(io), &first);
+    const expected = try std.fmt.allocPrint(e.arena.allocator(), "id:{s}", .{dev_reload.bootId(io)});
+    try std.testing.expectEqualStrings(expected, try a.next());
+    try std.testing.expectEqualStrings(expected, try b.next());
 
     // Held connections don't block ordinary requests.
     try std.testing.expectEqual(@as(u16, 200), (try e.get(port_on, "/page")).status);
+}
+
+test "dev reload: a change in the reload file reaches every open socket as 'reload'" {
+    if (!dev_reload.compiled_in) return error.SkipZigTest;
+    var e = try Env.init();
+    defer e.deinit();
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = dir_buf[0..try tmp.dir.realPath(io, &dir_buf)];
+    const path = try std.fs.path.join(e.arena.allocator(), &.{ dir_path, "reload" });
+    dev_reload.setReloadFile(path);
+    defer dev_reload.setReloadFile(null);
+
+    var a: Socket = undefined;
+    try a.open(io, port_on);
+    defer a.close(io);
+    var b: Socket = undefined;
+    try b.open(io, port_on);
+    defer b.close(io);
+    _ = try a.next();
+    _ = try b.next();
+
+    // What `spider dev` does when only the stylesheet changed.
+    {
+        const file = try tmp.dir.createFile(io, "reload", .{});
+        defer file.close(io);
+        var buf: [16]u8 = undefined;
+        var w: std.Io.File.Writer = .init(file, io, &buf);
+        try w.interface.writeAll("1\n");
+        try w.interface.flush();
+    }
+    try std.testing.expectEqualStrings("reload", try a.nextEvent());
+    try std.testing.expectEqualStrings("reload", try b.nextEvent());
 }
 
 test "dev reload: a plain GET on the socket path is a 400, not a hang" {

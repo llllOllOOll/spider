@@ -34,7 +34,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `devStep()` in Spider's `build.zig` and the `spider-dev-notify` build
   tool: the `dev` build step `spider dev` relies on. New apps have it; in an
   existing app add to `build.zig`:
-  `_ = @import("spider").devStep(b, spider_dep.artifact("spider-dev-notify"), exe);`
+
+  ```zig
+  const spider_build = @import("spider");
+  const dev = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{
+      .assets = &.{"public/css/app.css"},
+  });
+  dev.step.dependOn(&css.step); // the Tailwind step, if the app has one
+  ```
+
+  `assets` are the files the page loads besides the binary. When a build
+  changes only those (an edit to `src/styles.css`), `spider dev` keeps the
+  app running and reloads the browser.
+- `watchSources()` in Spider's `build.zig`: declares the files a build step
+  reads, so `zig build --watch` reruns it when they change and skips it
+  when they don't. Generated apps use it for Tailwind.
 
 ## [0.8.0] - 2026-10-08
 
@@ -110,6 +124,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Generated apps under `zig build --watch`: Tailwind never ran again after
+  the first build, so a class first used in a template had no CSS, and an
+  edit to `src/styles.css` did nothing. The Tailwind step now declares its
+  sources (`watchSources`). It also no longer runs before the compiler but
+  alongside it. In an existing app: add
+  `spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".zig", ".js" });`
+  and replace `exe.step.dependOn(&css.step)` with
+  `b.getInstallStep().dependOn(&css.step)`.
 - A generated app with SQLite did not link in a release build
   (`zig build -Doptimize=ReleaseSmall`, which is what its Dockerfile runs):
   undefined `__ubsan_handle_*` symbols. The app's `build.zig` did not pass

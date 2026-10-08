@@ -8,11 +8,15 @@
 //!   * serves that script and a WebSocket at `/_spider/dev`, before routing
 //!     and before any middleware (an app's auth never sees them).
 //!
-//! The socket sends one message, an id made when the process started, and
-//! then stays open. `spider dev` replaces the process after a build: the
-//! socket drops, the script reconnects until the new process is listening,
-//! receives a different id, and reloads the page. A dropped connection to
-//! the same process (same id) reloads nothing.
+//! The socket first sends `id:<boot id>`, made when the process started.
+//! `spider dev` replaces the process after a build: the socket drops, the
+//! script reconnects until the new process is listening, receives a
+//! different id, and reloads the page. A dropped connection to the same
+//! process (same id) reloads nothing.
+//!
+//! When a build changed only what the page loads besides the binary (the
+//! stylesheet), the process is not replaced. `spider dev` then rewrites the
+//! file it named in SPIDER_DEV; the socket notices and sends `reload`.
 //!
 //! Same origin as the app on purpose: a dev server on another port is
 //! blocked by an app whose Content-Security-Policy has `script-src 'self'`
@@ -43,11 +47,14 @@ pub const script =
     \\  var boot = null;
     \\  var leaving = false;
     \\  window.addEventListener('beforeunload', function () { leaving = true; });
+    \\  function reload() { if (!leaving) { leaving = true; location.reload(); } }
     \\  function connect() {
     \\    var sock = new WebSocket(url);
     \\    sock.onmessage = function (e) {
+    \\      if (e.data === 'reload') return reload();
+    \\      if (e.data.indexOf('id:') !== 0) return;
     \\      if (boot === null) { boot = e.data; return; }
-    \\      if (e.data !== boot && !leaving) { leaving = true; location.reload(); }
+    \\      if (e.data !== boot) reload();
     \\    };
     \\    sock.onclose = function () { if (!leaving) setTimeout(connect, 150); };
     \\  }
@@ -57,10 +64,31 @@ pub const script =
 ;
 
 /// `Config.dev_reload` as a decision: an explicit value wins, otherwise the
-/// environment. Always false in a release build.
+/// environment. Always false in a release build. Called once, by listen().
 pub fn resolve(configured: ?bool) bool {
     if (!compiled_in) return false;
-    return configured orelse (env.get(env_name) != null);
+    const from_env = env.get(env_name);
+    // `spider dev` puts the path of its reload file in the variable.
+    if (from_env) |value| {
+        if (reload_file == null and std.fs.path.isAbsolute(value)) reload_file = value;
+    }
+    return configured orelse (from_env != null);
+}
+
+/// The file `spider dev` rewrites to ask for a reload without replacing the
+/// process. Null: no such requests (the app was not started by `spider dev`).
+var reload_file: ?[]const u8 = null;
+
+/// Tests: where the socket looks for reload requests.
+pub fn setReloadFile(path: ?[]const u8) void {
+    reload_file = path;
+}
+
+/// What the reload file holds now ("" when there is none). Any change is a
+/// request.
+fn reloadRequest(io: std.Io, buf: []u8) []const u8 {
+    const path = reload_file orelse return "";
+    return std.Io.Dir.cwd().readFile(io, path, buf) catch "";
 }
 
 var boot_id: [16]u8 = @splat('0');
@@ -91,9 +119,15 @@ pub fn isHtml(content_type: []const u8) bool {
     return std.ascii.startsWithIgnoreCase(content_type, "text/html");
 }
 
-/// The WebSocket: sends the boot id and holds the connection until the
-/// client closes it or this process ends. Returns false when the request
-/// was not a WebSocket upgrade (nothing was written).
+const poll_ms = 100;
+/// A write is the only way to find out the browser went away (the client
+/// sends nothing): one every this many polls.
+const ping_every = 20;
+
+/// The WebSocket: sends `id:<boot id>`, then `reload` each time `spider
+/// dev` asks for one, until the client is gone or this process ends.
+/// Returns false when the request was not a WebSocket upgrade (nothing was
+/// written).
 pub fn serveSocket(
     io: std.Io,
     stream: std.Io.net.Stream,
@@ -103,12 +137,27 @@ pub fn serveSocket(
     var server = ws.Server.init(stream, io, arena);
     const upgraded = server.handshake(arena, headers) catch return true;
     if (!upgraded) return false;
-    server.sendText(bootId(io)) catch return true;
+
+    var hello_buf: [3 + 16]u8 = undefined;
+    const hello = std.fmt.bufPrint(&hello_buf, "id:{s}", .{bootId(io)}) catch unreachable;
+    server.sendText(hello) catch return true;
+
+    var seen_buf: [64]u8 = undefined;
+    var seen_len = reloadRequest(io, &seen_buf).len;
+    var polls: u32 = 0;
     while (true) {
-        const frame = server.readFrame(arena) catch break orelse break;
-        if (frame.opcode == .close) break;
+        std.Io.sleep(io, .fromMilliseconds(poll_ms), .awake) catch return true;
+        var now_buf: [64]u8 = undefined;
+        const now = reloadRequest(io, &now_buf);
+        if (!std.mem.eql(u8, now, seen_buf[0..seen_len])) {
+            @memcpy(seen_buf[0..now.len], now);
+            seen_len = now.len;
+            server.sendText("reload") catch return true;
+            continue;
+        }
+        polls += 1;
+        if (polls % ping_every == 0) server.sendText("ping") catch return true;
     }
-    return true;
 }
 
 test "inject: before the last </body>, once, and never into a fragment" {
@@ -131,10 +180,11 @@ test "inject: before the last </body>, once, and never into a fragment" {
     try std.testing.expectEqualStrings(once, inject(arena, once));
 }
 
-test "script: same origin, wss on https, reloads only on a different boot id" {
+test "script: same origin, wss on https, reloads on a different boot id or on request" {
     try std.testing.expect(std.mem.indexOf(u8, script, "location.host + '" ++ socket_path ++ "'") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "'wss://' : 'ws://'") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "e.data !== boot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "e.data === 'reload'") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "http://") == null);
 }
 

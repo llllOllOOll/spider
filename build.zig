@@ -32,24 +32,73 @@ pub fn testManifest(b: *std.Build, tool: *std.Build.Step.Compile, dir: []const u
     return b.createModule(.{ .root_source_file = out });
 }
 
+pub const DevOptions = struct {
+    /// Files, relative to the build root, that the page uses besides the
+    /// binary and that a build can change (the generated stylesheet). When
+    /// only these changed, `spider dev` reloads the browser without
+    /// restarting the app.
+    assets: []const []const u8 = &.{},
+};
+
 /// The `dev` build step `spider dev` runs (`zig build dev --watch`): builds
 /// `exe` and then runs `tool`, which tells the supervisor where the new
 /// binary is. Runs after every successful build, not after a failed one.
 /// Outside `spider dev` the tool does nothing, so `zig build dev` is just a
 /// build.
 ///
+/// Returns the notifying step, for whatever else must be finished before
+/// the browser reloads:
+///
 ///     // an app's build.zig
 ///     const spider_build = @import("spider");
-///     _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe);
-pub fn devStep(b: *std.Build, tool: *std.Build.Step.Compile, exe: *std.Build.Step.Compile) *std.Build.Step {
+///     const dev = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{
+///         .assets = &.{"public/css/app.css"},
+///     });
+///     dev.step.dependOn(&css.step);
+pub fn devStep(b: *std.Build, tool: *std.Build.Step.Compile, exe: *std.Build.Step.Compile, options: DevOptions) *std.Build.Step.Run {
     const run = b.addRunArtifact(tool);
     // Not cached: when `spider dev` starts on an up-to-date project nothing
-    // is rebuilt, and it still needs to be told where the binary is.
+    // is rebuilt, and it still needs to be told where the binary is. (Nor
+    // could Zig's cache be trusted with it: the incremental linker rewrites
+    // the binary without changing its size or modification time.)
     run.has_side_effects = true;
     run.addArtifactArg(exe);
+    for (options.assets) |asset| run.addArg(asset);
+    run.setCwd(b.path("."));
     const step = b.step("dev", "Build the app for `spider dev`");
     step.dependOn(&run.step);
-    return step;
+    return run;
+}
+
+/// Declares every file under `dir` (relative to the build root, searched
+/// recursively) whose name ends with one of `extensions` as an input of
+/// `run`: `zig build --watch` then reruns the step when one of them changes,
+/// and skips it when none did. New, removed and renamed files are noticed
+/// too (the build script is configured again).
+///
+///     // Tailwind reads the stylesheets and looks for class names everywhere
+///     spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".zig", ".js" });
+pub fn watchSources(b: *std.Build, run: *std.Build.Step.Run, dir: []const u8, extensions: []const []const u8) void {
+    const io = b.graph.io;
+    const arena = b.graph.arena;
+    b.dependOnDirectoryContents(b.path(dir));
+    var root = b.root.openDir(io, dir, .{ .iterate = true }) catch return;
+    defer root.close(io);
+    var walker = root.walk(arena) catch @panic("OOM");
+    defer walker.deinit();
+    while (walker.next(io) catch null) |entry| {
+        const sub_path = std.fs.path.join(arena, &.{ dir, entry.path }) catch @panic("OOM");
+        switch (entry.kind) {
+            .directory => b.dependOnDirectoryContents(b.path(sub_path)),
+            .file => for (extensions) |ext| {
+                if (std.mem.endsWith(u8, entry.basename, ext)) {
+                    run.addFileInput(b.path(sub_path));
+                    break;
+                }
+            },
+            else => {},
+        }
+    }
 }
 
 pub fn build(b: *std.Build) void {
