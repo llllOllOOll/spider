@@ -8,6 +8,11 @@
 //!
 //! Filled while the app is set up (single thread, before listen()); read
 //! afterwards.
+//!
+//! Middlewares are told apart by address. In release builds the compiler
+//! may give two functions with identical bodies the same address; marking
+//! one of them then marks both. Real auth middlewares differ from the
+//! others, so this only shows with trivial pass-through functions.
 
 const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 
@@ -31,10 +36,15 @@ const Ctx = @import("../core/context.zig").Ctx;
 const NextFn = @import("../core/context.zig").NextFn;
 const Response = @import("../core/context.zig").Response;
 
+// Each with a body no other function has: identical functions (a plain
+// `return next(c)` exists in other tests too) can be merged into one address
+// in release builds (see the note at the top).
 fn testMw(c: *Ctx, next: NextFn) anyerror!Response {
+    c.setErrorDetail("auth_marker test: marked");
     return next(c);
 }
 fn otherMw(c: *Ctx, next: NextFn) anyerror!Response {
+    c.setErrorDetail("auth_marker test: other");
     return next(c);
 }
 
