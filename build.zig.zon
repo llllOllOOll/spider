@@ -7,21 +7,15 @@
         .pacman = .{
             .path = "modules/pacman",
         },
-        // Not lazy: a lazy dependency of a dependency is only fetched if
-        // the ROOT project's own build.zig.zon also lists it (Zig's fetch
-        // phase only follows lazy edges reachable from the root
-        // manifest), and even then the first `zig build` invocation with
-        // a cold cache must return null gracefully from lazyDependency()
-        // for the automatic fetch-and-rerun to kick in — a broken
-        // production deploy (empty build cache, single `zig build`
-        // invocation) is what happens when that two-pass dance isn't
-        // handled just right. io_backend defaults to .threaded, but apps
-        // that build with .zio (Orbitx, for one) need it, and a lazy fetch
-        // failing on a clean deploy is worse than one extra unconditional
-        // fetch on `.threaded`-only builds.
+        // Lazy: only fetched when an app (or this repo) builds with
+        // -Dio_backend=zio. The build script asks for it with
+        // lazyDependency(); on a cold cache the first configure pass comes
+        // back without it, Zig fetches it and configures again, all within
+        // one `zig build`.
         .zio = .{
             .url = "git+https://github.com/lalinsky/zio#3bbd74d68a889e5d4da7274afdc7c7617ec614d6",
             .hash = "zio-0.19.0-xHbVVMFBLACx1T0028HttNTseV6bDeL0AI4id51AHx57",
+            .lazy = true,
         },
         .pg = .{
             .path = "modules/pg/pg_driver_impl",
@@ -48,10 +42,6 @@
         },
         .zqlite = .{
             .path = "modules/sqlite/sqlite_driver_impl",
-        },
-        .spider = .{
-            .url = "git+https://github.com/llllOllOOll/spider#1db1e0811c43e60e5a1064ab9e076ad8a3165828",
-            .hash = "spider-0.6.8-P7cGrgfCrwAPck9nPmJmbCh42dXPiki-XHAVaIpwSSG4",
         },
     },
     .paths = .{

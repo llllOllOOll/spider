@@ -67,8 +67,9 @@ pub fn build(b: *std.Build) void {
     });
 
     if (io_backend == .zio) {
-        // Not lazy anymore (see build.zig.zon) — b.dependency() is
-        // guaranteed already-fetched, no optional to unwrap.
+        // zio is a lazy dependency (see build.zig.zon). b.dependency() on
+        // one that is not fetched yet ends this configure pass; Zig fetches
+        // it and configures again, within the same `zig build`.
         //
         // Forces epoll instead of zio's own Linux default (io_uring):
         // io_uring_setup() came back EPERM under Docker's default seccomp

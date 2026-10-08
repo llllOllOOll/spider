@@ -99,6 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- zio is a lazy dependency again: it is only downloaded when something
+  builds with `-Dio_backend=zio`. On a clean machine one `zig build` still
+  does everything (Zig 0.17.0 fetches it and configures again by itself).
+- Spider's `build.zig.zon` no longer lists an old Spider (0.6.8) as a
+  dependency of itself. Nothing used it, every app downloaded it, and it
+  made `zig build --fork=<local spider>` fail in apps.
 - The HTTP client (`spider.http_client`) builds with an unmodified Zig.
   Its proxy support (https through an HTTP proxy, SOCKS5) used to need a
   Zig whose `lib/std/http/Client.zig` had been patched by hand; that file
