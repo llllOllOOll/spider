@@ -77,7 +77,7 @@ pub fn devStep(b: *std.Build, tool: *std.Build.Step.Compile, exe: *std.Build.Ste
 /// too (the build script is configured again).
 ///
 ///     // Tailwind reads the stylesheets and looks for class names everywhere
-///     spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".zig", ".js" });
+///     spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".js" });
 pub fn watchSources(b: *std.Build, run: *std.Build.Step.Run, dir: []const u8, extensions: []const []const u8) void {
     const io = b.graph.io;
     const arena = b.graph.arena;

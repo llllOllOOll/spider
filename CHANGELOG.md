@@ -129,7 +129,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edit to `src/styles.css` did nothing. The Tailwind step now declares its
   sources (`watchSources`). It also no longer runs before the compiler but
   alongside it. In an existing app: add
-  `spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".zig", ".js" });`
+  `spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".js" });`
   and replace `exe.step.dependOn(&css.step)` with
   `b.getInstallStep().dependOn(&css.step)`.
 - A generated app with SQLite did not link in a release build

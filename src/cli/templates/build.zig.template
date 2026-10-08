@@ -118,8 +118,10 @@ pub fn build(b: *std.Build) void {
     }
 
     // Tailwind reads the stylesheets and looks for class names in the
-    // sources: under `zig build --watch` it reruns when one of them changes.
-    spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".zig", ".js" });
+    // templates: under `zig build --watch` it reruns when one of them
+    // changes. Not on a `.zig` edit, to keep those fast: add ".zig" here if
+    // you write class names in Zig strings.
+    spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".js" });
 
     const css_step = b.step("css", "Build CSS with Tailwind");
     css_step.dependOn(&css.step);

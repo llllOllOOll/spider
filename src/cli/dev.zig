@@ -141,36 +141,34 @@ const Proc = struct {
     }
 };
 
-/// What a binary is, to tell a new build from the same one reported
-/// again. A hash of the contents: the incremental linker rewrites the file
-/// through a memory mapping, which changes neither its size nor its
-/// modification time.
-const BinaryStamp = struct {
-    size: u64,
-    hash: u64,
+/// Whether two files hold the same bytes. This is how a new build is told
+/// from the same one reported again: the incremental linker rewrites the
+/// binary through a memory mapping, which changes neither its size nor its
+/// modification time, so only the contents can tell. Comparing is much
+/// cheaper than hashing (about 0.2 s for a 900 MB binary against 2 s) and
+/// stops at the first difference. An unreadable file is "not the same".
+fn sameContents(io: Io, gpa: std.mem.Allocator, dir: Io.Dir, path_a: []const u8, path_b: []const u8) bool {
+    const file_a = dir.openFile(io, path_a, .{}) catch return false;
+    defer file_a.close(io);
+    const file_b = dir.openFile(io, path_b, .{}) catch return false;
+    defer file_b.close(io);
+    const stat_a = file_a.stat(io) catch return false;
+    const stat_b = file_b.stat(io) catch return false;
+    if (stat_a.size != stat_b.size) return false;
 
-    fn of(io: Io, gpa: std.mem.Allocator, dir: Io.Dir, path: []const u8) ?BinaryStamp {
-        const file = dir.openFile(io, path, .{}) catch return null;
-        defer file.close(io);
-        const buf = gpa.alloc(u8, 1024 * 1024) catch return null;
-        defer gpa.free(buf);
-        var reader = file.reader(io, &.{});
-        var hasher: std.hash.XxHash3 = .init(0);
-        var size: u64 = 0;
-        while (true) {
-            const n = reader.interface.readSliceShort(buf) catch return null;
-            if (n == 0) break;
-            hasher.update(buf[0..n]);
-            size += n;
-        }
-        return .{ .size = size, .hash = hasher.final() };
+    const chunk = 4 * 1024 * 1024;
+    const buf = gpa.alloc(u8, 2 * chunk) catch return false;
+    defer gpa.free(buf);
+    var reader_a = file_a.reader(io, &.{});
+    var reader_b = file_b.reader(io, &.{});
+    while (true) {
+        const n_a = reader_a.interface.readSliceShort(buf[0..chunk]) catch return false;
+        const n_b = reader_b.interface.readSliceShort(buf[chunk..]) catch return false;
+        if (n_a != n_b) return false;
+        if (n_a == 0) return true;
+        if (!std.mem.eql(u8, buf[0..n_a], buf[chunk..][0..n_b])) return false;
     }
-
-    fn eql(a: BinaryStamp, b: ?BinaryStamp) bool {
-        const other = b orelse return false;
-        return a.size == other.size and a.hash == other.hash;
-    }
-};
+}
 
 /// What the notify tool wrote (src/dev_notify_tool.zig).
 pub const Notice = struct {
@@ -277,10 +275,6 @@ pub fn supervise(
     // The notice the running app was started from.
     var seen: []u8 = try gpa.dupe(u8, "");
     defer gpa.free(seen);
-    // What the running app was copied from. The build can report the same
-    // binary more than once (an editor's save is often two file events, so
-    // two builds): that is not a new build.
-    var running_from: ?BinaryStamp = null;
     // The assets the running app's pages were last told about.
     var running_assets: []u8 = try gpa.dupe(u8, "");
     defer gpa.free(running_assets);
@@ -306,13 +300,18 @@ pub fn supervise(
             gpa.free(seen);
             seen = content;
             const built = Notice.parse(content) orelse break :fresh;
+            const noticed = Io.Timestamp.now(io, .awake);
             const exe = built.exe;
-            const stamp = BinaryStamp.of(io, gpa, root, exe) orelse {
+            root.access(io, exe, .{}) catch {
                 say(opts, "the build reported {s}, which is not there", .{exe});
                 break :fresh;
             };
             if (app) |proc| {
-                if (!proc.hasExited() and stamp.eql(running_from)) {
+                // The build can report the same binary more than once (an
+                // editor's save is often two file events, so two builds):
+                // that is not a new build.
+                const unchanged = if (running_copy) |copy| sameContents(io, gpa, root, exe, copy) else false;
+                if (!proc.hasExited() and unchanged) {
                     // Same binary. If what the page loads changed (the
                     // stylesheet), the app stays and its browsers reload.
                     if (!std.mem.eql(u8, built.assets, running_assets)) {
@@ -345,7 +344,6 @@ pub fn supervise(
                 gpa.free(old);
             }
             running_copy = copy;
-            running_from = stamp;
             gpa.free(running_assets);
             running_assets = try gpa.dupe(u8, built.assets);
 
@@ -361,7 +359,10 @@ pub fn supervise(
             };
             summary.starts += 1;
             app_exit_reported = false;
-            say(opts, "app started (build {d})", .{summary.starts});
+            // Comparing and copying the binary and stopping the old
+            // process: what `spider dev` adds to the build time.
+            const swap_ms = noticed.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
+            say(opts, "app started (build {d}, swapped in {d} ms)", .{ summary.starts, swap_ms });
         }
 
         if (app) |proc| {
