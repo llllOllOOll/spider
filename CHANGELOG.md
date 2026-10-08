@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `spider dev`: builds the app, runs it, and replaces it after every build
+  that succeeds. It runs `zig build dev --watch` (incremental compilation on
+  x86_64 Linux: an edit is back on the page in well under a second in a
+  generated app) and starts a copy of the new binary each time. While a
+  build runs or after it fails, the app that is up keeps serving and the
+  compiler's errors go to the terminal. Ctrl+C stops the build and the app.
+  One `spider dev` per project. Not on Windows yet. It does not reload the
+  browser yet.
+- `devStep()` in Spider's `build.zig` and the `spider-dev-notify` build
+  tool: the `dev` build step `spider dev` relies on. New apps have it; in an
+  existing app add to `build.zig`:
+  `_ = @import("spider").devStep(b, spider_dep.artifact("spider-dev-notify"), exe);`
+
 ## [0.8.0] - 2026-10-08
 
 ### Breaking changes

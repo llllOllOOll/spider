@@ -32,6 +32,26 @@ pub fn testManifest(b: *std.Build, tool: *std.Build.Step.Compile, dir: []const u
     return b.createModule(.{ .root_source_file = out });
 }
 
+/// The `dev` build step `spider dev` runs (`zig build dev --watch`): builds
+/// `exe` and then runs `tool`, which tells the supervisor where the new
+/// binary is. Runs after every successful build, not after a failed one.
+/// Outside `spider dev` the tool does nothing, so `zig build dev` is just a
+/// build.
+///
+///     // an app's build.zig
+///     const spider_build = @import("spider");
+///     _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe);
+pub fn devStep(b: *std.Build, tool: *std.Build.Step.Compile, exe: *std.Build.Step.Compile) *std.Build.Step {
+    const run = b.addRunArtifact(tool);
+    // Not cached: when `spider dev` starts on an up-to-date project nothing
+    // is rebuilt, and it still needs to be told where the binary is.
+    run.has_side_effects = true;
+    run.addArtifactArg(exe);
+    const step = b.step("dev", "Build the app for `spider dev`");
+    step.dependOn(&run.step);
+    return step;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -188,6 +208,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(gen_exe);
+
+    // spider-dev-notify — build tool behind devStep(), for `spider dev`.
+    const dev_notify_tool = b.addExecutable(.{
+        .name = "spider-dev-notify",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/dev_notify_tool.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    b.installArtifact(dev_notify_tool); // apps: spider_dep.artifact("spider-dev-notify")
 
     // tests — existing module tests. test_manifest lets the discovery test
     // in src/spider.zig fail when a file's tests aren't part of this binary.

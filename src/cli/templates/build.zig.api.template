@@ -87,4 +87,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src", &.{ "core/", "features/", "shared/" }));
     core_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/core", &.{}));
     features_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/features", &.{}));
+
+    // `spider dev` runs `zig build dev --watch`: build the app, then tell the
+    // supervisor where the new binary is.
+    _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe);
 }

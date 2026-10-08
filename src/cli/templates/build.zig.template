@@ -93,6 +93,10 @@ pub fn build(b: *std.Build) void {
     core_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/core", &.{}));
     features_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/features", &.{}));
 
+    // `spider dev` runs `zig build dev --watch`: build the app, then tell the
+    // supervisor where the new binary is.
+    _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe);
+
     // Check if frontend assets are installed
     const has_assets = blk: {
         std.Io.Dir.cwd().access(b.graph.io, "bin/tailwindcss", .{}) catch break :blk false;

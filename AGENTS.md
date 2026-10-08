@@ -94,6 +94,8 @@ src/modules/          rbac, logger, static files, health, push (Web Push), auth 
                       mail/ (Mailer + provider transports: brevo, resend, postmark, log, memory)
 src/internal/         config (spider.Config), env (.env loading), logfmt
 src/cli/              `spider` CLI; src/cli/templates/*.template = files it generates
+                      dev.zig = `spider dev` (supervises `zig build dev --watch` and
+                      the app; build.zig's devStep() + src/dev_notify_tool.zig)
 modules/pg|sqlite|r2|qrcode|xlsx   separate packages re-exported as spider.pg etc.
                       (opt-in: -Dpg/-Dsqlite/-Dr2/-Dqrcode/-Dxlsx; xlsx is std only)
 modules/pacman        the HTTP client (spider.http_client), always present; uses

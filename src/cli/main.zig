@@ -13,6 +13,7 @@ const ui_mod = @import("ui.zig");
 const icons_mod = @import("icons.zig");
 const pwa_mod = @import("pwa.zig");
 const check_mod = @import("check.zig");
+const dev = @import("dev.zig");
 
 const version = "0.8.0";
 
@@ -106,6 +107,10 @@ pub fn main(init: std.process.Init) !void {
             const code = try pwa_mod.run(io, allocator, cmd == .add, rest);
             if (code != 0) std.process.exit(code);
         },
+        .dev => dev.run(io, init.gpa, init.environ_map) catch |err| switch (err) {
+            error.Unsupported, error.NotAProjectRoot, error.AlreadyRunning => std.process.exit(1),
+            else => |e| return e,
+        },
         .update => try update.run(io),
         .self_update => try self_update.run(io),
         .install => try install.run(io, allocator, std.Io.Dir.cwd()),
@@ -122,6 +127,7 @@ test {
     _ = routes_cmd;
     _ = @import("auth.zig");
     _ = @import("new.zig");
+    _ = @import("dev.zig");
     _ = ui_mod;
     _ = icons_mod;
     _ = pwa_mod;
