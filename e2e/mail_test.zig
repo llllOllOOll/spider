@@ -137,7 +137,9 @@ fn providerUrl(alc: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(alc, "http://127.0.0.1:{d}", .{provider_port});
 }
 
-fn sample(to: []const u8) mail.Mail {
+/// `to` is comptime so the recipient list is static data: with a runtime
+/// value, `&.{...}` would point into this function's stack frame.
+fn sample(comptime to: []const u8) mail.Mail {
     return .{
         .to = &.{.{ .name = "Bob", .address = to }},
         .cc = &.{.{ .address = "cc@example.com" }},
