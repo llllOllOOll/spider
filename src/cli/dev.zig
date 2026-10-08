@@ -30,6 +30,8 @@ pub const built_env = "SPIDER_DEV_BUILT";
 /// Set for the app, to the path of the reload file: turns on the browser
 /// reload in the server (src/modules/dev_reload.zig; Debug builds only).
 pub const app_env = "SPIDER_DEV";
+/// Set for the app with `--port`: the port listen() uses.
+pub const app_port_env = "SPIDER_DEV_PORT";
 
 /// Everything `spider dev` writes, inside the project's build cache.
 const state_dir = ".zig-cache/spider-dev";
@@ -37,6 +39,67 @@ const built_file = state_dir ++ "/built";
 /// Rewritten to ask the running app to reload its browsers.
 const reload_file = state_dir ++ "/reload";
 const lock_file = state_dir ++ "/pid";
+
+/// What `spider dev` was asked on the command line.
+pub const Args = struct {
+    /// --port N: the port the app listens on, instead of its own.
+    port: ?u16 = null,
+
+    pub const Error = error{ UnknownOption, InvalidPort };
+
+    /// `args` are the ones after `dev`. `bad` receives the offending one.
+    pub fn parse(args: []const []const u8, bad: *[]const u8) Error!Args {
+        var out: Args = .{};
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            const value: []const u8 = if (std.mem.startsWith(u8, arg, "--port=")) arg["--port=".len..] else if (std.mem.eql(u8, arg, "--port")) blk: {
+                i += 1;
+                if (i == args.len) {
+                    bad.* = arg;
+                    return error.InvalidPort;
+                }
+                break :blk args[i];
+            } else {
+                bad.* = arg;
+                return error.UnknownOption;
+            };
+            const port = std.fmt.parseInt(u16, value, 10) catch 0;
+            if (port == 0) {
+                bad.* = value;
+                return error.InvalidPort;
+            }
+            out.port = port;
+        }
+        return out;
+    }
+};
+
+/// Whether an app's build.zig has the `dev` step `spider dev` builds.
+pub fn hasDevStep(build_zig: []const u8) bool {
+    return std.mem.indexOf(u8, build_zig, "devStep(") != null or
+        std.mem.indexOf(u8, build_zig, "b.step(\"dev\"") != null;
+}
+
+const missing_dev_step =
+    \\error: this project's build.zig has no `dev` step, which `spider dev` builds.
+    \\
+    \\Add to build.zig, after the executable (`exe`) is defined:
+    \\
+    \\    const spider_build = @import("spider");
+    \\    _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{});
+    \\
+    \\With a Tailwind step (`css`), so stylesheet edits are picked up too:
+    \\
+    \\    const dev = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{
+    \\        .assets = &.{"public/css/app.css"},
+    \\    });
+    \\    dev.step.dependOn(&css.step);
+    \\    spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".js" });
+    \\
+    \\It needs a Spider that has `devStep` (newer than 0.8.0).
+    \\
+;
 
 pub const Options = struct {
     /// The build command, run in the project root. Null: `zig build dev
@@ -47,9 +110,19 @@ pub const Options = struct {
     /// No progress lines (tests).
     quiet: bool = false,
     poll_ms: u32 = 30,
-    /// How long a process gets to exit after being asked to, before it is
+    /// How long the build gets to exit after being asked to, before it is
     /// killed.
     grace_ms: u32 = 2000,
+    /// The same for the app, and short: it is replaced on every build, and
+    /// a server holding open connections (a browser's SSE or WebSocket) may
+    /// take as long as it is given. Nothing of a development process is
+    /// worth waiting for.
+    app_grace_ms: u32 = 150,
+    /// The port the app is told to listen on (SPIDER_DEV_PORT). Null: the
+    /// app's own.
+    port: ?u16 = null,
+    /// The app's build takes `-Dspider-dev` (templates from disk).
+    dev_templates: bool = false,
 };
 
 pub const Summary = struct {
@@ -67,6 +140,16 @@ const default_build_argv: []const []const u8 = if (incremental_supported)
 else
     &.{ "zig", "build", "dev", "--watch" };
 
+/// The same, for an app whose build.zig reads `spider_build.devOption(b)`:
+/// templates from disk. (An app that does not declare the option would
+/// refuse it.)
+const dev_templates_build_argv: []const []const u8 = default_build_argv ++ .{"-Dspider-dev=true"};
+
+/// Whether an app's build.zig takes `-Dspider-dev`.
+pub fn hasDevOption(build_zig: []const u8) bool {
+    return std.mem.indexOf(u8, build_zig, "devOption(") != null;
+}
+
 var signal_stop: std.atomic.Value(bool) = .init(false);
 
 fn onSignal(_: std.posix.SIG) callconv(.c) void {
@@ -75,7 +158,7 @@ fn onSignal(_: std.posix.SIG) callconv(.c) void {
 
 /// The command: supervises the project in the current directory until the
 /// build exits or the user interrupts it.
-pub fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map) anyerror!void {
+pub fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.Map, args: Args) anyerror!void {
     if (builtin.os.tag == .windows) {
         std.debug.print("error: `spider dev` does not run on Windows yet\n", .{});
         return error.Unsupported;
@@ -85,6 +168,16 @@ pub fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.M
         return error.NotAProjectRoot;
     };
 
+    var dev_templates = false;
+    if (root.readFileAlloc(io, "build.zig", gpa, .limited(4 * 1024 * 1024))) |build_zig| {
+        defer gpa.free(build_zig);
+        if (!hasDevStep(build_zig)) {
+            std.debug.print("{s}", .{missing_dev_step});
+            return error.NoDevStep;
+        }
+        dev_templates = hasDevOption(build_zig);
+    } else |_| {}
+
     const action: std.posix.Sigaction = .{
         .handler = .{ .handler = onSignal },
         .mask = std.posix.sigemptyset(),
@@ -93,7 +186,7 @@ pub fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.M
     std.posix.sigaction(.INT, &action, null);
     std.posix.sigaction(.TERM, &action, null);
 
-    _ = try supervise(io, gpa, root, environ, .{ .stop = &signal_stop });
+    _ = try supervise(io, gpa, root, environ, .{ .stop = &signal_stop, .port = args.port, .dev_templates = dev_templates });
 }
 
 /// One child process and the task waiting for it to exit.
@@ -168,6 +261,30 @@ fn sameContents(io: Io, gpa: std.mem.Allocator, dir: Io.Dir, path_a: []const u8,
         if (n_a == 0) return true;
         if (!std.mem.eql(u8, buf[0..n_a], buf[chunk..][0..n_b])) return false;
     }
+}
+
+/// Copies `from` to `to` with plain reads and writes, keeping the mode.
+/// Not `Dir.copyFile`: on a copy-on-write filesystem (btrfs) that asks the
+/// kernel to clone the file, which first has to write out every page the
+/// incremental linker just changed through its memory mapping — about two
+/// seconds for a 900 MB binary. Reading comes straight from memory.
+fn copyBinary(io: Io, gpa: std.mem.Allocator, dir: Io.Dir, from: []const u8, to: []const u8) !void {
+    const source = try dir.openFile(io, from, .{});
+    defer source.close(io);
+    const stat = try source.stat(io);
+    const dest = try dir.createFile(io, to, .{ .permissions = stat.permissions });
+    defer dest.close(io);
+
+    const buf = try gpa.alloc(u8, 4 * 1024 * 1024);
+    defer gpa.free(buf);
+    var reader = source.reader(io, &.{});
+    var writer = dest.writer(io, &.{});
+    while (true) {
+        const n = try reader.interface.readSliceShort(buf);
+        if (n == 0) break;
+        try writer.interface.writeAll(buf[0..n]);
+    }
+    try writer.interface.flush();
 }
 
 /// What the notify tool wrote (src/dev_notify_tool.zig).
@@ -255,9 +372,16 @@ pub fn supervise(
     try app_environ.put(app_env, reload_path);
     root.deleteFile(io, reload_file) catch {};
     var reloads: u32 = 0;
+    var port_buf: [8]u8 = undefined;
+    if (opts.port) |port| {
+        try app_environ.put(app_port_env, std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch unreachable);
+    }
 
-    const build_argv = opts.build_argv orelse default_build_argv;
-    say(opts, "building ({s})", .{if (opts.build_argv == null and incremental_supported) "incremental" else "watch"});
+    const build_argv = opts.build_argv orelse if (opts.dev_templates) dev_templates_build_argv else default_build_argv;
+    say(opts, "building ({s}{s})", .{
+        if (opts.build_argv == null and incremental_supported) "incremental" else "watch",
+        if (opts.dev_templates) ", templates from disk" else "",
+    });
     const build = Proc.start(io, gpa, .{
         .argv = build_argv,
         .cwd = .{ .dir = root },
@@ -270,7 +394,7 @@ pub fn supervise(
 
     var summary: Summary = .{};
     var app: ?*Proc = null;
-    defer if (app) |proc| proc.stop(io, gpa, opts.grace_ms);
+    defer if (app) |proc| proc.stop(io, gpa, opts.app_grace_ms);
     var app_exit_reported = false;
     // The notice the running app was started from.
     var seen: []u8 = try gpa.dupe(u8, "");
@@ -301,19 +425,20 @@ pub fn supervise(
             seen = content;
             const built = Notice.parse(content) orelse break :fresh;
             const noticed = Io.Timestamp.now(io, .awake);
+            var compare_ms: i64 = 0;
             const exe = built.exe;
             root.access(io, exe, .{}) catch {
                 say(opts, "the build reported {s}, which is not there", .{exe});
                 break :fresh;
             };
             if (app) |proc| {
-                // The build can report the same binary more than once (an
-                // editor's save is often two file events, so two builds):
-                // that is not a new build.
-                const unchanged = if (running_copy) |copy| sameContents(io, gpa, root, exe, copy) else false;
-                if (!proc.hasExited() and unchanged) {
-                    // Same binary. If what the page loads changed (the
-                    // stylesheet), the app stays and its browsers reload.
+                if (!proc.hasExited()) {
+                    // What the page loads besides the binary changed (a
+                    // template read from disk, the stylesheet): the browsers
+                    // reload now. Checking the binary comes after, because
+                    // it can take seconds (a 900 MB binary that turns out
+                    // to be the same has to be read to the end) and a
+                    // template edit should not wait for it.
                     if (!std.mem.eql(u8, built.assets, running_assets)) {
                         gpa.free(running_assets);
                         running_assets = try gpa.dupe(u8, built.assets);
@@ -322,19 +447,26 @@ pub fn supervise(
                         const count = std.fmt.bufPrint(&count_buf, "{d}\n", .{reloads}) catch unreachable;
                         fs_utils.writeFile(io, root, reload_file, count) catch {};
                         summary.reloads += 1;
-                        say(opts, "page assets changed: reloading the browser", .{});
+                        say(opts, "page changed: reloading the browser", .{});
                     }
-                    break :fresh;
+                    // The build can report the same binary more than once
+                    // (an editor's save is often two file events, so two
+                    // builds): that is not a new build.
+                    const checking = Io.Timestamp.now(io, .awake);
+                    const unchanged = if (running_copy) |copy| sameContents(io, gpa, root, exe, copy) else false;
+                    compare_ms = checking.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
+                    if (unchanged) break :fresh;
                 }
             }
 
             if (app) |proc| {
-                proc.stop(io, gpa, opts.grace_ms);
+                proc.stop(io, gpa, opts.app_grace_ms);
                 app = null;
             }
+            const stopped = Io.Timestamp.now(io, .awake);
             const copy = try std.fmt.allocPrint(gpa, "{s}/app-{d}", .{ state_dir, summary.starts + 1 });
             errdefer gpa.free(copy);
-            root.copyFile(exe, root, copy, io, .{}) catch |err| {
+            copyBinary(io, gpa, root, exe, copy) catch |err| {
                 say(opts, "could not copy {s}: {s}", .{ exe, @errorName(err) });
                 gpa.free(copy);
                 break :fresh;
@@ -361,8 +493,15 @@ pub fn supervise(
             app_exit_reported = false;
             // Comparing and copying the binary and stopping the old
             // process: what `spider dev` adds to the build time.
-            const swap_ms = noticed.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds();
-            say(opts, "app started (build {d}, swapped in {d} ms)", .{ summary.starts, swap_ms });
+            const copied = Io.Timestamp.now(io, .awake);
+            const swap_ms = noticed.durationTo(copied).toMilliseconds();
+            const copy_ms = stopped.durationTo(copied).toMilliseconds();
+            const stop_ms = swap_ms - copy_ms - compare_ms;
+            if (opts.port) |port| {
+                say(opts, "app started on http://127.0.0.1:{d} (build {d}, swapped in {d} ms: compare {d}, stop {d}, copy {d})", .{ port, summary.starts, swap_ms, compare_ms, stop_ms, copy_ms });
+            } else {
+                say(opts, "app started (build {d}, swapped in {d} ms: compare {d}, stop {d}, copy {d})", .{ summary.starts, swap_ms, compare_ms, stop_ms, copy_ms });
+            }
         }
 
         if (app) |proc| {
@@ -381,6 +520,43 @@ pub fn supervise(
 // ── tests ───────────────────────────────────────────────────────────────
 
 const testing = std.testing;
+
+test "Args.parse: --port, and nothing else" {
+    var bad: []const u8 = "";
+    try testing.expectEqual(@as(?u16, null), (try Args.parse(&.{}, &bad)).port);
+    try testing.expectEqual(@as(?u16, 4000), (try Args.parse(&.{ "--port", "4000" }, &bad)).port);
+    try testing.expectEqual(@as(?u16, 4001), (try Args.parse(&.{"--port=4001"}, &bad)).port);
+    try testing.expectError(error.InvalidPort, Args.parse(&.{ "--port", "abc" }, &bad));
+    try testing.expectEqualStrings("abc", bad);
+    try testing.expectError(error.InvalidPort, Args.parse(&.{"--port"}, &bad));
+    try testing.expectError(error.InvalidPort, Args.parse(&.{"--port=0"}, &bad));
+    try testing.expectError(error.UnknownOption, Args.parse(&.{"--watch"}, &bad));
+    try testing.expectEqualStrings("--watch", bad);
+}
+
+test "hasDevStep: the helper, or a step named dev written by hand" {
+    try testing.expect(hasDevStep("    _ = spider_build.devStep(b, tool, exe, .{});\n"));
+    try testing.expect(hasDevStep("    const dev = b.step(\"dev\", \"mine\");\n"));
+    try testing.expect(!hasDevStep("    const run_step = b.step(\"run\", \"Run the app\");\n"));
+    try testing.expect(!hasDevStep(""));
+}
+
+test "supervise: --port reaches the app as SPIDER_DEV_PORT" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const fx = try Fixture.init(
+        \\printf '#!/bin/sh\necho "port=$SPIDER_DEV_PORT" > app-port\nwhile :; do sleep 0.05; done\n' > bin-p; chmod +x bin-p
+        \\
+    ++ script_prelude ++
+        \\notify p 1
+        \\exec sleep 30
+        \\
+    );
+    defer fx.deinit();
+    fx.port = 4123;
+    try fx.start();
+    try fx.expectFile("app-port", "port=4123\n");
+    _ = try fx.finish();
+}
 
 test "Notice.parse: the executable and the assets" {
     const full = Notice.parse("/p/.zig-cache/o/abc/app\n17\n00ff00ff00ff00ff\n").?;
@@ -404,6 +580,7 @@ const Fixture = struct {
     task: Io.Future(anyerror!Summary) = undefined,
     /// The supervisor task is running and nobody awaited it yet.
     running: bool = false,
+    port: ?u16 = null,
 
     fn init(build_script: []const u8) !*Fixture {
         const io = testing.io;
@@ -426,6 +603,7 @@ const Fixture = struct {
             .quiet = true,
             .poll_ms = 5,
             .grace_ms = 1000,
+            .port = self.port,
         });
     }
 
@@ -592,6 +770,38 @@ test "supervise: a new binary at the same path, with the same size, restarts the
 
     const summary = try fx.finish();
     try testing.expectEqual(@as(u32, 2), summary.starts);
+}
+
+test "supervise: an app that will not stop when asked is replaced anyway, quickly" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    // The first app ignores SIGTERM, as a server draining its connections
+    // would for a while.
+    const fx = try Fixture.init(
+        \\printf '#!/bin/sh\ntrap "" TERM\necho stubborn >> runs.log\nwhile :; do sleep 0.05; done\n' > bin-stubborn; chmod +x bin-stubborn
+        \\
+    ++ script_prelude ++
+        \\notify stubborn 1
+        \\while [ ! -f go ]; do sleep 0.02; done
+        \\app two; notify two 2
+        \\exec sleep 30
+        \\
+    );
+    defer fx.deinit();
+    try fx.start();
+
+    try fx.expectFile("runs.log", "stubborn\n");
+    const asked = Io.Timestamp.now(testing.io, .awake);
+    try fs_utils.writeFile(testing.io, fx.tmp.dir, "go", "");
+    try fx.expectFile("runs.log", "stubborn\ntwo\n");
+    const took_ms = asked.durationTo(Io.Timestamp.now(testing.io, .awake)).toMilliseconds();
+    // Far below the build's two-second grace.
+    try testing.expect(took_ms < 1000);
+
+    const summary = try fx.finish();
+    try testing.expectEqual(@as(u32, 2), summary.starts);
+    var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..try fx.tmp.dir.realPath(testing.io, &path_buf)];
+    try testing.expectEqual(@as(usize, 0), try processesRunning(dir_path));
 }
 
 test "supervise: a build that fails leaves the running app alone" {

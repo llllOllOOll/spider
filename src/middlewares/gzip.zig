@@ -2,6 +2,7 @@ const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const NextFn = @import("../core/context.zig").NextFn;
 const Response = @import("../core/context.zig").Response;
+const dev_reload = @import("../modules/dev_reload.zig");
 
 const MIN_COMPRESS_BYTES: usize = 1024;
 
@@ -30,7 +31,15 @@ pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
     if (resp.raw) return resp;
 
     // 3. Skip responses without a body
-    const body = resp.body orelse return resp;
+    var body = resp.body orelse return resp;
+
+    // Under `spider dev` the reload script goes into HTML pages. The server
+    // adds it after the middlewares ran, where a page compressed here is
+    // bytes it cannot read, so it is added now.
+    if (dev_reload.compiled_in and c._dev_reload and dev_reload.isHtml(resp.content_type)) {
+        body = dev_reload.inject(c.arena, body);
+        resp.body = body;
+    }
 
     // 4. Skip small payloads (diminishing returns)
     if (body.len < MIN_COMPRESS_BYTES) return resp;

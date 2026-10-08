@@ -13,7 +13,8 @@
 | What | Command |
 |---|---|
 | Build | `zig build` |
-| Run (http://localhost:3000) | `zig build run` |
+| Develop (http://localhost:3000): rebuild, restart and reload the browser on save | `spider dev` (`--port N`) |
+| Run once | `zig build run` |
 | Tests | `zig build test` (see "Tests" below) |
 | New CRUD feature | `spider g feature <name>`{{feature_api_flag}} |
 | Apply migrations | `spider migrate` |

@@ -32,12 +32,29 @@ pub fn testManifest(b: *std.Build, tool: *std.Build.Step.Compile, dir: []const u
     return b.createModule(.{ .root_source_file = out });
 }
 
+/// True when the build was started by `spider dev` (it passes
+/// `-Dspider-dev=true`). Pass it on to Spider so templates are read from
+/// disk instead of being embedded: editing one then needs no compile and no
+/// restart, only a browser reload.
+///
+///     // an app's build.zig
+///     const spider_build = @import("spider");
+///     const spider_dep = b.dependency("spider", .{ ..., .dev = spider_build.devOption(b) });
+pub fn devOption(b: *std.Build) bool {
+    return b.option(bool, "spider-dev", "Set by `spider dev`: templates are read from disk") orelse false;
+}
+
 pub const DevOptions = struct {
     /// Files, relative to the build root, that the page uses besides the
     /// binary and that a build can change (the generated stylesheet). When
     /// only these changed, `spider dev` reloads the browser without
     /// restarting the app.
     assets: []const []const u8 = &.{},
+    /// The directory with the app's templates, relative to the build root.
+    /// With templates read from disk (devOption), an edited template is not
+    /// part of the binary: naming the directory here makes the edit rerun
+    /// this step and count as a change of the page.
+    templates: ?[]const u8 = null,
 };
 
 /// The `dev` build step `spider dev` runs (`zig build dev --watch`): builds
@@ -64,6 +81,10 @@ pub fn devStep(b: *std.Build, tool: *std.Build.Step.Compile, exe: *std.Build.Ste
     run.has_side_effects = true;
     run.addArtifactArg(exe);
     for (options.assets) |asset| run.addArg(asset);
+    if (options.templates) |dir| {
+        run.addArg(b.fmt("--templates={s}", .{dir}));
+        watchSources(b, run, dir, &.{ ".html", ".md" });
+    }
     run.setCwd(b.path("."));
     const step = b.step("dev", "Build the app for `spider dev`");
     step.dependOn(&run.step);
@@ -117,6 +138,10 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption(IoBackend, "io_backend", io_backend);
+    // Templates from disk even when the app embeds them: what `spider dev`
+    // builds with (see devOption). A template edit then changes no binary.
+    const dev_templates = b.option(bool, "dev", "Development build: templates are read from disk, never embedded") orelse false;
+    build_options.addOption(bool, "dev_templates", dev_templates);
     const build_options_mod = build_options.createModule();
 
     const pacman_dep = b.dependency("pacman", .{});

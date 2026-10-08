@@ -18,6 +18,14 @@ fn fragment(c: *spider.Ctx) !spider.Response {
     return c.html(fragment_html, .{});
 }
 
+/// A page big enough for spider.gzip to compress (it skips small bodies).
+const big_page_html = "<!doctype html><html><body><p>" ++ big_filler ++ "</p></body></html>";
+const big_filler: [4096]u8 = @splat('x');
+
+fn bigPage(c: *spider.Ctx) !spider.Response {
+    return c.html(big_page_html, .{});
+}
+
 fn data(c: *spider.Ctx) !spider.Response {
     return c.json(.{ .note = "</body>" }, .{});
 }
@@ -32,7 +40,9 @@ fn runApp(port: u16, on: bool) void {
     var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null, .dev_reload = on });
     s
         .use(denySpiderPaths)
+        .use(spider.gzip)
         .get("/page", page, .{})
+        .get("/big", bigPage, .{})
         .get("/fragment", fragment, .{})
         .get("/data", data, .{})
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
@@ -149,6 +159,22 @@ test "dev reload: an HTML page gets the script tag before </body>" {
         "<!doctype html><html><body><h1>page</h1>" ++ dev_reload.script_tag ++ "</body></html>",
         res.body,
     );
+}
+
+test "dev reload: a page compressed by spider.gzip still gets the script tag" {
+    if (!dev_reload.compiled_in) return error.SkipZigTest;
+    var e = try Env.init();
+    defer e.deinit();
+    // What a browser sends. Without the header the page is not compressed.
+    const res = try h.request(std.testing.io, e.arena.allocator(), port_on, "/big", .{ .headers = &.{"Accept-Encoding: gzip, deflate, br"} });
+    try std.testing.expectEqual(@as(u16, 200), res.status);
+    try std.testing.expectEqualStrings("gzip", res.header("content-encoding").?);
+
+    var in: std.Io.Reader = .fixed(res.body);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var inflate: std.compress.flate.Decompress = .init(&in, .gzip, &window);
+    const html = try inflate.reader.allocRemaining(e.arena.allocator(), .limited(1024 * 1024));
+    try std.testing.expect(std.mem.endsWith(u8, html, dev_reload.script_tag ++ "</body></html>"));
 }
 
 test "dev reload: fragments and non-HTML responses are left alone" {

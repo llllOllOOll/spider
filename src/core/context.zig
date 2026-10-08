@@ -11,7 +11,12 @@ const Watchdog = @import("watchdog.zig").Watchdog;
 const RouteMeta = @import("../routing/router.zig").RouteMeta;
 
 const root = @import("root");
-pub const has_embed = @hasDecl(root, "spider_templates");
+/// False in a `spider dev` build (build option `dev`) even when the app
+/// declares `spider_templates`: templates are then read from disk on every
+/// request. `root.spider_templates` is never referenced in that case, so
+/// the compiler does not embed the files and a template edit changes no
+/// binary.
+pub const has_embed = !@import("spider_build_options").dev_templates and @hasDecl(root, "spider_templates");
 /// The app's embedded templates as one map (see render/embedded.zig).
 const embedded_templates: embedded.Map = if (has_embed) embedded.buildMap(root.spider_templates) else .initComptime(.{});
 
@@ -133,6 +138,8 @@ pub const Ctx = struct {
     _loaded: ?*anyopaque = null,
     /// Config.trusted_proxies, for clientIp().
     _trusted_proxies: []const []const u8 = &.{},
+    /// The server is running under `spider dev` (modules/dev_reload.zig).
+    _dev_reload: bool = false,
     _loaded_type: ?*const anyopaque = null,
 
     /// Id correlating every log line and the response of this request: the

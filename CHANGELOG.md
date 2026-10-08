@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generated app) and starts a copy of the new binary each time. While a
   build runs or after it fails, the app that is up keeps serving and the
   compiler's errors go to the terminal. Ctrl+C stops the build and the app.
-  One `spider dev` per project. Not on Windows yet.
+  One `spider dev` per project. Not on Windows yet. `--port N` makes the
+  app listen on N instead of the port in its code. In an app without the
+  `dev` build step it says which lines to add to `build.zig`.
 - Under `spider dev` the browser reloads by itself after each build. The
   app (Debug builds only, when `spider dev` started it) adds a small script
   to its HTML pages and serves it and a WebSocket at `/_spider/dev.js` and
@@ -30,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build reloads nothing. Everything is same-origin, so it works under a
   `script-src 'self'` / `connect-src 'self'` Content-Security-Policy.
   `Config.dev_reload` forces it on or off. Nothing of it is in a release
-  build.
+  build. Pages compressed by `spider.gzip` get the script too.
 - `devStep()` in Spider's `build.zig` and the `spider-dev-notify` build
   tool: the `dev` build step `spider dev` relies on. New apps have it; in an
   existing app add to `build.zig`:
@@ -139,6 +141,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   apps pass `.optimize = optimize`; in an existing app, add that line to
   `b.dependency("spider", .{ ... })`.
 - HTTP client (`spider.http_client`):
+  - Every request crashed (segmentation fault) in an app built with
+    incremental compilation, which is how `spider dev` builds: the client
+    looked for proxy settings by walking libc's `environ` variable, which
+    reads as a null pointer in such a build (Zig 0.17.0). It now calls
+    `getenv()`.
   - A persistent `Client` opened a new connection for every request whose
     response was compressed and chunked (most APIs): the end of the body
     was left unread, so the connection could not be reused. It is now read

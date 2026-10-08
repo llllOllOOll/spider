@@ -107,9 +107,16 @@ pub fn main(init: std.process.Init) !void {
             const code = try pwa_mod.run(io, allocator, cmd == .add, rest);
             if (code != 0) std.process.exit(code);
         },
-        .dev => dev.run(io, init.gpa, init.environ_map) catch |err| switch (err) {
-            error.Unsupported, error.NotAProjectRoot, error.AlreadyRunning => std.process.exit(1),
-            else => |e| return e,
+        .dev => {
+            var bad: []const u8 = "";
+            const dev_args = dev.Args.parse(rest, &bad) catch |err| switch (err) {
+                error.UnknownOption => usageError("unknown option '{s}' for `spider dev` (see `spider dev --help`)", .{bad}),
+                error.InvalidPort => usageError("--port needs a port number (got '{s}')", .{bad}),
+            };
+            dev.run(io, init.gpa, init.environ_map, dev_args) catch |err| switch (err) {
+                error.Unsupported, error.NotAProjectRoot, error.AlreadyRunning, error.NoDevStep => std.process.exit(1),
+                else => |e| return e,
+            };
         },
         .update => try update.run(io),
         .self_update => try self_update.run(io),

@@ -111,7 +111,7 @@ and generated apps). In GitHub Actions,
 ```bash
 spider new myapp          # HTML views + SQLite; --pg, --no-db, --api, --pwa, --ui=tailwind
 cd myapp
-zig build run             # http://localhost:3000
+spider dev                # http://localhost:3000, rebuilt and reloaded as you edit
 spider g feature posts    # a CRUD feature in src/features/posts/ + a migration
 ```
 
@@ -156,6 +156,48 @@ The third argument of every route is its config (`.{}` for none, see
 [Routing](#routing)). `listen(.{ .port, .host })` fields you leave out come from
 `spider.config.zig` (see [Configuration](#configuration)), else `127.0.0.1:3000`.
 `spider.app()` also registers `GET /up` and `GET /_spider/health`.
+
+### `spider dev`
+
+```bash
+spider dev            # or: spider dev --port 4000
+```
+
+One command, left running. It builds the app, runs it, and after every
+save rebuilds it, replaces the running process and reloads the browser.
+
+- **Fast where Zig allows it.** It runs `zig build dev --watch` with
+  incremental compilation on x86_64 Linux: in a generated app an edit is on
+  the page in about half a second. Elsewhere it is a normal build each
+  time.
+- **A build that fails changes nothing.** The app that is up keeps serving,
+  the compiler's errors are in the terminal, and the page does not reload
+  until a build succeeds.
+- **The browser reloads by itself.** A Debug build started by `spider dev`
+  adds a small script to its HTML pages. It is served by the app itself
+  (`/_spider/dev.js`, WebSocket `/_spider/dev`, before any middleware), so
+  it works behind your auth and under a strict Content-Security-Policy.
+  None of it exists in a release build.
+- **Stylesheet edits** rebuild the CSS and reload the browser without
+  restarting the app.
+- `--port N` makes the app listen on N instead of the port in its code.
+- Ctrl+C stops everything. One `spider dev` per project. Not on Windows
+  yet.
+
+Apps created by `spider new` are ready for it. An older app needs the `dev`
+build step; `spider dev` prints the lines to add to `build.zig` when it is
+missing:
+
+```zig
+const spider_build = @import("spider");
+const dev = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{
+    .assets = &.{"public/css/app.css"}, // what the page loads besides the binary
+});
+dev.step.dependOn(&css.step); // the Tailwind step
+spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".js" });
+```
+
+`zig build run` still works: one build, one run, no reload.
 
 ### A generated app
 

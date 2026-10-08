@@ -69,6 +69,9 @@ Before calling a change done: `zig build test`, and for anything under
 - Writers need `flush()`; `std.Io.Reader`: `fill`, `peekGreedy`, `toss`, `readSliceShort`.
 - `builtin.mode` is `std.lang.Optimize`: `.debug`/`.safe`/`.fast`/`.small` (not `.Debug`, `.ReleaseSafe`, …).
 - `std.Uri.getHost`/`getHostAlloc` are gone: `std.Io.net.HostName.fromUri(uri, &buf)`.
+- In a binary built with `-fincremental` (what `spider dev` runs), a C library
+  *variable* reads as null: `std.c.environ` crashed every HTTP client
+  request. Call C functions (`getenv`) instead; they work.
 - A signed int with a width/fill spec prints a sign (`{d:0>2}` of 5 is `+5`); cast to unsigned first.
 
 ## Layout
@@ -175,7 +178,10 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   browser reload lives in the server, same origin, Debug builds only, on
   when SPIDER_DEV is set: script tag injected into HTML responses, plus
   `/_spider/dev.js` and the `/_spider/dev` WebSocket answered before
-  routing. Keep it same-origin (apps send `script-src 'self'`). A build
+  routing. Keep it same-origin (apps send `script-src 'self'`). The tag
+  is injected after the middlewares ran, except that `spider.gzip` injects
+  it itself before compressing (browsers ask for gzip; curl does not, so
+  test with `curl --compressed`). A build
   that changes only the assets (CSS) rewrites the reload file named in
   SPIDER_DEV; the dev socket polls it and sends `reload`. Build helpers in
   build.zig: `devStep` (notify step; never cached) and `watchSources`.

@@ -498,7 +498,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
     std.debug.print("\nDone! Next steps:\n", .{});
     std.debug.print("  cd {s}\n", .{app_name});
     if (use_pg and !effective_no_db) std.debug.print("  docker compose up -d db\n", .{});
-    std.debug.print("  zig build run        ← downloads assets and starts server automatically\n", .{});
+    std.debug.print("  spider dev           ← builds, runs, and reloads the browser as you edit\n", .{});
+    std.debug.print("  zig build run        ← or: one build, one run\n", .{});
     std.debug.print("                         (requires spider CLI in PATH — run: spider install)\n", .{});
 
     if (effective_skip) {

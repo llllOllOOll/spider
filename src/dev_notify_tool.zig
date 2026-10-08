@@ -3,7 +3,7 @@
 //! runs after every build that succeeded and never after one that failed.
 //! It tells the supervisor that a build finished and what it produced.
 //!
-//! Usage: spider-dev-notify <built executable> [asset file...]
+//! Usage: spider-dev-notify <built executable> [asset file...] [--templates=<dir>]
 //!
 //! The supervisor names a file in SPIDER_DEV_BUILT. The tool replaces it
 //! (write to a temporary name, then rename: the reader never sees half a
@@ -13,13 +13,42 @@
 //!   2. a number that differs on every run (the build may put a new binary
 //!      at the same path);
 //!   3. a hash of the asset files' contents ("-" without assets): what the
-//!      page uses besides the binary, such as the generated stylesheet.
+//!      page uses besides the binary, such as the generated stylesheet and,
+//!      with `--templates`, every template under that directory (they are
+//!      read from disk in a `spider dev` build).
 //!
 //! Outside `spider dev` the variable is not set and the tool does nothing.
 
 const std = @import("std");
 
 pub const env_name = "SPIDER_DEV_BUILT";
+
+/// Every .html and .md file under `dir`, by name and contents, in a fixed
+/// order (a directory walk has none).
+fn hashTemplates(io: std.Io, alc: std.mem.Allocator, hasher: *std.hash.XxHash3, dir_path: []const u8) !void {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var paths: std.ArrayList([]const u8) = .empty;
+    var walker = try dir.walk(alc);
+    defer walker.deinit();
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.path, ".html") and !std.mem.endsWith(u8, entry.path, ".md")) continue;
+        try paths.append(alc, try alc.dupe(u8, entry.path));
+    }
+    std.mem.sort([]const u8, paths.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    for (paths.items) |path| {
+        hasher.update(path);
+        hasher.update(&[_]u8{0});
+        const content = dir.readFileAlloc(io, path, alc, .limited(8 * 1024 * 1024)) catch "";
+        hasher.update(content);
+        hasher.update(&[_]u8{0});
+    }
+}
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -45,6 +74,10 @@ pub fn main(init: std.process.Init) !void {
     var any_asset = false;
     while (it.next()) |asset| {
         any_asset = true;
+        if (std.mem.startsWith(u8, asset, "--templates=")) {
+            try hashTemplates(io, alc, &hasher, asset["--templates=".len..]);
+            continue;
+        }
         hasher.update(asset);
         hasher.update(&[_]u8{0});
         const content = cwd.readFileAlloc(io, asset, alc, .limited(64 * 1024 * 1024)) catch "";

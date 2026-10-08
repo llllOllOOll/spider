@@ -518,6 +518,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._request_id = request_id,
                 ._watch = &watch,
                 ._trusted_proxies = ctx.config.trusted_proxies,
+                ._dev_reload = dev_reload.compiled_in and (ctx.config.dev_reload orelse false),
                 ._route = m.meta,
             };
 
@@ -543,6 +544,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._request_id = request_id,
                 ._watch = &watch,
                 ._trusted_proxies = ctx.config.trusted_proxies,
+                ._dev_reload = dev_reload.compiled_in and (ctx.config.dev_reload orelse false),
             };
             var mw_buf_404: [64]MiddlewareFn = undefined;
             const mw_count_404 = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, &.{}, &mw_buf_404);
@@ -1377,7 +1379,7 @@ pub fn Server(comptime T: type) type {
         /// thread; each of the `cpu_count` threads below runs its own
         /// `accept()` loop directly against the listener socket.
         fn listenThreaded(self: *Self, options: ListenOptions) !void {
-            const port = options.port orelse self.config.port;
+            const port = dev_reload.portOverride() orelse options.port orelse self.config.port;
             const host = options.host orelse self.config.host;
 
             const gpa = std.heap.smp_allocator;
@@ -1447,7 +1449,7 @@ pub fn Server(comptime T: type) type {
         fn listenZio(self: *Self, options: ListenOptions) !void {
             const zio = @import("zio");
 
-            const port = options.port orelse self.config.port;
+            const port = dev_reload.portOverride() orelse options.port orelse self.config.port;
             const host = options.host orelse self.config.host;
 
             const gpa = std.heap.smp_allocator;

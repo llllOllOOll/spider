@@ -286,13 +286,17 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\
         ,
         .dev =>
-        \\Usage: spider dev
+        \\Usage: spider dev [--port N]
         \\
-        \\Build the app, run it, and replace it after every build that succeeds.
-        \\Runs `zig build dev --watch` (incremental on x86_64 Linux), so the app's
-        \\build.zig needs the `dev` step: `spider_build.devStep(...)`. While a
-        \\build is running or after it fails, the app that is up keeps serving;
-        \\the compiler's errors go to this terminal. Ctrl+C stops both.
+        \\Build the app, run it, and replace it after every build that succeeds;
+        \\the browser reloads by itself. Runs `zig build dev --watch` (incremental
+        \\on x86_64 Linux), so the app's build.zig needs the `dev` step:
+        \\`spider_build.devStep(...)` (`spider dev` says what to add when it is
+        \\missing). While a build is running or after it fails, the app that is
+        \\up keeps serving; the compiler's errors go to this terminal. Ctrl+C
+        \\stops both. One `spider dev` per project.
+        \\
+        \\  --port N   the port the app listens on, instead of the one in its code
         \\
         ,
         .install =>

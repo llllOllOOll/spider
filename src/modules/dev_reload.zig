@@ -4,7 +4,8 @@
 //! Debug, the server:
 //!
 //!   * adds `<script src="/_spider/dev.js">` before `</body>` of every HTML
-//!     page it sends;
+//!     page it sends (spider.gzip adds it itself, before compressing; a page
+//!     compressed by an app's own middleware cannot get it);
 //!   * serves that script and a WebSocket at `/_spider/dev`, before routing
 //!     and before any middleware (an app's auth never sees them).
 //!
@@ -34,6 +35,9 @@ pub const compiled_in = builtin.mode == .debug;
 
 /// Set by `spider dev` for the app it starts.
 pub const env_name = "SPIDER_DEV";
+/// Set by `spider dev --port N`: the port listen() uses instead of the
+/// app's own.
+pub const port_env_name = "SPIDER_DEV_PORT";
 pub const script_path = "/_spider/dev.js";
 pub const socket_path = "/_spider/dev";
 pub const script_tag = "<script src=\"" ++ script_path ++ "\" defer></script>";
@@ -73,6 +77,18 @@ pub fn resolve(configured: ?bool) bool {
         if (reload_file == null and std.fs.path.isAbsolute(value)) reload_file = value;
     }
     return configured orelse (from_env != null);
+}
+
+/// The port `spider dev --port N` asked for, if any. Never in a release
+/// build.
+pub fn portOverride() ?u16 {
+    if (!compiled_in) return null;
+    return parsePort(env.get(port_env_name) orelse return null);
+}
+
+pub fn parsePort(text: []const u8) ?u16 {
+    const port = std.fmt.parseInt(u16, std.mem.trim(u8, text, " \t\r\n"), 10) catch return null;
+    return if (port == 0) null else port;
 }
 
 /// The file `spider dev` rewrites to ask for a reload without replacing the
@@ -186,6 +202,15 @@ test "script: same origin, wss on https, reloads on a different boot id or on re
     try std.testing.expect(std.mem.indexOf(u8, script, "e.data !== boot") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "e.data === 'reload'") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "http://") == null);
+}
+
+test "parsePort: a port number, nothing else" {
+    try std.testing.expectEqual(@as(?u16, 4000), parsePort("4000"));
+    try std.testing.expectEqual(@as(?u16, 4000), parsePort(" 4000\n"));
+    try std.testing.expectEqual(@as(?u16, null), parsePort("0"));
+    try std.testing.expectEqual(@as(?u16, null), parsePort("70000"));
+    try std.testing.expectEqual(@as(?u16, null), parsePort("http"));
+    try std.testing.expectEqual(@as(?u16, null), parsePort(""));
 }
 
 test "resolve: an explicit value wins; off in a release build" {
