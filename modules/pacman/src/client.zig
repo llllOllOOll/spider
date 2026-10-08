@@ -19,6 +19,8 @@ pub const Client = struct {
     /// Client.deinit(), not by individual Response.deinit() calls (see
     /// Response.owns_http_client).
     http_client: HttpClient,
+    /// Owns the proxy settings `http_client` points at.
+    proxy_arena: std.heap.ArenaAllocator,
 
     pub fn init(io: Io, allocator: std.mem.Allocator, opts: struct {
         base_url: []const u8,
@@ -37,7 +39,9 @@ pub const Client = struct {
             const host_name = Io.net.HostName.fromUri(uri, &host_buf) catch break :blk "";
             break :blk host_name.bytes;
         };
-        try proxy.configure(allocator, &http_client, opts.proxy_url, target_host);
+        var proxy_arena: std.heap.ArenaAllocator = .init(allocator);
+        errdefer proxy_arena.deinit();
+        try proxy.configure(proxy_arena.allocator(), &http_client, opts.proxy_url, target_host);
 
         return .{
             .io = io,
@@ -46,12 +50,14 @@ pub const Client = struct {
             .headers = opts.headers,
             .proxy_url = opts.proxy_url,
             .http_client = http_client,
+            .proxy_arena = proxy_arena,
         };
     }
 
     /// Closes the connection pool. Call once, when done with this Client.
     pub fn deinit(self: *Client) void {
         self.http_client.deinit();
+        self.proxy_arena.deinit();
     }
 
     pub fn get(self: *Client, path: []const u8, opts: FetchOptions) !Response {

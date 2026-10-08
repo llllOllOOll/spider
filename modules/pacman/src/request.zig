@@ -456,7 +456,17 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
     var transfer_buffer: [4096]u8 = undefined;
     var decompress: http.Decompress = undefined;
     var decompress_buffer: [std.compress.flate.max_window_len]u8 = undefined;
-    const reader = response.readerDecompressing(&transfer_buffer, &decompress, &decompress_buffer);
+    // The body as framed on the wire (Content-Length / chunked), and on top
+    // of it the decompressing reader the loop below reads from.
+    // A response without a body (HEAD) still carries the headers of the
+    // body it would have had: there is nothing to inflate.
+    const content_encoding: http.ContentEncoding = if (opts.method.responseHasBody()) response.head.content_encoding else .identity;
+    // Without a body, response.reader() hands out a shared constant reader
+    // that must not be read from (reading writes to it): use an empty one
+    // of our own.
+    var no_body: std.Io.Reader = .fixed(&.{});
+    const transfer_reader = if (opts.method.responseHasBody()) response.reader(&transfer_buffer) else &no_body;
+    const reader = decompress.init(transfer_reader, &decompress_buffer, content_encoding);
 
     // Read body in chunks
     while (true) {
@@ -483,6 +493,12 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
     }
 
     const body_text = try body_list.toOwnedSlice(aa);
+
+    // A compressed stream can end before the framing does (the last chunk
+    // of a chunked body, bytes after a gzip trailer). Read to the end of the
+    // framing: otherwise the connection is not at a message boundary and
+    // deinit() closes it instead of returning it to the pool.
+    if (content_encoding != .identity) _ = transfer_reader.discardRemaining() catch {};
 
     // Deinit the request
     req.deinit();

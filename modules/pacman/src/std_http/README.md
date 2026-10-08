@@ -29,6 +29,15 @@ Zig 0.17.0 cannot put TLS on top of a tunnel:
 4. `ensureCertBundleLoaded` (new): the CA bundle loading that `request()`
    did inline, so `adoptTunneledStream` can run before the first request.
 
+5. `connectProxied` sends the proxy's credentials (`proxy-authorization`)
+   with the CONNECT request. The standard library only adds them to
+   requests forwarded outside a tunnel, so a proxy that asks for a password
+   answered 407 to every CONNECT.
+6. `connect` no longer falls back to forwarding when the target is https
+   and the tunnel could not be made: that sent `GET https://…` to the proxy
+   unencrypted. It fails with `error.ConnectionRefused` instead. For http
+   targets the fallback is unchanged.
+
 To see the exact difference:
 
 ```sh
@@ -44,8 +53,9 @@ changes above.
 
 ## Checking it
 
-`zig build test-pacman-local` needs no network. The proxy paths only run
-against a real proxy:
+`zig build test-pacman-local` needs no network; it covers the proxy
+credentials, the refused fallback and connection reuse with scripted local
+servers. TLS through a tunnel only runs against a real proxy:
 
 ```sh
 PACMAN_TEST_SOCKS5_PROXY=socks5h://127.0.0.1:1080 \

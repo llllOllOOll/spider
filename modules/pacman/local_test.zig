@@ -404,7 +404,7 @@ fn expectCutBody(io: Io, script: Script) !void {
     if (pacman.get(io, t.allocator, server.url(&url_buf, "/"), .{})) |res| {
         var owned = res;
         defer owned.deinit();
-        std.debug.print("got a response instead of an error: status {d}, {d} bytes: \"{s}\"\n", .{ @intFromEnum(owned.status), owned.text().len, owned.text() });
+        std.debug.print("got a response instead of an error: status {d}, {d} bytes: \"{s}\"\n", .{ @backingInt(owned.status), owned.text().len, owned.text() });
         return error.PartialBodyReturnedAsSuccess;
     } else |err| {
         try t.expectEqual(error.HttpBodyCutShort, err);
@@ -529,4 +529,329 @@ test "size limit: a declared length over the limit is refused before the body is
 test "size limit: the default is generous" {
     try t.expect(pacman.default_max_response_bytes >= 32 * 1024 * 1024);
     try t.expectEqual(pacman.default_max_response_bytes, (pacman.FetchOptions{}).max_response_bytes);
+}
+
+// ── connection reuse and proxies ────────────────────────────────────────
+
+/// A server that keeps connections alive and answers every request on them,
+/// one thread per connection. It can also play the proxy in front of
+/// itself: after a CONNECT or a SOCKS5 handshake it answers the tunneled
+/// requests as the origin would.
+const LiveServer = struct {
+    const Role = enum { origin, connect_proxy, socks5_proxy };
+
+    threaded: Io.Threaded,
+    listener: Io.net.Server,
+    port: u16,
+    role: Role,
+    /// connect_proxy: a CONNECT without this exact `proxy-authorization`
+    /// value gets a 407 and the connection is closed.
+    required_proxy_auth: ?[]const u8,
+    /// What every request is answered with. Set before the first request.
+    reply: []const u8 = answer,
+    thread: std.Thread,
+    stopping: std.atomic.Value(bool) = .init(false),
+    active: std.atomic.Value(usize) = .init(0),
+    accepted: std.atomic.Value(usize) = .init(0),
+    /// Requests answered with 200 (tunneled or direct).
+    answered: std.atomic.Value(usize) = .init(0),
+    /// CONNECTs / SOCKS5 handshakes accepted.
+    tunnels: std.atomic.Value(usize) = .init(0),
+    /// CONNECTs refused with 407.
+    refused: std.atomic.Value(usize) = .init(0),
+    /// Requests that reached the proxy outside a tunnel (`GET http://…`).
+    forwarded: std.atomic.Value(usize) = .init(0),
+
+    const answer = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello";
+
+    fn start(role: Role, required_proxy_auth: ?[]const u8) !*LiveServer {
+        const self = try std.heap.smp_allocator.create(LiveServer);
+        errdefer std.heap.smp_allocator.destroy(self);
+        self.* = .{
+            .threaded = .init(std.heap.smp_allocator, .{}),
+            .listener = undefined,
+            .port = 0,
+            .role = role,
+            .required_proxy_auth = required_proxy_auth,
+            .thread = undefined,
+        };
+        const io = self.threaded.io();
+        var addr = try Io.net.IpAddress.parseIp4("127.0.0.1", 0);
+        self.listener = try addr.listen(io, .{ .reuse_address = true });
+        self.port = self.listener.socket.address.getPort();
+        self.thread = try std.Thread.spawn(.{}, acceptLoop, .{self});
+        return self;
+    }
+
+    /// Call after the client closed its connections.
+    fn stop(self: *LiveServer) void {
+        const io = self.threaded.io();
+        self.stopping.store(true, .seq_cst);
+        if (Io.net.IpAddress.parseIp4("127.0.0.1", self.port)) |addr| {
+            if (addr.connect(io, .{ .mode = .stream })) |s| s.close(io) else |_| {}
+        } else |_| {}
+        self.thread.join();
+        var waited: u32 = 0;
+        while (self.active.load(.seq_cst) != 0 and waited < 3000) : (waited += 20) {
+            Io.sleep(io, .fromMilliseconds(20), .awake) catch {};
+        }
+        self.listener.deinit(io);
+        self.threaded.deinit();
+        std.heap.smp_allocator.destroy(self);
+    }
+
+    fn acceptLoop(self: *LiveServer) void {
+        const io = self.threaded.io();
+        while (true) {
+            const stream = self.listener.accept(io) catch return;
+            if (self.stopping.load(.seq_cst)) {
+                stream.close(io);
+                return;
+            }
+            _ = self.accepted.fetchAdd(1, .seq_cst);
+            _ = self.active.fetchAdd(1, .seq_cst);
+            const thread = std.Thread.spawn(.{}, serve, .{ self, stream }) catch {
+                _ = self.active.fetchSub(1, .seq_cst);
+                stream.close(io);
+                continue;
+            };
+            thread.detach();
+        }
+    }
+
+    fn serve(self: *LiveServer, stream: Io.net.Stream) void {
+        const io = self.threaded.io();
+        defer {
+            stream.close(io);
+            _ = self.active.fetchSub(1, .seq_cst);
+        }
+        var buf: [8192]u8 = undefined;
+
+        if (self.role == .socks5_proxy) {
+            // Greeting, then the CONNECT request; the client waits for each
+            // reply, so each arrives as one read.
+            if ((Server.readSome(io, stream, &buf) catch 0) == 0) return;
+            Server.writeAll(io, stream, "\x05\x00") catch return;
+            if ((Server.readSome(io, stream, &buf) catch 0) == 0) return;
+            Server.writeAll(io, stream, "\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00") catch return;
+            _ = self.tunnels.fetchAdd(1, .seq_cst);
+        }
+
+        while (true) {
+            const head = readHead(io, stream, &buf) orelse return;
+            if (std.mem.startsWith(u8, head, "CONNECT ")) {
+                if (self.required_proxy_auth) |required| {
+                    const given = headerValue(head, "proxy-authorization") orelse "";
+                    if (!std.mem.eql(u8, given, required)) {
+                        _ = self.refused.fetchAdd(1, .seq_cst);
+                        Server.writeAll(io, stream, "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n") catch {};
+                        return;
+                    }
+                }
+                _ = self.tunnels.fetchAdd(1, .seq_cst);
+                Server.writeAll(io, stream, "HTTP/1.1 200 Connection Established\r\n\r\n") catch return;
+                continue;
+            }
+            if (self.role == .connect_proxy and std.mem.indexOf(u8, head[0 .. std.mem.indexOf(u8, head, "\r\n") orelse head.len], "://") != null) {
+                _ = self.forwarded.fetchAdd(1, .seq_cst);
+            }
+            _ = self.answered.fetchAdd(1, .seq_cst);
+            Server.writeAll(io, stream, self.reply) catch return;
+        }
+    }
+
+    /// One request head (these tests send no bodies), or null once the
+    /// client closed the connection.
+    fn readHead(io: Io, stream: Io.net.Stream, buf: []u8) ?[]const u8 {
+        var len: usize = 0;
+        while (std.mem.indexOf(u8, buf[0..len], "\r\n\r\n") == null) {
+            if (len == buf.len) return null;
+            const n = Server.readSome(io, stream, buf[len..]) catch return null;
+            if (n == 0) return null;
+            len += n;
+        }
+        return buf[0..len];
+    }
+
+    fn headerValue(head: []const u8, name: []const u8) ?[]const u8 {
+        var lines = std.mem.splitSequence(u8, head, "\r\n");
+        _ = lines.next();
+        while (lines.next()) |line| {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            if (std.ascii.eqlIgnoreCase(line[0..colon], name)) return std.mem.trim(u8, line[colon + 1 ..], " \t");
+        }
+        return null;
+    }
+
+    fn url(self: *const LiveServer, buf: []u8, comptime scheme_and_userinfo: []const u8) []const u8 {
+        return std.fmt.bufPrint(buf, scheme_and_userinfo ++ "127.0.0.1:{d}", .{self.port}) catch unreachable;
+    }
+};
+
+fn getThree(client: *pacman.Client) !void {
+    for (0..3) |_| {
+        var res = try client.get("/", .{ .timeout_ms = 3000 });
+        defer res.deinit();
+        try t.expectEqualStrings("hello", res.text());
+    }
+}
+
+test "reuse: a persistent Client sends consecutive requests on one connection" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const origin = try LiveServer.start(.origin, null);
+    var base_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{ .base_url = origin.url(&base_buf, "http://") });
+        defer client.deinit();
+        try getThree(&client);
+    }
+    const accepted = origin.accepted.load(.seq_cst);
+    const answered = origin.answered.load(.seq_cst);
+    origin.stop();
+    try t.expectEqual(@as(usize, 3), answered);
+    try t.expectEqual(@as(usize, 1), accepted);
+}
+
+test "reuse: through SOCKS5, a persistent Client opens one tunnel" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const proxy = try LiveServer.start(.socks5_proxy, null);
+    var proxy_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{
+            .base_url = "http://origin.test",
+            .proxy_url = proxy.url(&proxy_buf, "socks5h://"),
+        });
+        defer client.deinit();
+        try getThree(&client);
+    }
+    const tunnels = proxy.tunnels.load(.seq_cst);
+    const answered = proxy.answered.load(.seq_cst);
+    proxy.stop();
+    try t.expectEqual(@as(usize, 3), answered);
+    try t.expectEqual(@as(usize, 1), tunnels);
+}
+
+test "http proxy: CONNECT carries the proxy credentials" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    // "user:pass" in base64.
+    const proxy = try LiveServer.start(.connect_proxy, "Basic dXNlcjpwYXNz");
+    var proxy_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{
+            .base_url = "http://origin.test",
+            .proxy_url = proxy.url(&proxy_buf, "http://user:pass@"),
+        });
+        defer client.deinit();
+        try getThree(&client);
+    }
+    const refused = proxy.refused.load(.seq_cst);
+    const tunnels = proxy.tunnels.load(.seq_cst);
+    const forwarded = proxy.forwarded.load(.seq_cst);
+    proxy.stop();
+    try t.expectEqual(@as(usize, 0), refused);
+    try t.expectEqual(@as(usize, 1), tunnels);
+    try t.expectEqual(@as(usize, 0), forwarded);
+}
+
+test "http proxy: an https request is never sent to the proxy outside a tunnel" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    // The proxy refuses every CONNECT (the credentials are wrong).
+    const proxy = try LiveServer.start(.connect_proxy, "Basic bm90LXRoaXM=");
+    var proxy_buf: [64]u8 = undefined;
+    const proxy_url = proxy.url(&proxy_buf, "http://user:pass@");
+
+    const result = pacman.get(io, t.allocator, "https://origin.test/secret", .{ .proxy_url = proxy_url, .timeout_ms = 3000 });
+    if (result) |res| {
+        var r = res;
+        r.deinit();
+    } else |_| {}
+    Io.sleep(io, .fromMilliseconds(100), .awake) catch {};
+    const refused = proxy.refused.load(.seq_cst);
+    const forwarded = proxy.forwarded.load(.seq_cst);
+    const answered = proxy.answered.load(.seq_cst);
+    proxy.stop();
+    try t.expect(std.meta.isError(result));
+    try t.expectEqual(@as(usize, 1), refused);
+    try t.expectEqual(@as(usize, 0), forwarded);
+    try t.expectEqual(@as(usize, 0), answered);
+}
+
+/// Three requests on one persistent Client, each answered with `reply`;
+/// returns how many connections the server saw.
+fn connectionsForThree(io: Io, reply: []const u8, expected_len: usize) !usize {
+    const origin = try LiveServer.start(.origin, null);
+    origin.reply = reply;
+    var base_buf: [64]u8 = undefined;
+    var failed: ?anyerror = null;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{ .base_url = origin.url(&base_buf, "http://") });
+        defer client.deinit();
+        for (0..3) |_| {
+            var res = client.get("/", .{ .timeout_ms = 3000 }) catch |err| {
+                failed = err;
+                break;
+            };
+            defer res.deinit();
+            if (res.text().len != expected_len) failed = error.TestUnexpectedResult;
+        }
+    }
+    const accepted = origin.accepted.load(.seq_cst);
+    origin.stop();
+    if (failed) |err| return err;
+    return accepted;
+}
+
+test "reuse: a gzip response leaves the connection reusable" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    try t.expectEqual(@as(usize, 1), try connectionsForThree(backend.io(), comptime gzipResponse(false), two_mib));
+}
+
+test "reuse: a chunked response leaves the connection reusable" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+    try t.expectEqual(@as(usize, 1), try connectionsForThree(backend.io(), chunked, 11));
+}
+
+test "reuse: a chunked gzip response leaves the connection reusable" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const chunked_gzip = comptime std.fmt.comptimePrint("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n{x}\r\n", .{gz_2mib.len}) ++ gz_2mib ++ "\r\n0\r\n\r\n";
+    try t.expectEqual(@as(usize, 1), try connectionsForThree(backend.io(), chunked_gzip, two_mib));
+}
+
+test "HEAD: a response that names a compressed body returns at once, empty" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const origin = try LiveServer.start(.origin, null);
+    origin.reply = "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 2048\r\n\r\n";
+    var url_buf: [64]u8 = undefined;
+    const started = Io.Timestamp.now(io, .awake);
+    const result = pacman.head(io, t.allocator, origin.url(&url_buf, "http://"), .{ .timeout_ms = 2000 });
+    const took = elapsedMs(io, started);
+    var len: usize = 1;
+    if (result) |res| {
+        var r = res;
+        len = r.text().len;
+        r.deinit();
+    } else |_| {}
+    origin.stop();
+    _ = try result;
+    try t.expectEqual(@as(usize, 0), len);
+    try t.expect(took < 1000);
 }

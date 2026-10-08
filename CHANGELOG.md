@@ -76,6 +76,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HTTP client (`spider.http_client`):
+  - A persistent `Client` opened a new connection for every request whose
+    response was compressed and chunked (most APIs): the end of the body
+    was left unread, so the connection could not be reused. It is now read
+    to the end and the connection goes back to the pool.
+  - https through an HTTP proxy that asks for a password failed: the
+    CONNECT request went out without the credentials.
+  - When an HTTP proxy refused the tunnel, an https request was sent to the
+    proxy unencrypted (`GET https://…`). It now fails with
+    `error.ConnectionRefused`.
+  - A persistent `Client` with a proxy leaked the proxy settings on
+    `deinit()`.
+  - `head()` on a response that names a compressed body crashed in release
+    builds.
 - A request with a body larger than the connection's read buffer (e.g. an
   access device posting an event with a photo) lost its path, headers and
   request id: they pointed into that buffer, which reading the body reused.

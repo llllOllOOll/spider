@@ -1569,6 +1569,10 @@ pub fn connectProxied(
             }
         }
 
+        // The connection is not marked `proxied` yet (it becomes the
+        // tunnel), so the request would go out without the proxy's
+        // credentials: a proxy that asks for them answers 407.
+        const proxy_auth: [1]http.Header = .{.{ .name = "proxy-authorization", .value = proxy.authorization orelse "" }};
         var req = client.request(.CONNECT, .{
             .scheme = "http",
             .host = .{ .raw = proxied_host.bytes },
@@ -1576,6 +1580,7 @@ pub fn connectProxied(
         }, .{
             .redirect_behavior = .unhandled,
             .connection = connection,
+            .extra_headers = if (proxy.authorization != null) &proxy_auth else &.{},
         }) catch |err| {
             break :tunnel err;
         };
@@ -1719,6 +1724,11 @@ pub fn connect(
             else => |e| return e,
         };
     }
+
+    // Without a tunnel, an https request would go to the proxy as
+    // `GET https://…` over the proxy's own connection: readable by the proxy
+    // and by anyone between here and it. Refuse instead.
+    if (protocol == .tls) return error.ConnectionRefused;
 
     // fall back to using the proxy as a normal http proxy
     const connection = try client.connectTcp(proxy.host, proxy.port, proxy.protocol);
