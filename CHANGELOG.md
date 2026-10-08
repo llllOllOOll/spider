@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `spider.livereload` (`src/modules/livereload.zig`): the old live reload,
+  which was never wired in. `spider dev` replaces it.
+
 ### Added
 
 - `spider dev`: builds the app, runs it, and replaces it after every build
@@ -15,8 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generated app) and starts a copy of the new binary each time. While a
   build runs or after it fails, the app that is up keeps serving and the
   compiler's errors go to the terminal. Ctrl+C stops the build and the app.
-  One `spider dev` per project. Not on Windows yet. It does not reload the
-  browser yet.
+  One `spider dev` per project. Not on Windows yet.
+- Under `spider dev` the browser reloads by itself after each build. The
+  app (Debug builds only, when `spider dev` started it) adds a small script
+  to its HTML pages and serves it and a WebSocket at `/_spider/dev.js` and
+  `/_spider/dev`, before routing and before any middleware, so an app's
+  auth does not get in the way. The script reloads the page when the
+  process it was connected to has been replaced by a new one; a failed
+  build reloads nothing. Everything is same-origin, so it works under a
+  `script-src 'self'` / `connect-src 'self'` Content-Security-Policy.
+  `Config.dev_reload` forces it on or off. Nothing of it is in a release
+  build.
 - `devStep()` in Spider's `build.zig` and the `spider-dev-notify` build
   tool: the `dev` build step `spider dev` relies on. New apps have it; in an
   existing app add to `build.zig`:

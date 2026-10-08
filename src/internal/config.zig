@@ -54,6 +54,11 @@ pub const Config = struct {
     /// is then closed, so the client reconnects instead of silently missing
     /// events, and a stuck client can't hold up delivery to everyone else.
     stream_write_timeout_ms: u32 = 10_000,
+    /// Browser reload for `spider dev` (modules/dev_reload.zig): a script
+    /// added to HTML pages plus `/_spider/dev.js` and `/_spider/dev`. null
+    /// (the default): on when SPIDER_DEV is set, which `spider dev` does for
+    /// the app it runs. Never on in a release build.
+    dev_reload: ?bool = null,
     /// Every route must declare who may call it (`.public`, `.roles` or
     /// `.org_roles`, directly or through its group's defaults()); listen()
     /// refuses to start otherwise and names the routes that don't. Turns

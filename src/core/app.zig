@@ -21,7 +21,6 @@ const Router = @import("../routing/router.zig").Router;
 const auth_marker = @import("../modules/auth_marker.zig");
 /// Registered only with `env = .development`; declares no access on purpose
 /// (see checkRouteAccess).
-pub const livereload_path = "/_spider/reload";
 const Handler = @import("../routing/router.zig").Handler;
 const Route = @import("../routing/router.zig").Route;
 const Group = @import("../routing/group.zig").Group;
@@ -29,7 +28,7 @@ const Config = @import("../internal/config.zig").Config;
 const Env = @import("../internal/config.zig").Env;
 const default_config = @import("../internal/config.zig").default;
 const views_mod = @import("../render/views.zig");
-const livereload = @import("../modules/livereload.zig");
+const dev_reload = @import("../modules/dev_reload.zig");
 const health_mod = @import("../modules/health.zig");
 const Hub = @import("../ws/hub.zig").Hub;
 const Ws = @import("../ws/ws.zig").Ws;
@@ -256,7 +255,7 @@ fn respondToError(error_handler: ?ErrorHandler, c: *Ctx, err: anyerror) Response
         };
     }
     const status = ctx_mod.statusForError(err);
-    if (@intFromEnum(status) >= 500) {
+    if (@backingInt(status) >= 500) {
         std.log.err("rid={s} {s} {s}: unhandled error {s}", .{ c.requestId(), method, c.getPath(), @errorName(err) });
     }
     const message = c.errorDetail() orelse (status.phrase() orelse "Error");
@@ -426,6 +425,36 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             }
         }
 
+        // `spider dev`: the reload script and its socket, before routing so
+        // no middleware (auth, https redirect) gets in the way.
+        if (dev_reload.compiled_in and (ctx.config.dev_reload orelse false) and request.head.method == .GET) {
+            if (std.mem.eql(u8, path, dev_reload.script_path)) {
+                request.respond(dev_reload.script, .{
+                    .extra_headers = &.{
+                        .{ .name = "content-type", .value = "text/javascript; charset=utf-8" },
+                        .{ .name = "cache-control", .value = "no-store" },
+                    },
+                }) catch |err| {
+                    logRespondError(err, request_id, method_name, path);
+                    break;
+                };
+                if (!request.head.keep_alive) break;
+                continue;
+            }
+            if (std.mem.eql(u8, path, dev_reload.socket_path)) {
+                if (dev_reload.serveSocket(ctx.io, ctx.stream, arena, &headers_map)) break;
+                request.respond("WebSocket only", .{
+                    .status = .bad_request,
+                    .extra_headers = &.{.{ .name = "content-type", .value = "text/plain" }},
+                }) catch |err| {
+                    logRespondError(err, request_id, method_name, path);
+                    break;
+                };
+                if (!request.head.keep_alive) break;
+                continue;
+            }
+        }
+
         if (!origin_mod.allowed(ctx.config.origin_check, .{
             .method = request.head.method,
             .path = path,
@@ -552,7 +581,10 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             continue;
         }
 
-        const final_body = response.body orelse "";
+        var final_body = response.body orelse "";
+        if (dev_reload.compiled_in and (ctx.config.dev_reload orelse false) and dev_reload.isHtml(response.content_type)) {
+            final_body = dev_reload.inject(arena, final_body);
+        }
 
         // std.http.Server.Request.discardBody() asserts that a body-bearing
         // method always carries Content-Length or Transfer-Encoding when the
@@ -1315,9 +1347,6 @@ pub fn Server(comptime T: type) type {
             var missing: usize = 0;
             for (list) |e| {
                 if (e.route.meta.declaresAccess()) continue;
-                // Development-only live reload: left to the app's auth like
-                // before (it may exist in production when env stays .development).
-                if (std.mem.eql(u8, e.path, livereload_path)) continue;
                 missing += 1;
                 log("route {s} {s} declares no access (require_route_access): add .public, .authenticated, .roles, .org_roles or .policy to its config, or a defaults() to its group", .{ @tagName(e.method), e.path });
             }
@@ -1337,6 +1366,7 @@ pub fn Server(comptime T: type) type {
                 return;
             }
             try self.checkRouteAccess();
+            self.config.dev_reload = dev_reload.resolve(self.config.dev_reload);
             if (comptime build_options.io_backend == .zio) {
                 return self.listenZio(options);
             }
@@ -1516,10 +1546,6 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
 
     health_mod.init();
 
-    // Live reload (/_spider/reload, modules/livereload.zig) is disabled: it
-    // only reloaded after a manual restart and nothing injected its script.
-    // Kept for a future `spider dev` (file watch + rebuild + reload).
-
     // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
     _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });
     _ = s.get("/_spider/health", health_mod.health, .{ .public = true, .quiet_log = true });
@@ -1543,10 +1569,6 @@ pub fn appWithConfig(config: Config) Server(EmptyDeco) {
     }
 
     health_mod.init();
-
-    // Live reload (/_spider/reload, modules/livereload.zig) is disabled: it
-    // only reloaded after a manual restart and nothing injected its script.
-    // Kept for a future `spider dev` (file watch + rebuild + reload).
 
     // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
     _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });

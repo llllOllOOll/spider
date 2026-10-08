@@ -169,6 +169,13 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   closes an fd (handleConnection owns it); a failed write `drop()`s the slot.
 - **Connection deadlines**: `Config.keepalive_timeout_ms`, `header_timeout_ms`,
   `body_timeout_ms`, `stream_write_timeout_ms`; never applied while a handler runs.
+- **`spider dev`** (`src/cli/dev.zig`, `src/modules/dev_reload.zig`): the CLI
+  supervises `zig build dev --watch` and a COPY of the binary (never the
+  cache binary itself: the incremental linker rewrites it in place). The
+  browser reload lives in the server, same origin, Debug builds only, on
+  when SPIDER_DEV is set: script tag injected into HTML responses, plus
+  `/_spider/dev.js` and the `/_spider/dev` WebSocket answered before
+  routing. Keep it same-origin (apps send `script-src 'self'`).
 - **Before routing** (`handleConnection`): `max_body_bytes` (413, checked on
   Content-Length before reading), static files (ETag; `immutable` with `?v=`;
   304), then `origin_check` (core/origin.zig: cross-site unsafe method or WS
@@ -199,7 +206,6 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `src/cli/templates/*.template`.
 - `tasks.md`, `memory.md`, `test.sh`, `test-mysql*.zig`, `server.log`,
   `test.db` are leftovers; don't treat them as current plans or tests.
-- `spider.livereload` is disabled (not registered by the server); kept for a
-  future `spider dev`. `Config.env` is not read by anything today.
+- `Config.env` is not read by anything today.
 - `zig build test-sqlite` doesn't compile (the sqlite module imports `spider`,
   which that test step doesn't provide).

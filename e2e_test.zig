@@ -627,6 +627,7 @@ test {
     _ = @import("e2e/keycloak_test.zig");
     _ = @import("e2e/sse_test.zig");
     _ = @import("e2e/mail_test.zig");
+    _ = @import("e2e/dev_reload_test.zig");
 }
 
 // ── middleware chain isolation ──────────────────────────────────────────

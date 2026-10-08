@@ -14,6 +14,10 @@
 //!
 //! A build that fails writes nothing, so the app that is running keeps
 //! running; the compiler's errors go to the terminal.
+//!
+//! The app is started with SPIDER_DEV set. A Debug build of Spider then adds
+//! a script to its HTML pages that reloads the browser when the process it
+//! was talking to has been replaced (src/modules/dev_reload.zig).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -22,6 +26,10 @@ const fs_utils = @import("fs_utils.zig");
 
 /// The variable the build's notify tool reads (src/dev_notify_tool.zig).
 pub const built_env = "SPIDER_DEV_BUILT";
+
+/// Set for the app: turns on the browser reload in the server
+/// (src/modules/dev_reload.zig; Debug builds only).
+pub const app_env = "SPIDER_DEV";
 
 /// Everything `spider dev` writes, inside the project's build cache.
 const state_dir = ".zig-cache/spider-dev";
@@ -225,6 +233,10 @@ pub fn supervise(
     defer build_env.deinit();
     try build_env.put(built_env, built_path);
 
+    var app_environ = try environ.clone(gpa);
+    defer app_environ.deinit();
+    try app_environ.put(app_env, "1");
+
     const build_argv = opts.build_argv orelse default_build_argv;
     say(opts, "building ({s})", .{if (opts.build_argv == null and incremental_supported) "incremental" else "watch"});
     const build = Proc.start(io, gpa, .{
@@ -301,6 +313,7 @@ pub fn supervise(
             app = Proc.start(io, gpa, .{
                 .argv = &.{copy_abs},
                 .cwd = .{ .dir = root },
+                .environ_map = &app_environ,
             }) catch |err| {
                 say(opts, "could not start the app: {s}", .{@errorName(err)});
                 break :fresh;
@@ -410,7 +423,7 @@ const Fixture = struct {
 /// the path it was started from in its command line); `notify NAME` is what
 /// the notify tool does.
 const script_prelude =
-    \\app() { printf '#!/bin/sh\necho %s >> runs.log\nwhile :; do sleep 0.05; done\n' "$1" > "bin-$1"; chmod +x "bin-$1"; }
+    \\app() { printf '#!/bin/sh\necho %s >> runs.log\necho "dev=$SPIDER_DEV" > app-env\nwhile :; do sleep 0.05; done\n' "$1" > "bin-$1"; chmod +x "bin-$1"; }
     \\notify() { printf '%s\n%s\n' "$PWD/bin-$1" "$2" > "$SPIDER_DEV_BUILT.tmp"; mv "$SPIDER_DEV_BUILT.tmp" "$SPIDER_DEV_BUILT"; }
     \\
 ;
@@ -435,6 +448,8 @@ test "supervise: starts the app on a build notice and replaces it on the next on
     try fx.start();
 
     try fx.expectFile("runs.log", "one\n");
+    // The app is told it runs under `spider dev`.
+    try fx.expectFile("app-env", "dev=1\n");
     // The app runs from a copy, not from the file the build wrote.
     try fx.tmp.dir.access(testing.io, state_dir ++ "/app-1", .{});
 

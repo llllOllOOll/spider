@@ -48,7 +48,8 @@ pub const pg = @import("spider_pg");
 pub const sqlite = @import("spider_sqlite");
 pub const auth = @import("modules/auth/auth.zig");
 pub const static = @import("modules/static.zig");
-pub const livereload = @import("modules/livereload.zig");
+/// Browser reload under `spider dev` (the server wires it in by itself).
+pub const dev_reload = @import("modules/dev_reload.zig");
 pub const health = @import("modules/health.zig");
 pub const rbac = @import("modules/rbac.zig");
 /// A named access rule for a route: `.policy = spider.policy("post_owner", isPostOwner)`
@@ -153,7 +154,7 @@ test {
     _ = @import("core/origin_test.zig");
     _ = @import("core/client_ip.zig");
     _ = @import("modules/auth/auth.zig");
-    _ = @import("modules/livereload.zig");
+    _ = @import("modules/dev_reload.zig");
     _ = @import("routing/router_test.zig");
     _ = @import("modules/rbac_test.zig");
     _ = @import("internal/url.zig");
