@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-08
+
 ### Breaking changes
 
 - **Templates are read from disk in a Debug build** and embedded only in a

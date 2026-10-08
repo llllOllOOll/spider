@@ -97,7 +97,7 @@ const missing_dev_step =
     \\    dev.step.dependOn(&css.step);
     \\    spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".js" });
     \\
-    \\It needs a Spider that has `devStep` (newer than 0.8.0).
+    \\It needs Spider 0.9.0 or newer.
     \\
 ;
 

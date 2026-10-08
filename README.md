@@ -1,4 +1,4 @@
-# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider v0.8.0
+# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider v0.9.0
 
 Build web servers in Zig — performant, productive, and batteries-included.
 
@@ -10,7 +10,7 @@ scaffolds apps and checks them.
 📖 **Documentation:** this README, and [`llms.txt`](llms.txt) — the maintained API reference  
 🔧 **CLI:** `spider new myapp`
 
-> **Spider 0.8.0 runs on the official Zig 0.17.0 release.** No development
+> **Spider runs on the official Zig 0.17.0 release** (since Spider 0.8.0). No development
 > build, no patched compiler: download Zig 0.17.0 from
 > [ziglang.org/download](https://ziglang.org/download/) and build. From now
 > on Spider only targets official Zig releases; the next move is to 0.18.0,
@@ -31,7 +31,7 @@ curl -fsSL https://spiderme.org/install.sh | bash
 Or a specific version:
 
 ```bash
-curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.8.0
+curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.9.0
 ```
 
 Then `spider new myapp` creates a project with Spider already added as a
@@ -1320,7 +1320,7 @@ The complete API: [`llms.txt`](llms.txt).
 
 Up to Spider 0.7.0 the project tracked development builds
 (`0.17.0-dev.956` was the last one). An app on that build has to move to
-Zig 0.17.0 to use Spider 0.8.0; the [changelog](CHANGELOG.md) lists what to
+Zig 0.17.0 to use Spider 0.8.0 or later; the [changelog](CHANGELOG.md) lists what to
 rename.
 
 ---
