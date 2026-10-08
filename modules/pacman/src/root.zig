@@ -540,18 +540,11 @@ test "concurrent async requests with Client methods" {
     try std.testing.expect(elapsed_ms < 2500);
 }
 
-/// Reads a test-only env var via std.c.environ. Used to opt in to the
-/// proxy integration tests below, which need a real local proxy to run
-/// against (see README for how to spin one up).
+/// Reads a test-only env var. Used to opt in to the proxy integration
+/// tests below, which need a real local proxy to run against (see README
+/// for how to spin one up).
 fn testEnv(key: []const u8) ?[]const u8 {
-    var i: usize = 0;
-    while (std.c.environ[i]) |entry| : (i += 1) {
-        const line = std.mem.span(entry);
-        if (line.len > key.len and line[key.len] == '=' and std.mem.eql(u8, line[0..key.len], key)) {
-            return line[key.len + 1 ..];
-        }
-    }
-    return null;
+    return @import("proxy.zig").getEnv(key);
 }
 
 /// Accepts exactly one connection, replies to whatever it received with a

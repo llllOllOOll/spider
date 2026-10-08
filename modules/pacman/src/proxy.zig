@@ -163,22 +163,35 @@ fn fromEnv(allocator: std.mem.Allocator, protocol: HttpClient.Protocol, target_h
     return null;
 }
 
-/// Reads an environment variable via std.c.environ (the classic
-/// null-terminated "KEY=VALUE" array from libc). Requires the final binary to
-/// link libc — already the case for this project's R2 driver
+/// Reads an environment variable with libc's getenv(). Requires the final
+/// binary to link libc — already the case for this project's R2 driver
 /// (modules/r2 uses link_libc = true). std.process.Environ.Map would require
 /// threading std.process.Init through pacman's whole API, a much bigger
 /// change than the scope of this feature.
-fn getEnv(name: []const u8) ?[]const u8 {
-    var i: usize = 0;
-    while (std.c.environ[i]) |entry| : (i += 1) {
-        const line = std.mem.span(entry);
-        if (line.len <= name.len) continue;
-        if (line[name.len] != '=') continue;
-        if (!std.mem.eql(u8, line[0..name.len], name)) continue;
-        return line[name.len + 1 ..];
-    }
-    return null;
+///
+/// getenv(), not a walk over `std.c.environ`: in a binary built with Zig
+/// 0.17.0's incremental compilation (`-fincremental`, which `spider dev`
+/// uses) that variable reads as a null pointer, and every request crashed
+/// here. Function calls into libc are fine.
+pub fn getEnv(name: []const u8) ?[]const u8 {
+    var name_buf: [64]u8 = undefined;
+    if (name.len >= name_buf.len) return null;
+    @memcpy(name_buf[0..name.len], name);
+    name_buf[name.len] = 0;
+    const getenv = struct {
+        extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+    }.getenv;
+    const value = getenv(@ptrCast(&name_buf)) orelse return null;
+    return std.mem.span(value);
+}
+
+test "getEnv: reads the process environment through libc" {
+    // PATH is set wherever the tests run; an unset name is null, and a name
+    // too long to be a variable does not overflow the buffer.
+    try std.testing.expect(getEnv("PATH") != null);
+    try std.testing.expectEqual(@as(?[]const u8, null), getEnv("PACMAN_SURELY_NOT_SET_7f3a"));
+    const long: [200]u8 = @splat('A');
+    try std.testing.expectEqual(@as(?[]const u8, null), getEnv(&long));
 }
 
 /// Checks whether `host` should bypass the proxy, per the no_proxy/NO_PROXY
