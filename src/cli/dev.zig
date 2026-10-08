@@ -121,8 +121,6 @@ pub const Options = struct {
     /// The port the app is told to listen on (SPIDER_DEV_PORT). Null: the
     /// app's own.
     port: ?u16 = null,
-    /// The app's build takes `-Dspider-dev` (templates from disk).
-    dev_templates: bool = false,
 };
 
 pub const Summary = struct {
@@ -139,16 +137,6 @@ const default_build_argv: []const []const u8 = if (incremental_supported)
     &.{ "zig", "build", "dev", "--watch", "-fincremental" }
 else
     &.{ "zig", "build", "dev", "--watch" };
-
-/// The same, for an app whose build.zig reads `spider_build.devOption(b)`:
-/// templates from disk. (An app that does not declare the option would
-/// refuse it.)
-const dev_templates_build_argv: []const []const u8 = default_build_argv ++ .{"-Dspider-dev=true"};
-
-/// Whether an app's build.zig takes `-Dspider-dev`.
-pub fn hasDevOption(build_zig: []const u8) bool {
-    return std.mem.indexOf(u8, build_zig, "devOption(") != null;
-}
 
 var signal_stop: std.atomic.Value(bool) = .init(false);
 
@@ -168,14 +156,12 @@ pub fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.M
         return error.NotAProjectRoot;
     };
 
-    var dev_templates = false;
     if (root.readFileAlloc(io, "build.zig", gpa, .limited(4 * 1024 * 1024))) |build_zig| {
         defer gpa.free(build_zig);
         if (!hasDevStep(build_zig)) {
             std.debug.print("{s}", .{missing_dev_step});
             return error.NoDevStep;
         }
-        dev_templates = hasDevOption(build_zig);
     } else |_| {}
 
     const action: std.posix.Sigaction = .{
@@ -186,7 +172,7 @@ pub fn run(io: Io, gpa: std.mem.Allocator, environ: *const std.process.Environ.M
     std.posix.sigaction(.INT, &action, null);
     std.posix.sigaction(.TERM, &action, null);
 
-    _ = try supervise(io, gpa, root, environ, .{ .stop = &signal_stop, .port = args.port, .dev_templates = dev_templates });
+    _ = try supervise(io, gpa, root, environ, .{ .stop = &signal_stop, .port = args.port });
 }
 
 /// One child process and the task waiting for it to exit.
@@ -294,9 +280,12 @@ pub const Notice = struct {
     /// A hash of what the page uses besides the binary; "-" when the build
     /// names nothing.
     assets: []const u8,
+    /// A hash of the template files' names; "-" when the build names no
+    /// template directory.
+    template_names: []const u8,
 
     /// Line 1 is the executable, line 2 a stamp that changes on every
-    /// build, line 3 the assets.
+    /// build, line 3 the assets, line 4 the template names.
     pub fn parse(content: []const u8) ?Notice {
         if (std.mem.indexOfScalar(u8, content, '\n') == null) return null;
         var lines = std.mem.splitScalar(u8, content, '\n');
@@ -304,7 +293,12 @@ pub const Notice = struct {
         if (exe.len == 0) return null;
         _ = lines.next();
         const assets = std.mem.trim(u8, lines.next() orelse "", " \r\t");
-        return .{ .exe = exe, .assets = if (assets.len == 0) "-" else assets };
+        const names = std.mem.trim(u8, lines.next() orelse "", " \r\t");
+        return .{
+            .exe = exe,
+            .assets = if (assets.len == 0) "-" else assets,
+            .template_names = if (names.len == 0) "-" else names,
+        };
     }
 };
 
@@ -377,11 +371,8 @@ pub fn supervise(
         try app_environ.put(app_port_env, std.fmt.bufPrint(&port_buf, "{d}", .{port}) catch unreachable);
     }
 
-    const build_argv = opts.build_argv orelse if (opts.dev_templates) dev_templates_build_argv else default_build_argv;
-    say(opts, "building ({s}{s})", .{
-        if (opts.build_argv == null and incremental_supported) "incremental" else "watch",
-        if (opts.dev_templates) ", templates from disk" else "",
-    });
+    const build_argv = opts.build_argv orelse default_build_argv;
+    say(opts, "building ({s})", .{if (opts.build_argv == null and incremental_supported) "incremental" else "watch"});
     const build = Proc.start(io, gpa, .{
         .argv = build_argv,
         .cwd = .{ .dir = root },
@@ -402,6 +393,9 @@ pub fn supervise(
     // The assets the running app's pages were last told about.
     var running_assets: []u8 = try gpa.dupe(u8, "");
     defer gpa.free(running_assets);
+    // The template names the running app listed when it started.
+    var running_names: []u8 = try gpa.dupe(u8, "");
+    defer gpa.free(running_names);
     // The copy the running app executes; deleted when the next one starts.
     var running_copy: ?[]u8 = null;
     defer if (running_copy) |path| {
@@ -431,8 +425,11 @@ pub fn supervise(
                 say(opts, "the build reported {s}, which is not there", .{exe});
                 break :fresh;
             };
+            // A template was added, removed or renamed: the app listed them
+            // when it started, so it is started again (same binary).
+            const names_changed = !std.mem.eql(u8, built.template_names, running_names);
             if (app) |proc| {
-                if (!proc.hasExited()) {
+                if (!proc.hasExited() and !names_changed) {
                     // What the page loads besides the binary changed (a
                     // template read from disk, the stylesheet): the browsers
                     // reload now. Checking the binary comes after, because
@@ -478,6 +475,8 @@ pub fn supervise(
             running_copy = copy;
             gpa.free(running_assets);
             running_assets = try gpa.dupe(u8, built.assets);
+            gpa.free(running_names);
+            running_names = try gpa.dupe(u8, built.template_names);
 
             const copy_abs = try std.fs.path.join(gpa, &.{ root_path, copy });
             defer gpa.free(copy_abs);
@@ -564,6 +563,8 @@ test "Notice.parse: the executable and the assets" {
     try testing.expectEqualStrings("00ff00ff00ff00ff", full.assets);
     // A build that names no assets, and the two-line notice of an older tool.
     try testing.expectEqualStrings("-", Notice.parse("/p/app\n17\n-\n").?.assets);
+    try testing.expectEqualStrings("-", full.template_names);
+    try testing.expectEqualStrings("abcd", Notice.parse("/p/app\n17\nffff\nabcd\n").?.template_names);
     try testing.expectEqualStrings("-", Notice.parse("/p/app\n17\n").?.assets);
     try testing.expectEqual(@as(?Notice, null), Notice.parse(""));
     try testing.expectEqual(@as(?Notice, null), Notice.parse("no newline yet"));
@@ -649,7 +650,7 @@ const Fixture = struct {
 /// the notify tool does.
 const script_prelude =
     \\app() { printf '#!/bin/sh\necho %s >> runs.log\ncase "$SPIDER_DEV" in */.zig-cache/spider-dev/reload) echo dev=reload-file > app-env;; *) echo "dev=$SPIDER_DEV" > app-env;; esac\nwhile :; do sleep 0.05; done\n' "$1" > "bin-$1"; chmod +x "bin-$1"; }
-    \\notify() { printf '%s\n%s\n%s\n' "$PWD/bin-$1" "$2" "${3:--}" > "$SPIDER_DEV_BUILT.tmp"; mv "$SPIDER_DEV_BUILT.tmp" "$SPIDER_DEV_BUILT"; }
+    \\notify() { printf '%s\n%s\n%s\n%s\n' "$PWD/bin-$1" "$2" "${3:--}" "${4:--}" > "$SPIDER_DEV_BUILT.tmp"; mv "$SPIDER_DEV_BUILT.tmp" "$SPIDER_DEV_BUILT"; }
     \\
 ;
 
@@ -749,6 +750,28 @@ test "supervise: same binary, new assets: the app stays and is asked to reload" 
     try testing.expectEqual(@as(u32, 1), summary.starts);
     try testing.expectEqual(@as(u32, 1), summary.reloads);
     try fx.expectFile("runs.log", "one\n");
+}
+
+test "supervise: same binary, a template added: the app is started again" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    // The fourth field is the hash of the template names.
+    const fx = try Fixture.init(script_prelude ++
+        \\app one; notify one 1 aaaa n1
+        \\while [ ! -f go ]; do sleep 0.02; done
+        \\notify one 2 bbbb n2
+        \\exec sleep 30
+        \\
+    );
+    defer fx.deinit();
+    try fx.start();
+
+    try fx.expectFile("runs.log", "one\n");
+    try fs_utils.writeFile(testing.io, fx.tmp.dir, "go", "");
+    // The same executable runs a second time.
+    try fx.expectFile("runs.log", "one\none\n");
+
+    const summary = try fx.finish();
+    try testing.expectEqual(@as(u32, 2), summary.starts);
 }
 
 test "supervise: a new binary at the same path, with the same size, restarts the app" {

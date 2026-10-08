@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Templates are read from disk in a Debug build** and embedded only in a
+  release build (`-Doptimize=ReleaseSafe`/`Fast`/`Small`). Until now an app
+  that declared `spider_templates` embedded them in every build. A Debug
+  binary now needs its template directory (`views_dir`) beside it; it says
+  so when it starts. Deploys that build in a release mode (the generated
+  Dockerfile does) are unchanged. To embed in every build as before, pass
+  `.templates = .embedded` to the spider dependency in `build.zig`
+  (`.disk` forces the other way). The rule follows the `optimize` the app
+  passes to the dependency: an app that does not pass it gets Debug, hence
+  disk, even in its own release build — pass `.optimize = optimize`.
+
 ### Removed
 
 - `spider.livereload` (`src/modules/livereload.zig`): the old live reload,
@@ -45,9 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dev.step.dependOn(&css.step); // the Tailwind step, if the app has one
   ```
 
-  `assets` are the files the page loads besides the binary. When a build
-  changes only those (an edit to `src/styles.css`), `spider dev` keeps the
-  app running and reloads the browser.
+  `assets` are the files the page loads besides the binary, and
+  `.templates = "src"` names the template directory. When a build changes
+  only those (an edit to `src/styles.css` or to a template, which a Debug
+  build reads from disk), `spider dev` keeps the app running and reloads
+  the browser: about a second in an app of 378 templates, where a restart
+  took four. A new, removed or renamed template restarts the app.
 - `watchSources()` in Spider's `build.zig`: declares the files a build step
   reads, so `zig build --watch` reruns it when they change and skips it
   when they don't. Generated apps use it for Tailwind.

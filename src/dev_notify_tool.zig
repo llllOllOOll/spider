@@ -15,7 +15,10 @@
 //!   3. a hash of the asset files' contents ("-" without assets): what the
 //!      page uses besides the binary, such as the generated stylesheet and,
 //!      with `--templates`, every template under that directory (they are
-//!      read from disk in a `spider dev` build).
+//!      read from disk in a Debug build);
+//!   4. with `--templates`, a hash of the template files' names ("-"
+//!      otherwise): the running app listed them when it started, so a new,
+//!      removed or renamed template needs the app restarted.
 //!
 //! Outside `spider dev` the variable is not set and the tool does nothing.
 
@@ -25,7 +28,7 @@ pub const env_name = "SPIDER_DEV_BUILT";
 
 /// Every .html and .md file under `dir`, by name and contents, in a fixed
 /// order (a directory walk has none).
-fn hashTemplates(io: std.Io, alc: std.mem.Allocator, hasher: *std.hash.XxHash3, dir_path: []const u8) !void {
+fn hashTemplates(io: std.Io, alc: std.mem.Allocator, hasher: *std.hash.XxHash3, names: *std.hash.XxHash3, dir_path: []const u8) !void {
     var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var paths: std.ArrayList([]const u8) = .empty;
@@ -42,6 +45,8 @@ fn hashTemplates(io: std.Io, alc: std.mem.Allocator, hasher: *std.hash.XxHash3, 
         }
     }.lessThan);
     for (paths.items) |path| {
+        names.update(path);
+        names.update(&[_]u8{0});
         hasher.update(path);
         hasher.update(&[_]u8{0});
         const content = dir.readFileAlloc(io, path, alc, .limited(8 * 1024 * 1024)) catch "";
@@ -72,10 +77,13 @@ pub fn main(init: std.process.Init) !void {
     // (assets not built yet) counts as empty.
     var hasher: std.hash.XxHash3 = .init(0);
     var any_asset = false;
+    var names_hasher: std.hash.XxHash3 = .init(0);
+    var any_templates = false;
     while (it.next()) |asset| {
         any_asset = true;
         if (std.mem.startsWith(u8, asset, "--templates=")) {
-            try hashTemplates(io, alc, &hasher, asset["--templates=".len..]);
+            any_templates = true;
+            try hashTemplates(io, alc, &hasher, &names_hasher, asset["--templates=".len..]);
             continue;
         }
         hasher.update(asset);
@@ -90,8 +98,14 @@ pub fn main(init: std.process.Init) !void {
     else
         "-";
 
+    var names_buf: [16]u8 = undefined;
+    const template_names: []const u8 = if (any_templates)
+        std.fmt.bufPrint(&names_buf, "{x:0>16}", .{names_hasher.final()}) catch unreachable
+    else
+        "-";
+
     const stamp = std.Io.Timestamp.now(io, .real).toNanoseconds();
-    const content = try std.fmt.allocPrint(alc, "{s}\n{d}\n{s}\n", .{ exe_path, stamp, assets });
+    const content = try std.fmt.allocPrint(alc, "{s}\n{d}\n{s}\n{s}\n", .{ exe_path, stamp, assets, template_names });
     const tmp_path = try std.fmt.allocPrint(alc, "{s}.tmp", .{built_path});
     {
         const file = try cwd.createFile(io, tmp_path, .{});

@@ -178,8 +178,10 @@ save rebuilds it, replaces the running process and reloads the browser.
   (`/_spider/dev.js`, WebSocket `/_spider/dev`, before any middleware), so
   it works behind your auth and under a strict Content-Security-Policy.
   None of it exists in a release build.
-- **Stylesheet edits** rebuild the CSS and reload the browser without
-  restarting the app.
+- **Template and stylesheet edits** do not restart the app. Templates are
+  read from disk in a Debug build (see
+  [Embedded and runtime modes](#embedded-and-runtime-modes)), so the browser
+  just reloads. A new, removed or renamed template file restarts the app.
 - `--port N` makes the app listen on N instead of the port in its code.
 - Ctrl+C stops everything. One `spider dev` per project. Not on Windows
   yet.
@@ -192,6 +194,7 @@ missing:
 const spider_build = @import("spider");
 const dev = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{
     .assets = &.{"public/css/app.css"}, // what the page loads besides the binary
+    .templates = "src",                 // where the templates are
 });
 dev.step.dependOn(&css.step); // the Tailwind step
 spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".js" });
@@ -716,11 +719,33 @@ literals; the result is inserted without escaping.
 
 ### Embedded and runtime modes
 
-- **Embedded** (production): a `spider new` project's build runs
-  `generate-templates`, writing `src/embedded_templates.zig`; `main.zig` declares
+An app's templates are either read from disk on every request or embedded
+in the binary. By default the build decides:
+
+| Build | Templates | Why |
+|---|---|---|
+| Debug (`zig build`, `zig build run`, `spider dev`) | read from `views_dir` | an edit shows on the next request: no rebuild, no restart |
+| Release (`-Doptimize=ReleaseSafe`/`Fast`/`Small`, what the generated Dockerfile runs) | embedded in the binary | the binary is all a deploy needs |
+
+A Debug binary therefore needs the template directory beside it (it says so
+when it starts, and warns if the directory is missing). To choose yourself,
+set `templates` on the dependency in `build.zig`:
+
+```zig
+const spider_dep = b.dependency("spider", .{
+    .target = target,
+    .optimize = optimize,          // the rule above follows this
+    .templates = .embedded,        // or .disk, or .auto (the default)
+});
+```
+
+- **Embedded** needs what a `spider new` project has: the build runs
+  `generate-templates`, writing `src/embedded_templates.zig`, and `main.zig`
+  declares
   `pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;`.
-- **Runtime**: without `spider_templates`, views are read from `views_dir`
-  (`spider.config.zig`; default `"./views"`, `null` → `"src"`).
+- **From disk** (runtime): views are read from `views_dir`
+  (`spider.config.zig`; default `"./views"`, `null` → `"src"`). An app that
+  does not declare `spider_templates` is always in this mode.
 
 View names come from paths:
 

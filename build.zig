@@ -8,6 +8,20 @@ const std = @import("std");
 /// `zio_backend_test.zig` for a benchmark demonstrating the difference.
 const IoBackend = enum { threaded, zio };
 
+/// Where the templates of an app that declares `spider_templates` come from.
+///
+/// `.auto` (the default): read from disk (`views_dir`) in a Debug build, so
+/// an edit shows on the next request with no compile and no restart, and
+/// embedded in the binary in a release build, which is then all a deploy
+/// needs. `.embedded` and `.disk` force one or the other in every build.
+///
+///     // an app's build.zig
+///     const spider_dep = b.dependency("spider", .{ .optimize = optimize, .templates = .embedded });
+///
+/// It follows the `optimize` the app passes to the dependency: an app that
+/// does not pass it builds Spider in Debug, hence from disk.
+pub const Templates = enum { auto, embedded, disk };
+
 /// For `spider.testing.expectAllTestsDiscovered`: a module listing the files
 /// under `dir` (relative to the calling build root, the directory of the
 /// module's root file) that declare `test "..."` blocks, with the test-name
@@ -32,18 +46,6 @@ pub fn testManifest(b: *std.Build, tool: *std.Build.Step.Compile, dir: []const u
     return b.createModule(.{ .root_source_file = out });
 }
 
-/// True when the build was started by `spider dev` (it passes
-/// `-Dspider-dev=true`). Pass it on to Spider so templates are read from
-/// disk instead of being embedded: editing one then needs no compile and no
-/// restart, only a browser reload.
-///
-///     // an app's build.zig
-///     const spider_build = @import("spider");
-///     const spider_dep = b.dependency("spider", .{ ..., .dev = spider_build.devOption(b) });
-pub fn devOption(b: *std.Build) bool {
-    return b.option(bool, "spider-dev", "Set by `spider dev`: templates are read from disk") orelse false;
-}
-
 pub const DevOptions = struct {
     /// Files, relative to the build root, that the page uses besides the
     /// binary and that a build can change (the generated stylesheet). When
@@ -51,9 +53,10 @@ pub const DevOptions = struct {
     /// restarting the app.
     assets: []const []const u8 = &.{},
     /// The directory with the app's templates, relative to the build root.
-    /// With templates read from disk (devOption), an edited template is not
-    /// part of the binary: naming the directory here makes the edit rerun
-    /// this step and count as a change of the page.
+    /// In a Debug build templates are read from disk (see `Templates`), so
+    /// an edited template is not part of the binary: naming the directory
+    /// here makes the edit rerun this step and count as a change of the
+    /// page.
     templates: ?[]const u8 = null,
 };
 
@@ -138,10 +141,16 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption(IoBackend, "io_backend", io_backend);
-    // Templates from disk even when the app embeds them: what `spider dev`
-    // builds with (see devOption). A template edit then changes no binary.
-    const dev_templates = b.option(bool, "dev", "Development build: templates are read from disk, never embedded") orelse false;
-    build_options.addOption(bool, "dev_templates", dev_templates);
+    const templates = b.option(
+        Templates,
+        "templates",
+        "Where an app's templates come from: auto (default: disk in a Debug build, embedded in a release build), embedded, disk",
+    ) orelse .auto;
+    build_options.addOption(bool, "templates_from_disk", switch (templates) {
+        .auto => optimize == .debug,
+        .embedded => false,
+        .disk => true,
+    });
     const build_options_mod = build_options.createModule();
 
     const pacman_dep = b.dependency("pacman", .{});

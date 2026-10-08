@@ -136,12 +136,16 @@ const Socket = struct {
         return text;
     }
 
-    /// The next message that is not the keep-alive.
+    /// The next message that is not the keep-alive. Gives up after a few
+    /// keep-alives (they come every two seconds) instead of waiting forever
+    /// for an event that is not coming.
     fn nextEvent(self: *Socket) ![]const u8 {
-        while (true) {
+        var pings: u32 = 0;
+        while (pings < 3) : (pings += 1) {
             const text = try self.next();
             if (!std.mem.eql(u8, text, "ping")) return text;
         }
+        return error.TestExpectedEvent;
     }
 
     fn close(self: *Socket, io: std.Io) void {

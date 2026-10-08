@@ -11,12 +11,16 @@ const Watchdog = @import("watchdog.zig").Watchdog;
 const RouteMeta = @import("../routing/router.zig").RouteMeta;
 
 const root = @import("root");
-/// False in a `spider dev` build (build option `dev`) even when the app
-/// declares `spider_templates`: templates are then read from disk on every
-/// request. `root.spider_templates` is never referenced in that case, so
-/// the compiler does not embed the files and a template edit changes no
-/// binary.
-pub const has_embed = !@import("spider_build_options").dev_templates and @hasDecl(root, "spider_templates");
+/// Whether the app's templates were chosen to be read from disk (build
+/// option `templates`; the default does so in a Debug build).
+pub const templates_from_disk = @import("spider_build_options").templates_from_disk;
+/// False when templates are read from disk, even if the app declares
+/// `spider_templates`. `root.spider_templates` is never referenced in that
+/// case, so the compiler does not embed the files and a template edit
+/// changes no binary.
+pub const has_embed = !templates_from_disk and @hasDecl(root, "spider_templates");
+/// The app has templates to embed and this build reads them from disk.
+pub const embed_skipped = templates_from_disk and @hasDecl(root, "spider_templates");
 /// The app's embedded templates as one map (see render/embedded.zig).
 const embedded_templates: embedded.Map = if (has_embed) embedded.buildMap(root.spider_templates) else .initComptime(.{});
 

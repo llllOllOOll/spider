@@ -1544,6 +1544,7 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
             std.log.warn("views index for \"{s}\" not built: {s}", .{ views_dir, @errorName(err) });
             break :blk null;
         };
+        if (ctx_mod.embed_skipped) noteTemplatesFromDisk(views_dir);
     }
 
     health_mod.init();
@@ -1553,6 +1554,17 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
     _ = s.get("/_spider/health", health_mod.health, .{ .public = true, .quiet_log = true });
 
     return s;
+}
+
+/// Said once when an app that embeds its templates runs a build that reads
+/// them from disk: this binary needs the directory beside it.
+fn noteTemplatesFromDisk(views_dir: []const u8) void {
+    std.debug.print(
+        "[spider] templates are read from \"{s}\" on every request (Debug build): edits need no rebuild.\n" ++
+            "[spider] A release build (-Doptimize=ReleaseSafe/Fast/Small) embeds them; " ++
+            "`.templates = .embedded` on the spider dependency does so in every build.\n",
+        .{views_dir},
+    );
 }
 
 pub fn appWithConfig(config: Config) Server(EmptyDeco) {
@@ -1568,6 +1580,7 @@ pub fn appWithConfig(config: Config) Server(EmptyDeco) {
             std.log.warn("views index for \"{s}\" not built: {s}", .{ views_dir, @errorName(err) });
             break :blk null;
         };
+        if (ctx_mod.embed_skipped) noteTemplatesFromDisk(views_dir);
     }
 
     health_mod.init();

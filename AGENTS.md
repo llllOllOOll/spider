@@ -159,6 +159,10 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `<script>`/`<style>` bodies are never interpolated. Components are PascalCase
   files; `extends "layout"` for layouts. Recursion is capped
   (`template_max_component_depth`).
+  Templates are read from disk in a Debug build and embedded in a release
+  build (build option `templates`, `ctx_mod.has_embed`): when from disk,
+  `root.spider_templates` must stay unreferenced, or the compiler embeds
+  the files and every template edit changes the binary again.
   Embedded templates (`spider_templates`) are one comptime map
   (`render/embedded.zig`) read by non-generic code in `Ctx.prepareView`;
   keep anything that depends on template contents out of generic

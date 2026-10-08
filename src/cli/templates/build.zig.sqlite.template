@@ -8,6 +8,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         // Spider and what it builds (its drivers, the bundled SQLite) follow
         // the app's mode. Without this they stay in Debug in a release build.
+        // Templates follow it too: read from disk in a Debug build (an edit
+        // needs no rebuild), embedded in the binary in a release build.
+        // `.templates = .embedded` (or `.disk`) forces one in every build.
         .optimize = optimize,
         .sqlite = true,
         // I/O backend: comment one line and uncomment the other.
@@ -95,9 +98,11 @@ pub fn build(b: *std.Build) void {
     features_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/features", &.{}));
 
     // `spider dev` runs `zig build dev --watch`: build the app, then tell the
-    // supervisor where the new binary is and whether the stylesheet changed.
+    // supervisor where the new binary is and whether the page's files (the
+    // stylesheet, the templates) changed.
     const dev = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{
         .assets = &.{"public/css/app.css"},
+        .templates = "src",
     });
 
     // Check if frontend assets are installed

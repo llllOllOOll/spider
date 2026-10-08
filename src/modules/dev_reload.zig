@@ -150,6 +150,12 @@ pub fn serveSocket(
     arena: std.mem.Allocator,
     headers: *const std.StringHashMapUnmanaged([]const u8),
 ) bool {
+    // What the reload file holds before the client hears from us: a request
+    // made any time after it got its id is then a change from this, and is
+    // not missed.
+    var seen_buf: [64]u8 = undefined;
+    var seen_len = reloadRequest(io, &seen_buf).len;
+
     var server = ws.Server.init(stream, io, arena);
     const upgraded = server.handshake(arena, headers) catch return true;
     if (!upgraded) return false;
@@ -158,8 +164,6 @@ pub fn serveSocket(
     const hello = std.fmt.bufPrint(&hello_buf, "id:{s}", .{bootId(io)}) catch unreachable;
     server.sendText(hello) catch return true;
 
-    var seen_buf: [64]u8 = undefined;
-    var seen_len = reloadRequest(io, &seen_buf).len;
     var polls: u32 = 0;
     while (true) {
         std.Io.sleep(io, .fromMilliseconds(poll_ms), .awake) catch return true;
