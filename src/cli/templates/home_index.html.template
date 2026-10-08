@@ -86,7 +86,7 @@ extends "layout"
     </div>
 
     <div class="flex items-center gap-4 mt-8 text-xs font-mono opacity-20">
-        <span>Spider v0.6.4 · Zig 0.17.0</span>
+        <span>Spider v0.8.0 · Zig 0.17.0</span>
         <a href="https://discord.gg/Z9aMYY6g" target="_blank"
            class="inline-flex items-center gap-1 hover:opacity-60 transition-opacity">
             <span class="hero-chat-bubble-left-right size-4" aria-hidden="true"></span>

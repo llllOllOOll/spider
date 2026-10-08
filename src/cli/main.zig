@@ -14,7 +14,7 @@ const icons_mod = @import("icons.zig");
 const pwa_mod = @import("pwa.zig");
 const check_mod = @import("check.zig");
 
-const version = "0.7.0";
+const version = "0.8.0";
 
 fn writeStdout(io: std.Io, text: []const u8) void {
     var buf: [4096]u8 = undefined;
