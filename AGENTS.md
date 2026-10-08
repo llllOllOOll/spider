@@ -1,6 +1,6 @@
 # AGENTS.md — working on the Spider framework
 
-Spider is a web framework for **Zig 0.17.0** (the release; std.Io era): router, middleware,
+Spider is a web framework for **Zig 0.17.0** (official releases only, no dev builds; std.Io era): router, middleware,
 templates, SSE/WebSocket, auth providers (Keycloak/JWKS, Google, Clerk), Postgres
 and SQLite drivers, a `spider` CLI that scaffolds apps. This file is for coding
 agents. API reference: `llms.txt`. Human docs: `README.md`.

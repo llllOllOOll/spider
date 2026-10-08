@@ -10,6 +10,12 @@ scaffolds apps and checks them.
 📖 **Documentation:** this README, and [`llms.txt`](llms.txt) — the maintained API reference  
 🔧 **CLI:** `spider new myapp`
 
+> **Spider 0.8.0 runs on the official Zig 0.17.0 release.** No development
+> build, no patched compiler: download Zig 0.17.0 from
+> [ziglang.org/download](https://ziglang.org/download/) and build. From now
+> on Spider only targets official Zig releases; the next move is to 0.18.0,
+> when it ships. See [Zig Version Policy](#zig-version-policy).
+
 ---
 
 ## Installation
@@ -1231,11 +1237,24 @@ The complete API: [`llms.txt`](llms.txt).
 
 ## Zig Version Policy
 
-Spider targets one Zig version at a time — currently the **0.17.0**
-release (see [Requirements](#requirements)), which is also
-`minimum_zig_version` in `build.zig.zon` and what the build CI uses. Older
-builds, including 0.17.0 development builds, are refused; newer master
-builds may break until Spider catches up.
+**Spider follows official Zig releases only.**
+
+- Today that is **Zig 0.17.0** (see [Requirements](#requirements)): it is
+  `minimum_zig_version` in `build.zig.zon`, for Spider and for generated
+  apps, and what the release CI builds with.
+- Spider stays on 0.17.0 until **Zig 0.18.0 is released**, and moves then.
+  It does not follow Zig's development branch any more: no pinned nightly
+  to hunt for on mirrors, no patched standard library.
+- To use Spider you install one thing, the official Zig release from
+  [ziglang.org/download](https://ziglang.org/download/).
+- Other Zig versions are not supported: older ones (including 0.17.0
+  development builds) are refused by `minimum_zig_version`, and master
+  builds may not compile Spider.
+
+Up to Spider 0.7.0 the project tracked development builds
+(`0.17.0-dev.956` was the last one). An app on that build has to move to
+Zig 0.17.0 to use Spider 0.8.0; the [changelog](CHANGELOG.md) lists what to
+rename.
 
 ---
 

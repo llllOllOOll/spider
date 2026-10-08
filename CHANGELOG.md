@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `minimum_zig_version = "0.17.0"`, and rename what the standard library
   renamed (`builtin.mode == .Debug` is `.debug`; `uri.getHost(&buf)` is
   `std.Io.net.HostName.fromUri(uri, &buf)`).
+- From this release Spider follows official Zig releases only. It stays on
+  0.17.0 until 0.18.0 is released and no longer tracks Zig's development
+  branch (README, "Zig Version Policy").
 - zio (the `-Dio_backend=zio` runtime) moves from 0.13.0 to its `main`
   branch at 3bbd74d (0.19.0), the first line of zio that supports Zig
   0.17.0. No zio release tag has it yet, so the dependency is pinned to
