@@ -25,6 +25,7 @@ All from the repo root.
 | zio integration test | `zig build test-zio-backend -Dio_backend=zio` | step only exists with that flag |
 | Postgres wrapper tests | `PG_HOST=127.0.0.1 PG_PORT=5435 PG_USER=postgres PG_PASSWORD=postgres PG_DB=postgres zig build test-pg` | a **disposable** Postgres (see below) |
 | HTTP client tests | `zig build test-pacman` | network access (most tests call httpbingo.org) |
+| Same, scripted local servers | `zig build test-pacman-local` (also with `-Dio_backend=zio`) | — |
 | SQLite tests | `zig build test-sqlite` | **currently fails to compile** (`no module named 'spider'`) — known, see traps |
 | xlsx module tests | `zig build test-xlsx` | — (`cd modules/xlsx && zig build test-libreoffice` needs LibreOffice) |
 | Format | `zig fmt <the files you touched>` | never `zig fmt src` (reformats unrelated files) |
@@ -32,7 +33,8 @@ All from the repo root.
 Disposable Postgres for `test-pg`: `docker compose -f docker-compose.test.yml up -d`
 (postgres/postgres on 5435, tmpfs). Without the `PG_*` vars the tests target
 localhost:5432 as spider/spider — don't point them at a database you care about.
-First build fetches dependencies (zio) over the network.
+First build fetches dependencies (zio) over the network. zio is pinned to a
+commit of its `main` branch (no release tag supports Zig 0.17.0 yet).
 
 Before calling a change done: `zig build test`, and for anything under
 `src/core/`, `src/ws/`, `src/routing/` or `src/providers/` also `test-e2e` on
@@ -169,6 +171,13 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   Content-Length before reading), static files (ETag; `immutable` with `?v=`;
   304), then `origin_check` (core/origin.zig: cross-site unsafe method or WS
   upgrade → 403). `Ctx.clientIp()` uses `trusted_proxies` (core/client_ip.zig).
+- **HTTP client** (`modules/pacman`): `src/std_http/Client.zig` is a copy of
+  Zig's `std/http/Client.zig` with fixes std lacks (TLS over a proxy tunnel,
+  proxy credentials on CONNECT, no https forwarded in the clear). Change it
+  only for such fixes and list each one in `src/std_http/README.md`; never
+  ask users to patch their Zig. `request.zig` reads the body to the end of
+  its framing so the connection returns to the pool. Redirects are not
+  followed. Behaviour tests go in `local_test.zig` (no network).
 - **Postgres** (`modules/pg/src/pg.zig`): use `query`/`queryOne`/`queryExecute`
   and `begin()`/`transaction()`; the rest is deprecated. `pg.exec("BEGIN")`
   is refused on purpose (each call is a different pooled connection).
