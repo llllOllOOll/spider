@@ -41,7 +41,7 @@ const _assert = blk: {
         break :blk root.pg_assert;
     }
     switch (@import("builtin").mode) {
-        .ReleaseFast, .ReleaseSmall => break :blk false,
+        .fast, .small => break :blk false,
         else => break :blk true,
     }
 };

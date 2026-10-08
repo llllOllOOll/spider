@@ -1,16 +1,18 @@
 # pacman
 
 Spider's HTTP client (`spider.http_client`): a Fetch-style wrapper over
-`std.http.Client`, used by the auth providers, Web Push, mail and R2.
+Zig's HTTP client, used by the auth providers, Web Push, mail and R2.
 
 Brought into the monorepo from https://github.com/llllOllOOll/pacman
 (`src/` at 1c68d77). The standalone repository also carries
 `vendor/zig-lib-patched`, a patched copy of the Zig stdlib for its own test
 step; it is not needed here and was left out.
 
-SOCKS5 proxying (`src/proxy.zig`) calls `std.http.Client.adoptTunneledStream`,
-which only exists in a Zig whose `lib/std/http/Client.zig` has pacman's
-patch applied.
+It builds with an unmodified Zig. The standard library's client cannot do
+TLS over a tunnel (https through an HTTP proxy, anything through SOCKS5),
+so pacman uses its own copy of that one file with the fix:
+`src/std_http/Client.zig`. `src/std_http/README.md` says what differs and
+when to delete it.
 
 ## Limits on a request
 

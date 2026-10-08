@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) !void {
     const translate_c = b.addTranslateC(.{
         .root_source_file = b.path("src/sqlite3.h"),
         .target = target,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
 
     const mod_zqlite = b.addModule("zqlite", .{

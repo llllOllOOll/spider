@@ -1,6 +1,6 @@
 # AGENTS.md — working on the Spider framework
 
-Spider is a web framework for **Zig 0.17.0-dev** (std.Io era): router, middleware,
+Spider is a web framework for **Zig 0.17.0** (the release; std.Io era): router, middleware,
 templates, SSE/WebSocket, auth providers (Keycloak/JWKS, Google, Clerk), Postgres
 and SQLite drivers, a `spider` CLI that scaffolds apps. This file is for coding
 agents. API reference: `llms.txt`. Human docs: `README.md`.
@@ -65,6 +65,8 @@ Before calling a change done: `zig build test`, and for anything under
 - `**` (array repeat) is rejected: use `@splat`, e.g. `const a: [n]u8 = @splat('x');`.
 - `@typeInfo(T).@"struct".field_names` / `.field_types` (not `.fields`).
 - Writers need `flush()`; `std.Io.Reader`: `fill`, `peekGreedy`, `toss`, `readSliceShort`.
+- `builtin.mode` is `std.lang.Optimize`: `.debug`/`.safe`/`.fast`/`.small` (not `.Debug`, `.ReleaseSafe`, …).
+- `std.Uri.getHost`/`getHostAlloc` are gone: `std.Io.net.HostName.fromUri(uri, &buf)`.
 - A signed int with a width/fill spec prints a sign (`{d:0>2}` of 5 is `+5`); cast to unsigned first.
 
 ## Layout
@@ -92,8 +94,9 @@ src/internal/         config (spider.Config), env (.env loading), logfmt
 src/cli/              `spider` CLI; src/cli/templates/*.template = files it generates
 modules/pg|sqlite|r2|qrcode|xlsx   separate packages re-exported as spider.pg etc.
                       (opt-in: -Dpg/-Dsqlite/-Dr2/-Dqrcode/-Dxlsx; xlsx is std only)
-modules/pacman        the HTTP client (spider.http_client), always present; its
-                      SOCKS5 path needs a Zig with the http/Client.zig patch
+modules/pacman        the HTTP client (spider.http_client), always present; uses
+                      its own copy of std's http/Client.zig (src/std_http/, with
+                      the proxy TLS fix) — builds with an unmodified Zig
 e2e_test.zig, e2e/    end-to-end tests; zio_backend_test.zig
 ```
 

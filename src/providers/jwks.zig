@@ -582,7 +582,7 @@ fn verifyRsaSha256Raw(sig: []const u8, msg: []const u8, n: []const u8, e: []cons
         inline 128, 256, 384, 512 => |modulus_len| {
             var sig_arr: [modulus_len]u8 = undefined;
             @memcpy(&sig_arr, sig[0..modulus_len]);
-            try rsa.PKCS1v1_5Signature.verify(modulus_len, sig_arr, msg, public_key, std.crypto.hash.sha2.Sha256);
+            try rsa.PKCS1v1_5Signature.verify(modulus_len, &sig_arr, msg, public_key, std.crypto.hash.sha2.Sha256);
         },
         else => return error.UnsupportedKeySize,
     }

@@ -1,6 +1,6 @@
 # Spider
 
-> Web framework for Zig 0.17.0-dev. `const spider = @import("spider");` Handlers are
+> Web framework for Zig 0.17.0. `const spider = @import("spider");` Handlers are
 > `fn (c: *spider.Ctx) !spider.Response`. Per-request memory is `c.arena`. Templates
 > escape `{ expr }` by default. This file lists the public API with signatures; the
 > source of truth is `src/spider.zig`. Agent guide: `AGENTS.md`.

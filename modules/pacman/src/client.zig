@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Io = std.Io;
 const http = std.http;
+const HttpClient = @import("std_http/Client.zig");
 const Response = @import("response.zig").Response;
 const FetchOptions = @import("request.zig").FetchOptions;
 const doRequest = @import("request.zig").request;
@@ -17,23 +18,23 @@ pub const Client = struct {
     /// across every .get()/.post()/etc made through this Client. Closed by
     /// Client.deinit(), not by individual Response.deinit() calls (see
     /// Response.owns_http_client).
-    http_client: http.Client,
+    http_client: HttpClient,
 
     pub fn init(io: Io, allocator: std.mem.Allocator, opts: struct {
         base_url: []const u8,
         headers: []const std.http.Header = &.{},
         proxy_url: ?[]const u8 = null,
     }) !Client {
-        var http_client: http.Client = .{ .allocator = allocator, .io = io };
+        var http_client: HttpClient = .{ .allocator = allocator, .io = io };
 
-        // Fixed once, here — not per-call. http.Client.http_proxy/https_proxy
+        // Fixed once, here — not per-call. HttpClient.http_proxy/https_proxy
         // are client-level fields; mutating them on every request would race
         // with other in-flight requests through this same persistent client.
         // See call()'s ProxyMismatch check below.
         var host_buf: [Io.net.HostName.max_len]u8 = undefined;
         const target_host: []const u8 = blk: {
             const uri = std.Uri.parse(opts.base_url) catch break :blk "";
-            const host_name = uri.getHost(&host_buf) catch break :blk "";
+            const host_name = Io.net.HostName.fromUri(uri, &host_buf) catch break :blk "";
             break :blk host_name.bytes;
         };
         try proxy.configure(allocator, &http_client, opts.proxy_url, target_host);
@@ -74,7 +75,7 @@ pub const Client = struct {
     }
 
     /// `opts.proxy_url`, if set, must match the proxy fixed at `init()` time.
-    /// This Client's http.Client is a persistent, shared connection pool —
+    /// This Client's HttpClient is a persistent, shared connection pool —
     /// http_proxy/https_proxy can't be safely reconfigured per call (races
     /// with concurrent in-flight requests through the same client, and would
     /// leak stale proxy config across calls). A differing value is treated

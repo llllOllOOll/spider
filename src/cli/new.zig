@@ -182,7 +182,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
         .argv = &.{ "zig", "version" },
     }) catch {
         std.debug.print("error: 'zig' command not found\n", .{});
-        std.debug.print("Spider requires Zig 0.17.0-dev or later.\n", .{});
+        std.debug.print("Spider requires Zig 0.17.0.\n", .{});
         std.debug.print("Download at: https://ziglang.org/download/\n", .{});
         return error.ZigNotFound;
     };

@@ -240,7 +240,7 @@ spider/
 
 ### Requirements
 
-- Zig `0.17.0-dev` (master branch)
+- Zig `0.17.0`
 - PostgreSQL (for pg driver tests)
 - SQLite3 (system library)
 

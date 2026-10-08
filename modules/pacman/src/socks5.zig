@@ -105,8 +105,7 @@ pub fn parseConnectReplyHeader(header: *const [4]u8) Socks5Error!u8 {
 /// for layering TLS (or using it plain) on top; this function never touches
 /// TLS itself.
 ///
-/// Known, unresolved limitation (same class of issue as
-/// vendor/zig-lib-patched/PATCH_NOTES.md's Change 1): this reads the
+/// Known, unresolved limitation: this reads the
 /// handshake replies through a buffered `stream.reader()`, whose underlying
 /// fill can pull more bytes from the socket than the exact handshake size in
 /// a single recv() — e.g. if the proxy sends the CONNECT reply and the very

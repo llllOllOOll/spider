@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Spider needs the **Zig 0.17.0 release** (`minimum_zig_version` is
+  `0.17.0`, for Spider and generated apps). The development build
+  `0.17.0-dev.956` no longer builds it. In an app: install Zig 0.17.0, set
+  `minimum_zig_version = "0.17.0"`, and rename what the standard library
+  renamed (`builtin.mode == .Debug` is `.debug`; `uri.getHost(&buf)` is
+  `std.Io.net.HostName.fromUri(uri, &buf)`).
+- zio (the `-Dio_backend=zio` runtime) moves from 0.13.0 to its `main`
+  branch at 3bbd74d (0.19.0), the first line of zio that supports Zig
+  0.17.0. No zio release tag has it yet, so the dependency is pinned to
+  that commit.
+
 ### Added
 
 - `c.download(bytes, .{ .filename, .content_type })`: answers with a file.
@@ -72,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The HTTP client (`spider.http_client`) builds with an unmodified Zig.
+  Its proxy support (https through an HTTP proxy, SOCKS5) used to need a
+  Zig whose `lib/std/http/Client.zig` had been patched by hand; that file
+  now lives in the module, fixed (`modules/pacman/src/std_http/`), and
+  goes away when the standard library has the fix. Behaviour is unchanged.
 - The HTTP client (pacman, `spider.http_client`) now lives in the monorepo
   (`modules/pacman`) instead of being fetched from its own repository: one
   dependency less to download on the first build. Its sources are the

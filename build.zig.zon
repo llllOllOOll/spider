@@ -2,7 +2,7 @@
     .name = .spider,
     .version = "0.7.0",
     .fingerprint = 0x6ad76a84ae06b73f,
-    .minimum_zig_version = "0.17.0-dev.956+2dca73595",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .pacman = .{
             .path = "modules/pacman",
@@ -20,8 +20,8 @@
         // failing on a clean deploy is worse than one extra unconditional
         // fetch on `.threaded`-only builds.
         .zio = .{
-            .url = "git+https://github.com/lalinsky/zio?ref=zig-0.17#316161e6da288c0f0432709767aa2f02ba00ecce",
-            .hash = "zio-0.13.0-xHbVVIxtHQD1mhkK4SSuEtoPdJiFj5keaBqAMBxuLJbm",
+            .url = "git+https://github.com/lalinsky/zio#3bbd74d68a889e5d4da7274afdc7c7617ec614d6",
+            .hash = "zio-0.19.0-xHbVVMFBLACx1T0028HttNTseV6bDeL0AI4id51AHx57",
         },
         .pg = .{
             .path = "modules/pg/pg_driver_impl",

@@ -1,5 +1,6 @@
 const std = @import("std");
 const http = std.http;
+const HttpClient = @import("std_http/Client.zig");
 const socks5 = @import("socks5.zig");
 
 /// Establishes a SOCKS5(h) tunnel to `target_host:target_port` if a SOCKS5
@@ -19,12 +20,12 @@ const socks5 = @import("socks5.zig");
 pub fn connectSocks5(
     io: std.Io,
     allocator: std.mem.Allocator,
-    client: *http.Client,
+    client: *HttpClient,
     explicit_url: ?[]const u8,
     target_host: []const u8,
     target_port: u16,
-    target_protocol: http.Client.Protocol,
-) !?*http.Client.Connection {
+    target_protocol: HttpClient.Protocol,
+) !?*HttpClient.Connection {
     const url = pick: {
         if (explicit_url) |u| {
             if (u.len == 0) break :pick null;
@@ -41,7 +42,8 @@ pub fn connectSocks5(
     } orelse return null;
 
     const uri = std.Uri.parse(url) catch try std.Uri.parseAfterScheme("socks5", url);
-    const proxy_host = try uri.getHostAlloc(allocator);
+    var proxy_host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+    const proxy_host = try std.Io.net.HostName.fromUri(uri, &proxy_host_buf);
     const proxy_port: u16 = uri.port orelse 1080;
 
     var auth: ?socks5.Auth = null;
@@ -82,7 +84,7 @@ fn isSocks5Scheme(url: []const u8) bool {
     return std.mem.startsWith(u8, url, "socks5://") or std.mem.startsWith(u8, url, "socks5h://");
 }
 
-/// Configures the http.Client's proxy, opt-in: if `explicit_url` is given, it
+/// Configures the HttpClient's proxy, opt-in: if `explicit_url` is given, it
 /// takes priority (and ignores no_proxy, same as curl's --proxy). Otherwise
 /// falls back to the standard environment variables (http_proxy/https_proxy/
 /// all_proxy), honoring no_proxy/NO_PROXY. If nothing is configured (neither
@@ -90,7 +92,7 @@ fn isSocks5Scheme(url: []const u8) bool {
 /// behavior as before this feature existed.
 pub fn configure(
     allocator: std.mem.Allocator,
-    client: *http.Client,
+    client: *HttpClient,
     explicit_url: ?[]const u8,
     target_host: []const u8,
 ) !void {
@@ -107,17 +109,19 @@ pub fn configure(
     if (fromEnv(allocator, .tls, target_host)) |proxy| client.https_proxy = proxy;
 }
 
-/// Builds an http.Client.Proxy from a "scheme://[user:pass@]host[:port]" URL.
+/// Builds an HttpClient.Proxy from a "scheme://[user:pass@]host[:port]" URL.
 /// URL syntax errors are propagated (explicit config should fail loudly, not
 /// silently); an unsupported scheme (neither http nor https) returns null.
-fn fromUrl(allocator: std.mem.Allocator, url: []const u8) !?*http.Client.Proxy {
+fn fromUrl(allocator: std.mem.Allocator, url: []const u8) !?*HttpClient.Proxy {
     const uri = std.Uri.parse(url) catch try std.Uri.parseAfterScheme("http", url);
-    const protocol = http.Client.Protocol.fromUri(uri) orelse return null;
-    const host = try uri.getHostAlloc(allocator);
+    const protocol = HttpClient.Protocol.fromUri(uri) orelse return null;
+    var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+    const parsed_host = try std.Io.net.HostName.fromUri(uri, &host_buf);
+    const host: std.Io.net.HostName = .{ .bytes = try allocator.dupe(u8, parsed_host.bytes) };
 
     const authorization: ?[]const u8 = if (uri.user != null or uri.password != null) blk: {
-        const buf = try allocator.alloc(u8, http.Client.basic_authorization.valueLengthFromUri(uri));
-        std.debug.assert(http.Client.basic_authorization.value(uri, buf).len == buf.len);
+        const buf = try allocator.alloc(u8, HttpClient.basic_authorization.valueLengthFromUri(uri));
+        std.debug.assert(HttpClient.basic_authorization.value(uri, buf).len == buf.len);
         break :blk buf;
     } else null;
 
@@ -126,7 +130,7 @@ fn fromUrl(allocator: std.mem.Allocator, url: []const u8) !?*http.Client.Proxy {
         .tls => 443,
     };
 
-    const proxy = try allocator.create(http.Client.Proxy);
+    const proxy = try allocator.create(HttpClient.Proxy);
     proxy.* = .{
         .protocol = protocol,
         .host = host,
@@ -141,7 +145,7 @@ fn fromUrl(allocator: std.mem.Allocator, url: []const u8) !?*http.Client.Proxy {
 /// the environment, honoring no_proxy/NO_PROXY. Best-effort: any error
 /// (malformed env value, OOM) just makes this source get skipped, never
 /// aborts the whole request.
-fn fromEnv(allocator: std.mem.Allocator, protocol: http.Client.Protocol, target_host: []const u8) ?*http.Client.Proxy {
+fn fromEnv(allocator: std.mem.Allocator, protocol: HttpClient.Protocol, target_host: []const u8) ?*HttpClient.Proxy {
     if (getEnv("no_proxy") orelse getEnv("NO_PROXY")) |list| {
         if (isBypassed(list, target_host)) return null;
     }
@@ -228,17 +232,16 @@ test "isBypassed does NOT treat CIDR as a range (documented limitation)" {
 }
 
 test "fromUrl parses host, port and protocol" {
-    // fromUrl uses Uri.getHostAlloc, whose contract is "allocates on the
-    // arena only if needed, the result should not be freed" — that's why
-    // this test uses an arena (matching real usage in request()), not
-    // std.testing.allocator with a manual free per field.
+    // fromUrl allocates the proxy and its fields and never frees them one
+    // by one — that's why this test uses an arena (matching real usage in
+    // request()), not std.testing.allocator with a manual free per field.
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const allocator = arena_state.allocator();
 
     const proxy = (try fromUrl(allocator, "http://proxy.example.com:8080")).?;
 
-    try std.testing.expectEqual(http.Client.Protocol.plain, proxy.protocol);
+    try std.testing.expectEqual(HttpClient.Protocol.plain, proxy.protocol);
     try std.testing.expectEqualStrings("proxy.example.com", proxy.host.bytes);
     try std.testing.expectEqual(@as(u16, 8080), proxy.port);
     try std.testing.expect(proxy.authorization == null);
@@ -261,6 +264,6 @@ test "fromUrl defaults port from scheme" {
 
     const proxy = (try fromUrl(allocator, "https://proxy.example.com")).?;
 
-    try std.testing.expectEqual(http.Client.Protocol.tls, proxy.protocol);
+    try std.testing.expectEqual(HttpClient.Protocol.tls, proxy.protocol);
     try std.testing.expectEqual(@as(u16, 443), proxy.port);
 }

@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Io = std.Io;
 const http = std.http;
+const HttpClient = @import("std_http/Client.zig");
 const Body = @import("body.zig").Body;
 const proxy = @import("proxy.zig");
 const Headers = @import("headers.zig").Headers;
@@ -111,7 +112,7 @@ fn hasContentType(headers: []const http.Header) bool {
     return false;
 }
 
-/// `existing_client`, when non-null, is a persistent http.Client owned by a
+/// `existing_client`, when non-null, is a persistent HttpClient owned by a
 /// `pacman.Client` — reused across many requests instead of created fresh
 /// here. This function never destroys it; ownership stays with the caller
 /// (see Response.owns_http_client).
@@ -131,7 +132,7 @@ fn discard(outcome: Race) void {
     }
 }
 
-pub fn request(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*http.Client) !Response {
+pub fn request(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*HttpClient) !Response {
     if (opts.timeout_ms == 0) return requestNoDeadline(io, allocator, url, opts, existing_client);
 
     // The request runs as a task of its own, raced against a clock. Whoever
@@ -153,7 +154,7 @@ pub fn request(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: Fetc
     };
 }
 
-fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*http.Client) anyerror!Response {
+fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*HttpClient) anyerror!Response {
     var arena = try allocator.create(std.heap.ArenaAllocator);
     arena.* = .init(allocator);
     errdefer {
@@ -164,8 +165,8 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
     const aa = arena.allocator();
 
     var owns_http_client = false;
-    const http_client: *http.Client = existing_client orelse blk: {
-        const c = try aa.create(http.Client);
+    const http_client: *HttpClient = existing_client orelse blk: {
+        const c = try aa.create(HttpClient);
         c.* = .{ .allocator = aa, .io = io };
         owns_http_client = true;
         break :blk c;
@@ -339,15 +340,15 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
 
     // If a SOCKS5(h) proxy applies, we pre-establish the tunnel ourselves and
     // hand the resulting Connection to http_client.request() below — SOCKS5
-    // isn't HTTP, so http.Client can't dial it on its own the way it does
+    // isn't HTTP, so HttpClient can't dial it on its own the way it does
     // for HTTP(S) proxies via .http_proxy/.https_proxy. Otherwise (HTTP(S)
     // proxy or none), fall back to the existing configure() path, which lets
     // http_client.request() dial (and proxy) the connection itself.
-    var explicit_connection: ?*http.Client.Connection = null;
+    var explicit_connection: ?*HttpClient.Connection = null;
     {
         var host_buf: [Io.net.HostName.max_len]u8 = undefined;
-        if (uri.getHost(&host_buf)) |host_name| {
-            const target_protocol = http.Client.Protocol.fromUri(uri) orelse .plain;
+        if (Io.net.HostName.fromUri(uri, &host_buf)) |host_name| {
+            const target_protocol = HttpClient.Protocol.fromUri(uri) orelse .plain;
             const target_port: u16 = uri.port orelse switch (target_protocol) {
                 .plain => 80,
                 .tls => 443,

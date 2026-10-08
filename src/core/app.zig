@@ -771,7 +771,7 @@ pub fn Server(comptime T: type) type {
                 .path_middleware_count = 0,
             };
             self.allocator = std.heap.page_allocator;
-            self.gpa = if (builtin.mode == .Debug)
+            self.gpa = if (builtin.mode == .debug)
                 self.spider_gpa.allocator()
             else
                 std.heap.smp_allocator;

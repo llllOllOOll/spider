@@ -571,8 +571,8 @@ fn brokenProxyAcceptAndHangUp(io: Io, server: *Io.net.Server) !void {
 }
 
 test "HTTP(S) proxy: tunnel closed before TLS handshake does not crash (UAF regression)" {
-    // Regression test for vendor/zig-lib-patched/PATCH_NOTES.md's Change 3.
-    // std.http.Client.connectProxied() used to write into an already-freed
+    // Regression test for connectProxied() in std_http/Client.zig, which
+    // used to write into an already-freed
     // Connection when a CONNECT tunnel succeeded but the TLS handshake
     // performed afterward (once the tunneled .plain Connection is destroyed
     // and rebuilt as .tls) then failed — exactly what happens when a proxy
@@ -634,7 +634,7 @@ test "GET HTTPS through an explicit SOCKS5(h) proxy" {
     // Only runs if PACMAN_TEST_SOCKS5_PROXY is set, e.g.:
     //   PACMAN_TEST_SOCKS5_PROXY=socks5h://127.0.0.1:1080 zig test src/root.zig
     // This specifically exercises the HTTPS-through-SOCKS5 path, which only
-    // works because of the vendored Client.zig fix — SOCKS5 tunnels to a
+    // works because of std_http/Client.zig — SOCKS5 tunnels to a
     // .plain byte pipe, and adoptTunneledStream() is what performs the real
     // TLS handshake on top for the .tls target.
     const url = testEnv("PACMAN_TEST_SOCKS5_PROXY") orelse return error.SkipZigTest;
