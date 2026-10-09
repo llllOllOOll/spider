@@ -23,6 +23,15 @@ const test_port = @import("port.zig");
 /// A server started by `start`, ready to receive requests.
 pub const App = struct {
     port: u16,
+    /// Header lines sent with every request (see `with`).
+    headers: []const []const u8 = &.{},
+
+    /// The same app, sending `headers` with every request: a signed-in
+    /// visitor is `app.with(&.{"Cookie: session=..."})`. The slice must
+    /// outlive the requests made with it.
+    pub fn with(self: App, headers: []const []const u8) App {
+        return .{ .port = self.port, .headers = headers };
+    }
 
     pub fn get(self: App, target: []const u8) !Response {
         return self.request(.{ .target = target });
@@ -69,6 +78,7 @@ pub const App = struct {
         var writer = stream.writer(io, &wbuf);
         const w = &writer.interface;
         try w.print("{s} {s} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n", .{ options.method, options.target });
+        for (self.headers) |line| try w.print("{s}\r\n", .{line});
         for (options.headers) |line| try w.print("{s}\r\n", .{line});
         if (options.body) |body| {
             try w.print("Content-Length: {d}\r\n\r\n{s}", .{ body.len, body });

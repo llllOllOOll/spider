@@ -127,6 +127,15 @@ test "session: the right password logs in, and the cookie identifies the user" {
     try mine.expectStatus(200);
     try mine.expectContains("id=7 name=Ana Ribeiro email=ana@example.com editor=true");
 
+    // The same visitor, without repeating the cookie on every request.
+    const ana = app.with(&.{cookie});
+    var again = try ana.get("/me");
+    defer again.deinit();
+    try again.expectContains("id=7");
+    var out = try ana.postForm("/logout", .{});
+    defer out.deinit();
+    try out.expectRedirect("/");
+
     var undeclared = try app.request(.{ .target = "/undeclared", .headers = &.{cookie} });
     defer undeclared.deinit();
     try undeclared.expectStatus(200);
