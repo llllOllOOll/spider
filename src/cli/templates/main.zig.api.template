@@ -5,6 +5,15 @@ const features = @import("features");
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const io = init.io;
+
+    try serve(allocator, io);
+}
+
+/// Builds the server and listens. main() calls it, and so do the tests in
+/// src/app_test.zig.
+pub fn serve(allocator: std.mem.Allocator, io: std.Io) !void {
+    // What the server needs before it starts goes here: `spider g auth`
+    // puts the login provider in this spot.
     _ = allocator;
     _ = io;
 
@@ -27,6 +36,11 @@ pub fn main(init: std.process.Init) !void {
 // active sets, features registered: `spider check` prints the same report.
 test "the app follows Spider's conventions" {
     try @import("spider").testing.expectConventions();
+}
+
+// Requests against the running app: src/app_test.zig.
+test {
+    _ = @import("app_test.zig");
 }
 
 test "every file with tests is part of this test binary" {

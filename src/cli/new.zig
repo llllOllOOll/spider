@@ -14,6 +14,7 @@ const env_example_tmpl = @embedFile("templates/.env.example.template");
 const env_example_pg_tmpl = @embedFile("templates/.env.example.pg.template");
 const env_example_nodb_tmpl = @embedFile("templates/.env.example.nodb.template");
 const dockerignore_tmpl = @embedFile("templates/.dockerignore.template");
+const app_test_tmpl = @embedFile("templates/app_test.zig.template");
 const gitignore_tmpl = @embedFile("templates/.gitignore.template");
 const core_mod_tmpl = @embedFile("templates/core_mod.zig.template");
 const features_mod_tmpl = @embedFile("templates/features_mod.zig.template");
@@ -166,6 +167,101 @@ fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: 
         out = next;
     }
     return out;
+}
+
+/// src/app_test.zig for the new project: `run` (what main() does to serve,
+/// with a scratch database when the project has SQLite) and a first test.
+pub fn renderAppTest(allocator: std.mem.Allocator, app_name: []const u8, api_only: bool, no_db: bool, use_pg: bool) ![]const u8 {
+    const sqlite = !no_db and !use_pg;
+    const pg = !no_db and use_pg;
+    const pg_note = try std.fmt.allocPrint(allocator,
+        \\
+        \\    // The database is not started here, so `zig build test` runs without
+        \\    // PostgreSQL. To test routes that query it, connect to a TEST database
+        \\    // (never the development one: the tests write to it) and migrate:
+        \\    //
+        \\    //     try spider.pg.init(gpa, io, .{{ .database = "{s}_test" }});
+        \\    //     try @import("core").db.migrations.migrate(gpa);
+        \\
+    , .{app_name});
+    defer allocator.free(pg_note);
+    const vars = [_][2][]const u8{
+        .{ "{{imports}}", if (sqlite) "const core = @import(\"core\");\nconst db = spider.sqlite;\n" else "" },
+        .{ "{{run_summary}}", if (sqlite)
+            ", on a database of its own: the tests never touch\n/// db.sqlite. The migrations run on it, so every table is there."
+        else if (pg)
+            ", without the database (see below)."
+        else
+            "." },
+        .{
+            "{{database}}",
+            if (sqlite)
+                \\
+                \\    const path = ".zig-cache/test.sqlite";
+                \\    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+                \\    try db.init(gpa, io, .{ .path = path });
+                \\    try core.db.migrations.migrate(gpa);
+                \\
+            else if (pg) pg_note else "",
+        },
+        .{
+            "{{first_test}}",
+            if (api_only)
+                \\test "the health check answers" {
+                \\    const app = try spider.testing.start(run);
+                \\
+                \\    var res = try app.get("/up");
+                \\    defer res.deinit();
+                \\    try res.expectStatus(200);
+                \\}
+                \\
+            else
+                \\test "the home page answers" {
+                \\    const app = try spider.testing.start(run);
+                \\
+                \\    var res = try app.get("/");
+                \\    defer res.deinit();
+                \\    try res.expectStatus(200);
+                \\}
+                \\
+        },
+    };
+    var out = try allocator.dupe(u8, app_test_tmpl);
+    for (vars) |v| {
+        const next = try std.mem.replaceOwned(u8, allocator, out, v[0], v[1]);
+        allocator.free(out);
+        out = next;
+    }
+    return out;
+}
+
+test "renderAppTest: a scratch database only for SQLite, a first test for every project" {
+    const a = std.testing.allocator;
+    const has = std.mem.indexOf;
+
+    const sqlite = try renderAppTest(a, "blog", false, false, false);
+    defer a.free(sqlite);
+    try std.testing.expect(has(u8, sqlite, "try db.init(gpa, io, .{ .path = path });") != null);
+    try std.testing.expect(has(u8, sqlite, "try core.db.migrations.migrate(gpa);") != null);
+    try std.testing.expect(has(u8, sqlite, "app.get(\"/\")") != null);
+    try std.testing.expect(has(u8, sqlite, "{{") == null);
+
+    const none = try renderAppTest(a, "blog", false, true, false);
+    defer a.free(none);
+    try std.testing.expect(has(u8, none, "db.init") == null);
+    try std.testing.expect(has(u8, none, "@import(\"core\")") == null);
+    try std.testing.expect(has(u8, none, "{{") == null);
+
+    const pg = try renderAppTest(a, "blog", false, false, true);
+    defer a.free(pg);
+    try std.testing.expect(has(u8, pg, "//     try spider.pg.init(gpa, io, .{ .database = \"blog_test\" });") != null);
+    try std.testing.expect(has(u8, pg, "\n    try spider.pg.init") == null);
+    try std.testing.expect(has(u8, pg, "{{") == null);
+
+    const api = try renderAppTest(a, "blog", true, true, false);
+    defer a.free(api);
+    try std.testing.expect(has(u8, api, "app.get(\"/up\")") != null);
+    try std.testing.expect(has(u8, api, "{{") == null);
 }
 
 /// The generated .env: `.env.example` with the JWT_SECRET placeholder
@@ -415,6 +511,20 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
             };
             std.debug.print("  create  {s}/{s}\n", .{ app_name, path });
         }
+    }
+
+    // A first test that sends a request to the app (spider.testing.start).
+    {
+        const app_test = renderAppTest(allocator, app_name, api_only, effective_no_db, use_pg) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        defer allocator.free(app_test);
+        writeFile(io, project_dir, "src/app_test.zig", app_test) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        std.debug.print("  create  {s}/src/app_test.zig\n", .{app_name});
     }
 
     // The compose file only starts a PostgreSQL server: other projects have

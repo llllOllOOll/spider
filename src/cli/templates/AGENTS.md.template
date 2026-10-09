@@ -32,7 +32,10 @@ The `spider` CLI must be on PATH. First build fetches dependencies (network).
 ## Layout
 
 ```
-src/main.zig              entry point: db init, middleware, mountFeatures, onError, listen()
+src/main.zig              entry point: main() (db init) and serve() (middleware,
+                          mountFeatures, onError, listen())
+src/app_test.zig          tests that send requests to the running app
+                          (spider.testing.start(run); run() calls main.serve)
 src/features/<name>/      one folder per feature:
   routes.zig              its routes (a spider.Group) and who may call them
   routes_test.zig         the access contract: method, path, access per route

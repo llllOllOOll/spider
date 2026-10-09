@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `spider new` writes `src/app_test.zig`: a first test that sends a request
+  to the running app with `spider.testing.start`, on a scratch database in
+  a SQLite project. The generated `src/main.zig` is split in two for it:
+  `main()` (the database) and `pub fn serve(allocator, io)` (the server),
+  which the tests call. Existing projects are not changed.
+
 ## [0.9.1] - 2026-10-09
 
 Fixes found while writing the new documentation site and its example app,

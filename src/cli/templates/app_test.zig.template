@@ -1,0 +1,28 @@
+//! Requests against the app itself, in `zig build test`.
+//!
+//! `spider.testing.start` runs the real server once for all the tests of
+//! the project, on a free port: middlewares, routes, templates and the
+//! error handler all take part. Each test asks for the app and sends it
+//! requests:
+//!
+//!     var res = try app.get("/posts");
+//!     var res = try app.postForm("/posts/create", .{ .name = "A post" });
+//!     var res = try app.request(.{ .method = "DELETE", .target = "/posts/1" });
+//!
+//! and checks the answer: res.status, res.body, res.header("Location"),
+//! res.cookie("session"), res.expectStatus(200), res.expectContains("..."),
+//! res.expectRedirect("/posts"). A redirect is not followed.
+const std = @import("std");
+const spider = @import("spider");
+{{imports}}const main = @import("main.zig");
+
+/// What main() does to serve{{run_summary}}
+fn run() !void {
+    const gpa = std.heap.smp_allocator;
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    const io = threaded.io();
+{{database}}
+    try main.serve(gpa, io);
+}
+
+{{first_test}}
