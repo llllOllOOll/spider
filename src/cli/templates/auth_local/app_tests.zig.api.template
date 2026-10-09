@@ -1,0 +1,74 @@
+
+// ── login (spider g auth) ───────────────────────────────────────────────
+// The tests share one database: each one uses an email of its own.
+
+/// Creates an account and gives back the Authorization header of its token.
+fn signUp(app: spider.testing.App, buf: []u8, comptime name: []const u8, comptime email: []const u8) ![]const u8 {
+    var res = try app.postJson("/auth/register", "{\"name\":\"" ++ name ++ "\",\"email\":\"" ++ email ++ "\",\"password\":\"a good password\"}");
+    defer res.deinit();
+    try res.expectStatus(201);
+    return std.fmt.bufPrint(buf, "Authorization: Bearer {s}", .{tokenIn(res.body).?});
+}
+
+/// The value of "token" in a JSON answer.
+fn tokenIn(body: []const u8) ?[]const u8 {
+    const key = "\"token\":\"";
+    const start = (std.mem.indexOf(u8, body, key) orelse return null) + key.len;
+    const end = std.mem.indexOfScalarPos(u8, body, start, '"') orelse return null;
+    return body[start..end];
+}
+
+test "auth: a route that needs a login answers 401 without a token" {
+    const app = try spider.testing.start(run);
+
+    var res = try app.get("/auth/me");
+    defer res.deinit();
+    try res.expectStatus(401);
+}
+
+test "auth: creating an account answers a token that identifies it" {
+    const app = try spider.testing.start(run);
+    var buf: [1024]u8 = undefined;
+    const authorization = try signUp(app, &buf, "Ana Ribeiro", "Ana@Example.com");
+
+    var me = try app.request(.{ .target = "/auth/me", .headers = &.{authorization} });
+    defer me.deinit();
+    try me.expectStatus(200);
+    try me.expectContains("\"name\":\"Ana Ribeiro\"");
+    try me.expectContains("\"email\":\"ana@example.com\"");
+}
+
+test "auth: a registration with a problem says what it is" {
+    const app = try spider.testing.start(run);
+
+    var short = try app.postJson("/auth/register", "{\"name\":\"Bia\",\"email\":\"bia@example.com\",\"password\":\"short\"}");
+    defer short.deinit();
+    try short.expectStatus(422);
+    try short.expectContains("Use a password of at least 8 characters.");
+
+    var buf: [1024]u8 = undefined;
+    _ = try signUp(app, &buf, "Caio", "caio@example.com");
+    var twice = try app.postJson("/auth/register", "{\"name\":\"Caio\",\"email\":\"caio@example.com\",\"password\":\"another password\"}");
+    defer twice.deinit();
+    try twice.expectStatus(409);
+}
+
+test "auth: logging in needs the right password" {
+    const app = try spider.testing.start(run);
+    var buf: [1024]u8 = undefined;
+    _ = try signUp(app, &buf, "Duda", "duda@example.com");
+
+    var wrong = try app.postJson("/auth/login", "{\"email\":\"duda@example.com\",\"password\":\"not the password\"}");
+    defer wrong.deinit();
+    try wrong.expectStatus(401);
+    try std.testing.expect(tokenIn(wrong.body) == null);
+
+    var nobody = try app.postJson("/auth/login", "{\"email\":\"nobody@example.com\",\"password\":\"a good password\"}");
+    defer nobody.deinit();
+    try nobody.expectStatus(401);
+
+    var right = try app.postJson("/auth/login", "{\"email\":\"DUDA@example.com\",\"password\":\"a good password\"}");
+    defer right.deinit();
+    try right.expectStatus(200);
+    try std.testing.expect(tokenIn(right.body).?.len > 0);
+}

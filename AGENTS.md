@@ -95,6 +95,7 @@ src/ws/               Hub (SSE/WS fan-out, channels, replay), Sse, Ws
 src/binding/          form + multipart parsing
 src/providers/        jwks (JWT via JWKS), keycloak, google, clerk
 src/modules/          rbac, logger, static files, health, push (Web Push), auth (HS256),
+                      password (argon2id), session (signed cookie login),
                       mail/ (Mailer + provider transports: brevo, resend, postmark, log, memory)
 src/internal/         config (spider.Config), env (.env loading), logfmt
 src/cli/              `spider` CLI; src/cli/templates/*.template = files it generates
@@ -223,6 +224,14 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   is refused on purpose (each call is a different pooled connection).
   Typed mapping: missing column / NULL into non-optional fails
   (`DbConfig.mapping = .fail`, or `.warn` to log once per field).
+- **An app's own users** (`modules/password.zig`, `modules/session.zig`,
+  `src/cli/auth_local.zig` + `templates/auth_local/`): what `spider g auth`
+  generates by default. `spider.session` signs with `auth.jwtSign` and
+  verifies with `auth.jwtPayload` (the generic `jwtVerify` returns string
+  claims that point into freed memory: do not use it for new code). The
+  generator appends request tests to the project's `src/app_test.zig`
+  only when its `run()` starts a database. `spider g auth
+  --provider=keycloak` is the older generator (`src/cli/auth.zig`).
 - **Auth**: `keycloak.Keycloak` wraps `jwks.JwksAuth`; tokens must be issued to
   the app's client (`audience`, defaults to `client_id`). RBAC reads the
   `_auth_*` params; providers set them (`JwksConfig.roles_claim` /

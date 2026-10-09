@@ -1,0 +1,22 @@
+extends "layout"
+
+<main class="min-h-screen flex items-center justify-center p-6">
+    <div class="ui-card w-full max-w-sm p-8 gap-6">
+        <h1 class="text-2xl font-semibold">Your account</h1>
+
+        <dl class="flex flex-col gap-3 text-sm">
+            <div>
+                <dt class="opacity-60">Name</dt>
+                <dd>{ name }</dd>
+            </div>
+            <div>
+                <dt class="opacity-60">Email</dt>
+                <dd>{ email }</dd>
+            </div>
+        </dl>
+
+        <form action="/auth/logout" method="post">
+            <button class="ui-btn" type="submit">Sign out</button>
+        </form>
+    </div>
+</main>

@@ -35,12 +35,13 @@ const keycloak_config_api =
 /// provider (middleware, login/callback handlers), so the code generated for
 /// "google" never compiled.
 pub fn unsupportedProvider(provider: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, provider, "local")) return null;
     if (std.mem.eql(u8, provider, "keycloak")) return null;
     if (std.mem.eql(u8, provider, "google"))
         return "Google sign-in isn't generated: Spider has no Google session provider.\n" ++
             "Use Keycloak (--provider=keycloak) and add Google as an identity provider\n" ++
             "of the realm; users then pick it on the Keycloak login page.";
-    return "unsupported provider; use --provider=keycloak";
+    return "unsupported provider; leave --provider out for the app's own users, or use --provider=keycloak";
 }
 
 test "unsupportedProvider: keycloak only; google says why" {
@@ -54,6 +55,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
         std.debug.print("error: --provider={s}: {s}\n", .{ provider, why });
         std.process.exit(2);
     }
+    if (std.mem.eql(u8, provider, "local")) return @import("auth_local.zig").run(io, allocator, api);
 
     const root_dir = try fs_utils.findProjectRoot(io);
 

@@ -75,6 +75,7 @@ pub fn check(io: std.Io, arena: std.mem.Allocator, root: std.Io.Dir, report: *Re
     const styles = readOrEmpty(io, arena, root, "src/styles.css");
     const has_ui_layer = if (root.access(io, "src/ui.css", .{})) |_| true else |_| false;
     const has_auth = std.mem.indexOf(u8, main_src, "_auth.middleware()") != null or
+        std.mem.indexOf(u8, main_src, "spider.session.middleware()") != null or
         std.mem.indexOf(u8, main_src, "markAuthMiddleware") != null;
 
     var src = root.openDir(io, "src", .{ .iterate = true }) catch return;

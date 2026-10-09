@@ -1,0 +1,66 @@
+const std = @import("std");
+const spider = @import("spider");
+const model = @import("model.zig");
+const repository = @import("repository.zig");
+const Response = spider.Response;
+
+// Login with the app's own users, for an API. A password is stored as a
+// hash (spider.password). Logging in answers a signed token
+// (spider.session); the client sends it back on every request as
+// `Authorization: Bearer <token>`, and the middleware in src/main.zig tells
+// the routes who is there. Nothing here talks to another service.
+
+pub fn login(c: *spider.Ctx) !Response {
+    const body = try c.bodyJson(model.Credentials);
+    const email = try model.tidyEmail(c.arena, body.email);
+    const user = try repository.findByEmail(c.arena, email);
+
+    // An account that does not exist is checked against a decoy hash, so
+    // it takes as long to refuse as a wrong password, and both get the
+    // same answer: neither tells a stranger which emails have accounts.
+    const stored = if (user) |u| u.password_hash else spider.password.decoy;
+    const matches = spider.password.verify(c, stored, body.password);
+    if (user == null or !matches) {
+        return c.json(.{ .@"error" = "Wrong email or password." }, .{ .status = .unauthorized });
+    }
+    return signedIn(c, user.?, .ok);
+}
+
+/// Anyone can create an account. To close registration, remove the
+/// /auth/register route from routes.zig.
+pub fn register(c: *spider.Ctx) !Response {
+    const body = try model.tidy(c.arena, try c.bodyJson(model.Registration));
+    if (model.problem(body)) |what| {
+        return c.json(.{ .@"error" = what }, .{ .status = .unprocessable_entity });
+    }
+    if (try repository.findByEmail(c.arena, body.email) != null) {
+        return c.json(.{ .@"error" = "That email already has an account." }, .{ .status = .conflict });
+    }
+
+    const hash = try spider.password.hash(c, body.password);
+    const user = try repository.create(c.arena, body.name, body.email, hash);
+    return signedIn(c, user, .created);
+}
+
+/// Who the token belongs to. Only reachable with one (see routes.zig).
+pub fn me(c: *spider.Ctx) !Response {
+    return c.json(.{
+        .id = c.userId().?,
+        .name = c.params.get("_auth_name") orelse "",
+        .email = c.params.get("_auth_email") orelse "",
+    }, .{});
+}
+
+/// The token for `user`, and who it is.
+fn signedIn(c: *spider.Ctx, user: model.User, status: std.http.Status) !Response {
+    const token = try spider.session.token(c, .{
+        .id = try std.fmt.allocPrint(c.arena, "{d}", .{user.id}),
+        .email = user.email,
+        .name = user.name,
+        .roles = &.{user.role},
+    });
+    return c.json(.{
+        .token = token,
+        .user = .{ .id = user.id, .name = user.name, .email = user.email },
+    }, .{ .status = status });
+}

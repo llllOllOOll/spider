@@ -18,7 +18,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, subcommand: []const u8, arg
         }
         try feature.run(io, allocator, name, api);
     } else if (std.mem.eql(u8, subcommand, "auth")) {
-        var provider: []const u8 = "keycloak";
+        var provider: []const u8 = "local";
         var api = false;
         while (args.next()) |arg| {
             if (std.mem.startsWith(u8, arg, "--provider=")) {
@@ -35,6 +35,6 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, subcommand: []const u8, arg
         std.debug.print("Usage: spider generate <subcommand>\n", .{});
         std.debug.print("Available subcommands:\n", .{});
         std.debug.print("  feature <name> [--api]    Generate a new feature (--api for REST API)\n", .{});
-        std.debug.print("  auth [--provider=keycloak] [--api]  Generate auth feature (--api for bearer-only)\n", .{});
+        std.debug.print("  auth [--provider=keycloak] [--api]  Login with the app's own users (--provider=keycloak for Keycloak)\n", .{});
     }
 }

@@ -1,0 +1,23 @@
+const std = @import("std");
+const spider = @import("spider");
+const db = spider.{{db_module}};
+const model = @import("model.zig");
+
+const columns = "id, name, email, password_hash, role";
+
+/// `email` as model.tidyEmail leaves it.
+pub fn findByEmail(arena: std.mem.Allocator, email: []const u8) !?model.User {
+    const sql = "SELECT " ++ columns ++ " FROM users WHERE email = $1";
+    return db.queryOne(model.User, arena, sql, .{email});
+}
+
+pub fn findById(arena: std.mem.Allocator, id: i64) !?model.User {
+    const sql = "SELECT " ++ columns ++ " FROM users WHERE id = $1";
+    return db.queryOne(model.User, arena, sql, .{id});
+}
+
+/// Saves a new user with the role "user" and gives it back with its id.
+pub fn create(arena: std.mem.Allocator, name: []const u8, email: []const u8, password_hash: []const u8) !model.User {
+    const sql = "INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING " ++ columns;
+    return (try db.queryOne(model.User, arena, sql, .{ name, email, password_hash })) orelse error.InsertFailed;
+}

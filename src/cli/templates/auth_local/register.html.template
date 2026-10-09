@@ -1,0 +1,30 @@
+extends "layout"
+
+<main class="min-h-screen flex items-center justify-center p-6">
+    <div class="ui-card w-full max-w-sm p-8 gap-6">
+        <h1 class="text-2xl font-semibold">Create an account</h1>
+
+        if (problem != "") {
+        <p class="ui-alert ui-alert-error" role="alert">{ problem }</p>
+        }
+
+        <form class="flex flex-col gap-4" action="/auth/register" method="post">
+            <label class="ui-field">
+                <span class="ui-label">Name</span>
+                <input class="ui-input" name="name" type="text" value="{ name }" autocomplete="name" maxlength="80" required autofocus>
+            </label>
+            <label class="ui-field">
+                <span class="ui-label">Email</span>
+                <input class="ui-input" name="email" type="email" value="{ email }" autocomplete="email" required>
+            </label>
+            <label class="ui-field">
+                <span class="ui-label">Password</span>
+                <input class="ui-input" name="password" type="password" autocomplete="new-password" minlength="8" required>
+                <span class="text-xs opacity-60">At least 8 characters.</span>
+            </label>
+            <button class="ui-btn ui-btn-primary" type="submit">Create account</button>
+        </form>
+
+        <p class="text-sm">Already have one? <a class="underline" href="/auth/login">Sign in</a></p>
+    </div>
+</main>

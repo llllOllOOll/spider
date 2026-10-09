@@ -133,6 +133,7 @@ test {
     _ = @import("auth_updater.zig");
     _ = routes_cmd;
     _ = @import("auth.zig");
+    _ = @import("auth_local.zig");
     _ = @import("new.zig");
     _ = @import("update.zig");
     _ = @import("self_update.zig");

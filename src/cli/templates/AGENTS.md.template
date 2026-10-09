@@ -112,8 +112,11 @@ auth. Fix the code, not the check — and don't delete that test.
   `.policy = policy.Tickets.route(.update)`, handlers and views ask
   `try policy.Tickets.can(c, .update, ticket)` (e.g. to show an edit button)
   instead of repeating the rule.
-- Roles only mean something once requests are authenticated (`spider g auth`
-  adds the provider's middleware). Without auth every route is open and a
+- Roles only mean something once requests are authenticated. `spider g auth`
+  adds a login with the app's own users (src/features/auth/: users table,
+  sign in/up/out; passwords hashed with `spider.password`, the session a
+  signed cookie from `spider.session`, whose middleware goes in
+  `src/main.zig`); `--provider=keycloak` uses a Keycloak realm instead. Without auth every route is open and a
   route with `.roles` answers 403 to everyone. That's why generated features
   have their `defaults()` line commented out until the app has auth; after
   `spider g auth`, enable it in each feature and set the real role.

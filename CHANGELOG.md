@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`spider g auth` generates a login with the app's own users**; the
+  Keycloak login it used to generate is now `spider g auth
+  --provider=keycloak`. Projects that already have their auth feature are
+  not touched.
+
 ### Added
+
+- `spider g auth`: `src/features/auth/` with a users table (migration),
+  sign in, sign up, sign out and an account page; `--api` answers a bearer
+  token from JSON routes instead of pages. It adds
+  `spider.session.middleware()` to `src/main.zig`, sends a visitor without
+  a session to the sign-in page, and appends tests of the whole flow to
+  `src/app_test.zig`. Nothing outside the app is involved, so the tests
+  run anywhere. Works with SQLite and PostgreSQL; a project without a
+  database is told why it cannot have one.
+- `spider.password`: `hash(c, password)` and `verify(c, stored, password)`
+  (argon2id with OWASP's parameters, a PHC string for one text column),
+  and `decoy`, a hash to verify against when the account does not exist.
+- `spider.session`: `start(c, user)` and `end(c)` give the response options
+  that write and clear a signed cookie (HS256, with the user's id, email,
+  name and roles); `token(c, user)` gives the token for an API;
+  `middleware()` reads the cookie or an `Authorization: Bearer` header,
+  fills in the request's user and answers 401 on a route that is not
+  `.public`. The secret is `JWT_SECRET`. No table of sessions: a session
+  cannot be revoked before it expires (14 days by default).
 
 - `spider new` writes `src/app_test.zig`: a first test that sends a request
   to the running app with `spider.testing.start`, on a scratch database in
