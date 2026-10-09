@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --provider=keycloak`. Projects that already have their auth feature are
   not touched.
 
+### Fixed
+
+- **`spider dev` lost changes after another `zig build` ran in the
+  project.** Running `zig build test` in a second terminal made the
+  watching build recompile everything; a file saved during that rebuild
+  (a generator writing several) was compiled half-written and not again,
+  so the app kept running without the change. The build of `spider dev`
+  now has a cache of its own, `.zig-cache/dev`. The first `spider dev`
+  after updating builds from scratch once.
+
 ### Added
 
 - `spider g auth`: `src/features/auth/` with a users table (migration),

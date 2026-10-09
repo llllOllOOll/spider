@@ -133,10 +133,32 @@ pub const Summary = struct {
 /// Incremental compilation is only supported by Zig 0.17 on x86_64 Linux.
 pub const incremental_supported = builtin.os.tag == .linux and builtin.cpu.arch == .x86_64;
 
+/// The build keeps a cache of its own, apart from the project's
+/// `.zig-cache`. Another `zig build` in the project while `spider dev` runs
+/// (`zig build test` in a second terminal) used to share it: the watching
+/// build then rebuilt everything, and a file saved during that rebuild was
+/// compiled half-written and never compiled again, so the app ran without
+/// the change until the next save.
+pub const build_cache_dir = ".zig-cache/dev";
+
 const default_build_argv: []const []const u8 = if (incremental_supported)
-    &.{ "zig", "build", "dev", "--watch", "-fincremental" }
+    &.{ "zig", "build", "dev", "--watch", "-fincremental", "--cache-dir", build_cache_dir }
 else
-    &.{ "zig", "build", "dev", "--watch" };
+    &.{ "zig", "build", "dev", "--watch", "--cache-dir", build_cache_dir };
+
+test "the build of spider dev has a cache of its own, inside the project's" {
+    var found = false;
+    for (default_build_argv, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "--cache-dir")) {
+            found = true;
+            try std.testing.expectEqualStrings(build_cache_dir, default_build_argv[i + 1]);
+        }
+    }
+    try std.testing.expect(found);
+    // Inside .zig-cache: already ignored by git, removed with it.
+    try std.testing.expect(std.mem.startsWith(u8, build_cache_dir, ".zig-cache/"));
+    try std.testing.expect(!std.mem.eql(u8, build_cache_dir, state_dir));
+}
 
 var signal_stop: std.atomic.Value(bool) = .init(false);
 

@@ -179,7 +179,9 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 - **Connection deadlines**: `Config.keepalive_timeout_ms`, `header_timeout_ms`,
   `body_timeout_ms`, `stream_write_timeout_ms`; never applied while a handler runs.
 - **`spider dev`** (`src/cli/dev.zig`, `src/modules/dev_reload.zig`): the CLI
-  supervises `zig build dev --watch` and a COPY of the binary (never the
+  supervises `zig build dev --watch --cache-dir .zig-cache/dev` (a cache of
+  its own: another `zig build` on the same cache made the watching build
+  rebuild everything and lose saves made meanwhile) and a COPY of the binary (never the
   cache binary itself: the incremental linker rewrites it in place). The
   browser reload lives in the server, same origin, Debug builds only, on
   when SPIDER_DEV is set: script tag injected into HTML responses, plus
