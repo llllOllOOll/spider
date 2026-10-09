@@ -100,6 +100,9 @@ pub const WebPush = struct {
     /// are not the ones the subscription was made with), `error.PushSendFailed`
     /// for any other status that is not 200, 201 or 204, and with the HTTP
     /// client's error when the service cannot be reached.
+    /// `error.InvalidKeyLength` when a key of the subscription or of the
+    /// config does not have the size its kind has (a forged or damaged
+    /// subscription): nothing is sent.
     pub fn sendRaw(
         self: *const WebPush,
         arena: std.mem.Allocator,
@@ -291,7 +294,12 @@ fn base64urlEncode(allocator: std.mem.Allocator, data: []const u8) ![]const u8 {
     return out;
 }
 
+/// Decodes `src` into `dest`, which it must fill exactly. The keys decoded
+/// here come from outside (a browser's subscription, the app's config),
+/// and std's decoder trusts the destination to be the right size.
 fn base64urlDecode(dest: []u8, src: []const u8) !void {
+    const size = try std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(src);
+    if (size != dest.len) return error.InvalidKeyLength;
     try std.base64.url_safe_no_pad.Decoder.decode(dest, src);
 }
 
@@ -433,4 +441,24 @@ test "extractOrigin from URL with port" {
     const origin = try extractOrigin(allocator, "https://example.com:8443/push");
     defer allocator.free(origin);
     try std.testing.expectEqualStrings("https://example.com:8443", origin);
+}
+
+test "a subscription key of the wrong length is an error, not a write outside the buffer" {
+    // `p256dh` and `auth` come from the browser: whoever registers a
+    // subscription chooses them.
+    var auth_secret: [16]u8 = undefined;
+    const too_long = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB"; // 36 bytes
+    try std.testing.expectError(error.InvalidKeyLength, base64urlDecode(&auth_secret, too_long));
+    // A short one used to leave the rest of the buffer undefined.
+    try std.testing.expectError(error.InvalidKeyLength, base64urlDecode(&auth_secret, "QUFB"));
+    try std.testing.expectError(error.InvalidKeyLength, base64urlDecode(&auth_secret, ""));
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const forged: PushSubscription = .{
+        .endpoint = "https://push.example.com/send/abc",
+        .p256dh = too_long ++ too_long ++ too_long,
+        .auth = too_long,
+    };
+    try std.testing.expectError(error.InvalidKeyLength, encryptPayload(arena.allocator(), std.testing.io, forged, "hello"));
 }

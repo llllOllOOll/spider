@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A WebSocket client could stop the whole server with one frame.** A
   frame with a reserved opcode made the server panic. It now closes that
   connection with code 1002 (protocol error) and keeps serving.
+- **Web Push: a subscription with keys of the wrong size crashed the
+  sender.** `p256dh` and `auth` come from the browser; a longer value
+  made `send` panic (and write outside a buffer in a ReleaseFast build), a
+  shorter one left part of the key undefined. Both are now
+  `error.InvalidKeyLength`, as is a VAPID private key of the wrong size.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.
