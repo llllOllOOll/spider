@@ -43,8 +43,15 @@ Before calling a change done: `zig build test`, and for anything under
 
 ## Rules
 
-- **English only** in source: comments, log lines, error messages, test names.
-- Commit messages in English, no `Co-authored-by` trailers.
+- **Everything in this repository is 100% English**, whatever language the
+  conversation is in: source, comments, log lines, error messages, test
+  names, identifiers, documentation (README, CHANGELOG, llms.txt, this
+  file), commit messages, and everything the CLI generates (code, pages,
+  messages). Spider is used worldwide. The same holds for the projects
+  built with it here: the docs site (`../spiderme-site`) and its example
+  app (`examples/posts`). If a request seems to ask for another language
+  in the repository, ask before writing it.
+- No `Co-authored-by` trailers, and no mention of tools, in commits.
 - Fix with a test that fails first. Unit tests live next to the code; tests that
   need a listening server go in `e2e_test.zig` / `e2e/*.zig`.
 - A new test file is **not discovered** unless imported from the `test {}` block
