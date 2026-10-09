@@ -14,6 +14,12 @@ pub const StaticConfig = struct {
     /// The start of the URL paths answered from `dir`: with `/assets`,
     /// `/assets/app.css` is the file `app.css` of `dir`.
     prefix: []const u8 = "/",
+    /// The largest file served. A file is read whole into memory for each
+    /// request that gets it, so this bounds what one request can take. A
+    /// bigger file is not served (the request goes on to the routes, which
+    /// answer 404) and the server logs which file and which limit. Set it
+    /// with `static_max_file_bytes` in `spider.config.zig`.
+    max_file_bytes: usize = 10 * 1024 * 1024,
 };
 
 // internal: the Content-Type for a file name, by its extension; `application/octet-stream` when unknown.
@@ -117,7 +123,7 @@ pub fn serve(
     else
         after_prefix;
 
-    const r = (try serveFile(io, arena, config.dir, relative)) orelse return null;
+    const r = (try serveFile(io, arena, config.dir, relative, config.max_file_bytes)) orelse return null;
     return try withCache(arena, r, req);
 }
 
@@ -126,6 +132,7 @@ fn serveFile(
     arena: std.mem.Allocator,
     dir: []const u8,
     relative_path: []const u8,
+    max_file_bytes: usize,
 ) !?Response {
     const file_path = if (relative_path.len == 0)
         try std.fmt.allocPrint(arena, "{s}/index.html", .{dir})
@@ -138,9 +145,12 @@ fn serveFile(
         io,
         file_path,
         arena,
-        .limited(10 * 1024 * 1024),
+        // The reader refuses a file that reaches its limit: one more byte
+        // makes `max_file_bytes` itself the largest size served.
+        .limited(max_file_bytes +| 1),
     ) catch |err| {
         if (err == error.FileNotFound or err == error.IsDir) return null;
+        if (err == error.StreamTooLong) return error.StaticFileTooLarge;
         return err;
     };
 
@@ -211,4 +221,24 @@ test "serve: an empty static dir (Config.static_dir = null) serves nothing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expect((try serve(std.testing.io, arena.allocator(), .{ .dir = "", .prefix = "/" }, "/index.html", .{})) == null);
+}
+
+test "serve: a file over max_file_bytes is error.StaticFileTooLarge; the limit can be raised" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const big: [2000]u8 = @splat('x');
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "video.mp4", .data = &big });
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+
+    try std.testing.expectError(
+        error.StaticFileTooLarge,
+        serve(std.testing.io, a, .{ .dir = dir, .prefix = "/", .max_file_bytes = 1000 }, "/video.mp4", .{}),
+    );
+    const r = (try serve(std.testing.io, a, .{ .dir = dir, .prefix = "/", .max_file_bytes = 2000 }, "/video.mp4", .{})).?;
+    try std.testing.expectEqual(@as(usize, 2000), r.body.?.len);
+    // The default is 10 MiB.
+    try std.testing.expectEqual(@as(usize, 10 * 1024 * 1024), (StaticConfig{}).max_file_bytes);
 }

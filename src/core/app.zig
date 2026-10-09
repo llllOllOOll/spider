@@ -408,7 +408,11 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 .query = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[q + 1 ..] else null,
                 .if_none_match = headerIgnoreCase(headers_map, "If-None-Match"),
             }) catch |err| blk: {
-                std.log.err("rid={s} {s} {s}: static file error {s}", .{ request_id, method_name, path, @errorName(err) });
+                if (err == error.StaticFileTooLarge) {
+                    std.log.warn("rid={s} {s} {s}: the file is over static_max_file_bytes ({d}) and was not served; raise the limit in spider.config.zig, or serve it from somewhere else", .{ request_id, method_name, path, ctx.static_config.max_file_bytes });
+                } else {
+                    std.log.err("rid={s} {s} {s}: static file error {s}", .{ request_id, method_name, path, @errorName(err) });
+                }
                 break :blk null;
             };
             if (static_hit) |static_response| {
@@ -923,13 +927,15 @@ pub fn Server(comptime T: type) type {
 
         /// Serves the files of `dir` from the root of the site, in place of the `static_dir` of the config.
         pub fn staticDir(self: *Self, dir: []const u8) *Self {
-            self.static_config = .{ .dir = dir, .prefix = "/" };
+            self.static_config.dir = dir;
+            self.static_config.prefix = "/";
             return self;
         }
 
         /// Serves the files of `dir` under the path `prefix`.
         pub fn staticAt(self: *Self, dir: []const u8, prefix: []const u8) *Self {
-            self.static_config = .{ .dir = dir, .prefix = prefix };
+            self.static_config.dir = dir;
+            self.static_config.prefix = prefix;
             return self;
         }
 
@@ -1661,7 +1667,7 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
     var s = Server(@TypeOf(decorations)).init();
     s.decorations = decorations;
     s.config = cfg;
-    s.static_config = .{ .dir = cfg.static_dir orelse "", .prefix = "/" };
+    s.static_config = .{ .dir = cfg.static_dir orelse "", .prefix = "/", .max_file_bytes = cfg.static_max_file_bytes };
     var threaded = std.Io.Threaded.init_single_threaded;
     defer threaded.deinit();
     const io = threaded.io();
@@ -1702,7 +1708,7 @@ fn noteTemplatesFromDisk(views_dir: []const u8) void {
 pub fn appWithConfig(config: Config) Server(EmptyDeco) {
     var s = Server(EmptyDeco).init();
     s.config = config;
-    s.static_config = .{ .dir = config.static_dir orelse "", .prefix = "/" };
+    s.static_config = .{ .dir = config.static_dir orelse "", .prefix = "/", .max_file_bytes = config.static_max_file_bytes };
     var threaded = std.Io.Threaded.init_single_threaded;
     defer threaded.deinit();
     const io = threaded.io();

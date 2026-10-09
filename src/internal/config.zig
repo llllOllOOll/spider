@@ -48,6 +48,10 @@ pub const Config = struct {
     /// public). null: no static files. `server.staticDir()` / `staticAt()`
     /// override it.
     static_dir: ?[]const u8 = "./public",
+    /// The largest static file served, in bytes. A file is read whole into
+    /// memory for each request, so raise it with care; bigger files belong
+    /// in object storage or behind the proxy. Default: 10 MiB.
+    static_max_file_bytes: usize = 10 * 1024 * 1024,
     /// The environment the app declares. Nothing in Spider reads it today:
     /// it does not change any behaviour. Default `.development`.
     env: Env = .development,
