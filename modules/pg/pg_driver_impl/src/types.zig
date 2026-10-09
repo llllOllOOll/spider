@@ -1377,7 +1377,7 @@ pub fn bindValue(comptime T: type, oid: i32, value: anytype, buf: *buffer.Buffer
                         if (ptr.child != lib.Binary) {
                             // Check if this is an ArrayParameter marker
                             const type_info = @typeInfo(ptr.child);
-                            if (type_info == .@"struct" and @hasDecl(ptr.child, "values") and @hasDecl(ptr.child, "type_name")) {
+                            if (type_info == .@"struct" and @hasField(ptr.child, "values") and @hasField(ptr.child, "type_name")) {
                                 // This is an ArrayParameter - pass through the original array values
                                 return bindSlice(oid, value.values, buf, format_pos);
                             }

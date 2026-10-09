@@ -2080,3 +2080,20 @@ test "civilFromDays: days since 1970-01-01, either side of it" {
     try std.testing.expectEqual(Civil{ .year = 2000, .month = 2, .day = 29 }, civilFromDays(11016));
     try std.testing.expectEqual(Civil{ .year = 1, .month = 1, .day = 1 }, civilFromDays(-719162));
 }
+
+test "array: a list of values for ANY($1), and a plain slice does the same" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const sql = "SELECT count(*) FROM generate_series(1, 5) AS g WHERE g = ANY($1)";
+    const ids = [_]i32{ 2, 4, 9 };
+    try std.testing.expectEqual(@as(i64, 2), try query(i64, a, sql, .{array(i32, &ids)}));
+    try std.testing.expectEqual(@as(i64, 2), try query(i64, a, sql, .{@as([]const i32, &ids)}));
+
+    const names = [_][]const u8{ "ana", "bia" };
+    const text_sql = "SELECT count(*) FROM (VALUES ('ana'), ('caio')) AS t(name) WHERE name = ANY($1)";
+    try std.testing.expectEqual(@as(i64, 1), try query(i64, a, text_sql, .{array([]const u8, &names)}));
+}
