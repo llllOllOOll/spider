@@ -8,8 +8,8 @@ agents. API reference: `llms.txt`. Human docs: `README.md`.
 **The human docs are partly stale.** Many README examples no longer compile
 (two-argument routes — the route config `.{}` is required; `c.param()` — it's
 `c.params.get()` or `spider.Path`; `pg.init(io, …)` — it's
-`init(allocator, io, …)`; a `mysql` driver that doesn't exist). `CONTRIBUTING.md`,
-`docs/POSTGRES.md` (libpq era) and `tasks.md` describe an older tree. When they
+`init(allocator, io, …)`; a `mysql` driver that doesn't exist). `CONTRIBUTING.md` and
+`docs/POSTGRES.md` (libpq era) describe an older tree. When they
 disagree with `src/spider.zig` / `llms.txt`, the code wins.
 
 ## Commands
@@ -253,6 +253,8 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 - `src/cli/build.zig` is a stale template copy, not the CLI's build (the CLI is
   built by the root `build.zig`); generated-project templates are
   `src/cli/templates/*.template`.
-- `tasks.md`, `memory.md`, `test.sh`, `test-mysql*.zig`, `server.log`,
-  `test.db` are leftovers; don't treat them as current plans or tests.
+- `test-mysql*.zig` are leftovers; don't treat them as current tests.
+- `.env.local` is yours and not in git. `spider.env` loads it, so a `PORT`
+  line in it moves any app in this tree that calls `listen()` without a
+  port.
 - `Config.env` is not read by anything today.

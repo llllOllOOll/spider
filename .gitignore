@@ -18,3 +18,9 @@ demos/
 src/cli/.playwright-mcp/
 realtime/
 testmig/
+# Local settings and leftovers of local runs: never in git
+.env.local
+server.log
+test.db
+memory.md
+test.sh
