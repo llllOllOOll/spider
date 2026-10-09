@@ -8,7 +8,7 @@ const embedded = @import("embedded.zig");
 const Node = ast.Node;
 const freeNode = ast.freeNode;
 const Context = ctx_mod.Context;
-const Value = ctx_mod.Value;
+pub const Value = ctx_mod.Value;
 const structToContext = ctx_mod.structToContext;
 const dupeValue = ctx_mod.dupeValue;
 const Parser = parser_mod.Parser;
@@ -35,6 +35,20 @@ pub const Template = struct {
     /// embedded templates here). Looked up after `components`, so inline
     /// components still take precedence; never modified or freed.
     base_components: ?*const embedded.Map = null,
+    /// Names every render of this template can use besides its data
+    /// (Ctx.view() passes `current_user` here). A name the data has too
+    /// keeps the data's value. Not copied or freed here.
+    globals: []const Global = &.{},
+
+    pub const Global = struct { name: []const u8, value: Value };
+
+    // Not generic: render() is instantiated once per data type.
+    fn addGlobals(self: *const Template, ctx: *Context, alc: std.mem.Allocator) !void {
+        for (self.globals) |global| {
+            if (ctx.get(global.name) != null) continue;
+            try ctx.set(alc, global.name, try dupeValue(alc, global.value));
+        }
+    }
 
     pub fn init(alc: std.mem.Allocator, template_str: []const u8) !Template {
         var parser = Parser.init(alc, template_str);
@@ -154,6 +168,7 @@ pub const Template = struct {
 
         var ctx = try structToContext(alc, context);
         defer ctx.deinit(alc);
+        try self.addGlobals(&ctx, alc);
 
         var state = RenderState.init(self.components, self.base_components);
         defer state.deinit(alc);
@@ -244,6 +259,7 @@ pub const Template = struct {
 
         var comp_ctx = try structToContext(alc, context);
         defer comp_ctx.deinit(alc);
+        try self.addGlobals(&comp_ctx, alc);
 
         var state = RenderState.init(self.components, self.base_components);
         defer state.deinit(alc);

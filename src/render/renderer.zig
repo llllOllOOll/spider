@@ -337,6 +337,8 @@ fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) bool {
         if (value == .boolean) return value.boolean;
         if (value == .string) return value.string.len > 0 and !std.mem.eql(u8, value.string, "false");
         if (value == .html) return value.html.len > 0 and !std.mem.eql(u8, value.html, "false");
+        // An object that is there is true: `if (current_user) { ... }`.
+        if (value == .object) return true;
     }
     return false;
 }

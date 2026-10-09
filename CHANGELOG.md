@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`current_user` in every view.** When the request has a user (a session,
+  a token, `c.setUser`), templates can read `current_user.id`,
+  `current_user.email` and `current_user.name` without the handler passing
+  them, in the layout and in components too: `if (current_user) { ... }
+  else { ... }`. A handler that passes its own `current_user` keeps it.
+
+### Changed
+
+- **An object is true in a template condition.** `if (post) { ... }` used
+  to be false whatever `post` held; it is now true when the name holds an
+  object.
+
+### Fixed
+
+- The two files the build writes for an app without its own
+  (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
+  `zig build` documentation of an app no longer reports them as errors.
+
 ## [0.9.2] - 2026-10-09
 
 A login that needs nothing outside the app, tests that call the app, and a

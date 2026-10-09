@@ -16,6 +16,9 @@ const Fixture = struct {
     docs_page: []const u8 = "-- doc\n# Hello",
     fragments_list: []const u8 = "<Items><ul>for (items) |i| {<li>{ i }</li>}</ul></Items><Items />",
     pages_boxed: []const u8 = "extends \"layout\"\n<Box><Card title=\"{ title }\" /></Box>",
+    who_layout: []const u8 = "if (current_user) {<b>{ current_user.name }</b>} else {<i>guest</i>}{ slot }",
+    who_page: []const u8 = "extends \"who_layout\"\n<Who />",
+    Who: []const u8 = "<p>{ current_user.id }|{ current_user.email }</p>",
 };
 
 const fixture_map = embedded.buildMap(Fixture);
@@ -192,4 +195,35 @@ test "embedded fragment renders exactly what the per-request map rendered" {
         const got = try new.renderFragment(pair[1], data, alc);
         try std.testing.expectEqualStrings(expected, got);
     }
+}
+
+test "Ctx views: current_user is the signed-in user, in the layout and in components" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alc = arena.allocator();
+
+    var anonymous = testCtx(alc);
+    var page = (try anonymous.prepareEmbedded(&fixture_map, "who/page", .{})).template;
+    try std.testing.expectEqualStrings("<i>guest</i><p>|</p>", try page.render(.{}, alc));
+
+    var c = testCtx(alc);
+    try c.setUser(.{ .id = "7", .email = "ana@example.com", .name = "Ana <Ribeiro>" });
+    page = (try c.prepareEmbedded(&fixture_map, "who/page", .{})).template;
+    try std.testing.expectEqualStrings("<b>Ana &lt;Ribeiro&gt;</b><p>7|ana@example.com</p>", try page.render(.{}, alc));
+
+    // A fragment gets it too.
+    page = (try c.prepareEmbedded(&fixture_map, "who/page", .{})).template;
+    try std.testing.expectEqualStrings("<p>7|ana@example.com</p>", try page.renderFragment("Who", .{}, alc));
+}
+
+test "Ctx views: the handler's own current_user wins" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alc = arena.allocator();
+
+    var c = testCtx(alc);
+    try c.setUser(.{ .id = "7", .name = "Ana" });
+    var page = (try c.prepareEmbedded(&fixture_map, "who/page", .{})).template;
+    const out = try page.render(.{ .current_user = .{ .id = "1", .name = "Bia", .email = "" } }, alc);
+    try std.testing.expectEqualStrings("<b>Bia</b><p>1|</p>", out);
 }

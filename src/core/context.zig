@@ -309,6 +309,7 @@ pub const Ctx = struct {
 
         var tmpl = try Template.init(self.arena, content);
         tmpl.base_components = map;
+        tmpl.globals = try self.viewGlobals();
         return .{ .template = tmpl };
     }
 
@@ -359,7 +360,23 @@ pub const Ctx = struct {
 
         var tmpl = try Template.init(self.arena, view_content);
         tmpl.components = components;
+        tmpl.globals = try self.viewGlobals();
         return .{ .template = tmpl };
+    }
+
+    /// What every view can use besides its own data: `current_user` (`id`,
+    /// `email`, `name`) when the request has a user, so a layout can say
+    /// who is signed in without each handler passing it. Without a user
+    /// the name is not there: `if (current_user) { ... } else { ... }`.
+    fn viewGlobals(self: *Ctx) ![]const Template.Global {
+        const id = self.userId() orelse return &.{};
+        var user: std.StringHashMapUnmanaged(template_mod.Value) = .empty;
+        try user.put(self.arena, "id", .{ .string = id });
+        try user.put(self.arena, "email", .{ .string = self.params.get("_auth_email") orelse "" });
+        try user.put(self.arena, "name", .{ .string = self.params.get("_auth_name") orelse "" });
+        const globals = try self.arena.alloc(Template.Global, 1);
+        globals[0] = .{ .name = "current_user", .value = .{ .object = user } };
+        return globals;
     }
 
     /// A template starting with `-- doc` is Markdown: rendered to HTML as is,

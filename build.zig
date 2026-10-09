@@ -244,6 +244,7 @@ pub fn build(b: *std.Build) void {
         \\const spider = @import("spider");
         \\pub const is_default = true;
         \\pub const config = spider.Config{};
+        \\
     );
     const default_cfg_mod = b.createModule(.{
         .root_source_file = default_cfg_file,
@@ -260,6 +261,7 @@ pub fn build(b: *std.Build) void {
     const default_helpers_file = default_helpers.add("template_helpers.zig",
         \\// No custom template helpers registered — any { name(...) } call in
         \\// a template renders empty (see render/renderer.zig's .call case).
+        \\
     );
     const default_helpers_mod = b.createModule(.{
         .root_source_file = default_helpers_file,

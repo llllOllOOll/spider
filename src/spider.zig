@@ -1,5 +1,8 @@
-//! Speed - A fast, ergonomic web framework for Zig
-//! Focused on great Developer Experience (DX) for developers coming from Go, Django, TypeScript
+//! Spider: a web framework for Zig. Router, middleware, templates, SSE and
+//! WebSocket, sessions and auth providers, an HTTP client, and database
+//! drivers (PostgreSQL, SQLite) behind build options.
+//!
+//! Everything an app uses is reached from here: `const spider = @import("spider");`.
 
 const std = @import("std");
 
