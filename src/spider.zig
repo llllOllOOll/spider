@@ -47,6 +47,11 @@ pub const Sse = @import("ws/sse.zig").Sse;
 pub const pg = @import("spider_pg");
 pub const sqlite = @import("spider_sqlite");
 pub const auth = @import("modules/auth/auth.zig");
+/// Login sessions for an app's own users: a signed cookie (or bearer
+/// token), `start`, `end`, `middleware()`.
+pub const session = @import("modules/session.zig");
+/// Password hashing for an app's own users (argon2id): `hash`, `verify`.
+pub const password = @import("modules/password.zig");
 pub const static = @import("modules/static.zig");
 /// Browser reload under `spider dev` (the server wires it in by itself).
 pub const dev_reload = @import("modules/dev_reload.zig");
@@ -154,6 +159,8 @@ test {
     _ = @import("core/origin_test.zig");
     _ = @import("core/client_ip.zig");
     _ = @import("modules/auth/auth.zig");
+    _ = @import("modules/password.zig");
+    _ = @import("modules/session.zig");
     _ = @import("modules/dev_reload.zig");
     _ = @import("routing/router_test.zig");
     _ = @import("modules/rbac_test.zig");

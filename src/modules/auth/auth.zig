@@ -42,6 +42,58 @@ pub fn jwtSign(alloc: std.mem.Allocator, claims: anytype, secret: []const u8) ![
     return std.fmt.allocPrint(alloc, "{s}.{s}.{s}", .{ HEADER_B64, payload_b64, sig_b64 });
 }
 
+/// The JSON payload of `token` once its HS256 signature is checked against
+/// `secret`; the caller owns it. Does not look at the claims (not at `exp`
+/// either): jwtVerify and spider.session do.
+pub fn jwtPayload(alloc: std.mem.Allocator, token: []const u8, secret: []const u8) ![]u8 {
+    var parts = std.mem.splitScalar(u8, token, '.');
+    const header_b64 = parts.next() orelse return JwtError.InvalidFormat;
+    const payload_b64 = parts.next() orelse return JwtError.InvalidFormat;
+    const sig_b64 = parts.next() orelse return JwtError.InvalidFormat;
+    if (parts.next() != null) return JwtError.InvalidFormat;
+    if (!std.mem.eql(u8, header_b64, HEADER_B64)) return JwtError.InvalidFormat;
+
+    var recomputed: [32]u8 = undefined;
+    var mac = std.crypto.auth.hmac.sha2.HmacSha256.init(secret);
+    mac.update(header_b64);
+    mac.update(".");
+    mac.update(payload_b64);
+    mac.final(&recomputed);
+
+    var sent: [32]u8 = undefined;
+    const sig_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(sig_b64) catch return JwtError.InvalidFormat;
+    if (sig_len != 32) return JwtError.InvalidSignature;
+    std.base64.url_safe_no_pad.Decoder.decode(&sent, sig_b64) catch return JwtError.InvalidSignature;
+    if (!std.crypto.timing_safe.eql([32]u8, sent, recomputed)) return JwtError.InvalidSignature;
+
+    const len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(payload_b64) catch return JwtError.InvalidFormat;
+    const payload = try alloc.alloc(u8, len);
+    errdefer alloc.free(payload);
+    std.base64.url_safe_no_pad.Decoder.decode(payload, payload_b64) catch return JwtError.InvalidFormat;
+    return payload;
+}
+
+test "jwtPayload: the payload of a token signed with the secret, nothing else" {
+    const a = std.testing.allocator;
+    const token = try jwtSign(a, .{ .sub = "7", .exp = 1 }, "secret");
+    defer a.free(token);
+
+    const payload = try jwtPayload(a, token, "secret");
+    defer a.free(payload);
+    try std.testing.expectEqualStrings("{\"sub\":\"7\",\"exp\":1}", payload);
+
+    try std.testing.expectError(JwtError.InvalidSignature, jwtPayload(a, token, "other secret"));
+    try std.testing.expectError(JwtError.InvalidFormat, jwtPayload(a, "not.a.token.at.all", "secret"));
+    try std.testing.expectError(JwtError.InvalidFormat, jwtPayload(a, "onlyonepart", "secret"));
+
+    // The same token with one byte of the payload changed.
+    const forged = try a.dupe(u8, token);
+    defer a.free(forged);
+    const dot = std.mem.indexOfScalar(u8, forged, '.').?;
+    forged[dot + 3] = if (forged[dot + 3] == 'A') 'B' else 'A';
+    try std.testing.expectError(JwtError.InvalidSignature, jwtPayload(a, forged, "secret"));
+}
+
 pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, io: std.Io, token: []const u8, secret: []const u8) !T {
     if (!@hasField(T, "sub")) @compileError("Claims must have 'sub' field");
     if (!@hasField(T, "exp")) @compileError("Claims must have 'exp' field");
