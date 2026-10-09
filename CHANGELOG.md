@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   made `send` panic (and write outside a buffer in a ReleaseFast build), a
   shorter one left part of the key undefined. Both are now
   `error.InvalidKeyLength`, as is a VAPID private key of the wrong size.
+- **SQLite: `defer tx.rollback()` after `tx.commit()` broke the pool.**
+  The rollback gave the connection back a second time: a panic, or two
+  transactions on one connection. A transaction now remembers that it
+  ended; a second `commit()` or `rollback()` does nothing, as in
+  `spider.pg`.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

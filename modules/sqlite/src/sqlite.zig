@@ -235,12 +235,21 @@ pub fn exec(sql: []const u8) !void {
 }
 
 // ── Transaction ──────────────────────────────────────────────
-/// A transaction on one connection, made by `begin()`. End it with exactly
-/// one call to `commit()` or `rollback()`: neither remembers that the
-/// transaction is over.
+/// A transaction on one connection, made by `begin()`. End it with
+/// `commit()` or `rollback()`; a call after the first does nothing.
+///
+/// ```zig
+/// var tx = try spider.sqlite.begin();
+/// defer tx.rollback();
+/// try tx.query(void, c.arena, "INSERT INTO posts (title) VALUES (?1)", .{title});
+/// try tx.commit();
+/// ```
 pub const Transaction = struct {
     /// The connection the transaction runs on.
     conn: zqlite.Conn,
+    /// The transaction was committed or rolled back: its connection went
+    /// back to the pool and must not be given back again.
+    finished: bool = false,
 
     /// The same as the module's `query`, inside this transaction.
     pub fn query(self: Transaction, comptime T: type, arena: std.mem.Allocator, sql: []const u8, params: anytype) !QueryResult(T) {
@@ -265,12 +274,18 @@ pub const Transaction = struct {
     /// Commits and gives the connection back. When the commit fails the
     /// connection is still held: call `rollback()`.
     pub fn commit(self: *Transaction) !void {
+        if (self.finished) return;
         try self.conn.commit();
+        self.finished = true;
         releaseConn(self.conn);
     }
 
     /// Undoes everything since `begin()` and gives the connection back.
+    /// After a `commit()` or another `rollback()` it does nothing, so
+    /// `defer tx.rollback()` right after `begin()` is safe.
     pub fn rollback(self: *Transaction) void {
+        if (self.finished) return;
+        self.finished = true;
         self.conn.rollback();
         releaseConn(self.conn);
     }
@@ -458,6 +473,33 @@ test "transaction - commit" {
     const rows = try query(Row, arena.allocator(), "SELECT id FROM tx_test", .{});
     try std.testing.expectEqual(@as(usize, 1), rows.len);
     try std.testing.expectEqual(@as(i64, 99), rows[0].id);
+}
+
+test "transaction - a rollback after the commit does nothing (defer tx.rollback())" {
+    // A pool this time: giving a connection back twice is what breaks.
+    try init(std.testing.allocator, std.testing.io, .{ .path = ":memory:", .size = 2 });
+    defer deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    {
+        var tx = try begin();
+        defer tx.rollback(); // the pattern taught for spider.pg
+        try tx.query(void, arena.allocator(), "CREATE TABLE tx_twice (id INTEGER)", .{});
+        try tx.commit();
+    }
+
+    // Both connections are still there, and they are two.
+    var first = try begin();
+    var second = try begin();
+    try std.testing.expect(first.conn.conn != second.conn.conn);
+    second.rollback();
+    second.rollback(); // twice is harmless too
+    first.rollback();
+
+    var again = try begin();
+    try again.commit();
 }
 
 test "queryOne - single row return" {
