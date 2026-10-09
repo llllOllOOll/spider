@@ -26,8 +26,18 @@ pub const Client = struct {
         base_url: []const u8,
         headers: []const std.http.Header = &.{},
         proxy_url: ?[]const u8 = null,
+        /// A connection left unused for longer than this is closed rather
+        /// than reused. Servers drop idle connections on their side
+        /// (Cloudflare within minutes); 30 s stays under the usual limits.
+        /// 0: no limit.
+        idle_timeout_ms: u32 = 30_000,
+        /// false: every request opens its own connection and closes it.
+        /// Slower (a handshake per request), never meets a stale one.
+        keep_alive: bool = true,
     }) !Client {
         var http_client: HttpClient = .{ .allocator = allocator, .io = io };
+        if (opts.idle_timeout_ms > 0) http_client.connection_pool.max_idle = .fromMilliseconds(opts.idle_timeout_ms);
+        if (!opts.keep_alive) http_client.connection_pool.free_size = 0;
 
         // Fixed once, here — not per-call. HttpClient.http_proxy/https_proxy
         // are client-level fields; mutating them on every request would race

@@ -1,7 +1,7 @@
 # std_http — pacman's copy of Zig's HTTP client
 
 `Client.zig` is Zig 0.17.0's `lib/std/http/Client.zig` (MIT, `LICENSE`) with
-two changes. pacman imports it instead of `std.http.Client`; everything
+a few changes. pacman imports it instead of `std.http.Client`; everything
 else (`std.http.Reader`, `std.crypto.tls`, …) still comes from the standard
 library. Nobody has to patch their Zig to build Spider.
 
@@ -37,6 +37,13 @@ Zig 0.17.0 cannot put TLS on top of a tunnel:
    and the tunnel could not be made: that sent `GET https://…` to the proxy
    unencrypted. It fails with `error.ConnectionRefused` instead. For http
    targets the fallback is unchanged.
+
+7. The pool knows about stale connections: `Connection.reused` (set when
+   a connection is taken from the pool), `Connection.idle_since` and
+   `ConnectionPool.max_idle` (a connection idle for longer is closed
+   instead of handed out), and `ConnectionPool.dropIdle` (closes the idle
+   connections to one host). `src/request.zig` uses them to send a request
+   again when the server had closed its pooled connection.
 
 To see the exact difference:
 

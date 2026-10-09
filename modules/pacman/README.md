@@ -34,6 +34,20 @@ server can do to the caller:
 A request that fails or times out closes its connection; a persistent
 `Client` never reuses it.
 
+A persistent `Client` keeps connections open between requests, and servers
+close idle ones on their side without telling the client. Two things keep
+that from reaching you:
+
+- a connection unused for more than `idle_timeout_ms` (default 30 000;
+  0 for no limit) is closed instead of reused;
+- a GET, HEAD, PUT, DELETE, OPTIONS or TRACE that still meets a dead
+  connection is sent again, once, on a new one. A POST or PATCH is not:
+  the server may have received it, so it fails with
+  `error.HttpConnectionClosing` and repeating it is your decision.
+
+`Client.init(io, allocator, .{ .base_url, .keep_alive = false })` opens a
+connection per request instead.
+
 Not supported: following redirects (a 3xx with a `Location` fails with
 `error.HttpRedirectLocationOversize`) and streaming the response body.
 

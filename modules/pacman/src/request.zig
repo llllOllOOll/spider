@@ -97,6 +97,72 @@ fn encodeQueryComponent(s: []const u8, writer: anytype) !void {
     }
 }
 
+/// How many times a request is sent again because its pooled connection
+/// turned out to be dead. One is enough when nothing else is going on (the
+/// retry drops the other idle connections first); the second covers a
+/// connection another request returned to the pool in between.
+const max_stale_retries = 2;
+
+/// Sends the request and waits for the response head.
+fn sendRequest(req: *HttpClient.Request, payload_opt: ?[]const u8, method: http.Method) !HttpClient.Response {
+    if (payload_opt) |payload| {
+        req.transfer_encoding = .{ .content_length = payload.len };
+        // Need to cast to mutable bytes
+        const mutable_payload = @constCast(payload);
+        try req.sendBodyComplete(mutable_payload);
+    } else {
+        // For methods that require a body (POST, PUT, PATCH), send empty body with Content-Length: 0
+        switch (method) {
+            .POST, .PUT, .PATCH => {
+                req.transfer_encoding = .{ .content_length = 0 };
+                try req.sendBodyComplete(&.{});
+            },
+            else => {
+                try req.sendBodiless();
+            },
+        }
+    }
+
+    // Wait for response headers
+    return req.receiveHead(&.{});
+}
+
+/// True when `err` means the request met a connection the server had
+/// already closed, and sending it again is safe.
+///
+/// Servers close idle keep-alive connections without telling the client;
+/// the next request on one fails before a byte of response arrives. That
+/// only happens to a connection taken from the pool, so a new connection
+/// that fails is a real failure. And only methods that may be repeated are
+/// sent again (RFC 9110, 9.2.2): the server may have received a POST before
+/// the connection died, and whether to repeat it is the caller's call.
+fn staleConnection(req: *HttpClient.Request, method: http.Method, err: anyerror) bool {
+    const connection = req.connection orelse return false;
+    if (!connection.reused) return false;
+    switch (method) {
+        .GET, .HEAD, .PUT, .DELETE, .OPTIONS, .TRACE => {},
+        else => return false,
+    }
+    return switch (err) {
+        error.HttpConnectionClosing => true,
+        // A reset or a broken pipe. Not a cancelation (a timeout cancels
+        // the request): that one must end it.
+        error.ReadFailed => (connection.getReadError() orelse return true) != error.Canceled,
+        error.WriteFailed => (connection.stream_writer.err orelse return true) != error.Canceled,
+        else => false,
+    };
+}
+
+/// The other idle connections to the same place sat unused at least as
+/// long as the dead one: close them, so the retry opens a new one.
+fn dropIdleLike(http_client: *HttpClient, io: Io, connection: *HttpClient.Connection) void {
+    http_client.connection_pool.dropIdle(io, .{
+        .host = connection.host(),
+        .port = connection.port,
+        .protocol = connection.protocol,
+    });
+}
+
 fn shouldEscape(c: u8) bool {
     // fast path for common cases
     if (std.ascii.isAlphanumeric(c)) {
@@ -338,73 +404,69 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
 
     const uri = if (opts.uri) |u| u else try std.Uri.parse(final_url);
 
-    // If a SOCKS5(h) proxy applies, we pre-establish the tunnel ourselves and
-    // hand the resulting Connection to http_client.request() below — SOCKS5
-    // isn't HTTP, so HttpClient can't dial it on its own the way it does
-    // for HTTP(S) proxies via .http_proxy/.https_proxy. Otherwise (HTTP(S)
-    // proxy or none), fall back to the existing configure() path, which lets
-    // http_client.request() dial (and proxy) the connection itself.
-    var explicit_connection: ?*HttpClient.Connection = null;
-    {
-        var host_buf: [Io.net.HostName.max_len]u8 = undefined;
-        if (Io.net.HostName.fromUri(uri, &host_buf)) |host_name| {
-            const target_protocol = HttpClient.Protocol.fromUri(uri) orelse .plain;
-            const target_port: u16 = uri.port orelse switch (target_protocol) {
-                .plain => 80,
-                .tls => 443,
-            };
-            explicit_connection = try proxy.connectSocks5(io, aa, http_client, opts.proxy_url, host_name.bytes, target_port, target_protocol);
-            // http_client.http_proxy/https_proxy are client-level fields,
-            // not per-request. For an owned (single-request) client it's
-            // safe to set them here. For a persistent, shared Client, they
-            // were already fixed once in Client.init() — reconfiguring per
-            // call would race with other in-flight requests through the
-            // same client (Client.call() enforces this by rejecting a
-            // differing opts.proxy_url with error.ProxyMismatch before we
-            // ever get here).
-            if (explicit_connection == null and owns_http_client) {
-                try proxy.configure(aa, http_client, opts.proxy_url, host_name.bytes);
-            }
-        } else |_| {}
-    }
+    var req: HttpClient.Request = undefined;
+    var response: HttpClient.Response = undefined;
+    var stale_retries: u8 = 0;
+    while (true) {
+        // If a SOCKS5(h) proxy applies, we pre-establish the tunnel ourselves and
+        // hand the resulting Connection to http_client.request() below — SOCKS5
+        // isn't HTTP, so HttpClient can't dial it on its own the way it does
+        // for HTTP(S) proxies via .http_proxy/.https_proxy. Otherwise (HTTP(S)
+        // proxy or none), fall back to the existing configure() path, which lets
+        // http_client.request() dial (and proxy) the connection itself.
+        var explicit_connection: ?*HttpClient.Connection = null;
+        {
+            var host_buf: [Io.net.HostName.max_len]u8 = undefined;
+            if (Io.net.HostName.fromUri(uri, &host_buf)) |host_name| {
+                const target_protocol = HttpClient.Protocol.fromUri(uri) orelse .plain;
+                const target_port: u16 = uri.port orelse switch (target_protocol) {
+                    .plain => 80,
+                    .tls => 443,
+                };
+                explicit_connection = try proxy.connectSocks5(io, aa, http_client, opts.proxy_url, host_name.bytes, target_port, target_protocol);
+                // http_client.http_proxy/https_proxy are client-level fields,
+                // not per-request. For an owned (single-request) client it's
+                // safe to set them here. For a persistent, shared Client, they
+                // were already fixed once in Client.init() — reconfiguring per
+                // call would race with other in-flight requests through the
+                // same client (Client.call() enforces this by rejecting a
+                // differing opts.proxy_url with error.ProxyMismatch before we
+                // ever get here).
+                if (explicit_connection == null and owns_http_client) {
+                    try proxy.configure(aa, http_client, opts.proxy_url, host_name.bytes);
+                }
+            } else |_| {}
+        }
 
-    // Create a Request to have access to response headers
-    var req = try http_client.request(opts.method, uri, .{
-        .extra_headers = extra_headers,
-        .connection = explicit_connection,
-    });
-    // A request that fails or is canceled midway closes its connection: it
-    // is not left open (it used to be, until the process ended) and a
-    // persistent client never reuses it. Marked as closing BEFORE deinit()
-    // on purpose — otherwise deinit() tries to read the rest of the
-    // response to keep the connection reusable, and that read can block for
-    // as long as the server likes.
+        // Create a Request to have access to response headers
+        req = try http_client.request(opts.method, uri, .{
+            .extra_headers = extra_headers,
+            .connection = explicit_connection,
+        });
+
+        if (sendRequest(&req, payload_opt, opts.method)) |received| {
+            response = received;
+            break;
+        } else |err| {
+            // A request that fails or is canceled midway closes its
+            // connection: it is not left open (it used to be, until the
+            // process ended) and a persistent client never reuses it.
+            // Marked as closing BEFORE deinit() on purpose — otherwise
+            // deinit() tries to read the rest of the response to keep the
+            // connection reusable, and that read can block for as long as
+            // the server likes.
+            const again = stale_retries < max_stale_retries and staleConnection(&req, opts.method, err);
+            if (again) dropIdleLike(http_client, io, req.connection.?);
+            if (req.connection) |connection| connection.closing = true;
+            req.deinit();
+            if (!again) return err;
+            stale_retries += 1;
+        }
+    }
     errdefer {
         if (req.connection) |connection| connection.closing = true;
         req.deinit();
     }
-
-    // Send the request
-    if (payload_opt) |payload| {
-        req.transfer_encoding = .{ .content_length = payload.len };
-        // Need to cast to mutable bytes
-        const mutable_payload = @constCast(payload);
-        try req.sendBodyComplete(mutable_payload);
-    } else {
-        // For methods that require a body (POST, PUT, PATCH), send empty body with Content-Length: 0
-        switch (opts.method) {
-            .POST, .PUT, .PATCH => {
-                req.transfer_encoding = .{ .content_length = 0 };
-                try req.sendBodyComplete(&.{});
-            },
-            else => {
-                try req.sendBodiless();
-            },
-        }
-    }
-
-    // Wait for response headers
-    var response = try req.receiveHead(&.{});
 
     // Extract response headers from raw header bytes BEFORE reading body
     var response_headers: []http.Header = &.{};

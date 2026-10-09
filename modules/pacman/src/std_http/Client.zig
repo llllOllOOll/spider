@@ -83,6 +83,10 @@ pub const ConnectionPool = struct {
     free: std.DoublyLinkedList = .{},
     free_len: usize = 0,
     free_size: usize = 32,
+    /// A connection idle for longer than this is closed instead of reused:
+    /// servers close idle connections on their side without a word, and a
+    /// request sent on one fails. Null: no limit.
+    max_idle: ?Io.Duration = null,
 
     /// The criteria for a connection to be considered a match.
     pub const Criteria = struct {
@@ -99,8 +103,11 @@ pub const ConnectionPool = struct {
         try pool.mutex.lock(io);
         defer pool.mutex.unlock(io);
 
+        const now: ?Io.Timestamp = if (pool.max_idle != null) Io.Timestamp.now(io, .awake) else null;
+
         var next = pool.free.last;
-        while (next) |node| : (next = node.prev) {
+        while (next) |node| {
+            next = node.prev;
             const connection: *Connection = @alignCast(@fieldParentPtr("pool_node", node));
             if (connection.protocol != criteria.protocol) continue;
             if (connection.port != criteria.port) continue;
@@ -108,11 +115,44 @@ pub const ConnectionPool = struct {
             // Domain names are case-insensitive (RFC 5890, Section 2.3.2.4)
             if (!connection.host().eql(criteria.host)) continue;
 
+            if (pool.max_idle) |limit| {
+                if (connection.idle_since) |since| {
+                    if (since.durationTo(now.?).toNanoseconds() > limit.toNanoseconds()) {
+                        pool.free.remove(node);
+                        pool.free_len -= 1;
+                        connection.destroy(io);
+                        continue;
+                    }
+                }
+            }
+
             pool.acquireUnsafe(connection);
+            connection.reused = true;
             return connection;
         }
 
         return null;
+    }
+
+    /// Closes the idle connections that match the criteria. For when one
+    /// of them turned out to be dead: the others sat idle at least as long.
+    ///
+    /// Threadsafe.
+    pub fn dropIdle(pool: *ConnectionPool, io: Io, criteria: Criteria) void {
+        pool.mutex.lockUncancelable(io);
+        defer pool.mutex.unlock(io);
+
+        var next = pool.free.last;
+        while (next) |node| {
+            next = node.prev;
+            const connection: *Connection = @alignCast(@fieldParentPtr("pool_node", node));
+            if (connection.protocol != criteria.protocol) continue;
+            if (connection.port != criteria.port) continue;
+            if (!connection.host().eql(criteria.host)) continue;
+            pool.free.remove(node);
+            pool.free_len -= 1;
+            connection.destroy(io);
+        }
     }
 
     /// Acquires an existing connection from the connection pool. This function is not threadsafe.
@@ -149,6 +189,8 @@ pub const ConnectionPool = struct {
 
             popped.destroy(io);
         }
+
+        connection.idle_since = Io.Timestamp.now(io, .awake);
 
         if (connection.proxied) {
             // proxied connections go to the end of the queue, always try direct connections first
@@ -250,6 +292,10 @@ pub const Connection = struct {
     proxied: bool,
     closing: bool,
     protocol: Protocol,
+    /// Taken from the pool, not opened for the current request.
+    reused: bool = false,
+    /// When it was last put back in the pool.
+    idle_since: ?Io.Timestamp = null,
 
     const Plain = struct {
         connection: Connection,

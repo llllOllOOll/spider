@@ -213,7 +213,11 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   only for such fixes and list each one in `src/std_http/README.md`; never
   ask users to patch their Zig. `request.zig` reads the body to the end of
   its framing so the connection returns to the pool. Redirects are not
-  followed. Behaviour tests go in `local_test.zig` (no network).
+  followed. A repeatable request (not POST/PATCH) that fails on a POOLED
+  connection before any response is sent again on a new one
+  (`staleConnection` in `request.zig`): servers close idle connections
+  silently. Never retry a new connection, a cancelation (timeouts cancel),
+  or a non-repeatable method. Behaviour tests go in `local_test.zig` (no network).
 - **Postgres** (`modules/pg/src/pg.zig`): use `query`/`queryOne`/`queryExecute`
   and `begin()`/`transaction()`; the rest is deprecated. `pg.exec("BEGIN")`
   is refused on purpose (each call is a different pooled connection).

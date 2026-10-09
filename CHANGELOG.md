@@ -58,6 +58,19 @@ Found while writing the new documentation site and its example app.
   (`core.db.migrations.migrate()` in `main.zig`): a container or a fresh
   clone has its tables on the first request. `spider migrate` still works
   and shares the same bookkeeping table.
+- **HTTP client: a persistent `Client` failed on connections the server
+  had closed.** Servers close idle keep-alive connections without a word
+  (Cloudflare R2 within minutes); the next request went out on the dead
+  socket and failed at once with `error.HttpConnectionClosing`, once per
+  dead connection in the pool. Seen in production as R2 reads failing after
+  a quiet period, and in bursts when a page asked for several objects.
+  Now: a GET, HEAD, PUT, DELETE, OPTIONS or TRACE that fails on a pooled
+  connection before any response arrives is sent again on a new connection
+  (the other idle connections to that host are closed first); a connection
+  idle for more than 30 s is not reused (`Client.init(.{ .idle_timeout_ms
+  })`, 0 for no limit); `.keep_alive = false` opens a connection per
+  request. A POST or PATCH is not repeated: the server may have received
+  it. `spider.r2` only uses the repeatable methods.
 - **Generated Dockerfile**: it used an image with a Zig older than 0.17.0
   and did not build. It now downloads the official Zig release, checks its
   checksum, and installs the `spider` command for the assets the build

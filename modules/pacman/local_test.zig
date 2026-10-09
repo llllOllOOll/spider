@@ -855,3 +855,175 @@ test "HEAD: a response that names a compressed body returns at once, empty" {
     try t.expectEqual(@as(usize, 0), len);
     try t.expect(took < 1000);
 }
+
+// ── stale connections: the server closed a pooled connection ────────────
+// Servers close idle keep-alive connections without telling the client
+// (Cloudflare R2 does, within minutes). A persistent Client then sends its
+// next request on a dead socket and reads 0 bytes: HttpConnectionClosing.
+// The scripted Server closes each connection when its script ends, so a
+// keep-alive answer followed by the end of the script is exactly that.
+
+const keep_alive_response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello";
+const answer_then_close: Script = &.{.{ .send = keep_alive_response }};
+
+/// Long enough for the server's close to reach the client's socket.
+fn letTheCloseArrive(io: Io) void {
+    Io.sleep(io, .fromMilliseconds(80), .awake) catch {};
+}
+
+test "stale: a request on a connection the server closed is sent again on a new one" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{ answer_then_close, answer_then_close, answer_then_close });
+    var base_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{ .base_url = server.url(&base_buf, "") });
+        defer client.deinit();
+        for (0..3) |_| {
+            var res = try client.get("/", .{ .timeout_ms = 3000 });
+            defer res.deinit();
+            try t.expectEqualStrings("hello", res.text());
+            letTheCloseArrive(io);
+        }
+    }
+    const accepted = server.accepted.load(.seq_cst);
+    server.stop();
+    try t.expectEqual(@as(usize, 3), accepted);
+}
+
+fn getOnce(client: *pacman.Client) anyerror!void {
+    var res = try client.get("/", .{ .timeout_ms = 5000 });
+    defer res.deinit();
+    try t.expectEqualStrings("hello", res.text());
+}
+
+test "stale: several dead connections in the pool cost no request" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    // Three requests at once open three connections; the server answers
+    // and closes each. Then three more requests, each of which would have
+    // met a dead connection.
+    const scripts: [6]Script = @splat(answer_then_close);
+    const server = try Server.start(&scripts);
+    var base_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{ .base_url = server.url(&base_buf, "") });
+        defer client.deinit();
+
+        var group: Io.Group = .init;
+        for (0..3) |_| try group.concurrent(io, getOnceLogged, .{&client});
+        try group.await(io);
+        try t.expectEqual(@as(usize, 0), burst_failures.swap(0, .seq_cst));
+        letTheCloseArrive(io);
+
+        for (0..3) |_| {
+            try getOnce(&client);
+            letTheCloseArrive(io);
+        }
+    }
+    const accepted = server.accepted.load(.seq_cst);
+    server.stop();
+    try t.expectEqual(@as(usize, 6), accepted);
+}
+
+var burst_failures: std.atomic.Value(usize) = .init(0);
+
+fn getOnceLogged(client: *pacman.Client) void {
+    getOnce(client) catch {
+        _ = burst_failures.fetchAdd(1, .seq_cst);
+    };
+}
+
+test "stale: a POST is not sent twice" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const server = try Server.start(&.{ answer_then_close, answer_then_close });
+    var base_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{ .base_url = server.url(&base_buf, "") });
+        defer client.deinit();
+        try getOnce(&client);
+        letTheCloseArrive(io);
+
+        // The server may have acted on a POST before the connection died:
+        // the caller decides whether to send it again.
+        try t.expectError(error.HttpConnectionClosing, client.post("/", .{ .timeout_ms = 3000, .body = .{ .raw = "x" } }));
+
+        // The dead connection is gone: the next request opens a new one.
+        try getOnce(&client);
+    }
+    const accepted = server.accepted.load(.seq_cst);
+    server.stop();
+    try t.expectEqual(@as(usize, 2), accepted);
+}
+
+test "stale: a new connection that fails is not tried again" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    // The server reads the request and hangs up without a word, twice if
+    // asked. Only one connection must arrive.
+    const hang_up: Script = &.{};
+    const server = try Server.start(&.{ hang_up, hang_up });
+    var base_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{ .base_url = server.url(&base_buf, "") });
+        defer client.deinit();
+        try t.expectError(error.HttpConnectionClosing, client.get("/", .{ .timeout_ms = 3000 }));
+    }
+    const accepted = server.accepted.load(.seq_cst);
+    server.stop();
+    try t.expectEqual(@as(usize, 1), accepted);
+}
+
+test "idle: a connection idle longer than idle_timeout_ms is not reused" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const origin = try LiveServer.start(.origin, null);
+    var base_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{
+            .base_url = origin.url(&base_buf, "http://"),
+            .idle_timeout_ms = 60,
+        });
+        defer client.deinit();
+        try getOnce(&client);
+        try getOnce(&client); // at once: the same connection
+        Io.sleep(io, .fromMilliseconds(150), .awake) catch {};
+        try getOnce(&client); // after the limit: a new one
+    }
+    const accepted = origin.accepted.load(.seq_cst);
+    const answered = origin.answered.load(.seq_cst);
+    origin.stop();
+    try t.expectEqual(@as(usize, 3), answered);
+    try t.expectEqual(@as(usize, 2), accepted);
+}
+
+test "keep_alive = false: every request opens its own connection" {
+    var backend = try Backend.init();
+    defer backend.deinit();
+    const io = backend.io();
+
+    const origin = try LiveServer.start(.origin, null);
+    var base_buf: [64]u8 = undefined;
+    {
+        var client = try pacman.Client.init(io, t.allocator, .{
+            .base_url = origin.url(&base_buf, "http://"),
+            .keep_alive = false,
+        });
+        defer client.deinit();
+        try getThree(&client);
+    }
+    const accepted = origin.accepted.load(.seq_cst);
+    origin.stop();
+    try t.expectEqual(@as(usize, 3), accepted);
+}
