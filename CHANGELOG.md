@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A WebSocket client could stop the whole server with one frame.** A
+  frame with a reserved opcode made the server panic. It now closes that
+  connection with code 1002 (protocol error) and keeps serving.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

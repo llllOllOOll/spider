@@ -630,6 +630,7 @@ test {
     _ = @import("e2e/dev_reload_test.zig");
     _ = @import("e2e/testing_http_test.zig");
     _ = @import("e2e/session_test.zig");
+    _ = @import("e2e/websocket_test.zig");
 }
 
 // ── middleware chain isolation ──────────────────────────────────────────

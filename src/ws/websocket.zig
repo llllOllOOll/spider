@@ -18,6 +18,21 @@ pub const Frame = struct {
         close = 0x8,
         ping = 0x9,
         pong = 0xA,
+
+        /// The opcode of a frame as it came from the wire, or null for a
+        /// reserved one (0x3 to 0x7, 0xB to 0xF): a client can send any
+        /// four bits.
+        pub fn fromWire(value: u4) ?Opcode {
+            return switch (value) {
+                0x0 => .continuation,
+                0x1 => .text,
+                0x2 => .binary,
+                0x8 => .close,
+                0x9 => .ping,
+                0xA => .pong,
+                else => null,
+            };
+        }
     };
 };
 
@@ -97,7 +112,14 @@ pub const Server = struct {
         const first_byte = header[0];
         const fin = (first_byte & 0x80) != 0;
         const opcode_val: u4 = @intCast(first_byte & 0x0F);
-        const opcode: Frame.Opcode = @enumFromInt(opcode_val);
+        const opcode = Frame.Opcode.fromWire(opcode_val) orelse {
+            // RFC 6455, 5.2: an unknown opcode fails the connection. 1002
+            // is "protocol error".
+            var code_buf: [2]u8 = undefined;
+            std.mem.writeInt(u16, &code_buf, 1002, .big);
+            self.writeFrame(.close, &code_buf) catch {};
+            return error.UnknownOpcode;
+        };
         const masked = (header[1] & 0x80) != 0;
         var payload_len: u64 = @intCast(header[1] & 0x7F);
 
@@ -195,3 +217,11 @@ pub const Server = struct {
         try self.writeFrame(.pong, payload);
     }
 };
+
+test "Opcode.fromWire: the six opcodes of the protocol, null for the reserved ones" {
+    try std.testing.expectEqual(Frame.Opcode.text, Frame.Opcode.fromWire(0x1).?);
+    try std.testing.expectEqual(Frame.Opcode.pong, Frame.Opcode.fromWire(0xA).?);
+    for ([_]u4{ 0x3, 0x4, 0x5, 0x6, 0x7, 0xB, 0xC, 0xD, 0xE, 0xF }) |reserved| {
+        try std.testing.expect(Frame.Opcode.fromWire(reserved) == null);
+    }
+}
