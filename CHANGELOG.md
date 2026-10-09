@@ -42,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Ws.joinUser` never delivered.** The channel name was kept in memory
   that ended with the call, so a message sent to `user:<id>` found
   nobody. (`Sse.joinUser` had been fixed for the same thing.)
+- **Clerk: the provider used memory it had freed.** `Clerk.init` freed the
+  address of the key set while the token verifier kept it, so the first
+  token signed with a key it had not seen yet crashed the server; and the
+  callback answered with headers that no longer existed by the time they
+  were sent (seen in optimized builds). `deinit` now also frees the two
+  addresses `init` builds.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

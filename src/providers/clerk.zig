@@ -55,8 +55,11 @@ pub const Clerk = struct {
     /// error.JwksFetchFailed when that does not answer with a key set.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: ClerkConfig) !Clerk {
         const domain = try parseIssuerUrl(allocator, config.publishable_key);
+        errdefer allocator.free(domain);
+        // Kept for as long as the Clerk lives: the verifier downloads the
+        // keys again from it when a token names a key it does not know.
         const jwks_url = try std.fmt.allocPrint(allocator, "{s}/.well-known/jwks.json", .{domain});
-        defer allocator.free(jwks_url);
+        errdefer allocator.free(jwks_url);
         const jwks_auth = try JwksAuth.init(allocator, io, .{
             .jwks_url = jwks_url,
             .issuer = domain,
@@ -74,8 +77,11 @@ pub const Clerk = struct {
         };
     }
 
-    /// Frees the cached keys.
+    /// Frees the cached keys and the two addresses `init` built.
     pub fn deinit(self: *Clerk) void {
+        const allocator = self.jwks.allocator;
+        allocator.free(self.jwks.config.jwks_url);
+        allocator.free(self.domain);
         self.jwks.deinit();
     }
 
@@ -147,13 +153,11 @@ pub const Clerk = struct {
             .max_age = 86400 * 7,
         });
 
-        return Response{
-            .status = .found,
-            .headers = &.{
-                .{ "Location", self.config.after_callback_path },
-                .{ "Set-Cookie", cookie_str },
-            },
-        };
+        // In the request's arena: the response is sent after this returns.
+        const headers = try c.arena.alloc([2][]const u8, 2);
+        headers[0] = .{ "Location", self.config.after_callback_path };
+        headers[1] = .{ "Set-Cookie", cookie_str };
+        return Response{ .status = .found, .headers = headers };
     }
 };
 
