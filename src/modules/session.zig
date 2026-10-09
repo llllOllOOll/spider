@@ -110,7 +110,8 @@ fn run(c: *Ctx, next: NextFn) anyerror!Response {
             try c.setRoles(user.roles);
         } else |_| {}
     }
-    if (c.userId() == null and !c.route().public) return error.Unauthorized;
+    // An address that is no route gets its 404 whoever asks.
+    if (c.userId() == null and c.hasRoute() and !c.route().public) return error.Unauthorized;
     return next(c);
 }
 

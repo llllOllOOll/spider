@@ -541,6 +541,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._headers = headers_map,
                 ._decorations = ctx.decorations,
                 ._ws_hub = null,
+                ._no_route = true,
                 ._sse_hub = ctx.sse_hub,
                 ._request_id = request_id,
                 ._watch = &watch,

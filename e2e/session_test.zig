@@ -91,6 +91,11 @@ test "session: without one, public routes answer and the rest answer 401" {
         defer res.deinit();
         try res.expectStatus(401);
     }
+
+    // An address that is no route is a 404, not a request to log in.
+    var nowhere = try app.get("/nowhere");
+    defer nowhere.deinit();
+    try nowhere.expectStatus(404);
 }
 
 test "session: the right password logs in, and the cookie identifies the user" {

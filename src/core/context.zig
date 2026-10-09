@@ -118,6 +118,7 @@ pub const Ctx = struct {
     _db: ?*const Database = null,
     _views: ?ViewsConfig = null,
     _io: std.Io = undefined,
+    _no_route: bool = false,
     _stream: std.Io.net.Stream = undefined,
     _headers: std.StringHashMapUnmanaged([]const u8) = .{},
     _decorations: ?*const anyopaque = null,
@@ -865,6 +866,13 @@ pub const Ctx = struct {
     /// The matched route's declarations (see routing/route_config.zig).
     pub fn route(self: *const Ctx) RouteMeta {
         return self._route;
+    }
+
+    /// False for a request no route matched: it is on its way to a 404, and
+    /// `route()` is then an empty config. A middleware that guards routes
+    /// lets such a request through.
+    pub fn hasRoute(self: *const Ctx) bool {
+        return !self._no_route;
     }
 
     pub fn getPath(self: *Ctx) []const u8 {
