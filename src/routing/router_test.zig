@@ -215,3 +215,53 @@ test "Router.entries: every route once, sorted by path then method, with its met
     try std.testing.expect(list[2].route.meta.public);
     try std.testing.expectEqual(std.http.Method.POST, list[3].method);
 }
+
+test "router: two routes may name the param at the same position differently" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/posts/:author", .{ .handler = h1 });
+    try r.addRoute(.POST, "/posts/:id", .{ .handler = h2 });
+    try r.addRoute(.GET, "/posts/:id/comments/:comment", .{ .handler = h2 });
+
+    const by_author = (try r.match(.GET, "/posts/ana", arena.allocator())).?;
+    try std.testing.expectEqualStrings("ana", by_author.params.get("author").?);
+    try std.testing.expect(by_author.params.get("id") == null);
+
+    const by_id = (try r.match(.POST, "/posts/7", arena.allocator())).?;
+    try std.testing.expectEqualStrings("7", by_id.params.get("id").?);
+    try std.testing.expect(by_id.params.get("author") == null);
+
+    const nested = (try r.match(.GET, "/posts/7/comments/3", arena.allocator())).?;
+    try std.testing.expectEqualStrings("7", nested.params.get("id").?);
+    try std.testing.expectEqualStrings("3", nested.params.get("comment").?);
+}
+
+const Paths = struct {
+    seen: [3]bool = @splat(false),
+    fn cb(self: *Paths, method: std.http.Method, path: []const u8, _: Route) void {
+        const wanted = [_]struct { std.http.Method, []const u8 }{
+            .{ .GET, "/posts/:author" },
+            .{ .POST, "/posts/:id" },
+            .{ .GET, "/posts/:id/comments/:comment" },
+        };
+        for (wanted, 0..) |w, i| {
+            if (w[0] == method and std.mem.eql(u8, w[1], path)) self.seen[i] = true;
+        }
+    }
+};
+
+test "router: forEach lists each route with its own param names" {
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/posts/:author", .{ .handler = h1 });
+    try r.addRoute(.POST, "/posts/:id", .{ .handler = h2 });
+    try r.addRoute(.GET, "/posts/:id/comments/:comment", .{ .handler = h2 });
+
+    var paths: Paths = .{};
+    r.forEach(std.testing.allocator, &paths, Paths.cb);
+    for (paths.seen) |seen| try std.testing.expect(seen);
+}

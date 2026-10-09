@@ -14,6 +14,11 @@ pub const Route = struct {
     handler: Handler,
     middlewares: []const MiddlewareFn = &.{},
     meta: RouteMeta = .{},
+    /// The names of the route's `:params`, in path order. Set by
+    /// Router.addRoute from the path (whatever is passed in is replaced)
+    /// and owned by the router: two routes may name the same position
+    /// differently (`GET /posts/:author`, `POST /posts/:id`).
+    param_names: []const []const u8 = &.{},
 };
 
 /// What a route declares about itself, from its config
@@ -159,6 +164,9 @@ pub const Router = struct {
             self.deinitNode(n);
         }
         if (node.wildcard_child) |n| self.deinitNode(n);
+        for (node.handlers.values) |maybe| {
+            if (maybe) |route| self.freeParamNames(route);
+        }
         node.children.deinit();
         self.allocator.destroy(node);
     }
@@ -184,6 +192,12 @@ pub const Router = struct {
             return;
         }
 
+        var names: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (names.items) |name| self.allocator.free(name);
+            names.deinit(self.allocator);
+        }
+
         var node = self.root;
         var it = std.mem.splitScalar(u8, path, '/');
         while (it.next()) |segment| {
@@ -192,9 +206,10 @@ pub const Router = struct {
                 if (node.param_child == null) {
                     node.param_child = try Node.init(self.allocator);
                     node.param_name = try self.allocator.dupe(u8, segment[1..]);
-                } else if (!std.mem.eql(u8, node.param_name orelse "", segment[1..])) {
-                    std.debug.print("ROUTER: Warning: parameter conflict at segment '{s}'\n", .{segment});
                 }
+                const name = try self.allocator.dupe(u8, segment[1..]);
+                errdefer self.allocator.free(name);
+                try names.append(self.allocator, name);
                 node = node.param_child.?;
             } else if (std.mem.eql(u8, segment, "*")) {
                 if (node.wildcard_child == null) {
@@ -210,8 +225,18 @@ pub const Router = struct {
                 node = node.children.get(segment).?;
             }
         }
-        if (node.handlers.get(method) != null) self.warnDuplicate(method, path);
-        node.handlers.set(method, route);
+        if (node.handlers.get(method)) |old| {
+            self.warnDuplicate(method, path);
+            self.freeParamNames(old);
+        }
+        var stored = route;
+        stored.param_names = try names.toOwnedSlice(self.allocator);
+        node.handlers.set(method, stored);
+    }
+
+    fn freeParamNames(self: *Router, route: Route) void {
+        for (route.param_names) |name| self.allocator.free(name);
+        self.allocator.free(route.param_names);
     }
 
     fn warnDuplicate(self: *Router, method: std.http.Method, path: []const u8) void {
@@ -251,7 +276,7 @@ pub const Router = struct {
             fn lt(_: void, a: Entry, b: Entry) bool {
                 const o = std.mem.order(u8, a.path, b.path);
                 if (o != .eq) return o == .lt;
-                return @intFromEnum(a.method) < @intFromEnum(b.method);
+                return @backingInt(a.method) < @backingInt(b.method);
             }
         }.lt);
         return list.toOwnedSlice(allocator);
@@ -277,10 +302,36 @@ pub const Router = struct {
         forEachNode(self.root, &path_buf, allocator, context, callback);
     }
 
+    /// `trie_path` with each `:param` renamed to the route's own name for
+    /// it (the trie keeps the first name registered at a position). Null
+    /// when out of memory: the caller falls back to the trie's names.
+    fn ownPath(allocator: std.mem.Allocator, trie_path: []const u8, names: []const []const u8) ?[]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        var next: usize = 0;
+        var it = std.mem.splitScalar(u8, trie_path, '/');
+        while (it.next()) |segment| {
+            if (segment.len == 0) continue;
+            out.append(allocator, '/') catch return null;
+            if (segment[0] == ':' and next < names.len) {
+                out.append(allocator, ':') catch return null;
+                out.appendSlice(allocator, names[next]) catch return null;
+                next += 1;
+            } else {
+                out.appendSlice(allocator, segment) catch return null;
+            }
+        }
+        return out.toOwnedSlice(allocator) catch null;
+    }
+
     fn forEachNode(node: *Node, path_buf: *std.ArrayList(u8), allocator: std.mem.Allocator, context: anytype, comptime callback: fn (@TypeOf(context), std.http.Method, []const u8, Route) void) void {
         inline for (std.meta.tags(std.http.Method)) |method| {
             if (node.handlers.get(method)) |r| {
-                callback(context, method, path_buf.items, r);
+                if (ownPath(allocator, path_buf.items, r.param_names)) |own| {
+                    defer allocator.free(own);
+                    callback(context, method, own, r);
+                } else {
+                    callback(context, method, path_buf.items, r);
+                }
             }
         }
 
@@ -338,6 +389,10 @@ pub const Router = struct {
 
         var params: std.StringHashMapUnmanaged([]const u8) = .{};
         errdefer params.deinit(allocator);
+        // The values of the :params, in path order; they get their names
+        // from the matched route once it is known.
+        var values: std.ArrayList([]const u8) = .empty;
+        defer values.deinit(allocator);
         var node = self.root;
         var it = std.mem.splitScalar(u8, path, '/');
         while (it.next()) |segment| {
@@ -345,11 +400,9 @@ pub const Router = struct {
             if (node.children.get(segment)) |child| {
                 node = child;
             } else if (node.param_child) |child| {
-                const key = try allocator.dupe(u8, node.param_name.?);
-                errdefer allocator.free(key);
                 const value = try allocator.dupe(u8, segment);
                 errdefer allocator.free(value);
-                try params.put(allocator, key, value);
+                try values.append(allocator, value);
                 node = child;
             } else if (node.wildcard_child) |child| {
                 const key = try allocator.dupe(u8, "*");
@@ -366,6 +419,12 @@ pub const Router = struct {
             params.deinit(allocator);
             return null;
         };
+        for (values.items, 0..) |value, i| {
+            if (i >= route.param_names.len) break;
+            const key = try allocator.dupe(u8, route.param_names[i]);
+            errdefer allocator.free(key);
+            try params.put(allocator, key, value);
+        }
         return .{ .handler = route.handler, .params = params, .middlewares = route.middlewares, .meta = route.meta };
     }
 };
