@@ -452,7 +452,7 @@ fn decodeField(comptime T: type, data: []const u8, oid: i32, arena: std.mem.Allo
 fn zeroValue(comptime T: type) T {
     const info = @typeInfo(T);
     if (info == .optional) return null;
-    if (info == .@"enum") return @enumFromInt(0);
+    if (info == .@"enum") return @fromBackingInt(@intCast(0));
     return switch (T) {
         []const u8 => "",
         bool => false,
@@ -626,11 +626,9 @@ pub fn queryExecute(
     defer db_pool.?.release(conn);
 
     if (T == void) {
-        var it = std.mem.splitScalar(u8, sql, ';');
+        var it: Statements = .{ .sql = sql };
         while (it.next()) |stmt| {
-            const s = std.mem.trim(u8, stmt, " \n\r\t");
-            if (s.len == 0) continue;
-            _ = conn.exec(s, .{}) catch |err| return fail(conn, err);
+            _ = conn.exec(stmt, .{}) catch |err| return fail(conn, err);
         }
         return {};
     }
@@ -730,6 +728,116 @@ pub fn txControl(sql: []const u8) TxControl {
     return .none;
 }
 
+/// The statements of a script, one at a time, trimmed, empty ones skipped.
+/// A `;` only ends a statement outside strings ('..'), quoted names (".."),
+/// dollar-quoted bodies ($$..$$, $tag$..$tag$) and comments (-- and /* */):
+/// a function body such as `$$ BEGIN ...; END; $$` stays in one piece.
+const Statements = struct {
+    sql: []const u8,
+    pos: usize = 0,
+
+    fn next(self: *Statements) ?[]const u8 {
+        while (self.pos < self.sql.len) {
+            const start = self.pos;
+            const end = self.endOfStatement();
+            self.pos = @min(end + 1, self.sql.len);
+            const stmt = std.mem.trim(u8, self.sql[start..end], " \n\r\t");
+            if (stmt.len > 0) return stmt;
+        }
+        return null;
+    }
+
+    /// The index of the `;` that ends the statement at `pos`, or sql.len.
+    fn endOfStatement(self: *Statements) usize {
+        const sql = self.sql;
+        var i = self.pos;
+        while (i < sql.len) {
+            const ch = sql[i];
+            if (ch == ';') return i;
+            if (ch == '\'' or ch == '"') {
+                i = skipQuoted(sql, i, ch);
+            } else if (ch == '-' and i + 1 < sql.len and sql[i + 1] == '-') {
+                i = std.mem.indexOfScalarPos(u8, sql, i, '\n') orelse sql.len;
+            } else if (ch == '/' and i + 1 < sql.len and sql[i + 1] == '*') {
+                i = if (std.mem.indexOfPos(u8, sql, i + 2, "*/")) |close| close + 2 else sql.len;
+            } else if (ch == '$') {
+                i = skipDollarQuoted(sql, i);
+            } else {
+                i += 1;
+            }
+        }
+        return sql.len;
+    }
+
+    /// Past the closing quote of the string or name opened at `open`. A
+    /// doubled quote inside it is the quote character itself.
+    fn skipQuoted(sql: []const u8, open: usize, quote: u8) usize {
+        var i = open + 1;
+        while (i < sql.len) : (i += 1) {
+            if (sql[i] != quote) continue;
+            if (i + 1 < sql.len and sql[i + 1] == quote) {
+                i += 1;
+                continue;
+            }
+            return i + 1;
+        }
+        return sql.len;
+    }
+
+    /// Past the closing tag of the `$tag$` body opened at `open`; one past
+    /// the `$` when it does not open one (`$1`, a `$` inside a name).
+    fn skipDollarQuoted(sql: []const u8, open: usize) usize {
+        var tag_end = open + 1;
+        while (tag_end < sql.len and (std.ascii.isAlphanumeric(sql[tag_end]) or sql[tag_end] == '_')) tag_end += 1;
+        if (tag_end >= sql.len or sql[tag_end] != '$') return open + 1;
+        // `$1$`-like tags do not exist: a tag does not start with a digit.
+        if (tag_end > open + 1 and std.ascii.isDigit(sql[open + 1])) return open + 1;
+        const tag = sql[open .. tag_end + 1];
+        const close = std.mem.indexOfPos(u8, sql, tag_end + 1, tag) orelse return sql.len;
+        return close + tag.len;
+    }
+};
+
+test "Statements: a function body, strings and comments keep their semicolons" {
+    const script =
+        \\CREATE TABLE notes (id int, name text DEFAULT 'a; b');
+        \\-- a comment; with a semicolon
+        \\CREATE OR REPLACE FUNCTION set_updated_at()
+        \\RETURNS TRIGGER AS $$
+        \\BEGIN
+        \\    NEW.updated_at = NOW();
+        \\    RETURN NEW;
+        \\END;
+        \\$$ LANGUAGE plpgsql;
+        \\/* block; comment */ CREATE TRIGGER t BEFORE UPDATE ON notes
+        \\FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+        \\DO $body$ BEGIN PERFORM 1; END $body$;
+        \\INSERT INTO notes VALUES ($1, 'it''s; fine') ;
+        \\;
+    ;
+    var it: Statements = .{ .sql = script };
+    try std.testing.expect(std.mem.startsWith(u8, it.next().?, "CREATE TABLE notes"));
+    const function = it.next().?;
+    try std.testing.expect(std.mem.indexOf(u8, function, "-- a comment; with a semicolon") != null);
+    try std.testing.expect(std.mem.endsWith(u8, function, "$$ LANGUAGE plpgsql"));
+    try std.testing.expect(std.mem.endsWith(u8, it.next().?, "EXECUTE FUNCTION set_updated_at()"));
+    try std.testing.expectEqualStrings("DO $body$ BEGIN PERFORM 1; END $body$", it.next().?);
+    try std.testing.expectEqualStrings("INSERT INTO notes VALUES ($1, 'it''s; fine')", it.next().?);
+    try std.testing.expect(it.next() == null);
+}
+
+test "guardMulti: BEGIN and END inside a function body are not transaction control" {
+    try guardMulti(
+        \\CREATE OR REPLACE FUNCTION f() RETURNS TRIGGER AS $$
+        \\BEGIN
+        \\    RETURN NEW;
+        \\END;
+        \\$$ LANGUAGE plpgsql;
+        \\CREATE TABLE t (id int);
+    );
+    try guardMulti("BEGIN; INSERT INTO t VALUES (1); COMMIT");
+}
+
 fn refuseTxControl(sql: []const u8) error{UseBeginForTransactions} {
     std.log.err(
         "[pg] refused \"{s}\": every pg.* call runs on its own pooled connection, so transaction " ++
@@ -749,7 +857,7 @@ fn guardSingle(sql: []const u8) error{UseBeginForTransactions}!void {
 /// Unbalanced control would hand an in-transaction connection back to the pool.
 fn guardMulti(sql: []const u8) error{UseBeginForTransactions}!void {
     var open = false;
-    var it = std.mem.splitScalar(u8, sql, ';');
+    var it: Statements = .{ .sql = sql };
     while (it.next()) |stmt| {
         switch (txControl(stmt)) {
             .none => {},
@@ -844,11 +952,9 @@ fn pgExecFn(ptr: *anyopaque, sql: []const u8) anyerror!void {
     _ = ptr;
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
-    var it = std.mem.splitScalar(u8, sql, ';');
+    var it: Statements = .{ .sql = sql };
     while (it.next()) |stmt| {
-        const s = std.mem.trim(u8, stmt, " \n\r\t");
-        if (s.len == 0) continue;
-        _ = conn.exec(s, .{}) catch |err| return fail(conn, err);
+        _ = conn.exec(stmt, .{}) catch |err| return fail(conn, err);
     }
 }
 
@@ -881,11 +987,9 @@ pub fn execRaw(sql: []const u8) !void {
     try guardMulti(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
-    var it = std.mem.splitScalar(u8, sql, ';');
+    var it: Statements = .{ .sql = sql };
     while (it.next()) |stmt| {
-        const s = std.mem.trim(u8, stmt, " \n\r\t");
-        if (s.len == 0) continue;
-        _ = conn.exec(s, .{}) catch |err| return fail(conn, err);
+        _ = conn.exec(stmt, .{}) catch |err| return fail(conn, err);
     }
 }
 
@@ -1397,7 +1501,9 @@ test "array parameter - ANY() query" {
 
     const ids = &[_]i32{ 2, 4 };
     const Row = struct { id: i32, name: []const u8 };
-    const rows = try query(Row, arena.allocator(),
+    const rows = try query(
+        Row,
+        arena.allocator(),
         "SELECT id, name FROM any_test WHERE id = ANY($1) ORDER BY id",
         .{ids.*},
     );
