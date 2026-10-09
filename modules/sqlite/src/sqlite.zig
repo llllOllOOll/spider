@@ -93,12 +93,12 @@ fn decodeField(comptime T: type, row: zqlite.Row, col: usize, arena: std.mem.All
         return std.meta.stringToEnum(T, text) orelse error.InvalidEnumValue;
     }
     return switch (T) {
-        []const u8  => try arena.dupe(u8, row.text(col)),
-        bool        => row.boolean(col),
+        []const u8 => try arena.dupe(u8, row.text(col)),
+        bool => row.boolean(col),
         i8, i16, i32, i64 => @intCast(row.int(col)),
         u8, u16, u32, u64 => @intCast(row.int(col)),
-        f32, f64    => @floatCast(row.float(col)),
-        else        => @compileError("decodeField: unsupported type " ++ @typeName(T)),
+        f32, f64 => @floatCast(row.float(col)),
+        else => @compileError("decodeField: unsupported type " ++ @typeName(T)),
     };
 }
 
@@ -161,17 +161,18 @@ pub fn queryOne(comptime T: type, arena: std.mem.Allocator, sql: []const u8, par
 }
 
 // ── queryExecute ────────────────────────────────────────────
-pub fn queryExecute(comptime T: type, arena: std.mem.Allocator, sql: []const u8) !QueryResult(T) {
+pub fn queryExecute(comptime T: type, _: std.mem.Allocator, sql: []const u8) !QueryResult(T) {
     const conn = try acquireConn();
     defer releaseConn(conn);
 
-    var it = std.mem.splitScalar(u8, sql, ';');
-    while (it.next()) |stmt| {
-        const s = std.mem.trim(u8, stmt, " \n\r\t");
-        if (s.len == 0) continue;
-        const s_z = try arena.dupeSentinel(u8, s, 0);
-        try conn.execNoArgs(s_z);
-    }
+    // The whole script goes to sqlite3_exec, which runs each statement in
+    // turn. (Splitting on ';' here cut triggers, whose body has its own
+    // semicolons, and any ';' inside a string or a comment.)
+    // The copy does not come from `arena`: exec() below has none to give.
+    const gpa = std.heap.smp_allocator;
+    const sql_z = try gpa.dupeSentinel(u8, sql, 0);
+    defer gpa.free(sql_z);
+    try conn.execNoArgs(sql_z);
     return if (T == void) {} else &[_]T{};
 }
 
@@ -307,6 +308,45 @@ test "query - text param" {
     const rows = try query(Row, arena.allocator(), "SELECT val FROM text_test", .{});
     try std.testing.expectEqual(@as(usize, 1), rows.len);
     try std.testing.expectEqualStrings("hello", rows[0].val);
+}
+
+test "queryExecute - a script with a trigger (semicolons inside BEGIN..END, in strings and comments)" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try queryExecute(void, arena.allocator(),
+        \\CREATE TEMP TABLE trig_test (id INTEGER PRIMARY KEY, name TEXT, touched INTEGER DEFAULT 0);
+        \\-- a comment; with a semicolon
+        \\CREATE TEMP TRIGGER trig_test_touch
+        \\AFTER UPDATE OF name ON trig_test
+        \\FOR EACH ROW
+        \\BEGIN
+        \\    UPDATE trig_test SET touched = touched + 1 WHERE id = NEW.id;
+        \\END;
+        \\INSERT INTO trig_test (name) VALUES ('a; b');
+        \\UPDATE trig_test SET name = 'c' WHERE id = 1;
+    );
+
+    const Row = struct { name: []const u8, touched: i64 };
+    const rows = try query(Row, arena.allocator(), "SELECT name, touched FROM trig_test", .{});
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    try std.testing.expectEqualStrings("c", rows[0].name);
+    try std.testing.expectEqual(@as(i64, 1), rows[0].touched);
+}
+
+test "exec - runs a script without an arena" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    try exec("CREATE TEMP TABLE exec_test (x INTEGER); INSERT INTO exec_test VALUES (1);");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const Row = struct { x: i64 };
+    const rows = try query(Row, arena.allocator(), "SELECT x FROM exec_test", .{});
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
 }
 
 test "queryExecute - DDL statement" {

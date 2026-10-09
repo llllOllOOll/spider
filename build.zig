@@ -470,6 +470,11 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "zqlite", .module = zqlite_mod },
+                // sqlite.zig reads its settings through spider.env; the
+                // tests get a stub that answers every key with its default.
+                .{ .name = "spider", .module = b.createModule(.{
+                    .root_source_file = b.path("modules/sqlite/src/test_env_stub.zig"),
+                }) },
             },
         }),
     });
