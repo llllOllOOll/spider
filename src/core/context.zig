@@ -48,6 +48,10 @@ pub const CookieOptions = struct {
     max_age: ?u32 = null,
     /// Domain attribute (null: host-only, the safer default).
     domain: ?[]const u8 = null,
+    /// Percent-encode the value. For text a person typed (a name with an
+    /// accent, a `;`): without it such a value is error.InvalidCookie or
+    /// depends on the browser. Read it back with `Ctx.cookieDecoded`.
+    encode: bool = false,
 };
 
 /// htmx response headers (htmx 2 names), built by `Ctx.htmx`.
@@ -485,6 +489,14 @@ pub const Ctx = struct {
         return null;
     }
 
+    /// A cookie written with `.encode = true`, decoded. A value that was
+    /// not encoded comes back as it is, unless it contains a `%XX`.
+    pub fn cookieDecoded(self: *Ctx, name: []const u8) ?[]const u8 {
+        const raw = self.cookie(name) orelse return null;
+        const copy = self.arena.dupe(u8, raw) catch return raw;
+        return std.Uri.percentDecodeInPlace(copy);
+    }
+
     pub fn withCookie(self: *Ctx, name: []const u8, value: []const u8, opts: CookieOptions) !ResponseOptions {
         const cookie_str = try self.setCookie(name, value, opts);
         const headers = try self.arena.alloc([2][]const u8, 1);
@@ -503,6 +515,11 @@ pub const Ctx = struct {
         value: []const u8,
         opts: CookieOptions,
     ) ![]const u8 {
+        if (opts.encode) {
+            var plain = opts;
+            plain.encode = false;
+            return self.setCookie(name, try percentEncode(self.arena, value), plain);
+        }
         if (!validCookieName(name) or !validCookieText(value) or !validCookieText(opts.path) or
             !validCookieText(opts.same_site) or (opts.domain != null and !validCookieText(opts.domain.?)))
             return error.InvalidCookie;
@@ -620,6 +637,24 @@ pub const Ctx = struct {
     /// header directly lets anyone pick their own address.
     pub fn clientIp(self: *Ctx) ?[]const u8 {
         return @import("client_ip.zig").resolve(self.peerAddress(), self.header("X-Forwarded-For"), self._trusted_proxies);
+    }
+
+    /// A redirect that also sends headers or cookies:
+    ///     return c.redirectWith("/posts", try c.withCookie("author", name, .{ .encode = true }));
+    /// Answers 303 See Other, the status for "saved, now GET this page";
+    /// `.status` set to another 3xx is kept.
+    pub fn redirectWith(self: *Ctx, url: []const u8, opts: ResponseOptions) !Response {
+        const hdrs = try self.arena.alloc([2][]const u8, opts.headers.len + 1);
+        hdrs[0] = .{ "Location", url };
+        @memcpy(hdrs[1..], opts.headers);
+        const code = @backingInt(opts.status);
+        return Response{
+            .status = if (code >= 300 and code < 400) opts.status else .see_other,
+            .body = null,
+            .content_type = "text/plain",
+            .headers = hdrs,
+            .cookies = opts.cookies,
+        };
     }
 
     pub fn redirect(self: *Ctx, url: []const u8) !Response {
@@ -948,6 +983,19 @@ test "typeMarker: one per type" {
     try std.testing.expect(typeMarker(u8) == typeMarker(u8));
     try std.testing.expect(typeMarker(u8) != typeMarker(u16));
     try std.testing.expect(typeMarker(struct { a: u8 }) != typeMarker(struct { a: u8 }));
+}
+
+/// Percent-encodes everything but letters, digits and `-_.~`.
+fn percentEncode(arena: std.mem.Allocator, text: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (text) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or std.mem.indexOfScalar(u8, "-_.~", byte) != null) {
+            try out.append(arena, byte);
+        } else {
+            try out.print(arena, "%{X:0>2}", .{byte});
+        }
+    }
+    return out.items;
 }
 
 fn validCookieText(s: []const u8) bool {

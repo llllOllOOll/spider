@@ -208,3 +208,41 @@ test "download: running out of memory leaks nothing" {
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Run.run, .{});
 }
+
+test "setCookie with .encode: any text is a valid value, cookieDecoded reads it back" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var c = cookieCtx(a);
+    try std.testing.expectError(error.InvalidCookie, c.setCookie("author", "Zé; da \"Silva\"", .{}));
+    try std.testing.expectEqualStrings(
+        "author=Z%C3%A9%3B%20da%20%22Silva%22; Path=/; SameSite=Lax; HttpOnly; Secure",
+        try c.setCookie("author", "Zé; da \"Silva\"", .{ .encode = true }),
+    );
+    const opts = try c.withCookie("author", "a b", .{ .encode = true });
+    try std.testing.expectEqualStrings("author=a%20b; Path=/; SameSite=Lax; HttpOnly; Secure", opts.headers[0][1]);
+
+    var reader = try makeCtx(a, &.{.{ "Cookie", "sid=abc; author=Z%C3%A9%3B%20da%20%22Silva%22; plain=a+b" }});
+    try std.testing.expectEqualStrings("Zé; da \"Silva\"", reader.cookieDecoded("author").?);
+    try std.testing.expectEqualStrings("Z%C3%A9%3B%20da%20%22Silva%22", reader.cookie("author").?);
+    try std.testing.expectEqualStrings("a+b", reader.cookieDecoded("plain").?);
+    try std.testing.expect(reader.cookieDecoded("missing") == null);
+}
+
+test "redirectWith: 303 by default, keeps headers and cookies, another 3xx is kept" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = cookieCtx(arena.allocator());
+
+    const res = try c.redirectWith("/posts/5", try c.withCookie("author", "Ana", .{}));
+    try std.testing.expectEqual(std.http.Status.see_other, res.status);
+    try std.testing.expectEqualStrings("Location", res.headers[0][0]);
+    try std.testing.expectEqualStrings("/posts/5", res.headers[0][1]);
+    try std.testing.expectEqualStrings("Set-Cookie", res.headers[1][0]);
+    try std.testing.expect(std.mem.startsWith(u8, res.headers[1][1], "author=Ana;"));
+
+    const moved = try c.redirectWith("/new", .{ .status = .moved_permanently });
+    try std.testing.expectEqual(std.http.Status.moved_permanently, moved.status);
+    const plain = try c.redirect("/x");
+    try std.testing.expectEqual(std.http.Status.found, plain.status);
+}

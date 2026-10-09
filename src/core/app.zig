@@ -1379,7 +1379,7 @@ pub fn Server(comptime T: type) type {
         /// thread; each of the `cpu_count` threads below runs its own
         /// `accept()` loop directly against the listener socket.
         fn listenThreaded(self: *Self, options: ListenOptions) !void {
-            const port = dev_reload.portOverride() orelse options.port orelse self.config.port;
+            const port = dev_reload.listenPort(options.port orelse self.config.port);
             const host = options.host orelse self.config.host;
 
             const gpa = std.heap.smp_allocator;
@@ -1449,7 +1449,7 @@ pub fn Server(comptime T: type) type {
         fn listenZio(self: *Self, options: ListenOptions) !void {
             const zio = @import("zio");
 
-            const port = dev_reload.portOverride() orelse options.port orelse self.config.port;
+            const port = dev_reload.listenPort(options.port orelse self.config.port);
             const host = options.host orelse self.config.host;
 
             const gpa = std.heap.smp_allocator;
