@@ -241,6 +241,7 @@ test {
     _ = @import("core/http_client_mtls.zig");
     _ = @import("providers/jwks.zig");
     _ = @import("testing.zig");
+    _ = @import("doc_check.zig");
     _ = @import("testing/http.zig");
     _ = @import("testing/port.zig");
     _ = @import("core/listen_port.zig");

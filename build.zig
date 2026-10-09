@@ -323,6 +323,26 @@ pub fn build(b: *std.Build) void {
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+    // Every pub name of the library says `///` (API, goes to the reference)
+    // or `// internal:` (see src/doc_check.zig). The CLI, the tests and the
+    // copies of other projects' code are not part of the API.
+    const doc_check_tool = b.addExecutable(.{
+        .name = "spider-doc-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/doc_check_tool.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const run_doc_check = b.addRunArtifact(doc_check_tool);
+    run_doc_check.has_side_effects = true;
+    run_doc_check.addDirectoryArg(b.path("."));
+    run_doc_check.addArgs(&.{
+        "src",              "modules/pg/src",     "modules/sqlite/src", "modules/pacman/src",
+        "modules/r2/src",   "modules/qrcode/src", "modules/xlsx/src",   "--skip",
+        "src/cli/",         "--skip",             "/std_http/",         "--skip",
+        "/pg_driver_impl/", "--skip",             "/templates/",
+    });
+    test_step.dependOn(&run_doc_check.step);
     // CLI argument handling (src/cli/args.zig, via src/cli/main.zig's test block).
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cli_exe.root_module })).step);
 

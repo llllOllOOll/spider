@@ -52,6 +52,16 @@ Before calling a change done: `zig build test`, and for anything under
   app (`examples/posts`). If a request seems to ask for another language
   in the repository, ask before writing it.
 - No `Co-authored-by` trailers, and no mention of tools, in commits.
+- **Every `pub` name says which side it is on**, right above it: `///` when
+  an app uses it (it goes to the API reference: say what it does, what it
+  returns, when it fails; a fenced ```zig example on the main entry
+  points), or `// internal: why` when it is public only for Spider's own
+  files. Every file starts with a `//!` header; a file with nothing for
+  apps starts it with `//! Internal:` and needs no per-name notes. Fields
+  starting with `_` are internal. `zig build test` fails on a name or a
+  file that says neither (`src/doc_check.zig`; the CLI and the tests are
+  not checked). Every sentence of a `///` is something the code does:
+  check signatures and error names, and take examples from the tests.
 - Fix with a test that fails first. Unit tests live next to the code; tests that
   need a listening server go in `e2e_test.zig` / `e2e/*.zig`.
 - A new test file is **not discovered** unless imported from the `test {}` block
@@ -253,6 +263,9 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 - `src/cli/build.zig` is a stale template copy, not the CLI's build (the CLI is
   built by the root `build.zig`); generated-project templates are
   `src/cli/templates/*.template`.
+- `zig fmt` is not a no-op on about ten files (it rewrites `@enumFromInt` /
+  `@intFromEnum` into `@fromBackingInt` / `@backingInt`): after formatting
+  a file you only meant to touch lightly, look at the diff.
 - `test-mysql*.zig` are leftovers; don't treat them as current tests.
 - `.env.local` is yours and not in git. `spider.env` loads it, so a `PORT`
   line in it moves any app in this tree that calls `listen()` without a
