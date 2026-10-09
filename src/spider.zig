@@ -166,6 +166,9 @@ test {
     _ = @import("core/http_client_mtls.zig");
     _ = @import("providers/jwks.zig");
     _ = @import("testing.zig");
+    _ = @import("testing/http.zig");
+    _ = @import("testing/port.zig");
+    _ = @import("core/listen_port.zig");
     _ = @import("middlewares/https.zig");
     _ = @import("modules/mail/mail.zig");
     _ = @import("modules/mail/message.zig");

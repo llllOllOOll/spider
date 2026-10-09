@@ -23,6 +23,14 @@ const builtin = @import("builtin");
 /// The app conventions behind expectConventions() and `spider check`.
 pub const conventions = @import("conventions.zig");
 
+/// Requests against the running app, in a test: see testing/http.zig.
+///     const app = try spider.testing.start(run);
+///     var res = try app.get("/posts");
+pub const http = @import("testing/http.zig");
+pub const start = http.start;
+pub const App = http.App;
+pub const Response = http.Response;
+
 /// A feature's access contract: see routing/expect_routes.zig.
 pub const expectRoutes = @import("routing/expect_routes.zig").expectRoutes;
 

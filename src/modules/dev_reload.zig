@@ -86,30 +86,6 @@ pub fn portOverride() ?u16 {
     return parsePort(env.get(port_env_name) orelse return null);
 }
 
-/// The port listen() uses: `spider dev --port` first, then the PORT
-/// variable (the environment or .env; how a container or a host tells an
-/// app where to listen), then the app's own setting.
-pub fn listenPort(configured: u16) u16 {
-    return choosePort(portOverride(), env.get("PORT"), configured);
-}
-
-pub fn choosePort(dev: ?u16, port_var: ?[]const u8, configured: u16) u16 {
-    if (dev) |port| return port;
-    if (port_var) |text| {
-        if (parsePort(text)) |port| return port;
-    }
-    return configured;
-}
-
-test "choosePort: spider dev, then PORT, then the app's setting" {
-    try std.testing.expectEqual(@as(u16, 4000), choosePort(4000, "8080", 3000));
-    try std.testing.expectEqual(@as(u16, 8080), choosePort(null, "8080", 3000));
-    try std.testing.expectEqual(@as(u16, 8080), choosePort(null, " 8080\n", 3000));
-    try std.testing.expectEqual(@as(u16, 3000), choosePort(null, null, 3000));
-    try std.testing.expectEqual(@as(u16, 3000), choosePort(null, "not a port", 3000));
-    try std.testing.expectEqual(@as(u16, 3000), choosePort(null, "0", 3000));
-}
-
 pub fn parsePort(text: []const u8) ?u16 {
     const port = std.fmt.parseInt(u16, std.mem.trim(u8, text, " \t\r\n"), 10) catch return null;
     return if (port == 0) null else port;

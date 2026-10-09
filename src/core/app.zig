@@ -29,6 +29,7 @@ const Env = @import("../internal/config.zig").Env;
 const default_config = @import("../internal/config.zig").default;
 const views_mod = @import("../render/views.zig");
 const dev_reload = @import("../modules/dev_reload.zig");
+const listen_port = @import("listen_port.zig");
 const health_mod = @import("../modules/health.zig");
 const Hub = @import("../ws/hub.zig").Hub;
 const Ws = @import("../ws/ws.zig").Ws;
@@ -1379,8 +1380,9 @@ pub fn Server(comptime T: type) type {
         /// thread; each of the `cpu_count` threads below runs its own
         /// `accept()` loop directly against the listener socket.
         fn listenThreaded(self: *Self, options: ListenOptions) !void {
-            const port = dev_reload.listenPort(options.port orelse self.config.port);
-            const host = options.host orelse self.config.host;
+            const where = listen_port.resolve(options.host orelse self.config.host, options.port, self.config.port);
+            const port = where.port;
+            const host = where.host;
 
             const gpa = std.heap.smp_allocator;
 
@@ -1449,8 +1451,9 @@ pub fn Server(comptime T: type) type {
         fn listenZio(self: *Self, options: ListenOptions) !void {
             const zio = @import("zio");
 
-            const port = dev_reload.listenPort(options.port orelse self.config.port);
-            const host = options.host orelse self.config.host;
+            const where = listen_port.resolve(options.host orelse self.config.host, options.port, self.config.port);
+            const port = where.port;
+            const host = where.host;
 
             const gpa = std.heap.smp_allocator;
 
