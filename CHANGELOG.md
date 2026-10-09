@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callback answered with headers that no longer existed by the time they
   were sent (seen in optimized builds). `deinit` now also frees the two
   addresses `init` builds.
+- **PostgreSQL: a date before 1970 could not be read as text.** A `date`,
+  `timestamp` or `timestamptz` earlier than 1970-01-01 read into a
+  `[]const u8` field failed with `error.TypeMismatch` (a birth date, for
+  one). They now come back like the others, from year 1 on.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

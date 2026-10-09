@@ -362,22 +362,38 @@ fn formatTimestamp(arena: std.mem.Allocator, us_since_2000: i64, utc_suffix: boo
     const unix_us: i128 = @as(i128, us_since_2000) + pg_epoch_us;
     const secs: i128 = @divFloor(unix_us, std.time.us_per_s);
     const frac_ms: u64 = @intCast(@divFloor(@mod(unix_us, std.time.us_per_s), 1000));
-    if (secs < 0) return error.TypeMismatch; // pre-1970: not needed by callers so far
-    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(secs) };
-    const yd = es.getEpochDay().calculateYearDay();
-    const md = yd.calculateMonthDay();
-    const ds = es.getDaySeconds();
+    // Floor division: a moment before 1970 is a negative day and a time of
+    // day that still counts forward from midnight.
+    const date = civilFromDays(@intCast(@divFloor(secs, std.time.s_per_day)));
+    if (date.year < 1) return error.TypeMismatch; // BC: Postgres writes those another way
+    const of_day: u64 = @intCast(@mod(secs, std.time.s_per_day));
     return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}{s}", .{
-        yd.year, md.month.numeric(), md.day_index + 1, ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(), frac_ms, if (utc_suffix) "Z" else "",
+        @as(u64, @intCast(date.year)), date.month, date.day, of_day / 3600, (of_day / 60) % 60, of_day % 60, frac_ms, if (utc_suffix) "Z" else "",
     });
 }
 
 fn formatDate(arena: std.mem.Allocator, days_since_2000: i32) ![]const u8 {
-    const days: i64 = @as(i64, days_since_2000) + 10957; // 1970-01-01 -> 2000-01-01
-    if (days < 0) return error.TypeMismatch;
-    const yd = (std.time.epoch.EpochDay{ .day = @intCast(days) }).calculateYearDay();
-    const md = yd.calculateMonthDay();
-    return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{ yd.year, md.month.numeric(), md.day_index + 1 });
+    const date = civilFromDays(@as(i64, days_since_2000) + 10957); // 1970-01-01 -> 2000-01-01
+    if (date.year < 1) return error.TypeMismatch; // BC: Postgres writes those another way
+    return std.fmt.allocPrint(arena, "{d:0>4}-{d:0>2}-{d:0>2}", .{ @as(u64, @intCast(date.year)), date.month, date.day });
+}
+
+const Civil = struct { year: i64, month: u8, day: u8 };
+
+/// The calendar date of a day counted from 1970-01-01, before or after it
+/// (proleptic Gregorian, as Postgres counts). std's epoch types only go
+/// forward from 1970. The arithmetic is Howard Hinnant's civil_from_days.
+fn civilFromDays(days_since_1970: i64) Civil {
+    const z = days_since_1970 + 719468; // days since 0000-03-01
+    const era = @divFloor(z, 146097); // 400-year cycles
+    const day_of_era: u64 = @intCast(z - era * 146097); // 0..146096
+    const year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365; // 0..399
+    const day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100); // 0..365, from March 1
+    const month_from_march = (5 * day_of_year + 2) / 153; // 0..11
+    const day: u8 = @intCast(day_of_year - (153 * month_from_march + 2) / 5 + 1);
+    const month: u8 = @intCast(if (month_from_march < 10) month_from_march + 3 else month_from_march - 9);
+    const year = @as(i64, @intCast(year_of_era)) + era * 400;
+    return .{ .year = if (month <= 2) year + 1 else year, .month = month, .day = day };
 }
 
 fn numericText(arena: std.mem.Allocator, data: []const u8) ![]const u8 {
@@ -2025,4 +2041,42 @@ test "mapping: .warn mode keeps the old zero values (migration aid)" {
     const rows = try query(struct { id: i32, carrier: []const u8, n: i32 }, arena.allocator(), "SELECT 1 AS id, NULL::int AS n", .{});
     try std.testing.expectEqualStrings("", rows[0].carrier);
     try std.testing.expectEqual(@as(i32, 0), rows[0].n);
+}
+
+test "mapping: dates and timestamps before 1970 come as text too (birth dates)" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Row = struct { d: []const u8, ts: []const u8, tstz: []const u8 };
+    const r = (try queryOne(Row, a,
+        \\SELECT '1965-03-02'::date AS d,
+        \\       '1965-03-02 10:20:30.456'::timestamp AS ts,
+        \\       '1969-12-31 23:59:59.999+00'::timestamptz AS tstz
+    , .{})).?;
+    try std.testing.expectEqualStrings("1965-03-02", r.d);
+    try std.testing.expectEqualStrings("1965-03-02T10:20:30.456", r.ts);
+    try std.testing.expectEqualStrings("1969-12-31T23:59:59.999Z", r.tstz);
+
+    // Leap days, the first day of the calendar, and what still works.
+    const Dates = struct { a: []const u8, b: []const u8, c: []const u8, e: []const u8 };
+    const dates = (try queryOne(Dates, a,
+        \\SELECT '1900-03-01'::date AS a, '1904-02-29'::date AS b,
+        \\       '0001-01-01'::date AS c, '2024-02-29'::date AS e
+    , .{})).?;
+    try std.testing.expectEqualStrings("1900-03-01", dates.a);
+    try std.testing.expectEqualStrings("1904-02-29", dates.b);
+    try std.testing.expectEqualStrings("0001-01-01", dates.c);
+    try std.testing.expectEqualStrings("2024-02-29", dates.e);
+}
+
+test "civilFromDays: days since 1970-01-01, either side of it" {
+    try std.testing.expectEqual(Civil{ .year = 1970, .month = 1, .day = 1 }, civilFromDays(0));
+    try std.testing.expectEqual(Civil{ .year = 1969, .month = 12, .day = 31 }, civilFromDays(-1));
+    try std.testing.expectEqual(Civil{ .year = 2000, .month = 1, .day = 1 }, civilFromDays(10957));
+    try std.testing.expectEqual(Civil{ .year = 1965, .month = 3, .day = 2 }, civilFromDays(-1766));
+    try std.testing.expectEqual(Civil{ .year = 2000, .month = 2, .day = 29 }, civilFromDays(11016));
+    try std.testing.expectEqual(Civil{ .year = 1, .month = 1, .day = 1 }, civilFromDays(-719162));
 }
