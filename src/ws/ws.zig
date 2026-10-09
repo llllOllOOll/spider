@@ -66,8 +66,9 @@ pub const Ws = struct {
 
     /// `join` on the channel `user:<user_id>`.
     pub fn joinUser(self: *Ws, user_id: u64) !void {
-        var ch_buf: [32]u8 = undefined;
-        const channel = try std.fmt.bufPrint(&ch_buf, "user:{d}", .{user_id});
+        // join() keeps the slice for as long as the connection lives (here
+        // and in the hub): it has to outlive this call. Same as Sse.joinUser.
+        const channel = try std.fmt.allocPrint(self.arena, "user:{d}", .{user_id});
         try self.join(channel);
     }
 

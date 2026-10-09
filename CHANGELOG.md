@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transactions on one connection. A transaction now remembers that it
   ended; a second `commit()` or `rollback()` does nothing, as in
   `spider.pg`.
+- **`Ws.joinUser` never delivered.** The channel name was kept in memory
+  that ended with the call, so a message sent to `user:<id>` found
+  nobody. (`Sse.joinUser` had been fixed for the same thing.)
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

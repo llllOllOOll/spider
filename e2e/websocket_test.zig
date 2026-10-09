@@ -159,3 +159,33 @@ test "websocket: a frame with a reserved opcode ends that connection, not the se
     try other.sendText("still here");
     try other.expectText("still here");
 }
+
+test "websocket: joinUser puts the connection on the user's channel, and it stays there" {
+    const app = try spider.testing.start(run);
+    var ana: Client = undefined;
+    try ana.open(std.testing.io, app.port);
+    defer ana.close();
+    var other: Client = undefined;
+    try other.open(std.testing.io, app.port);
+    defer other.close();
+
+    try ana.sendText("join:7");
+    try ana.expectText("joined");
+
+    // Some traffic in between: the channel name must not live in memory
+    // the handler's next calls reuse.
+    try ana.sendText("one");
+    try ana.expectText("one");
+    try ana.sendText("two");
+    try ana.expectText("two");
+
+    try other.sendText("tell:7:for you");
+    try ana.expectText("for you");
+
+    // Nobody else is on that channel.
+    try other.sendText("tell:8:not for ana");
+    try other.sendText("ping me");
+    try other.expectText("ping me");
+    try ana.sendText("three");
+    try ana.expectText("three");
+}
