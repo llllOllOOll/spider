@@ -49,6 +49,15 @@ Found while writing the new documentation site and its example app.
   every `;`, which cut a `CREATE TRIGGER` and any `;` inside a string. The
   generated `src/core/db/migrations.zig` could not apply the migration
   `spider g feature` writes. The script now runs as one piece.
+- **PostgreSQL**: `queryExecute`, `execRaw` and the `Database` bridge split
+  a script on every `;`, and the transaction guard did the same, so a
+  plpgsql function body (`$$ BEGIN ...; END; $$`) failed with
+  `UseBeginForTransactions`. Statements now end only outside strings,
+  quoted names, dollar-quoted bodies and comments.
+- **Generated apps apply pending migrations when they start**
+  (`core.db.migrations.migrate()` in `main.zig`): a container or a fresh
+  clone has its tables on the first request. `spider migrate` still works
+  and shares the same bookkeeping table.
 - **Generated Dockerfile**: it used an image with a Zig older than 0.17.0
   and did not build. It now downloads the official Zig release, checks its
   checksum, and installs the `spider` command for the assets the build
