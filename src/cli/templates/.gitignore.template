@@ -7,6 +7,9 @@ zig-pkg/
 .env.development
 .env.production
 
+# Written by every build: the list of templates a release build embeds
+src/embedded_templates.zig
+
 # The SQLite database (spider migrate creates it)
 db.sqlite
 db.sqlite-*

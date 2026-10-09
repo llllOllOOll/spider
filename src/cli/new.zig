@@ -227,8 +227,9 @@ test "the generated .dockerignore keeps secrets and local builds out of the imag
     }
 }
 
-test "the generated .gitignore keeps the SQLite database out of git" {
+test "the generated .gitignore keeps the SQLite database and the template index out of git" {
     try std.testing.expect(std.mem.indexOf(u8, gitignore_tmpl, "\ndb.sqlite\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, gitignore_tmpl, "\nsrc/embedded_templates.zig\n") != null);
 }
 
 test "the generated .gitignore keeps .env out of git" {
