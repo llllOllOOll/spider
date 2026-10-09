@@ -189,7 +189,8 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\Subcommands:
         \\  feature <name> [--api]
         \\      CRUD feature: src/features/<name>/ (controller, model, repository,
-        \\      views), a migration, routes in src/main.zig. --api for JSON.
+        \\      views, routes.zig), a migration. --api for JSON. The routes are
+        \\      mounted by mountFeatures in src/main.zig; nothing to edit there.
         \\      Apply the migration with `spider migrate` before using it.
         \\  auth [--provider=keycloak] [--api]
         \\      Keycloak login (--api: bearer tokens only). For Google sign-in, add

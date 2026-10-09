@@ -1,11 +1,50 @@
-FROM llllollooll/zig:master AS builder
+# Builds {{app_name}} with the official Zig release and runs it in a small
+# image. The final image holds the binary and public/; a release build keeps
+# the templates inside the binary.
+#
+#     docker build -t {{app_name}} .
+#     docker run -p 3000:3000 --env-file .env {{app_name}}
+
+FROM debian:bookworm-slim AS builder
+
+ARG ZIG_VERSION=0.17.0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl xz-utils ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# The official Zig release, checked against its published SHA-256
+# (https://ziglang.org/download/index.json, "shasum"). To move to another
+# Zig, change ZIG_VERSION and the two checksums together.
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) ZIG_ARCH="x86_64";  ZIG_SHA256="1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026" ;; \
+      arm64) ZIG_ARCH="aarch64"; ZIG_SHA256="9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8" ;; \
+      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    ZIG_TARBALL="zig-${ZIG_ARCH}-linux-${ZIG_VERSION}.tar.xz"; \
+    curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}" -o "/tmp/${ZIG_TARBALL}" && \
+    echo "${ZIG_SHA256}  /tmp/${ZIG_TARBALL}" | sha256sum -c - && \
+    tar -xJf "/tmp/${ZIG_TARBALL}" -C /opt && \
+    mv "/opt/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}" /opt/zig && \
+    rm "/tmp/${ZIG_TARBALL}"
+ENV PATH="/opt/zig:${PATH}"
+
+# The spider command: the build runs `spider install` for what is not kept in
+# git (Tailwind, the icon sets, htmx, Alpine).
+RUN curl -fsSL https://raw.githubusercontent.com/llllOllOOll/spider/main/scripts/install.sh \
+    | SPIDER_INSTALL_DIR=/usr/local/bin bash
+
 WORKDIR /app
 COPY . .
-RUN zig build -Doptimize=ReleaseSmall
+RUN mkdir -p public && zig build -Doptimize=ReleaseSmall
 
 FROM debian:bookworm-slim
+# Certificates for the HTTPS requests the app makes (login providers, mail).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/zig-out/bin/{{app_name}} /app/{{app_name}}
 COPY --from=builder /app/public /app/public
+# The app listens on 3000; run it with -e PORT=8080 to change that.
 EXPOSE 3000
 CMD ["./{{app_name}}"]

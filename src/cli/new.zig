@@ -12,6 +12,8 @@ const dockerfile_tmpl = @embedFile("templates/Dockerfile.template");
 const docker_compose_tmpl = @embedFile("templates/docker-compose.yml.template");
 const env_example_tmpl = @embedFile("templates/.env.example.template");
 const env_example_pg_tmpl = @embedFile("templates/.env.example.pg.template");
+const env_example_nodb_tmpl = @embedFile("templates/.env.example.nodb.template");
+const dockerignore_tmpl = @embedFile("templates/.dockerignore.template");
 const gitignore_tmpl = @embedFile("templates/.gitignore.template");
 const core_mod_tmpl = @embedFile("templates/core_mod.zig.template");
 const features_mod_tmpl = @embedFile("templates/features_mod.zig.template");
@@ -48,9 +50,12 @@ const agents_db_sqlite_tmpl = @embedFile("templates/agents_db_sqlite.md.template
 const agents_db_pg_tmpl = @embedFile("templates/agents_db_pg.md.template");
 const agents_db_none_tmpl = @embedFile("templates/agents_db_none.md.template");
 
-fn runZigFetch(io: std.Io, app_name: []const u8) !void {
+/// The Spider release a new project starts on: the one this CLI belongs to.
+pub const spider_ref = "v" ++ @import("version.zig").version;
+
+fn zigFetch(io: std.Io, app_name: []const u8, url: []const u8) !void {
     var child = try std.process.spawn(io, .{
-        .argv = &.{ "zig", "fetch", "--save=spider", "git+https://github.com/llllOllOOll/spider#main" },
+        .argv = &.{ "zig", "fetch", "--save=spider", url },
         .cwd = .{ .path = app_name },
     });
     const term = try child.wait(io);
@@ -58,6 +63,22 @@ fn runZigFetch(io: std.Io, app_name: []const u8) !void {
         .exited => |code| if (code != 0) return error.ZigFetchFailed,
         else => return error.ZigFetchFailed,
     }
+}
+
+/// Saves the Spider dependency: the release with this CLI's version. A CLI
+/// built from an unreleased tree has no such tag yet and falls back to main.
+fn runZigFetch(io: std.Io, app_name: []const u8) !void {
+    const repo = "git+https://github.com/llllOllOOll/spider";
+    zigFetch(io, app_name, repo ++ "?ref=" ++ spider_ref) catch {
+        std.debug.print("warning: Spider {s} is not published; using the main branch instead\n", .{spider_ref});
+        return zigFetch(io, app_name, repo ++ "#main");
+    };
+}
+
+/// The host port of the project's PostgreSQL container: one in 5433..5932
+/// picked from the app name, so two projects rarely ask for the same.
+pub fn pgPort(app_name: []const u8) u16 {
+    return 5433 + @as(u16, @intCast(std.hash.Fnv1a_32.hash(app_name) % 500));
 }
 
 fn runZigInit(io: std.Io, app_name: []const u8) !void {
@@ -110,7 +131,11 @@ fn render(allocator: std.mem.Allocator, tmpl: []const u8, app_name: []const u8, 
     defer allocator.free(step3);
     const step4 = try std.mem.replaceOwned(u8, allocator, step3, "{{db_module}}", db_module);
     defer allocator.free(step4);
-    return std.mem.replaceOwned(u8, allocator, step4, "{{sqlite_enabled}}", sqlite_enabled);
+    const step5 = try std.mem.replaceOwned(u8, allocator, step4, "{{sqlite_enabled}}", sqlite_enabled);
+    defer allocator.free(step5);
+    var port_buf: [5]u8 = undefined;
+    const port = std.fmt.bufPrint(&port_buf, "{d}", .{pgPort(app_name)}) catch unreachable;
+    return std.mem.replaceOwned(u8, allocator, step5, "{{pg_port}}", port);
 }
 
 /// AGENTS.md for the new project: the shared template plus the sections that
@@ -121,6 +146,8 @@ fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: 
         if (no_db) "no database" else if (use_pg) "PostgreSQL" else "SQLite",
     });
     defer allocator.free(variant);
+    var port_buf: [5]u8 = undefined;
+    const port = std.fmt.bufPrint(&port_buf, "{d}", .{pgPort(app_name)}) catch unreachable;
     const vars = [_][2][]const u8{
         .{ "{{app_name}}", app_name },
         .{ "{{variant}}", variant },
@@ -130,6 +157,7 @@ fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: 
         .{ "{{views_layout}}", if (api_only) agents_views_api_tmpl else agents_views_html_tmpl },
         .{ "{{views_conventions}}", if (api_only) agents_views_conv_api_tmpl else agents_views_conv_html_tmpl },
         .{ "{{db_section}}", if (no_db) agents_db_none_tmpl else if (use_pg) agents_db_pg_tmpl else agents_db_sqlite_tmpl },
+        .{ "{{pg_port}}", port },
     };
     var out = try allocator.dupe(u8, agents_md_tmpl);
     for (vars) |v| {
@@ -151,13 +179,56 @@ pub fn envFromExample(allocator: std.mem.Allocator, example: []const u8, secret:
 
 test "envFromExample: the example's settings with a generated JWT_SECRET" {
     const a = std.testing.allocator;
-    inline for (.{ env_example_tmpl, env_example_pg_tmpl }) |tmpl| {
+    inline for (.{ env_example_tmpl, env_example_pg_tmpl, env_example_nodb_tmpl }) |tmpl| {
         const out = try envFromExample(a, tmpl, "0123abcd");
         defer a.free(out);
         try std.testing.expect(std.mem.indexOf(u8, out, "\nJWT_SECRET=0123abcd\n") != null);
         try std.testing.expect(std.mem.indexOf(u8, out, "change_me") == null);
-        try std.testing.expect(std.mem.indexOf(u8, out, "PG_HOST=localhost") != null);
     }
+}
+
+test "each .env.example only has the settings of its database" {
+    const has = std.mem.indexOf;
+    try std.testing.expect(has(u8, env_example_tmpl, "SQLITE_PATH=db.sqlite") != null);
+    try std.testing.expect(has(u8, env_example_tmpl, "PG_") == null);
+    try std.testing.expect(has(u8, env_example_pg_tmpl, "PG_PORT={{pg_port}}") != null);
+    try std.testing.expect(has(u8, env_example_pg_tmpl, "SQLITE") == null);
+    try std.testing.expect(has(u8, env_example_nodb_tmpl, "PG_") == null);
+    try std.testing.expect(has(u8, env_example_nodb_tmpl, "SQLITE") == null);
+}
+
+test "pgPort: stable for a name, inside 5433..5932, rendered into the templates" {
+    try std.testing.expectEqual(pgPort("blog"), pgPort("blog"));
+    for ([_][]const u8{ "blog", "shop", "posts", "a", "my_app_2" }) |name| {
+        try std.testing.expect(pgPort(name) >= 5433 and pgPort(name) <= 5932);
+    }
+    try std.testing.expect(pgPort("blog") != pgPort("shop"));
+
+    const a = std.testing.allocator;
+    const compose = try render(a, docker_compose_tmpl, "blog", "blog", "0x0", "", "false");
+    defer a.free(compose);
+    var buf: [32]u8 = undefined;
+    const mapping = try std.fmt.bufPrint(&buf, "\"{d}:5432\"", .{pgPort("blog")});
+    try std.testing.expect(std.mem.indexOf(u8, compose, mapping) != null);
+    try std.testing.expect(std.mem.indexOf(u8, compose, "{{") == null);
+}
+
+test "the generated Dockerfile builds with the official Zig release" {
+    const has = std.mem.indexOf;
+    try std.testing.expect(has(u8, dockerfile_tmpl, "llllollooll/zig") == null);
+    try std.testing.expect(has(u8, dockerfile_tmpl, "https://ziglang.org/download/${ZIG_VERSION}/") != null);
+    try std.testing.expect(has(u8, dockerfile_tmpl, "sha256sum -c") != null);
+    try std.testing.expect(has(u8, dockerfile_tmpl, "ARG ZIG_VERSION=0.17.0") != null);
+}
+
+test "the generated .dockerignore keeps secrets and local builds out of the image" {
+    inline for (.{ "\n.env\n", "\ndb.sqlite\n", "\nzig-pkg/\n", "\n.zig-cache/\n", "\nbin/\n" }) |line| {
+        try std.testing.expect(std.mem.indexOf(u8, dockerignore_tmpl, line) != null);
+    }
+}
+
+test "the generated .gitignore keeps the SQLite database out of git" {
+    try std.testing.expect(std.mem.indexOf(u8, gitignore_tmpl, "\ndb.sqlite\n") != null);
 }
 
 test "the generated .gitignore keeps .env out of git" {
@@ -262,7 +333,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
 
     const selected_build_zig_tmpl = if (api_only) build_zig_api_tmpl else if (effective_no_db) build_zig_tmpl else if (use_pg) build_zig_pg_tmpl else build_zig_sqlite_tmpl;
     const selected_main_zig_tmpl = if (api_only and effective_no_db) main_zig_api_tmpl else if (api_only) main_zig_api_sqlite_tmpl else if (effective_no_db) main_zig_tmpl else if (use_pg) main_zig_pg_tmpl else main_zig_sqlite_tmpl;
-    const selected_env_example_tmpl = if (effective_no_db or !use_pg) env_example_tmpl else env_example_pg_tmpl;
+    const selected_env_example_tmpl = if (effective_no_db) env_example_nodb_tmpl else if (use_pg) env_example_pg_tmpl else env_example_tmpl;
 
     // For API projects, use sqlite_enabled flag in build.zig.api.template
     const sqlite_enabled = if (api_only and !no_db) "true" else "false";
@@ -289,7 +360,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
         .{ "src/features/home/routes.zig", home_routes_tmpl },
         .{ "src/features/home/routes_test.zig", home_routes_test_tmpl },
         .{ "Dockerfile", dockerfile_tmpl },
-        .{ "docker-compose.yml", docker_compose_tmpl },
+        .{ ".dockerignore", dockerignore_tmpl },
         .{ ".env.example", selected_env_example_tmpl },
         .{ ".gitignore", gitignore_tmpl },
     };
@@ -310,7 +381,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
             .{ "src/core/mod.zig", core_mod_tmpl },
             .{ "src/features/mod.zig", features_mod_api_tmpl },
             .{ "Dockerfile", dockerfile_tmpl },
-            .{ "docker-compose.yml", docker_compose_tmpl },
+            .{ ".dockerignore", dockerignore_tmpl },
             .{ ".env.example", selected_env_example_tmpl },
             .{ ".gitignore", gitignore_tmpl },
         };
@@ -343,6 +414,21 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
             };
             std.debug.print("  create  {s}/{s}\n", .{ app_name, path });
         }
+    }
+
+    // The compose file only starts a PostgreSQL server: other projects have
+    // no use for it.
+    if (use_pg and !effective_no_db) {
+        const compose = render(allocator, docker_compose_tmpl, app_name, zon_safe_name, fingerprint, "", sqlite_enabled) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        defer allocator.free(compose);
+        writeFile(io, project_dir, "docker-compose.yml", compose) catch |err| {
+            fail_err = err;
+            return err;
+        };
+        std.debug.print("  create  {s}/docker-compose.yml (PostgreSQL on port {d})\n", .{ app_name, pgPort(app_name) });
     }
 
     if (!api_only) {
@@ -489,7 +575,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
     }
 
     current_step = "fetch spider";
-    std.debug.print("Fetching spider from main...\n", .{});
+    std.debug.print("Fetching Spider {s}...\n", .{spider_ref});
     runZigFetch(io, app_name) catch |err| {
         fail_err = err;
         return err;

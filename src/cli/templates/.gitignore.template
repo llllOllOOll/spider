@@ -7,6 +7,10 @@ zig-pkg/
 .env.development
 .env.production
 
+# The SQLite database (spider migrate creates it)
+db.sqlite
+db.sqlite-*
+
 # Spider generated assets (run: spider install): tailwind, daisyUI and icon
 # sets under bin/, compiled CSS and JS libraries under public/
 bin/

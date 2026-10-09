@@ -81,6 +81,9 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const unit_tests = b.addTest(.{ .root_module = exe.root_module });
+    // src/main.zig imports the generated template index: a fresh clone runs
+    // `zig build test` before anything else built it.
+    unit_tests.step.dependOn(&gen.step);
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);

@@ -20,7 +20,9 @@ pub fn main(init: std.process.Init) !void {
         .use(spider.logger)
         .mountFeatures(features)
         .onError(spider.errorHandler(.{ .always_json = true }))
-        .listen(.{ .port = 3000, .host = "0.0.0.0" }) catch |err| return err;
+        // Port and host come from spider.config.zig; the PORT variable
+        // (the environment or .env) replaces the port.
+        .listen(.{}) catch |err| return err;
 }
 
 // Routes in routes.zig with declared access, ui-* classes, icons from the

@@ -35,10 +35,16 @@ const PendingMigration = struct {
 pub fn run(io: std.Io, allocator: std.mem.Allocator) !void {
     const root_dir = try fs_utils.findProjectRoot(io);
 
+    // A fresh clone has no .env (it is not kept in git): the committed
+    // .env.example names the same development database.
     const env_opt: ?[]u8 = root_dir.readFileAlloc(io, ".env", allocator, .limited(64 * 1024)) catch |err| blk: {
-        if (err == error.FileNotFound) break :blk null;
-        std.debug.print("error: could not read .env file\n", .{});
-        return err;
+        if (err != error.FileNotFound) {
+            std.debug.print("error: could not read .env file\n", .{});
+            return err;
+        }
+        const example = root_dir.readFileAlloc(io, ".env.example", allocator, .limited(64 * 1024)) catch break :blk null;
+        std.debug.print("note: no .env here; using the settings of .env.example (cp .env.example .env to keep your own)\n", .{});
+        break :blk example;
     };
     defer if (env_opt) |e| allocator.free(e);
     const env_content: []const u8 = env_opt orelse "";

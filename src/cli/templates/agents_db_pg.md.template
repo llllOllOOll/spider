@@ -1,7 +1,7 @@
 
 ## Database (PostgreSQL)
 
-- Start it: `docker compose up -d db` (port 5452). The app and `spider migrate`
+- Start it: `docker compose up -d db` (port {{pg_port}}). The app and `spider migrate`
   read `PG_HOST`, `PG_PORT`, `PG_USER`, `PG_PASSWORD`, `PG_DB` from `.env`,
   which `spider new` created (git-ignored); `.env.example` is the committed
   reference — add new settings to both.
