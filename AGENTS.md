@@ -26,7 +26,7 @@ All from the repo root.
 | Postgres wrapper tests | `PG_HOST=127.0.0.1 PG_PORT=5435 PG_USER=postgres PG_PASSWORD=postgres PG_DB=postgres zig build test-pg` | a **disposable** Postgres (see below) |
 | HTTP client tests | `zig build test-pacman` | network access (most tests call httpbingo.org) |
 | Same, scripted local servers | `zig build test-pacman-local` (also with `-Dio_backend=zio`) | — |
-| SQLite tests | `zig build test-sqlite` | **currently fails to compile** (`no module named 'spider'`) — known, see traps |
+| SQLite tests | `zig build test-sqlite` | — (the tests get an env stub as their `spider` module) |
 | xlsx module tests | `zig build test-xlsx` | — (`cd modules/xlsx && zig build test-libreoffice` needs LibreOffice) |
 | Format | `zig fmt <the files you touched>` | never `zig fmt src` (reformats unrelated files) |
 
@@ -87,6 +87,7 @@ src/core/
   download.zig        Content-Disposition for c.download (file-name rules)
   extractors.zig      spider.Path(T, name) / spider.Form(T) handler params
   watchdog.zig        connection deadlines (idle/header/body/stream write)
+  listen_port.zig     the port and host listen() takes (test, dev, PORT, config)
 src/routing/          router (trie + static map; RouteMeta), Group (defaults, use),
                       route_config.zig (the route config keys, checked at comptime)
 src/render/           template engine: parser → AST → renderer; escaping, RawHtml
@@ -189,6 +190,19 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   that changes only the assets (CSS) rewrites the reload file named in
   SPIDER_DEV; the dev socket polls it and sends `reload`. Build helpers in
   build.zig: `devStep` (notify step; never cached) and `watchSources`.
+- **Where listen() listens** (`core/listen_port.zig`): a test
+  (`spider.testing.start`, one-shot, 127.0.0.1), `spider dev --port`, the
+  `.port` given to `listen()`, the `PORT` variable, the config. PORT stays
+  after an explicit `.port`: apps (and this repo's `.env`) have a PORT line
+  for other uses, and the e2e apps pass their own port.
+- **Test helper** (`testing/http.zig`): `spider.testing.start(run)` runs the
+  app's serve function on a detached thread and talks to it over a real
+  socket. `src/testing.zig` is also compiled alone as the CLI's
+  `spider_testing` module: keep `testing/*.zig` free of imports from the
+  rest of the framework (`testing/port.zig` is the only link to core).
+- **Markdown** (`render/zmd`): everything the author typed is escaped
+  (`Formatters.escape`, `safeAddress`). A new formatter that prints
+  `node.href`, `node.title` or `node.meta` must escape them.
 - **Before routing** (`handleConnection`): `max_body_bytes` (413, checked on
   Content-Length before reading), static files (ETag; `immutable` with `?v=`;
   304), then `origin_check` (core/origin.zig: cross-site unsafe method or WS
@@ -220,5 +234,3 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 - `tasks.md`, `memory.md`, `test.sh`, `test-mysql*.zig`, `server.log`,
   `test.db` are leftovers; don't treat them as current plans or tests.
 - `Config.env` is not read by anything today.
-- `zig build test-sqlite` doesn't compile (the sqlite module imports `spider`,
-  which that test step doesn't provide).

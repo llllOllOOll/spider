@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Found while writing the new documentation site and its example app.
+
+### Security
+
+- **Markdown (`spider.zmd`) wrote what the author typed unescaped** in four
+  places: a link's address and text, an image's address and title, the
+  language of a code block, and the body of a `{% raw %}` block. A document
+  could inject markup (`[x](https://a" onmouseover="...)`) or a script. All
+  are escaped now, quotes included, and a link or image whose address has a
+  scheme other than `http`, `https` or `mailto` (`javascript:`, `data:`)
+  keeps only its text. An app that renders Markdown from its users should
+  update.
+
+### Added
+
+- `spider.testing.start(run)`: an app's tests send real requests to its
+  server. `run` is what `main()` does to serve; it runs on a thread, once
+  per test binary, and its `listen()` takes a free port on 127.0.0.1. The
+  `App` has `get`, `postForm`, `postJson`, `request`; a `Response` has
+  `status`, `header`, `cookie`, `body` and `expectStatus`, `expectContains`,
+  `expectNotContains`, `expectHeader`, `expectRedirect`.
+- `c.redirectWith(url, opts)`: a redirect with headers or cookies, 303 by
+  default (`c.redirect` takes none and answers 302):
+  `c.redirectWith("/posts", try c.withCookie("author", name, .{ .encode = true }))`.
+- `CookieOptions.encode` percent-encodes a cookie's value, so text a person
+  typed (an accent, a `;`) is valid; `c.cookieDecoded(name)` reads it back.
+- `PORT` (the environment or `.env`) sets the port of an app that does not
+  pass one to `listen()`. Order: `spider dev --port`, `listen(.{ .port })`,
+  `PORT`, `spider.config.zig`. New projects call `listen(.{})`.
+- Markdown: a line starting with `> ` is a blockquote.
+- `zig build test-sqlite` compiles and runs again.
+
+### Fixed
+
+- **Router**: two routes that name the param at the same position
+  differently (`GET /posts/:author`, `POST /posts/:id`) each get their own
+  name. The second used to answer 400, "missing path param". `spider
+  routes` lists each route as it was declared.
+- **SQLite**: `queryExecute` (and `exec`) ran a script by splitting it on
+  every `;`, which cut a `CREATE TRIGGER` and any `;` inside a string. The
+  generated `src/core/db/migrations.zig` could not apply the migration
+  `spider g feature` writes. The script now runs as one piece.
+- **Generated Dockerfile**: it used an image with a Zig older than 0.17.0
+  and did not build. It now downloads the official Zig release, checks its
+  checksum, and installs the `spider` command for the assets the build
+  downloads. New: a `.dockerignore` (`.env`, databases, local builds).
+- **A fresh clone of a generated project**: `zig build test` builds the
+  template index first (it is no longer kept in git); `spider migrate`
+  reads `.env.example` when there is no `.env`; `.gitignore` lists
+  `db.sqlite`.
+- `spider new`: `docker-compose.yml` only for `--pg` projects, on a port
+  picked from the app's name (it was 5452 in every project);
+  `.env.example` only has the settings of the project's database.
+- `spider new` and `spider update` save a released tag of Spider, not the
+  tip of `main`.
+- `spider self-update` falls back to the install script in the repository
+  when spiderme.org does not answer.
+- `spider g feature` adds its line next to the others in
+  `src/features/mod.zig` (it went after the tests).
+
 ## [0.9.0] - 2026-10-08
 
 ### Breaking changes
