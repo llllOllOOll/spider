@@ -6,6 +6,17 @@
 
 const std = @import("std");
 
+/// A handler parameter filled from a `:name` segment of the route, already
+/// converted: an integer type or `[]const u8`.
+///
+/// ```zig
+/// fn show(c: *spider.Ctx, id: spider.Path(i64, "id")) !spider.Response {
+///     return c.json(.{ .id = id.value }, .{});
+/// }
+/// ```
+///
+/// A value that is not a `T` (`/posts/abc` for an integer) never reaches
+/// the handler: the request fails with `error.InvalidPathParam`, a 400.
 pub fn Path(comptime T: type, comptime name: []const u8) type {
     switch (@typeInfo(T)) {
         .int => {},
@@ -23,6 +34,16 @@ pub fn Path(comptime T: type, comptime name: []const u8) type {
     };
 }
 
+/// A handler parameter filled from the submitted form, as `Ctx.parseForm`
+/// would:
+///
+/// ```zig
+/// const Input = struct { title: []const u8 = "", body: []const u8 = "" };
+///
+/// fn create(c: *spider.Ctx, form: spider.Form(Input)) !spider.Response {
+///     return c.json(.{ .title = form.value.title }, .{});
+/// }
+/// ```
 pub fn Form(comptime T: type) type {
     return struct {
         pub const spider_kind = .form;

@@ -1,8 +1,12 @@
+//! The request and the response: `Ctx` (what every handler receives),
+//! `Response`, the option structs, and `statusForError`.
+
 const std = @import("std");
 const template_mod = @import("../render/template.zig");
 const Template = template_mod.Template;
 const views_mod = @import("../render/views.zig");
 const Database = @import("database.zig").Database;
+// internal: see Ctx.db.
 pub const DatabaseCtx = @import("database.zig").DatabaseCtx;
 const zmd = @import("../render/zmd/zmd.zig");
 const embedded = @import("../render/embedded.zig");
@@ -24,8 +28,10 @@ pub const embed_skipped = templates_from_disk and @hasDecl(root, "spider_templat
 /// The app's embedded templates as one map (see render/embedded.zig).
 const embedded_templates: embedded.Map = if (has_embed) embedded.buildMap(root.spider_templates) else .initComptime(.{});
 
+// internal: how the server found the app's templates.
 pub const ViewsMode = enum { runtime, embed };
 
+// internal: where views are read from; the server fills it in listen().
 pub const ViewsConfig = struct {
     views_dir: []const u8 = "./views",
     layout: ?[]const u8 = "layout",
@@ -35,16 +41,47 @@ pub const ViewsConfig = struct {
     index: ?*const views_mod.ViewsIndex = null,
 };
 
+/// What a middleware calls to let the request go on: the next middleware,
+/// or the handler.
 pub const NextFn = *const fn (*Ctx) anyerror!Response;
+
+/// A middleware: runs around the handler. It answers by itself, or calls
+/// `next(c)` and may change the response on the way back.
+///
+/// ```zig
+/// fn noStore(c: *spider.Ctx, next: spider.NextFn) !spider.Response {
+///     var res = try next(c);
+///     const headers = try c.arena.alloc([2][]const u8, res.headers.len + 1);
+///     @memcpy(headers[0..res.headers.len], res.headers);
+///     headers[res.headers.len] = .{ "Cache-Control", "no-store" };
+///     res.headers = headers;
+///     return res;
+/// }
+/// ```
+///
+/// Register it with `Server.use`, `Server.useAt` or `Group.use`.
 pub const MiddlewareFn = *const fn (*Ctx, NextFn) anyerror!Response;
+
+/// The function given to `Server.onError`: every error a handler, a
+/// middleware or an extractor returns ends up there.
+/// `spider.errorHandler(.{})` makes a ready one.
 pub const ErrorHandler = *const fn (*Ctx, anyerror) anyerror!Response;
 
+/// The attributes of a cookie, for `Ctx.withCookie`, `Ctx.setCookie` and
+/// `Ctx.deleteCookie`. The defaults are the safe ones: not readable from
+/// JavaScript, sent over HTTPS only, `SameSite=Lax`, for the whole site.
 pub const CookieOptions = struct {
+    /// Not used: the value is the argument of the function.
     value: []const u8 = "",
+    /// `HttpOnly`: JavaScript in the page cannot read the cookie.
     http_only: bool = true,
+    /// `Secure`: sent over HTTPS only. Browsers still send it to
+    /// `http://localhost`.
     secure: bool = true,
+    /// `SameSite`: "Lax", "Strict" or "None".
     same_site: []const u8 = "Lax",
     path: []const u8 = "/",
+    /// Seconds the browser keeps it. Null: until the browser closes.
     max_age: ?u32 = null,
     /// Domain attribute (null: host-only, the safer default).
     domain: ?[]const u8 = null,
@@ -74,10 +111,20 @@ pub const HtmxHeaders = struct {
     pub const Swap = enum { innerHTML, outerHTML, textContent, beforebegin, afterbegin, beforeend, afterend, delete, none };
 };
 
+/// The last argument of `Ctx.json`, `Ctx.text`, `Ctx.html`, `Ctx.view` and
+/// the others that build a response. `.{}` is a 200 with no extra header.
+///
+/// ```zig
+/// return c.json(.{ .id = id }, .{ .status = .created });
+/// ```
 pub const ResponseOptions = struct {
     status: std.http.Status = .ok,
+    /// Extra response headers, as `.{ name, value }` pairs. They must stay
+    /// valid until the response is sent: allocate them in `c.arena`.
     headers: []const [2][]const u8 = &.{},
-    cookies: []const [2][]const u8 = &.{}, // .{ name, full_set_cookie_string }
+    /// `.{ name, full Set-Cookie value }` pairs. `Ctx.withCookie` is the
+    /// short way to set one cookie.
+    cookies: []const [2][]const u8 = &.{},
 };
 
 const download_mod = @import("download.zig");
@@ -101,19 +148,47 @@ pub const DownloadOptions = struct {
     cookies: []const [2][]const u8 = &.{},
 };
 
+/// What a handler returns. Build it with the methods of `Ctx` (`c.json`,
+/// `c.view`, `c.redirect`, ...); a middleware may change its fields after
+/// `next(c)`.
 pub const Response = struct {
     status: std.http.Status = .ok,
     body: ?[]const u8 = null,
     content_type: []const u8 = "text/plain",
     headers: []const [2][]const u8 = &.{},
     cookies: []const [2][]const u8 = &.{},
+    /// The handler already wrote to the connection itself (SSE, WebSocket):
+    /// the server sends nothing more.
     raw: bool = false,
 };
 
+/// The request, and what builds the response: every handler and middleware
+/// receives a `*Ctx`.
+///
+/// ```zig
+/// fn show(c: *spider.Ctx) !spider.Response {
+///     const id = c.params.get("id") orelse return error.NotFound;
+///     return c.json(.{ .id = id }, .{});
+/// }
+/// ```
+///
+/// Fields whose name starts with `_` belong to Spider: they change without
+/// notice.
 pub const Ctx = struct {
+    /// The request as std parsed it: `request.head.method`,
+    /// `request.head.target`. Most handlers use `getMethod`, `getPath`,
+    /// `header` and `query` instead.
     request: std.http.Server.Request,
+    /// Memory for this request, freed when the response is sent. What a
+    /// handler allocates for its answer goes here; nothing is freed by hand.
     arena: std.mem.Allocator,
+    /// The `:name` segments of the matched route: `c.params.get("id")`.
+    /// Spider also keeps who the request is from here, under names that
+    /// start with `_auth_`; read those with `userId`, `hasRole` and the
+    /// like.
     params: std.StringHashMapUnmanaged([]const u8),
+    /// The request body as it arrived, or null when there is none. See
+    /// `bodyJson` and `parseForm`.
     body: ?[]const u8 = null,
     _db: ?*const Database = null,
     _views: ?ViewsConfig = null,
@@ -164,6 +239,7 @@ pub const Ctx = struct {
         self._error_detail = detail;
     }
 
+    /// The reason attached with `setErrorDetail`, if any.
     pub fn errorDetail(self: *Ctx) ?[]const u8 {
         return self._error_detail;
     }
@@ -181,6 +257,20 @@ pub const Ctx = struct {
         return std.mem.eql(u8, dest, "empty");
     }
 
+    /// The `std.Io` the server runs on: files, sockets, sleep and locks
+    /// take it. Use this one inside a request, never an `Io` of your own:
+    /// under the zio backend another `Io` does not work on the server's
+    /// sockets.
+    ///
+    /// ```zig
+    /// const res = try spider.http_client.get(c.io(), c.arena, url, .{});
+    /// ```
+    pub fn io(self: *const Ctx) std.Io {
+        return self._io;
+    }
+
+    // internal: the old generic database handle; apps use spider.pg or
+    // spider.sqlite directly.
     pub fn db(self: *Ctx) DatabaseCtx {
         return .{
             ._db = self._db.?,
@@ -188,6 +278,13 @@ pub const Ctx = struct {
         };
     }
 
+    /// A JSON response: `value` (a struct, a slice, anything `std.json` can
+    /// write) serialized, with `Content-Type: application/json`.
+    ///
+    /// ```zig
+    /// return c.json(.{ .id = post.id, .title = post.title }, .{});
+    /// return c.json(.{ .errors = errors }, .{ .status = .unprocessable_entity });
+    /// ```
     pub fn json(self: *Ctx, value: anytype, opts: ResponseOptions) !Response {
         const body = try std.json.Stringify.valueAlloc(self.arena, value, .{});
         return Response{
@@ -199,6 +296,8 @@ pub const Ctx = struct {
         };
     }
 
+    /// A plain text response (UTF-8). `content` is not copied: it must stay
+    /// valid until the response is sent (a literal, or memory from `c.arena`).
     pub fn text(_: *Ctx, content: []const u8, opts: ResponseOptions) !Response {
         return Response{
             .status = opts.status,
@@ -209,6 +308,9 @@ pub const Ctx = struct {
         };
     }
 
+    /// An HTML response from a string you already have. It is sent as it is:
+    /// nothing is escaped. For a page, `view` renders a template and escapes
+    /// the data.
     pub fn html(_: *Ctx, content: []const u8, opts: ResponseOptions) !Response {
         return Response{
             .status = opts.status,
@@ -245,6 +347,9 @@ pub const Ctx = struct {
         };
     }
 
+    /// Renders a template given as text (not a file) with `data`, as HTML.
+    /// `view` is the usual one: it finds the template by name and knows the
+    /// layout and the components.
     pub fn render(self: *Ctx, tmpl: []const u8, data: anytype, opts: ResponseOptions) !Response {
         var tmpl_instance = try Template.init(self.arena, tmpl);
         defer tmpl_instance.deinit();
@@ -259,6 +364,20 @@ pub const Ctx = struct {
         };
     }
 
+    /// Renders a template of the app with `data` and answers it as HTML.
+    ///
+    /// `name` is the feature and the file: `"posts/index"` is
+    /// `src/features/posts/views/index.html`. `data` is a struct; its fields
+    /// are the names the template reads, and everything is HTML-escaped unless
+    /// it is a `spider.RawHtml`. Templates also see `current_user` when someone
+    /// is signed in.
+    ///
+    /// ```zig
+    /// return c.view("posts/show", .{ .title = post.title, .post = post }, .{});
+    /// ```
+    ///
+    /// `error.TemplateNotFound` when there is no such template,
+    /// `error.ViewsNotConfigured` when the app has none.
     pub fn view(self: *Ctx, name: []const u8, data: anytype, opts: ResponseOptions) !Response {
         switch (try self.prepareView(name, opts)) {
             .done => |resp| return resp,
@@ -270,6 +389,14 @@ pub const Ctx = struct {
         }
     }
 
+    /// Renders one component of a template, without the layout or the rest of
+    /// the page: what an htmx request that swaps a part of the page wants.
+    /// `component_name` is a component defined in `template_name` or a
+    /// component file. `error.ComponentNotFound` when there is none.
+    ///
+    /// ```zig
+    /// return c.viewFragment("posts/index", "PostList", .{ .posts = posts }, .{});
+    /// ```
     pub fn viewFragment(self: *Ctx, template_name: []const u8, component_name: []const u8, data: anytype, opts: ResponseOptions) !Response {
         switch (try self.prepareView(template_name, opts)) {
             .done => |resp| return resp,
@@ -316,7 +443,7 @@ pub const Ctx = struct {
     /// Runtime mode: reads the template, and every indexed template as a
     /// component, from disk.
     fn prepareRuntime(self: *Ctx, vc: ViewsConfig, name: []const u8, opts: ResponseOptions) !PreparedView {
-        const io = vc.io;
+        const views_io = vc.io;
         const view_path = if (vc.index) |idx|
             idx.get(name) orelse {
                 self._last_template = name;
@@ -326,7 +453,7 @@ pub const Ctx = struct {
             try std.fmt.allocPrint(self.arena, "{s}/{s}.html", .{ vc.views_dir, name });
 
         const view_content = std.Io.Dir.cwd().readFileAlloc(
-            io,
+            views_io,
             view_path,
             self.arena,
             .limited(512 * 1024),
@@ -345,7 +472,7 @@ pub const Ctx = struct {
         if (vc.index) |idx| {
             for (idx.entries) |entry| {
                 const content = std.Io.Dir.cwd().readFileAlloc(
-                    io,
+                    views_io,
                     entry.path,
                     self.arena,
                     .limited(512 * 1024),
@@ -397,10 +524,20 @@ pub const Ctx = struct {
         };
     }
 
+    /// The request body as it arrived (the same as the `body` field).
     pub fn getBody(self: *Ctx) ?[]const u8 {
         return self.body;
     }
 
+    /// The JSON body parsed into `T`. Fields of the JSON that `T` does not
+    /// have are ignored; a field `T` needs and the JSON lacks is an error, as
+    /// is JSON that does not parse. `error.BodyEmpty` when there is no body.
+    /// All of them answer 400 by default.
+    ///
+    /// ```zig
+    /// const Input = struct { title: []const u8, body: []const u8 = "" };
+    /// const input = try c.bodyJson(Input);
+    /// ```
     pub fn bodyJson(self: *Ctx, comptime T: type) !T {
         const raw = self.body orelse return error.BodyEmpty;
         const parsed = try std.json.parseFromSlice(T, self.arena, raw, .{
@@ -409,6 +546,9 @@ pub const Ctx = struct {
         return parsed.value;
     }
 
+    /// The parts of a `multipart/form-data` body: the fields and the uploaded
+    /// files. `error.BodyEmpty`, `error.MissingContentType` or
+    /// `error.InvalidBoundary` when the request is not one.
     pub fn parseMultipart(self: *Ctx) !@import("../binding/multipart.zig").MultipartData {
         const body = self.body orelse return error.BodyEmpty;
         const ct = self.header("content-type") orelse return error.MissingContentType;
@@ -416,6 +556,14 @@ pub const Ctx = struct {
         return @import("../binding/multipart.zig").parse(self.arena, body, boundary);
     }
 
+    /// The fields of a submitted form as a `T`, whether it came as
+    /// `application/x-www-form-urlencoded` or `multipart/form-data`. A field
+    /// of `T` with a default is optional in the form.
+    ///
+    /// ```zig
+    /// const Input = struct { title: []const u8 = "", body: []const u8 = "" };
+    /// const input = try c.parseForm(Input);
+    /// ```
     pub fn parseForm(self: *Ctx, comptime T: type) !T {
         const body = self.body orelse return error.BodyEmpty;
         const ct = self.header("content-type");
@@ -431,10 +579,12 @@ pub const Ctx = struct {
         return try parser.parse(T);
     }
 
+    /// True for a request htmx made (the `HX-Request` header).
     pub fn isHtmx(self: *Ctx) bool {
         return self.header("HX-Request") != null;
     }
 
+    /// True for a navigation htmx made through `hx-boost` (the `HX-Boosted` header).
     pub fn isBoosted(self: *Ctx) bool {
         return self.header("HX-Boosted") != null;
     }
@@ -492,6 +642,8 @@ pub const Ctx = struct {
         return .full;
     }
 
+    /// The value of the cookie `name` as the browser sent it, or null. A
+    /// cookie written with `.encode = true` is read with `cookieDecoded`.
     pub fn cookie(self: *Ctx, name: []const u8) ?[]const u8 {
         const cookie_header = self.header("Cookie") orelse return null;
         var iter = std.mem.splitScalar(u8, cookie_header, ';');
@@ -515,6 +667,14 @@ pub const Ctx = struct {
         return std.Uri.percentDecodeInPlace(copy);
     }
 
+    /// Response options that set one cookie:
+    ///
+    /// ```zig
+    /// return c.redirectWith("/", try c.withCookie("theme", "dark", .{ .max_age = 86400 * 365 }));
+    /// ```
+    ///
+    /// `error.InvalidCookie` for a name or value a cookie cannot hold; text a
+    /// person typed needs `.encode = true`.
     pub fn withCookie(self: *Ctx, name: []const u8, value: []const u8, opts: CookieOptions) !ResponseOptions {
         const cookie_str = try self.setCookie(name, value, opts);
         const headers = try self.arena.alloc([2][]const u8, 1);
@@ -615,6 +775,8 @@ pub const Ctx = struct {
         return decodeFormValue(self.arena, raw) catch raw;
     }
 
+    /// The value of a request header, or null. The name is matched without
+    /// regard to case: `c.header("content-type")`.
     pub fn header(self: *Ctx, name: []const u8) ?[]const u8 {
         var iter = self._headers.iterator();
         while (iter.next()) |entry| {
@@ -675,6 +837,8 @@ pub const Ctx = struct {
         };
     }
 
+    /// A 302 redirect to `url`. After a form was saved, `redirectWith` is the
+    /// better one: it answers 303, and can set a cookie.
     pub fn redirect(self: *Ctx, url: []const u8) !Response {
         const hdrs = try self.arena.alloc([2][]const u8, 1);
         hdrs[0] = .{ "Location", url };
@@ -686,15 +850,21 @@ pub const Ctx = struct {
         };
     }
 
+    /// The hub of the app's WebSocket connections, to send to them from a
+    /// handler. Panics when the app registered no WebSocket route (`Server.ws`).
     pub fn wsHub(self: *Ctx) *Hub {
         return self._ws_hub orelse @panic("wsHub: no hub attached — use server.ws()");
     }
 
+    /// The hub of the app's SSE streams, to publish events from a handler:
+    /// `c.sseHub().emit("post_created", .{ .id = id })`. Panics when the app registered no SSE
+    /// route (`Server.sse`).
     pub fn sseHub(self: *Ctx) *Hub {
         return self._sse_hub orelse @panic("sseHub: no SSE hub — use server.sse()");
     }
 
-    /// Retorna o org_id da primeira organization que o usuário tem a role especificada
+    /// The id of the first organization where the user holds `role`, or
+    /// null.
     pub fn getOrgByRole(self: *Ctx, role: []const u8) ?[]const u8 {
         const count_str = self.params.get("_auth_orgs_count") orelse return null;
         const count = std.fmt.parseInt(usize, count_str, 10) catch return null;
@@ -710,6 +880,7 @@ pub const Ctx = struct {
         return null;
     }
 
+    /// True when the user holds `role` in any of their organizations. `hasActiveOrgRole` looks at the selected one only.
     pub fn hasOrgRole(self: *Ctx, role: []const u8) bool {
         const count_str = self.params.get("_auth_orgs_count") orelse return false;
         const count = std.fmt.parseInt(usize, count_str, 10) catch return false;
@@ -779,6 +950,8 @@ pub const Ctx = struct {
         return false;
     }
 
+    /// True when the user holds `role` (a role of the account, not of an
+    /// organization): what `.roles` on a route checks.
     pub fn hasRole(self: *Ctx, role: []const u8) bool {
         const count_str = self.params.get("_auth_roles_count") orelse return false;
         const count = std.fmt.parseInt(usize, count_str, 10) catch return false;
@@ -800,6 +973,7 @@ pub const Ctx = struct {
     // `.roles`, `.org_roles` and policies read them the same way whatever
     // the source.
 
+    /// Who a request is from, for `setUser`.
     pub const User = struct {
         id: []const u8,
         email: ?[]const u8 = null,
@@ -843,6 +1017,7 @@ pub const Ctx = struct {
         return out.items;
     }
 
+    /// One role of the user inside one organization, for `addOrgRole`.
     pub const OrgRole = struct {
         org_id: []const u8,
         org_name: []const u8 = "",
@@ -892,10 +1067,13 @@ pub const Ctx = struct {
         return !self._no_route;
     }
 
+    /// The target of the request as it was sent: the path and, when there is
+    /// one, the query string (`/posts?q=zig`).
     pub fn getPath(self: *Ctx) []const u8 {
         return self.request.head.target;
     }
 
+    /// The request method in capitals: "GET", "POST", ...
     pub fn getMethod(self: *Ctx) []const u8 {
         return @tagName(self.request.head.method);
     }

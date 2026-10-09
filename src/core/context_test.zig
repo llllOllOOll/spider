@@ -246,3 +246,9 @@ test "redirectWith: 303 by default, keeps headers and cookies, another 3xx is ke
     const plain = try c.redirect("/x");
     try std.testing.expectEqual(std.http.Status.found, plain.status);
 }
+
+test "io() is the Io the server gave the request" {
+    var c = Ctx{ .request = undefined, .arena = std.testing.allocator, .params = .{}, .body = null };
+    c._io = std.testing.io;
+    try std.testing.expectEqual(std.testing.io.vtable, c.io().vtable);
+}

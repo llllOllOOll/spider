@@ -1,10 +1,16 @@
+//! The server: `spider.app(.{})` builds one, the route methods fill it, and
+//! `listen()` runs it. Also here: the request lifecycle (handleConnection),
+//! the accept loops of both io backends, and the route listing.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const build_options = @import("spider_build_options");
 const env = @import("../internal/env.zig");
 const static_mod = @import("../modules/static.zig");
+/// Where static files are served from; see `Server.staticDir`.
 pub const StaticConfig = static_mod.StaticConfig;
+// internal: the shape of the RBAC part of a route config.
 pub const RouteConfig = struct {
     roles: []const []const u8 = &.{},
     org_roles: []const []const u8 = &.{},
@@ -617,6 +623,10 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
     }
 }
 
+/// The argument of `Server.listen`. `.{}` takes both from the app's config.
+///
+/// The port is, in this order: `spider dev --port`, `.port` here, the
+/// `PORT` variable (environment or `.env`), then `spider.config.zig`.
 pub const ListenOptions = struct {
     port: ?u16 = null,
     host: ?[]const u8 = null,
@@ -727,6 +737,7 @@ pub const Boot = struct {
     /// The server's Io.
     io: Io,
 };
+// internal: the type of a feature's boot().
 pub const BootFn = *const fn (Boot) anyerror!void;
 
 /// A periodic task a feature declares: `pub const jobs = .{spider.every(60_000, retryLoop)};`
@@ -736,6 +747,17 @@ pub const Job = struct {
     run: *const fn (*Hub) void,
 };
 
+/// A job that runs `run` every `every_ms` milliseconds, for a feature's
+/// `jobs`:
+///
+/// ```zig
+/// pub const jobs = .{spider.every(60_000, cleanUp)};
+///
+/// fn cleanUp(hub: *spider.Hub) void {
+///     _ = hub;
+///     // runs once a minute, on its own thread
+/// }
+/// ```
 pub fn every(every_ms: u64, run: *const fn (*Hub) void) Job {
     return .{ .every_ms = every_ms, .run = run };
 }
@@ -762,6 +784,19 @@ fn intervalLoop(entry: *IntervalEntry) void {
     }
 }
 
+/// The server type. Apps get one from `spider.app(.{})` and do not name
+/// it. Every method that registers something returns the server, so the
+/// calls chain:
+///
+/// ```zig
+/// var server = spider.app(.{});
+/// defer server.deinit();
+/// try server
+///     .use(spider.logger)
+///     .mountFeatures(features)
+///     .onError(onError)
+///     .listen(.{});
+/// ```
 pub fn Server(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -792,6 +827,7 @@ pub fn Server(comptime T: type) type {
         /// Features' boot() hooks, run by listen() before the first accept.
         boot_hooks: std.ArrayListUnmanaged(BootFn) = .empty,
 
+        // internal: `spider.app` and `spider.appWithConfig` call it.
         pub fn init() Self {
             env.autoLoad(std.heap.page_allocator);
             env.checkGitignore();
@@ -814,6 +850,7 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Frees what the server allocated. Call it with `defer` after `spider.app`.
         pub fn deinit(self: *Self) void {
             for (self.interval_threads.items) |*e| {
                 e.running.store(false, .release);
@@ -837,6 +874,9 @@ pub fn Server(comptime T: type) type {
             self.spider_arena.deinit();
         }
 
+        /// Adds a middleware that runs on every request, in the order added,
+        /// before the route's own access checks. At most 16; one added after that
+        /// is ignored.
         pub fn use(self: *Self, m: MiddlewareFn) *Self {
             if (self.global_middleware_count < 16) {
                 self.global_middlewares[self.global_middleware_count] = m;
@@ -845,6 +885,9 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Adds a middleware for the requests whose path starts with `path`
+        /// (`"/admin"` and `"/admin/*"` mean the same). It runs after the global
+        /// ones. At most 32.
         pub fn useAt(self: *Self, path: []const u8, m: MiddlewareFn) *Self {
             if (self.path_middleware_count >= self.path_middlewares.len) {
                 std.debug.panic(
@@ -857,26 +900,60 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Sets where every error a handler or a middleware returns ends up.
+        /// Without one, the error becomes its default status (`spider.statusForError`).
+        ///
+        /// ```zig
+        /// fn onError(c: *spider.Ctx, err: anyerror) !spider.Response {
+        ///     if (err == error.NotFound) return c.view("not-found", .{}, .{ .status = .not_found });
+        ///     return fallback(c, err);
+        /// }
+        /// const fallback = spider.errorHandler(.{});
+        /// ```
         pub fn onError(self: *Self, handler: ErrorHandler) *Self {
             self.error_handler = handler;
             return self;
         }
 
+        // internal: the old generic database handle; apps call `spider.pg.init` or `spider.sqlite.init`.
         pub fn db(self: *Self, database: Database) *Self {
             self._db = database;
             return self;
         }
 
+        /// Serves the files of `dir` from the root of the site, in place of the `static_dir` of the config.
         pub fn staticDir(self: *Self, dir: []const u8) *Self {
             self.static_config = .{ .dir = dir, .prefix = "/" };
             return self;
         }
 
+        /// Serves the files of `dir` under the path `prefix`.
         pub fn staticAt(self: *Self, dir: []const u8, prefix: []const u8) *Self {
             self.static_config = .{ .dir = dir, .prefix = prefix };
             return self;
         }
 
+        /// Registers a GET route.
+        ///
+        /// `path` may have `:name` segments (`"/posts/:id"`), read in the handler
+        /// with `c.params.get("id")`. `handler` is `fn (*spider.Ctx) !spider.Response`;
+        /// it may also take `spider.Path`, `spider.Form` and `spider.Loaded`
+        /// parameters. `config` says who may call the route and is required, even
+        /// when empty (`.{}`):
+        ///
+        /// - `.public = true`: anyone.
+        /// - `.authenticated = true`: anyone signed in.
+        /// - `.roles = &.{"admin"}`: a signed-in user with one of these roles.
+        /// - `.org_roles = &.{"owner"}`: one of these roles in the active organization.
+        /// - `.policy = ...`: a rule of the app (`spider.policy`, `spider.policySet`).
+        /// - `.quiet_log = true`: a successful request is not logged.
+        /// - `.allow_http = true`: served over plain HTTP under `spider.forceHttps`.
+        ///
+        /// An unknown key is a compile error.
+        ///
+        /// ```zig
+        /// server.get("/posts/:id", show, .{ .public = true })
+        /// ```
         pub fn get(self: *Self, path: []const u8, handler: anytype, comptime config: anytype) *Self {
             const H = if (@TypeOf(handler) == Handler)
                 handler
@@ -892,6 +969,7 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers a POST route. Path, handler and config as in `get`.
         pub fn post(self: *Self, path: []const u8, handler: anytype, comptime config: anytype) *Self {
             const H = if (@TypeOf(handler) == Handler)
                 handler
@@ -907,6 +985,7 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers a PUT route. Path, handler and config as in `get`.
         pub fn put(self: *Self, path: []const u8, handler: anytype, comptime config: anytype) *Self {
             const H = if (@TypeOf(handler) == Handler)
                 handler
@@ -922,6 +1001,7 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers a DELETE route. Path, handler and config as in `get`.
         pub fn delete(self: *Self, path: []const u8, handler: anytype, comptime config: anytype) *Self {
             const H = if (@TypeOf(handler) == Handler)
                 handler
@@ -937,6 +1017,7 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers a PATCH route. Path, handler and config as in `get`.
         pub fn patch(self: *Self, path: []const u8, handler: anytype, comptime config: anytype) *Self {
             const H = if (@TypeOf(handler) == Handler)
                 handler
@@ -952,6 +1033,7 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers a HEAD route. Path, handler and config as in `get`.
         pub fn head(self: *Self, path: []const u8, handler: anytype, comptime config: anytype) *Self {
             const H = if (@TypeOf(handler) == Handler)
                 handler
@@ -967,6 +1049,16 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers a WebSocket route. The handler runs once per connection and
+        /// returns when it ends:
+        ///
+        /// ```zig
+        /// fn chat(ws: *spider.Ws) !void {
+        ///     while (try ws.next()) |message| {
+        ///         _ = message;
+        ///     }
+        /// }
+        /// ```
         pub fn ws(self: *Self, path: []const u8, comptime handler: fn (*Ws) anyerror!void) *Self {
             var threaded = std.Io.Threaded.init_single_threaded;
             const hub_ptr = std.heap.smp_allocator.create(Hub) catch unreachable;
@@ -981,6 +1073,9 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers a WebSocket route whose clients only listen, and calls
+        /// `callback` with the route's hub every `ms` milliseconds, to send to
+        /// them.
         pub fn wsInterval(self: *Self, path: []const u8, ms: u64, comptime callback: fn (*Hub) void) *Self {
             var threaded = std.Io.Threaded.init_single_threaded;
             const hub_ptr = std.heap.smp_allocator.create(Hub) catch unreachable;
@@ -1019,6 +1114,7 @@ pub fn Server(comptime T: type) type {
             }
         }
 
+        /// Calls `callback` with the SSE hub every `ms` milliseconds, on its own thread: a place to publish events on a schedule.
         pub fn sseInterval(self: *Self, ms: u64, comptime callback: fn (*Hub) void) *Self {
             self.ensureSseHub();
             self.interval_threads.append(std.heap.smp_allocator, .{
@@ -1074,6 +1170,8 @@ pub fn Server(comptime T: type) type {
             }
         }
 
+        /// Registers a Server-Sent Events route. The handler receives the stream
+        /// of one client; see `spider.Sse`. Use `sseWith` to say who may call it.
         pub fn sse(self: *Self, path: []const u8, comptime handler: fn (*Sse) anyerror!void) *Self {
             self.ensureSseHub();
             const H = sse_mod.buildHandler(handler);
@@ -1093,10 +1191,12 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
+        /// Registers a GET route with an empty config. The server already answers `/up`.
         pub fn health(self: *Self, path: []const u8, comptime handler: anytype) *Self {
             return self.get(path, handler, .{});
         }
 
+        // internal: registers a route from already built parts.
         pub fn addRoute(
             self: *Self,
             method: std.http.Method,
@@ -1108,6 +1208,7 @@ pub fn Server(comptime T: type) type {
                 std.log.err("route {s} {s} not registered: {s}", .{ @tagName(method), path, @errorName(err) });
         }
 
+        // internal: the older way to group routes; apps use `spider.Group` and `mount`.
         pub fn group(
             self: *Self,
             prefix: []const u8,
@@ -1177,6 +1278,8 @@ pub fn Server(comptime T: type) type {
             }
         }
 
+        /// Registers the routes of a `spider.Group`. Features are mounted by
+        /// `mountFeatures`; this is for a group built elsewhere.
         pub fn mount(self: *Self, child: Group) *Self {
             const MountCtx = struct { s: *Self, use: []const MiddlewareFn };
             const mctx: MountCtx = .{ .s = self, .use = child.use_middlewares[0..child.use_count] };
@@ -1360,6 +1463,16 @@ pub fn Server(comptime T: type) type {
             }
         }
 
+        /// Starts the server and serves until the process ends. Before the first
+        /// connection it runs the features' `boot()` hooks and starts their jobs.
+        ///
+        /// ```zig
+        /// try server.listen(.{});
+        /// try server.listen(.{ .port = 8080, .host = "0.0.0.0" });
+        /// ```
+        ///
+        /// With `SPIDER_ROUTES` set it prints the route table and returns instead
+        /// (what `spider routes` runs).
         pub fn listen(self: *Self, options: ListenOptions) !void {
             if (env.get("SPIDER_ROUTES")) |mode| {
                 var threaded = std.Io.Threaded.init_single_threaded;
@@ -1517,10 +1630,23 @@ fn AppType(comptime T: type) type {
     return Server(T);
 }
 
+// internal: a server with no config; apps call `spider.app`.
 pub fn server() Server(EmptyDeco) {
     return Server(EmptyDeco).init();
 }
 
+/// Builds the server of an app, with the config of `spider.config.zig`.
+/// It already answers `/up` (for load balancers) and serves the static
+/// directory.
+///
+/// ```zig
+/// var server = spider.app(.{});
+/// defer server.deinit();
+/// ```
+///
+/// `decorations` is a struct of values handlers may ask for by type: a
+/// handler that takes a second parameter of the type of one of its fields
+/// receives that field. Most apps pass `.{}`.
 pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
     if (@hasDecl(@import("spider_config"), "is_default")) {
         std.log.warn(
@@ -1571,6 +1697,8 @@ fn noteTemplatesFromDisk(views_dir: []const u8) void {
     );
 }
 
+/// The same server as `spider.app(.{})`, with the config given in code
+/// instead of read from `spider.config.zig` (tests, small programs).
 pub fn appWithConfig(config: Config) Server(EmptyDeco) {
     var s = Server(EmptyDeco).init();
     s.config = config;

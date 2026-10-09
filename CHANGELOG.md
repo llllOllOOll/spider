@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`c.io()`**: the `std.Io` the server runs on, for code inside a request
+  that needs one (the HTTP client, files, sleep). It replaces reading the
+  field `c._io`, which keeps working.
 - **`current_user` in every view.** When the request has a user (a session,
   a token, `c.setUser`), templates can read `current_user.id`,
   `current_user.email` and `current_user.name` without the handler passing

@@ -1,15 +1,21 @@
+//! The router: a map of static paths and a trie of dynamic ones, each route
+//! with its own middlewares and declarations (`RouteMeta`). Apps do not
+//! use `Router` directly; they register routes on the server or on a
+//! `spider.Group`.
+
 const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const Response = @import("../core/context.zig").Response;
 const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 
+/// The plain handler type: `fn (*spider.Ctx) !spider.Response`.
 pub const Handler = *const fn (*Ctx) anyerror!Response;
 
-/// A registered endpoint: the handler plus the middlewares that belong to
-/// that exact route (e.g. RBAC from `.{ .roles = ... }`). Stored in the
-/// router itself so a match on `/items/:id` carries its own middlewares —
-/// looking them up afterwards by comparing the request path against the
-/// registered pattern can never match a dynamic route.
+// internal: a registered endpoint: the handler plus the middlewares that belong to
+// that exact route (e.g. RBAC from `.{ .roles = ... }`). Stored in the
+// router itself so a match on `/items/:id` carries its own middlewares:
+// looking them up afterwards by comparing the request path against the
+// registered pattern can never match a dynamic route.
 pub const Route = struct {
     handler: Handler,
     middlewares: []const MiddlewareFn = &.{},
@@ -79,7 +85,7 @@ pub const RouteMeta = struct {
     }
 };
 
-/// One registered route, as listed by Router.entries().
+// internal: one registered route, as listed by Router.entries().
 pub const Entry = struct {
     method: std.http.Method,
     /// Always starts with '/'.
@@ -109,6 +115,7 @@ const Node = struct {
     }
 };
 
+// internal: what Router.match gives the server.
 pub const MatchResult = struct {
     handler: Handler,
     params: std.StringHashMapUnmanaged([]const u8),
@@ -128,6 +135,7 @@ fn toUppercase(in: []const u8, out: []u8) void {
     }
 }
 
+// internal: the server and each Group own one.
 pub const Router = struct {
     root: *Node,
     allocator: std.mem.Allocator,

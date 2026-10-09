@@ -1,3 +1,6 @@
+//! `spider.Group`: the routes of one feature under one prefix, with shared
+//! access defaults and middlewares, mounted on the server later.
+
 const std = @import("std");
 const Router = @import("router.zig").Router;
 const Handler = @import("router.zig").Handler;
@@ -40,6 +43,8 @@ pub const Group = struct {
     use_count: usize = 0,
     route_count: usize = 0,
 
+    /// A new, empty group. `prefix` goes in front of every path added to it;
+    /// `""` is a group at the root of the site.
     pub fn init(prefix: []const u8) Group {
         const r = std.heap.page_allocator.create(Router) catch @panic("OOM");
         r.* = Router.init(std.heap.page_allocator) catch @panic("OOM");
@@ -74,26 +79,35 @@ pub const Group = struct {
         return self;
     }
 
+    /// Adds a GET route under the group's prefix: in a group at `/posts`,
+    /// `""` answers `/posts` and `"/:id"` answers `/posts/4`. Handler and
+    /// config are the ones of `Server.get`; an empty config (`.{}`) takes the
+    /// group's `defaults`.
     pub fn get(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
         return self.route(.GET, path, toHandler(handler), config);
     }
 
+    /// Adds a POST route under the group's prefix. Path, handler and config as in `get`.
     pub fn post(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
         return self.route(.POST, path, toHandler(handler), config);
     }
 
+    /// Adds a PUT route under the group's prefix. Path, handler and config as in `get`.
     pub fn put(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
         return self.route(.PUT, path, toHandler(handler), config);
     }
 
+    /// Adds a DELETE route under the group's prefix. Path, handler and config as in `get`.
     pub fn delete(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
         return self.route(.DELETE, path, toHandler(handler), config);
     }
 
+    /// Adds a PATCH route under the group's prefix. Path, handler and config as in `get`.
     pub fn patch(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
         return self.route(.PATCH, path, toHandler(handler), config);
     }
 
+    /// Adds a HEAD route under the group's prefix. Path, handler and config as in `get`.
     pub fn head(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
         return self.route(.HEAD, path, toHandler(handler), config);
     }
@@ -133,6 +147,9 @@ pub const Group = struct {
     // No RBAC config param — Server.sse() doesn't take one either, so this
     // isn't a new inconsistency. buildHandler lives in ws/sse.zig (not
     // app.zig) specifically so this can call it without a circular import.
+    /// Adds a Server-Sent Events route under the group's prefix. It takes no
+    /// config and does not get the group's `defaults`: use `sseWith` to say
+    /// who may call it.
     pub fn sse(self: *Group, path: []const u8, comptime handler: fn (*Sse) anyerror!void) *Group {
         const full = self.join(path) catch unreachable;
         self.router.add(.GET, full, sse_mod.buildHandler(handler)) catch unreachable;
@@ -148,6 +165,9 @@ pub const Group = struct {
         return self.route(.GET, path, sse_mod.buildHandler(handler), config);
     }
 
+    /// Adds a middleware for the requests whose path starts with the group's
+    /// prefix followed by `path_suffix`. It is tied to the path, not to the
+    /// routes: `use` is the one for "every route of this group". At most 32.
     pub fn useAt(self: *Group, path_suffix: []const u8, m: MiddlewareFn) *Group {
         const full = self.join(path_suffix) catch return self;
         if (self.path_middleware_count >= self.path_middlewares.len) {
