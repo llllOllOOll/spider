@@ -7,12 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-09
+
+A login that needs nothing outside the app, tests that call the app, and a
+fix for `spider dev`. Existing projects are not changed by updating: the
+generators only affect what they generate from now on.
+
 ### Changed
 
-- **`spider g auth` generates a login with the app's own users**; the
+- **`spider g auth` generates a login with the app's own users.** The
   Keycloak login it used to generate is now `spider g auth
-  --provider=keycloak`. Projects that already have their auth feature are
-  not touched.
+  --provider=keycloak`. A project that already has its auth feature is not
+  touched.
+- **`spider new` splits `src/main.zig` in two**: `main()` sets up the
+  database and calls `pub fn serve(allocator, io)`, which builds the server
+  and listens. The tests call `serve` too.
+
+### Added
+
+- **`spider g auth`**: `src/features/auth/` with a users table (migration),
+  sign in, sign up, sign out and an account page. `--api` generates JSON
+  routes that answer a bearer token instead of pages. It adds
+  `spider.session.middleware()` to `src/main.zig`, sends a visitor without
+  a session to the sign-in page, and appends tests of the whole flow to
+  `src/app_test.zig`. Nothing outside the app is involved, so the tests
+  run anywhere. Works with SQLite and PostgreSQL; a project without a
+  database is told why it cannot have a login.
+- **`spider.password`**: `hash(c, password)` and `verify(c, stored,
+  password)` (argon2id with OWASP's parameters, a PHC string for one text
+  column), and `decoy`, a hash to verify against when the account does not
+  exist, so a missing account takes as long to refuse as a wrong password.
+- **`spider.session`**: `start(c, user)` and `end(c)` give the response
+  options that write and clear a signed cookie (HS256, with the user's id,
+  email, name and roles); `token(c, user)` gives the token for an API;
+  `middleware()` reads the cookie or an `Authorization: Bearer` header,
+  fills in the request's user (what `.authenticated`, `.roles` and
+  `c.userId()` check) and answers 401 on a route that is not `.public`. A
+  request that matches no route still gets its 404. The secret is
+  `JWT_SECRET`; without one a debug build makes one up for the run and a
+  release build refuses to sign. There is no table of sessions: a session
+  cannot be revoked before it expires (14 days by default).
+- **`spider new` writes `src/app_test.zig`**: a first test that sends a
+  request to the running app with `spider.testing.start`, on a scratch
+  database in a SQLite project. A new project's `zig build test` starts
+  its own server from the first day.
+- `spider.testing`: `app.with(headers)` is the same app sending those
+  header lines with every request, for a test that acts as a signed-in
+  visitor.
+- `c.hasRoute()`: false for a request no route matched, so a middleware
+  that guards routes can let it through to its 404.
+- `spider.auth.jwtPayload(alloc, token, secret)`: the verified payload of
+  an HS256 token.
+- `spider check` counts `spider.session.middleware()` as authentication.
 
 ### Fixed
 
@@ -24,32 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now has a cache of its own, `.zig-cache/dev`. The first `spider dev`
   after updating builds from scratch once.
 
-### Added
+### Known limits
 
-- `spider g auth`: `src/features/auth/` with a users table (migration),
-  sign in, sign up, sign out and an account page; `--api` answers a bearer
-  token from JSON routes instead of pages. It adds
-  `spider.session.middleware()` to `src/main.zig`, sends a visitor without
-  a session to the sign-in page, and appends tests of the whole flow to
-  `src/app_test.zig`. Nothing outside the app is involved, so the tests
-  run anywhere. Works with SQLite and PostgreSQL; a project without a
-  database is told why it cannot have one.
-- `spider.password`: `hash(c, password)` and `verify(c, stored, password)`
-  (argon2id with OWASP's parameters, a PHC string for one text column),
-  and `decoy`, a hash to verify against when the account does not exist.
-- `spider.session`: `start(c, user)` and `end(c)` give the response options
-  that write and clear a signed cookie (HS256, with the user's id, email,
-  name and roles); `token(c, user)` gives the token for an API;
-  `middleware()` reads the cookie or an `Authorization: Bearer` header,
-  fills in the request's user and answers 401 on a route that is not
-  `.public`. The secret is `JWT_SECRET`. No table of sessions: a session
-  cannot be revoked before it expires (14 days by default).
-
-- `spider new` writes `src/app_test.zig`: a first test that sends a request
-  to the running app with `spider.testing.start`, on a scratch database in
-  a SQLite project. The generated `src/main.zig` is split in two for it:
-  `main()` (the database) and `pub fn serve(allocator, io)` (the server),
-  which the tests call. Existing projects are not changed.
+- The generated login has no password reset, email confirmation, limit on
+  sign-in attempts or two-factor.
+- A PostgreSQL project gets the login but not its request tests: the test
+  server of a generated PostgreSQL project starts no database.
+- `spider.auth.jwtVerify` with claims other than `spider.auth.Claims`
+  returns text that may point to freed memory. `spider.session` does not
+  use it; prefer `jwtPayload` in new code.
 
 ## [0.9.1] - 2026-10-09
 
