@@ -56,8 +56,12 @@ pub fn toHtml(
             defer allocator.free(escaped);
             try allocating.writer.writeAll(escaped);
         },
+        // Kept as typed for a template engine ({{ }}, {% %}), but it is
+        // still text: HTML in it is escaped.
         .raw_block => {
-            try allocating.writer.writeAll(self.content);
+            const escaped = try escape(allocator, self.content);
+            defer allocator.free(escaped);
+            try allocating.writer.writeAll(escaped);
         },
         else => {},
     }
@@ -99,15 +103,5 @@ pub fn getHandlerComptime(
 }
 
 fn escape(allocator: Allocator, input: []const u8) ![]const u8 {
-    const replacements = .{
-        .{ "&", "&amp;" },
-        .{ "<", "&lt;" },
-        .{ ">", "&gt;" },
-    };
-
-    var output = input;
-    inline for (replacements) |replacement| {
-        output = try std.mem.replaceOwned(u8, allocator, output, replacement[0], replacement[1]);
-    }
-    return output;
+    return Formatters.escape(allocator, input);
 }

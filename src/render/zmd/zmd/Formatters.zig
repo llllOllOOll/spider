@@ -17,6 +17,7 @@ h3: Handler = Default.h3,
 h4: Handler = Default.h4,
 h5: Handler = Default.h5,
 h6: Handler = Default.h6,
+blockquote: Handler = Default.blockquote,
 bold: Handler = Default.bold,
 italic: Handler = Default.italic,
 unordered_list: Handler = Default.unordered_list,
@@ -42,22 +43,26 @@ pub const Default = struct {
             \\</html>
             \\
         ;
-        return allocPrint(allocator, html, .{node.content});
+        const content = try joinQuotes(allocator, node.content);
+        defer allocator.free(content);
+        return allocPrint(allocator, html, .{content});
     }
 
     pub fn root_partial(allocator: Allocator, node: Node) ![]const u8 {
-        return allocator.dupe(u8, node.content);
+        return joinQuotes(allocator, node.content);
     }
 
     pub fn block(allocator: Allocator, node: Node) ![]const u8 {
         if (node.meta) |meta| {
+            const lang = try escape(allocator, meta);
+            defer allocator.free(lang);
             return allocPrint(allocator,
                 \\<div class="code-block">
                 \\  <div class="code-block-bar"><span class="code-block-lang">{s}</span></div>
                 \\  <pre><code>{s}</code></pre>
                 \\</div>
                 \\
-            , .{ meta, node.content });
+            , .{ lang, node.content });
         } else {
             return allocPrint(allocator,
                 \\<div class="code-block">
@@ -68,16 +73,29 @@ pub const Default = struct {
         }
     }
 
+    /// The address and the text are what the author typed: both are escaped,
+    /// and an address that would run code (javascript:, data:) leaves only
+    /// the text.
     pub fn link(allocator: Allocator, node: Node) ![]const u8 {
+        const text = try escape(allocator, node.title.?);
+        if (!safeAddress(node.href.?)) return text;
+        defer allocator.free(text);
+        const href = try escape(allocator, node.href.?);
+        defer allocator.free(href);
         return allocPrint(allocator,
             \\<a href="{s}">{s}</a>
-        , .{ node.href.?, node.title.? });
+        , .{ href, text });
     }
 
     pub fn image(allocator: Allocator, node: Node) ![]const u8 {
+        const title = try escape(allocator, node.title.?);
+        if (!safeAddress(node.href.?)) return title;
+        defer allocator.free(title);
+        const src = try escape(allocator, node.href.?);
+        defer allocator.free(src);
         return allocPrint(allocator,
             \\<img src="{s}" title="{s}">
-        , .{ node.href.?, node.title.? });
+        , .{ src, title });
     }
 
     pub fn h1(allocator: Allocator, node: Node) ![]const u8 {
@@ -118,6 +136,13 @@ pub const Default = struct {
     pub fn h6(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<h6>{s}</h6>
+            \\
+        , .{node.content});
+    }
+
+    pub fn blockquote(allocator: Allocator, node: Node) ![]const u8 {
+        return allocPrint(allocator,
+            \\<blockquote>{s}</blockquote>
             \\
         , .{node.content});
     }
@@ -175,6 +200,53 @@ pub const Default = struct {
         return node.content;
     }
 };
+
+/// Each `> ` line is rendered as its own blockquote; lines that follow one
+/// another become one. (Text never contains these tags: it is escaped.)
+fn joinQuotes(allocator: Allocator, html: []const u8) Allocator.Error![]const u8 {
+    return std.mem.replaceOwned(u8, allocator, html, "</blockquote>\n<blockquote>", "\n");
+}
+
+/// Escapes text for HTML, inside an element or a quoted attribute.
+pub fn escape(allocator: Allocator, input: []const u8) Allocator.Error![]const u8 {
+    var extra: usize = 0;
+    for (input) |byte| extra += switch (byte) {
+        '&' => 4,
+        '<', '>' => 3,
+        '"' => 5,
+        '\'' => 4,
+        else => 0,
+    };
+    const out = try allocator.alloc(u8, input.len + extra);
+    var i: usize = 0;
+    for (input) |byte| {
+        const piece: []const u8 = switch (byte) {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\'' => "&#39;",
+            else => &.{byte},
+        };
+        @memcpy(out[i..][0..piece.len], piece);
+        i += piece.len;
+    }
+    return out;
+}
+
+/// An address a reader may follow: http, https, mailto, or one with no
+/// scheme at all (a path, a fragment). `javascript:` and `data:` are not.
+pub fn safeAddress(address: []const u8) bool {
+    const trimmed = std.mem.trim(u8, address, &std.ascii.whitespace);
+    const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse return true;
+    // A colon after the path began is not a scheme: /a:b, ?q=a:b, #a:b.
+    if (std.mem.indexOfAny(u8, trimmed[0..colon], "/?#") != null) return true;
+    const scheme = trimmed[0..colon];
+    for ([_][]const u8{ "http", "https", "mailto" }) |allowed| {
+        if (std.ascii.eqlIgnoreCase(scheme, allowed)) return true;
+    }
+    return false;
+}
 
 fn wrap(allocator: Allocator, content: []const u8, string: []const u8) ![]const u8 {
     return allocPrint(
