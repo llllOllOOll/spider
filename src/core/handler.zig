@@ -1,6 +1,7 @@
-//! Turning handler functions into the router's `Handler`: typed extractors
-//! (spider.Path / spider.Form / spider.Loaded) and plain `fn (*Ctx) !Response`. Shared by
-//! Server (core/app.zig) and Group (routing/group.zig).
+//! Internal: turning handler functions into the router's `Handler`: typed
+//! extractors (spider.Path / spider.Form / spider.Loaded) and plain
+//! `fn (*Ctx) !Response`. Shared by Server (core/app.zig) and Group
+//! (routing/group.zig).
 
 const std = @import("std");
 const ctx_mod = @import("context.zig");

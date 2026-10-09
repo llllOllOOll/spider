@@ -1,3 +1,7 @@
+//! Internal: parses an `application/x-www-form-urlencoded` body into a map of
+//! fields (`FormData`). Apps use `c.parseForm(T)` or a `spider.Form(T)`
+//! handler parameter.
+
 const std = @import("std");
 
 pub const FormValue = union(enum) {

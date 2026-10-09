@@ -1,3 +1,6 @@
+//! Internal: the Markdown syntax table: the kinds of element, the text that
+//! opens and closes each one, and the `Token` the parser gives every node.
+
 const std = @import("std");
 
 pub const ElementType = enum {

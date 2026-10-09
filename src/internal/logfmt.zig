@@ -45,7 +45,9 @@ pub fn colorEnabled() bool {
 
 /// Drop-in std.log function that prefixes every line with a UTC timestamp:
 ///
-///   pub const std_options: std.Options = .{ .logFn = spider.logFn };
+/// ```zig
+/// pub const std_options: std.Options = .{ .logFn = spider.logFn };
+/// ```
 pub fn logFn(
     comptime level: std.log.Level,
     comptime scope: @EnumLiteral(),

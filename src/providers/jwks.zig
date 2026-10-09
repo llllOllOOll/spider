@@ -1,3 +1,8 @@
+//! Token login for any OpenID Connect provider (`spider.jwks`): checks the
+//! RS256 signature of a JWT against the provider's published keys (its JWKS)
+//! and puts the user, roles and organizations of the token on the request.
+//! `spider.keycloak` and `spider.clerk` are built on it.
+
 const std = @import("std");
 const auth_marker = @import("../modules/auth_marker.zig");
 const pacman = @import("pacman");
@@ -19,8 +24,16 @@ const JwkEntry = struct {
     e: []const u8,
 };
 
+/// What `JwksAuth.init` takes. None of its strings is copied: they must stay
+/// valid as long as the JwksAuth.
 pub const JwksConfig = struct {
+    /// URL of the provider's key set (a JSON object with a `keys` list; each
+    /// key needs `kid`, `n` and `e`, so RSA keys only). Downloaded by `init`
+    /// and again when a token names an unknown key. No default.
     jwks_url: []const u8,
+    /// The `iss` a token must carry: without the claim the token fails with
+    /// error.MissingIssuer, with another value error.InvalidIssuer. null (the
+    /// default) skips the check.
     issuer: ?[]const u8 = null,
     /// The client this app accepts tokens for. A token passes when it was
     /// issued to it (`azp`) or is addressed to it (`aud` is it, or a list
@@ -28,11 +41,26 @@ pub const JwksConfig = struct {
     /// same realm obtained for the user — fails with error.InvalidAudience.
     /// null skips the check (then any client of the issuer can log users in).
     audience: ?[]const u8 = null,
+    /// Cookie the middleware reads the token from when the request has no
+    /// `Authorization: Bearer <token>` header.
     cookie_name: []const u8 = "__session",
+    /// Where the middleware redirects a request that carries no token (unless
+    /// `api_mode`).
     login_path: []const u8 = "/login",
+    /// Not read by JwksAuth; the providers built on it have their own.
     after_callback_path: []const u8 = "/",
+    /// Paths the middleware lets through without a token: the path itself and
+    /// anything under it (`"/auth"` also covers `/auth/login`, not
+    /// `/authors`). A route marked `.public` is let through too. Default:
+    /// none.
     auth_skip_paths: []const []const u8 = &.{},
+    /// Where a browser request with an expired token is redirected, as
+    /// `{refresh_path}?next=<the request's target>`; htmx and SSE requests get
+    /// 401 instead. null (the default): an expired token is a 401.
     refresh_path: ?[]const u8 = null,
+    /// true: a missing, invalid or expired token is answered with a 401 and a
+    /// JSON body (`{"error":"unauthorized","message":...}`), never a
+    /// redirect.
     api_mode: bool = false,
     /// Cookie holding the org the user picked (e.g. "orbitx_condo"). When
     /// present and naming an org the user belongs to, its value becomes
@@ -65,6 +93,7 @@ pub const JwksConfig = struct {
     map_claims: ?*const fn (c: *Ctx, claims: std.json.ObjectMap) anyerror!void = null,
 };
 
+/// The shapes of organization claims `JwksConfig.org_claims` can read.
 pub const OrgClaims = enum {
     /// Keycloak with Phase Two organizations: an `organizations` claim,
     /// {"<org id>": {"name": "..", "roles": ["..", ..]}}; roles may also be
@@ -79,25 +108,51 @@ pub const OrgClaims = enum {
     none,
 };
 
+/// What `JwksAuth.verifyToken` returns: the standard claims of a verified
+/// token. The strings are copies allocated with the allocator given to it.
 pub const Claims = struct {
+    /// The user id at the provider.
     sub: []const u8,
     email: ?[]const u8 = null,
     name: ?[]const u8 = null,
     iss: ?[]const u8 = null,
+    /// Expiry, in seconds since the epoch. verifyToken does not compare it.
     exp: i64,
+    /// Not valid before, in seconds since the epoch, when the token has it.
     nbf: ?i64 = null,
+    /// Keycloak's realm roles (`realm_access.roles`), when present.
     realm_access: ?RealmAccess = null,
+    /// Not filled by anything today: always empty.
     extra: std.StringHashMapUnmanaged([]const u8) = .{},
 };
 
 const KeyMap = std.StringHashMapUnmanaged(JwkEntry);
 
+/// The verifier: the provider's keys, kept in memory, and the middleware
+/// that uses them.
+///
+/// ```zig
+/// var auth = try spider.jwks.JwksAuth.init(allocator, io, .{
+///     .jwks_url = "https://idp.example.com/.well-known/jwks.json",
+///     .issuer = "https://idp.example.com",
+///     .audience = "my-app",
+/// });
+/// defer auth.deinit();
+/// server.use(auth.middleware());
+/// ```
+///
+/// The middleware keeps a pointer to this value: it must not move or be
+/// freed while the server runs.
 pub const JwksAuth = struct {
+    /// The config given to `init`.
     config: JwksConfig,
+    // internal: owns the cached keys
     allocator: std.mem.Allocator,
+    // internal: the Io given to `init`, used by `fetchJwks` and `verifyToken`
     io: std.Io,
     /// Read under `keys_lock` (shared); replaced wholesale under it (exclusive).
     keys: KeyMap,
+    // internal: guards `keys`
     keys_lock: std.Io.RwLock = .init,
     /// Singleflight for re-fetches: only one fetch runs at a time, and callers
     /// that waited re-check the cache before fetching again.
@@ -105,6 +160,9 @@ pub const JwksAuth = struct {
     /// Guarded by `fetch_mutex`.
     last_fetch: ?std.Io.Timestamp = null,
 
+    /// Downloads the key set, so the provider must be reachable when the app
+    /// starts: error.JwksFetchFailed when the answer is not a 200 with a key
+    /// set, or the HTTP client's error when it cannot be reached.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: JwksConfig) !JwksAuth {
         var self = JwksAuth{
             .config = config,
@@ -117,6 +175,7 @@ pub const JwksAuth = struct {
         return self;
     }
 
+    /// Frees the cached keys.
     pub fn deinit(self: *JwksAuth) void {
         freeKeyMap(self.allocator, &self.keys);
     }
@@ -219,6 +278,13 @@ pub const JwksAuth = struct {
         return (try self.copyKey(io, arena, kid)) orelse error.UnknownKey;
     }
 
+    /// The claims of `token` once its signature (RSA PKCS#1 v1.5 with
+    /// SHA-256), issuer and audience are checked. It does NOT check `exp` or
+    /// `nbf`: compare them yourself (the middleware does). `allocator` should
+    /// be an arena. Errors: InvalidToken (not three parts), UnknownKey (no key
+    /// for the token's `kid`, even after a re-fetch), InvalidSignature,
+    /// UnsupportedKeySize (the signature is not 1024, 2048, 3072 or 4096
+    /// bits), MissingIssuer, InvalidIssuer, InvalidAudience.
     pub fn verifyToken(self: *JwksAuth, allocator: std.mem.Allocator, token: []const u8) !Claims {
         return self.verifyTokenIo(self.io, allocator, token);
     }
@@ -290,6 +356,19 @@ pub const JwksAuth = struct {
         };
     }
 
+    /// The middleware: `server.use(auth.middleware())`. It takes the token
+    /// from `Authorization: Bearer` or the cookie, verifies it, checks `exp`
+    /// and `nbf`, and sets the request's user (`c.userId()` is the token's
+    /// `sub`), roles and organizations, which is what `.authenticated`,
+    /// `.roles` and `.org_roles` on a route check. Routes marked `.public` and
+    /// `auth_skip_paths` pass untouched.
+    ///
+    /// Without a token: redirect to `login_path`. With one that does not
+    /// verify: 401 with the error's name as the body. Expired: see
+    /// `refresh_path`. In `api_mode` all three are a JSON 401.
+    ///
+    /// The instance is kept in one static slot: a process can use the
+    /// middleware of one JwksAuth; a second call replaces the first.
     pub fn middleware(self: *JwksAuth) MiddlewareFn {
         const S = struct {
             var instance: ?*JwksAuth = null;

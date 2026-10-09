@@ -1,3 +1,7 @@
+//! The request itself: `FetchOptions`, the per-method functions (`get`,
+//! `post`, ...) and `request`, which sends, enforces the deadline and the
+//! size limit, and reads the response to the end.
+
 const std = @import("std");
 
 const Io = std.Io;
@@ -13,12 +17,29 @@ const Response = @import("response.zig").Response;
 /// process's memory.
 pub const default_max_response_bytes: usize = 64 * 1024 * 1024;
 
+/// The options of a request. Every field has a default: `.{}` is a plain
+/// request with no deadline.
 pub const FetchOptions = struct {
+    /// Set by `post`, `put`, `patch`, `delete`, `head` and by `Client`,
+    /// whatever is given here. `get` and `request` send the method given
+    /// (GET by default).
     method: http.Method = .GET,
+    /// Request headers: `&.{.{ .name = "Authorization", .value = token }}`.
+    /// A `Client` ignores this field and sends its own headers.
     headers: []const http.Header = &.{},
+    /// The request body. null: none (POST, PUT and PATCH then send an empty
+    /// one).
     body: ?Body = null,
+    /// Name/value pairs added to the URL as its query string, URL-encoded
+    /// (after a `?`, or a `&` when the URL already has a query).
     query: []const [2][]const u8 = &.{},
+    /// Values for `:name` placeholders in the URL: `.{ "id", "42" }` turns
+    /// `/users/:id` into `/users/42`. The value is inserted as it is (not
+    /// URL-encoded); a placeholder without a value stays. Not applied when
+    /// `query` is also set.
     params: []const [2][]const u8 = &.{}, // URL path parameters
+    /// A URI the caller already parsed, used instead of parsing the URL.
+    /// `query` and `params` are then ignored.
     uri: ?std.Uri = null, // pre-built URI (skips std.Uri.parse)
     /// Deadline for the WHOLE request, in milliseconds: connecting, the TLS
     /// handshake, sending, waiting for the response and reading its body.
@@ -39,34 +60,46 @@ pub const FetchOptions = struct {
     proxy_url: ?[]const u8 = null,
 };
 
+/// A GET request to `url`, on a connection of its own (opened for this call,
+/// closed by `Response.deinit()`). Any HTTP answer comes back as a Response,
+/// 4xx and 5xx included. Errors: `error.Timeout` (`timeout_ms` passed),
+/// `error.ResponseTooLarge` (`max_response_bytes`), `error.HttpBodyCutShort`
+/// (the body stopped early), or the error of the connection or of parsing
+/// `url`. Redirects are not followed. The response is allocated from
+/// `allocator` and owns its memory: call `deinit()`.
 pub fn get(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions) !Response {
     return request(io, allocator, url, opts, null);
 }
 
+/// A POST request to `url` with `opts.body`. See `get`.
 pub fn post(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions) !Response {
     var opts_copy = opts;
     opts_copy.method = .POST;
     return request(io, allocator, url, opts_copy, null);
 }
 
+/// A PUT request to `url` with `opts.body`. See `get`.
 pub fn put(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions) !Response {
     var opts_copy = opts;
     opts_copy.method = .PUT;
     return request(io, allocator, url, opts_copy, null);
 }
 
+/// A PATCH request to `url` with `opts.body`. See `get`.
 pub fn patch(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions) !Response {
     var opts_copy = opts;
     opts_copy.method = .PATCH;
     return request(io, allocator, url, opts_copy, null);
 }
 
+/// A DELETE request to `url`. See `get`.
 pub fn delete(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions) !Response {
     var opts_copy = opts;
     opts_copy.method = .DELETE;
     return request(io, allocator, url, opts_copy, null);
 }
 
+/// A HEAD request to `url`: status and headers, an empty body. See `get`.
 pub fn head(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions) !Response {
     var opts_copy = opts;
     opts_copy.method = .HEAD;
@@ -178,10 +211,6 @@ fn hasContentType(headers: []const http.Header) bool {
     return false;
 }
 
-/// `existing_client`, when non-null, is a persistent HttpClient owned by a
-/// `pacman.Client` — reused across many requests instead of created fresh
-/// here. This function never destroys it; ownership stays with the caller
-/// (see Response.owns_http_client).
 /// The outcome of the race between a request and its deadline.
 const Race = union(enum) {
     response: anyerror!Response,
@@ -198,6 +227,13 @@ fn discard(outcome: Race) void {
     }
 }
 
+/// Sends one request with the method in `opts.method`: what `get`, `post`
+/// and `Client` call.
+///
+/// `existing_client`, when non-null, is a persistent HttpClient owned by a
+/// `pacman.Client` — reused across many requests instead of created fresh
+/// here. This function never destroys it; ownership stays with the caller
+/// (see Response.owns_http_client).
 pub fn request(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*HttpClient) !Response {
     if (opts.timeout_ms == 0) return requestNoDeadline(io, allocator, url, opts, existing_client);
 

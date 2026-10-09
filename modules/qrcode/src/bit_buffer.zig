@@ -1,8 +1,8 @@
-//! Sequential bit-level output buffer, packed most-significant-bit
-//! first within each byte — the bit ordering ISO/IEC 18004:2015 uses
-//! throughout 7.4 (mode indicator, character count indicator, encoded
-//! data, terminator, padding all concatenate into one MSB-first stream
-//! before being sliced into 8-bit codewords per 7.4.10).
+//! Internal: sequential bit-level output buffer, packed
+//! most-significant-bit first within each byte — the bit ordering ISO/IEC
+//! 18004:2015 uses throughout 7.4 (mode indicator, character count
+//! indicator, encoded data, terminator, padding all concatenate into one
+//! MSB-first stream before being sliced into 8-bit codewords per 7.4.10).
 //!
 //! Capacity is caller-provided (QR data capacity is always known ahead
 //! of time from tables.zig, given a version/ECC pair — see ISO Table 7),

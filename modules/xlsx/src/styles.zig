@@ -11,6 +11,7 @@ const std = @import("std");
 const Writer = std.Io.Writer;
 const xml = @import("xml.zig");
 
+/// The style errors; all of them are part of `xlsx.Error`.
 pub const Error = error{
     /// More distinct styles than a workbook can hold.
     TooManyStyles,
@@ -156,6 +157,7 @@ pub const max_styles = 65_490;
 pub const max_number_format_len = 255;
 /// Longest font name accepted, in bytes (Excel's limit is 31 characters).
 pub const max_font_name_len = 31;
+/// Largest font size accepted, in points.
 pub const max_font_size = 409;
 const builtin_font_name = "Calibri";
 /// Font sizes are kept in tenths of a point.
@@ -240,8 +242,9 @@ const FontKey = struct {
     };
 };
 
-/// Every distinct style a workbook was given. Id 0 is the default
-/// style; the others are handed out in the order styles are first seen.
+// internal: the workbook's table of styles.
+// Every distinct style a workbook was given. Id 0 is the default
+// style; the others are handed out in the order styles are first seen.
 pub const Registry = struct {
     keys: std.ArrayList(Key) = .empty,
     ids: std.AutoHashMapUnmanaged(Key, u16) = .empty,
@@ -269,6 +272,7 @@ pub const Registry = struct {
         return @as(f64, @floatFromInt(self.default_font_size_tenths)) / 10.0;
     }
 
+    // internal: true while the default font is still Calibri 11.
     pub fn hasBuiltinDefaultFont(self: *const Registry) bool {
         return self.default_font_size_tenths == builtin_font_size_tenths and
             std.ascii.eqlIgnoreCase(self.default_font_name, builtin_font_name);

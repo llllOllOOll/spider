@@ -11,24 +11,55 @@
 
 const std = @import("std");
 
+// internal: ISO constants; reexported for the tests.
 pub const tables = @import("tables.zig");
+// internal: the bit writer; reexported for the tests.
 pub const bit_buffer = @import("bit_buffer.zig");
+// internal: GF(2^8) arithmetic; reexported for the tests.
 pub const galois_field = @import("galois_field.zig");
+// internal: error correction codewords; reexported for the tests.
 pub const reed_solomon = @import("reed_solomon.zig");
+// internal: mode detection and segment encoding; reexported for the tests.
 pub const mode_selector = @import("mode_selector.zig");
+// internal: codeword assembly; reexported for the tests.
 pub const codewords = @import("codewords.zig");
+// internal: format and version information; reexported for the tests.
 pub const bch = @import("bch.zig");
+// internal: the module grid; reexported for the tests.
 pub const matrix = @import("matrix.zig");
+// internal: mask patterns and scoring; reexported for the tests.
 pub const masking = @import("masking.zig");
 
+/// The error correction level: how much of a damaged or covered symbol a
+/// scanner can still recover. `.low` (about 7%), `.medium` (15%),
+/// `.quartile` (25%), `.high` (30%). A higher level leaves less room for
+/// data in the same version.
 pub const Ecc = tables.Ecc;
 
+/// An encoded QR Code: a square of `size` x `size` modules, read with
+/// `getModule`. Drawing it (SVG, PNG, table cells) is up to the app.
+///
+/// ```zig
+/// var qr = try spider.qrcode.QR.encode(allocator, "HELLO WORLD", 1, .medium);
+/// defer qr.deinit();
+/// // qr.size == 21; qr.getModule(x, y) is true for a dark module
+/// ```
+///
+/// `encode` does not choose the version. To get the smallest symbol that
+/// fits, try versions in order while the error is `error.DataTooLarge`.
 pub const QR = struct {
+    /// The allocator given to `encode`; `deinit` frees with it.
     allocator: std.mem.Allocator,
+    /// The version asked for, 1 to 40.
     version: u8,
+    /// The error correction level asked for.
     ecc: Ecc,
+    /// The mask pattern (0 to 7) the encoder chose.
     mask: u3,
+    /// Modules per side: `version * 4 + 17` (21 for version 1, 177 for version 40).
     size: u16,
+    /// The modules, one bit each, row by row, most significant bit first.
+    /// Read them with `getModule`.
     modules: []u8,
 
     /// Encodes `text` as a QR Code of the given `version` (1-40) and
@@ -89,6 +120,7 @@ pub const QR = struct {
         };
     }
 
+    /// Frees the modules.
     pub fn deinit(self: QR) void {
         self.allocator.free(self.modules);
     }

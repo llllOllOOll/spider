@@ -1,4 +1,4 @@
-//! Build-time tool behind `testManifest()` in build.zig: scans a module's
+//! Internal: build-time tool behind `testManifest()` in build.zig: scans a module's
 //! directory for files that declare `test "..."` blocks and writes the Zig
 //! source of the manifest module read by
 //! `spider.testing.expectAllTestsDiscovered`.

@@ -1,3 +1,7 @@
+//! Internal: WebSocket framing over a stream for the server: the upgrade
+//! handshake, reading frames (pings answered, 16 MiB at most per frame) and
+//! writing them. Handlers use `spider.Ws`.
+
 const std = @import("std");
 const net = std.Io.net;
 

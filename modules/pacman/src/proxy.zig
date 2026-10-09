@@ -1,3 +1,7 @@
+//! Internal: which proxy a request goes through. An explicit URL or the
+//! environment (http_proxy, https_proxy, all_proxy, no_proxy); HTTP(S)
+//! proxies are set on the client, SOCKS5 ones get a tunnel opened here.
+
 const std = @import("std");
 const http = std.http;
 const HttpClient = @import("std_http/Client.zig");

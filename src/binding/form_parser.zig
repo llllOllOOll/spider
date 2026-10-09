@@ -1,3 +1,6 @@
+//! Internal: fills a struct from a submitted form, urlencoded or multipart
+//! (`FormParser`). It is what `c.parseForm(T)` and `spider.Form(T)` run.
+
 const std = @import("std");
 const form = @import("form.zig");
 const multipart = @import("multipart.zig");

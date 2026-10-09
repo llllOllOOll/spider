@@ -1,5 +1,5 @@
-//! The module grid: finder/timing/alignment function patterns (ISO
-//! 6.3.3-6.3.6), format/version info placement (7.9/7.10), and the
+//! Internal: the module grid: finder/timing/alignment function patterns
+//! (ISO 6.3.3-6.3.6), format/version info placement (7.9/7.10), and the
 //! zigzag codeword placement scan (7.7.3).
 //!
 //! Two same-size bit grids are kept side by side: `modules` (the

@@ -1,4 +1,5 @@
-//! GF(2^8) arithmetic for QR Code's Reed-Solomon error correction.
+//! Internal: GF(2^8) arithmetic for QR Code's Reed-Solomon error
+//! correction.
 //!
 //! ISO/IEC 18004:2015 Annex A: "α is the primitive element 2 under
 //! GF(2^8)". The field is defined by reduction polynomial

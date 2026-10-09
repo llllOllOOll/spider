@@ -24,11 +24,19 @@ const builtin = @import("builtin");
 pub const conventions = @import("conventions.zig");
 
 /// Requests against the running app, in a test: see testing/http.zig.
-///     const app = try spider.testing.start(run);
-///     var res = try app.get("/posts");
+///
+/// ```zig
+/// const app = try spider.testing.start(run);
+/// var res = try app.get("/posts");
+/// defer res.deinit();
+/// try res.expectStatus(200);
+/// ```
 pub const http = @import("testing/http.zig");
+/// Starts the app once for the test binary and gives back where to send requests.
 pub const start = http.start;
+/// The server started by `start`: `get`, `postForm`, `postJson`, `request`.
 pub const App = http.App;
+/// What the server answered, with `expectStatus`, `expectContains` and the like.
 pub const Response = http.Response;
 
 /// A feature's access contract: see routing/expect_routes.zig.

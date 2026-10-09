@@ -1,3 +1,8 @@
+//! Access rules of a route (`spider.rbac`): the middlewares behind the route
+//! config keys `.authenticated`, `.roles`, `.org_roles` and `.policy`, and the
+//! builders `spider.policy`, `spider.resourcePolicy` and `spider.policySet`.
+//! They read the identity an auth middleware put on the request.
+
 const std = @import("std");
 const spider = @import("../spider.zig");
 const Ctx = spider.Ctx;
@@ -72,7 +77,10 @@ pub fn requireOrgRoles(comptime roles: []const []const u8) MiddlewareFn {
 /// route as `.policy = spider.policy("post_owner", isPostOwner)`; the name
 /// is what the route listing, routes.lock and expectRoutes show.
 pub const Policy = struct {
+    /// What the route listing shows for the rule.
     name: []const u8,
+    /// true lets the request through. Build a Policy with `spider.policy`,
+    /// which wraps a `bool` or `!bool` function into this shape.
     check: *const fn (*Ctx) anyerror!bool,
 };
 
@@ -122,11 +130,13 @@ pub const Deny = enum {
 
 /// A policy about the one resource a route works on (a post, a ticket):
 ///
-///     .policy = spider.resourcePolicy("post_owner", Post, .{
-///         .load = loadPost,   // fn (*Ctx) ?Post, !?Post or !Post — from c.params etc.
-///         .check = isOwner,   // fn (*Ctx, *const Post) bool or !bool
-///         .deny = .forbidden, // or .not_found (optional)
-///     })
+/// ```zig
+/// .policy = spider.resourcePolicy("post_owner", Post, .{
+///     .load = loadPost,   // fn (*Ctx) ?Post, !?Post or !Post — from c.params etc.
+///     .check = isOwner,   // fn (*Ctx, *const Post) bool or !bool
+///     .deny = .forbidden, // or .not_found (optional)
+/// })
+/// ```
 ///
 /// In order: an anonymous request on a non-public route is refused (401)
 /// before anything is loaded; a missing resource is error.NotFound (404);
@@ -184,16 +194,18 @@ pub fn resourcePolicy(comptime name: []const u8, comptime T: type, comptime opts
 /// The rules about one kind of resource, in one place — like a Laravel
 /// Policy class or a Pundit policy:
 ///
-///     pub const Tickets = spider.policySet(Ticket, .{
-///         .name = "ticket",                  // policies listed as ticket.view, ticket.update...
-///         .load = service.loadTicket,        // as in resourcePolicy
-///         .deny = .not_found,                // default for every rule (optional)
-///         .rules = .{
-///             .view = canView,               // fn (*Ctx, *const Ticket) bool or !bool
-///             .update = isOwner,
-///             .delete = .{ .check = isAdmin, .deny = .forbidden }, // per-rule deny
-///         },
-///     });
+/// ```zig
+/// pub const Tickets = spider.policySet(Ticket, .{
+///     .name = "ticket",                  // policies listed as ticket.view, ticket.update...
+///     .load = service.loadTicket,        // as in resourcePolicy
+///     .deny = .not_found,                // default for every rule (optional)
+///     .rules = .{
+///         .view = canView,               // fn (*Ctx, *const Ticket) bool or !bool
+///         .update = isOwner,
+///         .delete = .{ .check = isAdmin, .deny = .forbidden }, // per-rule deny
+///     },
+/// });
+/// ```
 ///
 /// Routes take `.policy = Tickets.route(.update)` (a resourcePolicy: 401 /
 /// 404 / 403 as documented there, the ticket reaches the handler as
@@ -212,7 +224,10 @@ pub fn policySet(comptime T: type, comptime opts: anytype) type {
     }
     const set_deny: Deny = if (@hasField(O, "deny")) opts.deny else .forbidden;
     return struct {
+        /// The type the set is about (`T`).
         pub const Resource = T;
+        /// The set's `.name`: the prefix of its policies' names
+        /// ("ticket" in "ticket.update").
         pub const name: []const u8 = opts.name;
 
         fn rule(comptime action: @TypeOf(.enum_literal)) type {

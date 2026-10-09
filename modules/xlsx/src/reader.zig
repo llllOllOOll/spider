@@ -21,10 +21,15 @@ const xml_reader = @import("xml_reader.zig");
 const cell_ref = @import("cell_ref.zig");
 const date_mod = @import("date.zig");
 
+// internal: short name for this file; apps use `xlsx.DateTime`.
 pub const DateTime = date_mod.DateTime;
+// internal: short name for this file; apps use `xlsx.TimeOfDay`.
 pub const TimeOfDay = date_mod.TimeOfDay;
+// internal: short name for this file; apps use `xlsx.Range`.
 pub const Range = cell_ref.Range;
 
+/// Everything opening or reading a file can fail with. A `Diagnostic` says
+/// where in the file it happened.
 pub const Error = error{
     /// One of `Limits` was exceeded; `Diagnostic.limit` says which.
     LimitExceeded,
@@ -94,6 +99,7 @@ pub const Limits = struct {
     };
 };
 
+/// Which of `Limits` was exceeded; each name is the field without `max_`.
 pub const LimitKind = enum {
     file_bytes,
     entries,
@@ -125,8 +131,12 @@ pub const Diagnostic = struct {
     limit: ?LimitKind = null,
 };
 
+/// Whether a sheet shows among the tabs. `hidden` and `very_hidden` are the
+/// file's two hidden states.
 pub const Visibility = enum { visible, hidden, very_hidden };
 
+/// One sheet of the file, as listed by `Reader.sheets`. `name` lives as
+/// long as the reader.
 pub const SheetInfo = struct {
     name: []const u8,
     visibility: Visibility,
@@ -149,6 +159,7 @@ pub const Value = union(enum) {
     err: []const u8,
 };
 
+/// One cell of a `Row`. Cells the file does not have are not returned.
 pub const Cell = struct {
     /// Zero-based.
     column: u32,
@@ -173,6 +184,7 @@ pub const Row = struct {
     cells: []const Cell,
 };
 
+/// Options of `Reader.rows`. `.{}` reads values only.
 pub const Options = struct {
     /// Also return each formula's text.
     formulas: bool = false,
@@ -187,6 +199,27 @@ const Format = struct {
 
 const general: Format = .{ .code = "General", .kind = .number };
 
+/// An open .xlsx file. `open` reads the list of sheets; `rows` reads one
+/// sheet, row by row.
+///
+/// ```zig
+/// const book = try xlsx.Reader.open(allocator, bytes, .{});
+/// defer book.deinit();
+/// const rows = try book.rows(0, .{});
+/// defer rows.deinit();
+/// while (try rows.next()) |row| {
+///     for (row.cells) |cell| switch (cell.value) {
+///         .text => |text| std.debug.print("{d}:{d} text {s}\n", .{ row.number, cell.column, text }),
+///         .number => |n| std.debug.print("{d}:{d} number {d}\n", .{ row.number, cell.column, n }),
+///         else => {},
+///     };
+/// }
+/// ```
+///
+/// Rows and columns the file does not have are skipped: use `row.number`
+/// and `cell.column`, not the position in the iteration.
+///
+/// Apart from `diagnostic`, the fields are the reader's own state.
 pub const Reader = struct {
     gpa: std.mem.Allocator,
     /// Owns what lives as long as the reader: names, formats.
@@ -255,6 +288,8 @@ pub const Reader = struct {
         return self;
     }
 
+    /// Frees the reader. Free every `Rows` of it first. The file's bytes are
+    /// no longer needed afterwards.
     pub fn deinit(self: *Reader) void {
         const gpa = self.gpa;
         self.string_data.deinit(gpa);
@@ -588,6 +623,8 @@ pub const Rows = struct {
         return self;
     }
 
+    /// Frees the iterator, the last row returned and the list of merged
+    /// ranges. Call it before the reader's `deinit`.
     pub fn deinit(self: *Rows) void {
         const gpa = self.reader.gpa;
         self.part.destroy();

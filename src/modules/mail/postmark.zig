@@ -1,4 +1,5 @@
-//! Postmark transport (`POST /email`).
+//! Postmark transport (`POST /email`). Apps use only `Postmark`, as
+//! `spider.mail.Postmark`; the rest is internal.
 
 const std = @import("std");
 const http = @import("http.zig");
@@ -7,11 +8,15 @@ const Mail = message.Mail;
 const Mailbox = message.Mailbox;
 const Receipt = message.Receipt;
 
+/// Delivery through Postmark: the value of `Backend.postmark`.
 pub const Postmark = struct {
     /// The server token (`X-Postmark-Server-Token`).
     api_key: []const u8,
+    /// The API's address, without a trailing slash. Change it for a mock
+    /// server or a regional endpoint (`Mailer.fromEnv`: MAIL_BASE_URL).
     base_url: []const u8 = "https://api.postmarkapp.com",
 
+    // internal: called by Mailer.sendWith; apps send through a Mailer
     pub fn send(self: Postmark, arena: std.mem.Allocator, io: std.Io, mail: Mail) !Receipt {
         const url = try std.fmt.allocPrint(arena, "{s}/email", .{self.base_url});
         const reply = try http.postJson(arena, io, url, &.{

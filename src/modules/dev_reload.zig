@@ -1,4 +1,5 @@
-//! Browser reload for `spider dev`.
+//! Internal: browser reload for `spider dev`. The server wires it in by
+//! itself; apps do not call anything here.
 //!
 //! When the app runs under `spider dev` (SPIDER_DEV is set) and was built in
 //! Debug, the server:

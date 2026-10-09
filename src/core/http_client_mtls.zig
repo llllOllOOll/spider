@@ -31,22 +31,35 @@ pub const MtlsCert = union(enum) {
     },
 };
 
+/// What to send: the options of `request`. Every field has a default, so
+/// `.{}` is a GET with no extra headers.
 pub const MtlsRequest = struct {
     method: std.http.Method = .GET,
+    /// Request headers as name and value pairs, e.g.
+    /// `&.{.{ "Content-Type", "application/json" }}`.
     headers: []const [2][]const u8 = &.{},
+    /// Request body, sent as is. null: no body.
     body: ?[]const u8 = null,
+    /// Longest the whole exchange may take; `request` then fails with
+    /// error.MtlsTimeout or error.MtlsTransportFailed. Default 30 s.
     timeout_ms: u32 = 30_000,
 };
 
+/// The answer to `request`. A 4xx or 5xx status is a response like any
+/// other, not an error.
 pub const MtlsResponse = struct {
     status: std.http.Status,
+    /// The response body, allocated with the allocator given to `request`.
     body: []const u8,
 
+    /// Frees `body`. `allocator` is the one given to `request`.
     pub fn deinit(self: *MtlsResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.body);
         self.* = undefined;
     }
 
+    /// Parses `body` as JSON into `T`; fields of the JSON that `T` does not
+    /// have are ignored. The caller calls `deinit()` on the result.
     pub fn json(self: MtlsResponse, comptime T: type, allocator: std.mem.Allocator) !std.json.Parsed(T) {
         return std.json.parseFromSlice(T, allocator, self.body, .{ .ignore_unknown_fields = true });
     }
@@ -63,6 +76,22 @@ pub const MtlsResponse = struct {
 /// caller's io" step like fcm.zig has — the whole function just owns a
 /// dedicated `Io.Threaded` internally, the same fix fcm.zig applies to only
 /// its subprocess portion.
+///
+/// The body of the response is allocated with `gpa`: free it with
+/// `res.deinit(gpa)`. Needs `curl` on the PATH (error.FileNotFound without
+/// it). Fails with error.MtlsTimeout when curl does not finish within
+/// `opts.timeout_ms`, and with error.MtlsTransportFailed when the connection
+/// or the TLS handshake fails (refused, DNS, certificate rejected). A
+/// response body over 64 MiB is an error.
+///
+/// ```zig
+/// var res = try spider.http_client_mtls.request(gpa, url, cert, .{
+///     .method = .POST,
+///     .headers = &.{.{ "Content-Type", "application/json" }},
+///     .body = body,
+/// });
+/// defer res.deinit(gpa);
+/// ```
 pub fn request(
     gpa: std.mem.Allocator,
     url: []const u8,

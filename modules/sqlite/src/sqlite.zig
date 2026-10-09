@@ -1,3 +1,7 @@
+//! SQLite for an app (`spider.sqlite`, opt-in with `-Dsqlite=true`): one
+//! database per process, opened by `init`, then `query`, `queryOne`,
+//! `queryExecute` and `begin` from anywhere. Rows come back as structs whose
+//! fields are matched to columns by name.
 const std = @import("std");
 const zqlite = @import("zqlite");
 
@@ -9,12 +13,28 @@ var db_allocator: ?std.mem.Allocator = null;
 var db_io: ?std.Io = null;
 
 // ── Config ────────────────────────────────────────────────
+/// The options of `init`. `.{}` opens the file named by `SQLITE_PATH` with
+/// a pool of five connections.
 pub const DbConfig = struct {
+    /// The database file, or ":memory:". null (the default): the
+    /// `SQLITE_PATH` variable, or "db.sqlite" when it is not set.
     path: ?[]const u8 = null, // null → read SQLITE_PATH from env, fallback "db.sqlite"
+    /// Connections in the pool. Default 5. With 1 there is no pool: every
+    /// call uses the same connection, which is what an in-memory database
+    /// needs (each connection to ":memory:" is a database of its own).
     size: usize = 5,
 };
 
 // ── Init / Deinit ─────────────────────────────────────────
+/// Opens the database, creating the file when it does not exist. Call it
+/// once at startup, before any query, and `deinit()` at exit. `allocator`
+/// must outlive the database. Fails with the SQLite error when the file
+/// can't be opened.
+///
+/// ```zig
+/// try spider.sqlite.init(allocator, io, .{});
+/// defer spider.sqlite.deinit();
+/// ```
 pub fn init(allocator: std.mem.Allocator, io: std.Io, overrides: DbConfig) !void {
     db_allocator = allocator;
     const env = @import("spider").env;
@@ -40,6 +60,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, overrides: DbConfig) !void
     }
 }
 
+/// Closes every connection. No query may run after it.
 pub fn deinit() void {
     if (db_conn) |c| c.close();
     db_conn = null;
@@ -125,6 +146,22 @@ fn mapRow(comptime T: type, row: zqlite.Row, arena: std.mem.Allocator) !T {
 }
 
 // ── query ─────────────────────────────────────────────────
+/// Runs one statement with `?` parameters and gives back what `T` asks for:
+/// - a struct: every row as a `[]T` allocated in `arena`. A field takes the
+///   column of the same name; a field with no such column gets null, 0,
+///   false or "". Fields may be `[]const u8` (copied into `arena`), `bool`,
+///   integers, floats, enums (stored as their name; error.InvalidEnumValue
+///   for another text) and optionals of those (null for a NULL column).
+/// - `i64`: the first column of the first row, 0 when there is no row.
+/// - `void`: nothing; for INSERT, UPDATE and DELETE.
+///
+/// Fails with the SQLite error of the statement (a constraint, a missing
+/// table, a syntax error).
+///
+/// ```zig
+/// const posts = try spider.sqlite.query(Post, c.arena, "SELECT id, title FROM posts WHERE author = ?", .{author});
+/// try spider.sqlite.query(void, c.arena, "DELETE FROM posts WHERE id = ?1", .{id});
+/// ```
 pub fn query(comptime T: type, arena: std.mem.Allocator, sql: []const u8, params: anytype) !QueryResult(T) {
     const conn = try acquireConn();
     defer releaseConn(conn);
@@ -151,6 +188,12 @@ pub fn query(comptime T: type, arena: std.mem.Allocator, sql: []const u8, params
 }
 
 // ── queryOne ──────────────────────────────────────────────
+/// The first row of a statement as a struct `T`, or null when it returns
+/// no row. Fields are mapped as in `query`; strings are allocated in `arena`.
+///
+/// ```zig
+/// const post = try spider.sqlite.queryOne(Post, c.arena, "SELECT id, title FROM posts WHERE id = ?", .{id}) orelse return error.NotFound;
+/// ```
 pub fn queryOne(comptime T: type, arena: std.mem.Allocator, sql: []const u8, params: anytype) !?T {
     const conn = try acquireConn();
     defer releaseConn(conn);
@@ -161,6 +204,14 @@ pub fn queryOne(comptime T: type, arena: std.mem.Allocator, sql: []const u8, par
 }
 
 // ── queryExecute ────────────────────────────────────────────
+/// Runs a script: one or more statements separated by `;`, without
+/// parameters (DDL, migrations). Triggers and `;` inside strings or comments
+/// are fine. Pass `void` as `T`: no rows are returned (a struct `T` gives an
+/// empty slice). The allocator argument is not used.
+///
+/// ```zig
+/// try spider.sqlite.queryExecute(void, arena, "CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY, title TEXT)");
+/// ```
 pub fn queryExecute(comptime T: type, _: std.mem.Allocator, sql: []const u8) !QueryResult(T) {
     const conn = try acquireConn();
     defer releaseConn(conn);
@@ -177,14 +228,21 @@ pub fn queryExecute(comptime T: type, _: std.mem.Allocator, sql: []const u8) !Qu
 }
 
 // ── exec (for Database bridge) ───────────────────────────────
+/// Runs a script without parameters: `queryExecute(void, ...)` without the
+/// allocator argument.
 pub fn exec(sql: []const u8) !void {
     try queryExecute(void, undefined, sql);
 }
 
 // ── Transaction ──────────────────────────────────────────────
+/// A transaction on one connection, made by `begin()`. End it with exactly
+/// one call to `commit()` or `rollback()`: neither remembers that the
+/// transaction is over.
 pub const Transaction = struct {
+    /// The connection the transaction runs on.
     conn: zqlite.Conn,
 
+    /// The same as the module's `query`, inside this transaction.
     pub fn query(self: Transaction, comptime T: type, arena: std.mem.Allocator, sql: []const u8, params: anytype) !QueryResult(T) {
         if (T == void) {
             try self.conn.exec(sql, params);
@@ -204,17 +262,29 @@ pub const Transaction = struct {
         return try items.toOwnedSlice(arena);
     }
 
+    /// Commits and gives the connection back. When the commit fails the
+    /// connection is still held: call `rollback()`.
     pub fn commit(self: *Transaction) !void {
         try self.conn.commit();
         releaseConn(self.conn);
     }
 
+    /// Undoes everything since `begin()` and gives the connection back.
     pub fn rollback(self: *Transaction) void {
         self.conn.rollback();
         releaseConn(self.conn);
     }
 };
 
+/// Starts a transaction on a connection that stays reserved until
+/// `commit()` or `rollback()`. Statements run through the module's `query`
+/// meanwhile are not part of it when the pool has more than one connection.
+///
+/// ```zig
+/// var tx = try spider.sqlite.begin();
+/// try tx.query(void, arena, "INSERT INTO posts (title) VALUES (?)", .{title});
+/// try tx.commit();
+/// ```
 pub fn begin() !Transaction {
     const conn = try acquireConn();
     try conn.transaction();
@@ -238,9 +308,12 @@ fn sqliteExecFn(ptr: *anyopaque, sql: []const u8) anyerror!void {
 
 fn sqliteDeinitFn(_: *anyopaque) void {}
 
+// internal: adapter to the old generic `spider.Database` handle; apps call
+// the functions above.
 pub const SqliteDriver = struct {
     _dummy: u8 = 0,
 
+    // internal: see SqliteDriver.
     pub fn database(_: *SqliteDriver) @import("spider").Database {
         return .{
             .ptr = @constCast(db_pool orelse @panic("SQLite not initialized")),

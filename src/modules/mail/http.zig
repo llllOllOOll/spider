@@ -1,5 +1,5 @@
-//! What the HTTP transports share: posting a JSON payload to a provider and
-//! turning its answer into a mail error.
+//! Internal: what the HTTP mail transports share: posting a JSON payload to a
+//! provider and turning its answer into a mail error.
 
 const std = @import("std");
 const builtin = @import("builtin");

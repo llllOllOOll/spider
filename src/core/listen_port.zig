@@ -1,4 +1,4 @@
-//! Where listen() listens.
+//! Internal: where listen() listens.
 const std = @import("std");
 const env = @import("../internal/env.zig");
 const dev_reload = @import("../modules/dev_reload.zig");

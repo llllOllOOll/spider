@@ -27,8 +27,11 @@ pub fn Path(comptime T: type, comptime name: []const u8) type {
     }
 
     return struct {
+        // internal: how the server tells the extractors apart.
         pub const spider_kind = .path;
+        // internal: the type the extractor carries.
         pub const Inner = T;
+        // internal: the route segment this one reads.
         pub const param_name = name;
         value: T,
     };
@@ -46,7 +49,9 @@ pub fn Path(comptime T: type, comptime name: []const u8) type {
 /// ```
 pub fn Form(comptime T: type) type {
     return struct {
+        // internal: how the server tells the extractors apart.
         pub const spider_kind = .form;
+        // internal: the type the extractor carries.
         pub const Inner = T;
         value: T,
     };
@@ -58,7 +63,9 @@ pub fn Form(comptime T: type) type {
 /// error.ResourceNotLoaded (a 500: the route is wired wrong).
 pub fn Loaded(comptime T: type) type {
     return struct {
+        // internal: how the server tells the extractors apart.
         pub const spider_kind = .loaded;
+        // internal: the type the extractor carries.
         pub const Inner = T;
         value: *T,
     };

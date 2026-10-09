@@ -1,6 +1,6 @@
-//! Data masking (ISO/IEC 18004:2015 7.8): the 8 mask patterns (Table
-//! 10), the 4 penalty rules used to score a masked symbol (Table 11),
-//! and picking the mask with the lowest score.
+//! Internal: data masking (ISO/IEC 18004:2015 7.8): the 8 mask patterns
+//! (Table 10), the 4 penalty rules used to score a masked symbol (Table
+//! 11), and picking the mask with the lowest score.
 
 const std = @import("std");
 const matrix = @import("matrix.zig");

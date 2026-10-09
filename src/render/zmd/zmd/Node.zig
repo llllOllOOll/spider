@@ -1,3 +1,6 @@
+//! One element of a parsed Markdown document (`spider.zmd.Node`): the value a
+//! `Formatters` function receives.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -6,15 +9,25 @@ const Node = @This();
 const Formatters = @import("Formatters.zig");
 const Writer = std.Io.Writer;
 
+/// The syntax element this node came from and its place in the input.
 token: tokens.Token,
+/// The inner HTML of the element when its formatter runs: the children
+/// already rendered, text and code already escaped.
 content: []const u8 = "",
+/// The language named after the opening fence of a code block (`zig` for
+/// a block opened with three backticks and `zig`). As typed: escape it.
 meta: ?[]const u8 = null,
+/// The address of a link or image. As typed: check it with
+/// `Formatters.safeAddress` and escape it.
 href: ?[]const u8 = null,
+/// The text of a link or image. As typed: escape it.
 title: ?[]const u8 = null,
+/// The elements inside this one, in order.
 children: ArrayList(*Node),
+// internal: position of the token in the token list.
 index: usize = 0,
 
-/// Recursively translate a node into HTML.
+// internal: recursively translates a node into HTML; `parse` calls it on the root.
 pub fn toHtml(
     self: *Node,
     allocator: Allocator,
@@ -92,6 +105,7 @@ pub fn toHtml(
     }
 }
 
+// internal: the formatter of an element type, or `default_handler`.
 pub fn getHandlerComptime(
     formatters: Formatters,
     comptime element_type: []const u8,

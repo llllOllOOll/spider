@@ -1,6 +1,6 @@
-//! XML output helpers. There is no XML tree: every part is written
-//! straight to a `std.Io.Writer`, and these functions escape the three
-//! kinds of text a workbook contains.
+//! Internal: XML output helpers. There is no XML tree: every part is
+//! written straight to a `std.Io.Writer`, and these functions escape the
+//! three kinds of text a workbook contains.
 //!
 //! All inputs are expected to be valid UTF-8 (the workbook checks that
 //! before storing anything).

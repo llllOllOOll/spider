@@ -1,20 +1,55 @@
+//! The app's settings: `Config` is the type of the `config` constant that
+//! an app declares in its `spider.config.zig`. Every field has a default, so
+//! an app sets only what it changes.
 const std = @import("std");
 
+/// The value of `Config.env`.
 pub const Env = enum {
     development,
     production,
     testing,
 };
 
+/// The settings of an app. `spider.app()` reads them from the `config`
+/// constant of the project's `spider.config.zig` (the defaults below when
+/// the project has no such file); `spider.appWithConfig(.{...})` takes them
+/// in code.
+///
+/// ```zig
+/// // spider.config.zig
+/// const spider = @import("spider");
+///
+/// pub const config = spider.Config{
+///     .views_dir = "./src",
+///     .layout = "layout",
+///     .env = .development,
+///     .port = 3000,
+///     .host = "0.0.0.0",
+/// };
+/// ```
 pub const Config = struct {
+    /// Port `listen()` binds when nothing else names one. `spider dev
+    /// --port`, the `.port` given to `listen()` and the `PORT` variable
+    /// (environment or `.env`) come first, in that order. Default 3000.
     port: u16 = 3000,
+    /// Address `listen()` binds; the `.host` given to `listen()` replaces
+    /// it. The default, "127.0.0.1", accepts local connections only: use
+    /// "0.0.0.0" to accept connections from other machines (a container).
     host: []const u8 = "127.0.0.1",
+    /// Directory of the templates that `c.view()` renders when they are
+    /// read from disk: a view named "posts/index" is
+    /// `<views_dir>/posts/index.html`. Default "./views" (a generated app
+    /// sets "./src"). null: `c.view()` fails with error.ViewsNotConfigured.
     views_dir: ?[]const u8 = "./views",
+    /// Not read by the server today: a template names its layout itself,
+    /// with `extends "layout"`. Default "layout".
     layout: ?[]const u8 = "layout",
     /// Directory served as static files at "/" (before routing, always
     /// public). null: no static files. `server.staticDir()` / `staticAt()`
     /// override it.
     static_dir: ?[]const u8 = "./public",
+    /// The environment the app declares. Nothing in Spider reads it today:
+    /// it does not change any behaviour. Default `.development`.
     env: Env = .development,
     /// Accept threads of the threaded I/O backend (null: one per CPU).
     /// Ignored by the zio backend.
@@ -66,8 +101,10 @@ pub const Config = struct {
     require_route_access: bool = false,
 };
 
+// internal: every field at its default; core/app.zig reads it.
 pub const default = Config{};
 
+// internal: the config of the project being built; `spider.app()` calls it.
 pub fn fromRoot() Config {
     // spider_config is always available: either the project's spider.config.zig
     // (registered by myapp/build.zig) or the default fallback from spider's build.zig

@@ -1,8 +1,35 @@
+//! `spider.Hub`: the open SSE and WebSocket connections of the server and the
+//! channels they joined. Handlers and jobs use it to send to everyone, to a
+//! channel or to one user; the server registers and removes the connections.
+
 const std = @import("std");
 const posix = std.posix;
 const net = std.Io.net;
 const Watchdog = @import("../core/watchdog.zig").Watchdog;
 
+/// The open connections of the app and the channels they joined. The server
+/// owns its hubs: one for every SSE route together (`c.sseHub()`, and the hub
+/// a `spider.every` job receives), and one for each WebSocket route (what
+/// `Ws.broadcast` sends through, and what a `Server.wsInterval` callback
+/// receives).
+///
+/// ```zig
+/// hub.emitTo(channel, "package_updated", .{ .id = pkg.id });
+/// ```
+///
+/// Who receives what:
+///
+///   - `emit`: every SSE connection.
+///   - `emitTo`, `emitHtmlTo`: the SSE connections on one channel; recorded
+///     for replay.
+///   - `notifyUser`: the SSE connections on the channel `user:<id>`.
+///   - `broadcast`, `broadcastFmt`: every connection, SSE and WebSocket.
+///   - `broadcastToChannel`, `broadcastToChannelFmt`: the connections on one
+///     channel, SSE and WebSocket.
+///
+/// None of them returns an error: a connection whose write fails is taken out
+/// of the hub and its socket shut down, and the others still get the message.
+/// The fields belong to the server; use the methods.
 pub const Hub = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -25,13 +52,18 @@ pub const Hub = struct {
     /// connections registered with a `watch` entry are bounded.
     write_timeout_ms: u32 = 0,
 
+    /// The interval of `Server.sseHeartbeat(null)`: 30 seconds.
     pub const default_heartbeat_ms: u64 = 30_000;
+    /// The interval of `Server.sseSweep(null)`: 60 seconds.
     pub const default_sweep_ms: u64 = 60_000;
+    /// The reconnection delay every SSE stream announces when it opens: 3
+    /// seconds. `Sse.setRetry` changes it for one connection.
     pub const default_retry_ms: u64 = 3_000;
     /// Per-channel replay buffer bound — whichever limit is hit first.
     const history_max_entries: usize = 50;
     const history_max_age_ms: i64 = 5 * 60 * 1000;
 
+    // internal: what the server registers for each SSE or WebSocket connection.
     pub const Connection = struct {
         id: u64,
         stream: net.Stream,
@@ -90,6 +122,9 @@ pub const Hub = struct {
         }
     };
 
+    /// One event recorded for replay, as `historySince` returns it. `id` is the
+    /// hub-wide event id sent to the clients; `data` is the text that went out
+    /// (JSON from `emitTo`, HTML from `emitHtmlTo`).
     pub const HistoryEntry = struct {
         id: u64,
         event: []const u8,
@@ -109,6 +144,9 @@ pub const Hub = struct {
         }
     };
 
+    /// A hub with no connections. Its writes go through `io`, which must be the
+    /// Io of the server that owns the sockets. The server creates the hubs of an
+    /// app; a test may create its own.
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Hub {
         return .{
             .allocator = allocator,
@@ -118,6 +156,8 @@ pub const Hub = struct {
         };
     }
 
+    /// Stops the heartbeat and sweep threads, closes the stream of every
+    /// connection still registered and frees the hub.
     pub fn deinit(self: *Hub) void {
         self.stopHeartbeat();
         self.stopSweep();
@@ -136,6 +176,8 @@ pub const Hub = struct {
         self.channel_history.deinit(self.allocator);
     }
 
+    // internal: the server registers each connection before running its handler.
+    // `error.DuplicateId` when the id is already registered. `conn.channel` is not copied.
     pub fn add(self: *Hub, conn: Connection) !void {
         self.mutex.lock(self.io) catch return error.LockFailed;
         defer self.mutex.unlock(self.io);
@@ -149,7 +191,8 @@ pub const Hub = struct {
         try self.connections.append(self.allocator, slot);
     }
 
-    /// Moves the connection to `channel`, dropping every other subscription.
+    // internal: handlers call `Sse.join` / `Ws.join`, which know the connection id.
+    // Moves the connection to `channel`, dropping every other subscription.
     pub fn updateChannel(self: *Hub, conn_id: u64, channel: []const u8) !void {
         self.mutex.lock(self.io) catch return error.LockFailed;
         defer self.mutex.unlock(self.io);
@@ -162,10 +205,11 @@ pub const Hub = struct {
         }
     }
 
-    /// Adds `channel` to the connection's subscriptions, keeping the ones it
-    /// already has — one SSE connection can then serve several channels
-    /// (e.g. "condo:X" + "user:Y") instead of the browser opening one
-    /// EventSource per channel. No-op if already subscribed.
+    // internal: handlers call `Sse.subscribe`, which knows the connection id.
+    // Adds `channel` to the connection's subscriptions, keeping the ones it
+    // already has — one SSE connection can then serve several channels
+    // (e.g. "condo:X" + "user:Y") instead of the browser opening one
+    // EventSource per channel. No-op if already subscribed.
     pub fn addChannel(self: *Hub, conn_id: u64, channel: []const u8) !void {
         self.mutex.lock(self.io) catch return error.LockFailed;
         defer self.mutex.unlock(self.io);
@@ -191,25 +235,26 @@ pub const Hub = struct {
         return n;
     }
 
-    /// Removes the connection from the list (so no future broadcast/
-    /// heartbeat/sweep snapshot can find it), waiting on io_mutex first
-    /// to make sure no in-flight write is currently using it. That wait
-    /// happens *after* releasing the Hub's global `mutex`, so a
-    /// slow-to-finish write on this one connection can't stall
-    /// add()/remove()/broadcast() calls for any other connection.
-    ///
-    /// Does NOT close conn.stream — every caller (buildHandler for both
-    /// SSE and WS, in sse.zig/app.zig) registers the connection from
-    /// inside a Handler that's already running under handleConnection's
-    /// own `defer ctx.stream.close(ctx.io)`, which is what actually owns
-    /// and closes the fd once the handler returns. Closing it here too
-    /// used to double-close: the first close() releases the fd number
-    /// back to the OS, which can immediately hand that same number to a
-    /// brand new connection — and the second close() (or a concurrent
-    /// recv() on that new connection racing it) then hits the wrong
-    /// socket. The io_mutex wait below is what remove() actually needs to
-    /// provide: proof that no write is touching the stream right now,
-    /// before handleConnection's defer is allowed to close it for real.
+    // internal: the server removes a connection when its handler returns.
+    // Removes the connection from the list (so no future broadcast/
+    // heartbeat/sweep snapshot can find it), waiting on io_mutex first
+    // to make sure no in-flight write is currently using it. That wait
+    // happens *after* releasing the Hub's global `mutex`, so a
+    // slow-to-finish write on this one connection can't stall
+    // add()/remove()/broadcast() calls for any other connection.
+    //
+    // Does NOT close conn.stream — every caller (buildHandler for both
+    // SSE and WS, in sse.zig/app.zig) registers the connection from
+    // inside a Handler that's already running under handleConnection's
+    // own `defer ctx.stream.close(ctx.io)`, which is what actually owns
+    // and closes the fd once the handler returns. Closing it here too
+    // used to double-close: the first close() releases the fd number
+    // back to the OS, which can immediately hand that same number to a
+    // brand new connection — and the second close() (or a concurrent
+    // recv() on that new connection racing it) then hits the wrong
+    // socket. The io_mutex wait below is what remove() actually needs to
+    // provide: proof that no write is touching the stream right now,
+    // before handleConnection's defer is allowed to close it for real.
     pub fn remove(self: *Hub, conn_id: u64) void {
         const slot = blk: {
             self.mutex.lock(self.io) catch return;
@@ -232,6 +277,7 @@ pub const Hub = struct {
         self.releaseSlot(slot);
     }
 
+    /// Number of connections registered in this hub, whatever their channel.
     pub fn count(self: *Hub) usize {
         self.mutex.lock(self.io) catch return 0;
         defer self.mutex.unlock(self.io);
@@ -249,10 +295,11 @@ pub const Hub = struct {
         }
     }
 
-    /// Writes to ONE registered connection under its io_mutex, so a direct
-    /// write (Sse.send, replay) can never interleave its bytes with a
-    /// concurrent Hub broadcast/heartbeat to the same socket.
-    /// error.UnknownConnection when `conn_id` isn't registered.
+    // internal: how `Sse` writes to its own connection.
+    // Writes to ONE registered connection under its io_mutex, so a direct
+    // write (Sse.send, replay) can never interleave its bytes with a
+    // concurrent Hub broadcast/heartbeat to the same socket.
+    // error.UnknownConnection when `conn_id` isn't registered.
     pub fn writeToConn(self: *Hub, conn_id: u64, comptime writeFn: anytype, args: anytype) !void {
         const slot = blk: {
             self.mutex.lock(self.io) catch return error.LockFailed;
@@ -290,14 +337,15 @@ pub const Hub = struct {
         return @call(.auto, writeFn, .{ self, slot.conn.stream } ++ args);
     }
 
-    /// A write to this connection failed (or timed out): unregister it AND
-    /// shut its socket down. Unregistering alone left the client connected
-    /// to a stream that never got another event — its handler kept waiting
-    /// on the open socket, so the browser never reconnected. The shutdown
-    /// wakes that handler; handleConnection then closes the fd as usual.
-    /// Only done while the slot isn't closed yet, under its io_mutex: the
-    /// handler's own remove() sets `closed` before the fd can be closed, so
-    /// the descriptor shut down here is still this connection's.
+    // internal: what the hub does with a connection whose write failed.
+    // A write to this connection failed (or timed out): unregister it AND
+    // shut its socket down. Unregistering alone left the client connected
+    // to a stream that never got another event — its handler kept waiting
+    // on the open socket, so the browser never reconnected. The shutdown
+    // wakes that handler; handleConnection then closes the fd as usual.
+    // Only done while the slot isn't closed yet, under its io_mutex: the
+    // handler's own remove() sets `closed` before the fd can be closed, so
+    // the descriptor shut down here is still this connection's.
     pub fn drop(self: *Hub, conn_id: u64) void {
         const slot = blk: {
             self.mutex.lock(self.io) catch return;
@@ -329,6 +377,9 @@ pub const Hub = struct {
         _ = slot.refs.fetchAdd(1, .monotonic);
     }
 
+    /// Sends `message` to every connection of the hub, whatever its channel. A
+    /// WebSocket client receives it as a text frame; an SSE client as an event
+    /// named `message` with the text as data. Not recorded for replay.
     pub fn broadcast(self: *Hub, message: []const u8) void {
         self.mutex.lock(self.io) catch return;
         var snapshot: std.ArrayListUnmanaged(*ConnectionSlot) = .empty;
@@ -350,18 +401,40 @@ pub const Hub = struct {
         }
     }
 
+    /// Sends to one user: `emitTo` on the channel `user:<user_id>`, the one a
+    /// stream joins with `Sse.joinUser(user_id)`. Only SSE connections receive
+    /// it.
     pub fn notifyUser(self: *Hub, user_id: u64, event: []const u8, data: anytype) void {
         var ch_buf: [32]u8 = undefined;
         const channel = std.fmt.bufPrint(&ch_buf, "user:{d}", .{user_id}) catch return;
         self.emitTo(channel, event, data);
     }
 
+    /// Sends the event `event`, with `data` as JSON, to every SSE connection of
+    /// the hub, whatever its channel. WebSocket connections do not receive it.
+    /// It carries no event id and is not recorded for replay. Nothing is sent
+    /// when `data` cannot be serialized.
+    ///
+    /// ```zig
+    /// c.sseHub().emit("post_created", .{ .id = id });
+    /// ```
     pub fn emit(self: *Hub, event: []const u8, data: anytype) void {
         const json = std.json.Stringify.valueAlloc(self.allocator, data, .{}) catch return;
         defer self.allocator.free(json);
         self.broadcastEvent(event, json);
     }
 
+    /// Sends the event `event`, with `data` as JSON, to the SSE connections
+    /// subscribed to `channel` (`Sse.join`, `Sse.subscribe`). WebSocket
+    /// connections do not receive it. The event gets the next hub-wide id and is
+    /// recorded in the channel's history (the last 50 events, at most 5 minutes
+    /// old), so a client that reconnects gets what it missed (`Sse.joinWithReplay`).
+    /// It is recorded even when nobody is on the channel. Nothing is sent when
+    /// `data` cannot be serialized.
+    ///
+    /// ```zig
+    /// hub.emitTo(channel, "notification_created", .{});
+    /// ```
     pub fn emitTo(self: *Hub, channel: []const u8, event: []const u8, data: anytype) void {
         const json = std.json.Stringify.valueAlloc(self.allocator, data, .{}) catch return;
         defer self.allocator.free(json);
@@ -483,18 +556,23 @@ pub const Hub = struct {
         }
     }
 
+    /// `broadcast` with a formatted message: every connection of the hub.
     pub fn broadcastFmt(self: *Hub, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
         defer self.allocator.free(msg);
         self.broadcast(msg);
     }
 
+    /// `broadcastToChannel` with a formatted message: the connections on `channel`.
     pub fn broadcastToChannelFmt(self: *Hub, channel: []const u8, comptime fmt: []const u8, args: anytype) void {
         const msg = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
         defer self.allocator.free(msg);
         self.broadcastToChannel(channel, msg);
     }
 
+    /// Sends `message` to the connections on `channel`, SSE and WebSocket alike:
+    /// a text frame for a WebSocket client, an event named `message` for an SSE
+    /// client. Not recorded for replay.
     pub fn broadcastToChannel(self: *Hub, channel: []const u8, message: []const u8) void {
         self.mutex.lock(self.io) catch return;
         var snapshot: std.ArrayListUnmanaged(*ConnectionSlot) = .empty;
@@ -518,12 +596,14 @@ pub const Hub = struct {
         }
     }
 
+    // internal: writes one SSE event to a stream; callers go through `writeToConn`.
     pub fn sendSse(self: *Hub, stream: net.Stream, event: []const u8, data: []const u8) !void {
         var write_buf: [4096]u8 = undefined;
         var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
         try writeSseFrame(&sw.interface, null, event, data);
         try sw.interface.flush();
     }
+    // internal: `sendSse` with an `id:` line; used for channel events and replay.
     pub fn sendSseWithId(self: *Hub, stream: net.Stream, id: u64, event: []const u8, data: []const u8) !void {
         var write_buf: [4096]u8 = undefined;
         var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
@@ -606,12 +686,15 @@ pub const Hub = struct {
     // the next real write fails. Opt-in (call startHeartbeat after init())
     // so existing callers/tests that never touch it are unaffected.
 
+    // internal: `Server.sseHeartbeat` asks for it and listen() starts it.
+    // Starts a thread that sends an SSE comment to every SSE connection every `interval_ms` (null: `default_heartbeat_ms`).
     pub fn startHeartbeat(self: *Hub, interval_ms: ?u64) !void {
         if (self.heartbeat_thread != null) return;
         self.heartbeat_running.store(true, .release);
         self.heartbeat_thread = try std.Thread.spawn(.{}, heartbeatLoop, .{ self, interval_ms orelse default_heartbeat_ms });
     }
 
+    // internal: stops and joins the heartbeat thread; `deinit` calls it.
     pub fn stopHeartbeat(self: *Hub) void {
         if (self.heartbeat_thread) |t| {
             self.heartbeat_running.store(false, .release);
@@ -629,9 +712,10 @@ pub const Hub = struct {
         }
     }
 
-    /// The actual per-tick heartbeat action, callable directly (deterministic,
-    /// no timer involved) — this is what startHeartbeat's background thread
-    /// calls on each tick, and what tests exercise instead of racing a timer.
+    // internal: one heartbeat round; public for the tests.
+    // The actual per-tick heartbeat action, callable directly (deterministic,
+    // no timer involved) — this is what startHeartbeat's background thread
+    // calls on each tick, and what tests exercise instead of racing a timer.
     pub fn sendHeartbeats(self: *Hub) void {
         self.mutex.lock(self.io) catch return;
         var snapshot: std.ArrayListUnmanaged(*ConnectionSlot) = .empty;
@@ -668,12 +752,15 @@ pub const Hub = struct {
     // indefinitely. Sweep independently probes any SSE connection that's
     // been idle for at least the sweep interval and removes ones that fail.
 
+    // internal: `Server.sseSweep` asks for it and listen() starts it.
+    // Starts a thread that probes idle SSE connections every `interval_ms` (null: `default_sweep_ms`).
     pub fn startSweep(self: *Hub, interval_ms: ?u64) !void {
         if (self.sweep_thread != null) return;
         self.sweep_running.store(true, .release);
         self.sweep_thread = try std.Thread.spawn(.{}, sweepLoop, .{ self, interval_ms orelse default_sweep_ms });
     }
 
+    // internal: stops and joins the sweep thread; `deinit` calls it.
     pub fn stopSweep(self: *Hub) void {
         if (self.sweep_thread) |t| {
             self.sweep_running.store(false, .release);
@@ -691,9 +778,10 @@ pub const Hub = struct {
         }
     }
 
-    /// Directly callable (deterministic, no timer) — probes any SSE
-    /// connection idle for at least `idle_threshold_ms` and removes the ones
-    /// that fail to receive it.
+    // internal: one sweep round; public for the tests.
+    // Directly callable (deterministic, no timer) — probes any SSE
+    // connection idle for at least `idle_threshold_ms` and removes the ones
+    // that fail to receive it.
     pub fn sweepDeadConnections(self: *Hub, idle_threshold_ms: u64) void {
         const ts = self.now();
         self.mutex.lock(self.io) catch return;
@@ -1458,9 +1546,10 @@ test "Hub: emitHtmlTo records the raw HTML (not JSON) for replay" {
     try testing.expectEqualStrings("badge", entries[0].event);
 }
 
-/// One SSE frame: optional `id:`, `event:`, then `data:` once per line of
-/// `data` (CR/LF or LF), and the blank line that ends the event. A single
-/// `data:` with raw newlines inside would end the event early.
+// internal: the SSE wire format, shared by the senders of this file.
+// One SSE frame: optional `id:`, `event:`, then `data:` once per line of
+// `data` (CR/LF or LF), and the blank line that ends the event. A single
+// `data:` with raw newlines inside would end the event early.
 pub fn writeSseFrame(w: *std.Io.Writer, id: ?u64, event: []const u8, data: []const u8) !void {
     if (id) |n| try w.print("id: {d}\n", .{n});
     try w.writeAll("event: ");

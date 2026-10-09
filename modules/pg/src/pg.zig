@@ -1,3 +1,7 @@
+//! PostgreSQL for an app (`spider.pg`, opt-in with `-Dpg=true`): one
+//! connection pool per process, opened by `init`, then `query`, `queryOne`,
+//! `queryExecute`, `begin` and `transaction` from anywhere. Rows come back
+//! as structs whose fields are matched to columns by name.
 const std = @import("std");
 const pg_lib = @import("pg");
 const env = @import("spider").env;
@@ -8,6 +12,7 @@ pub fn ArrayParameter(comptime T: type) type {
         values: []const T,
         type_name: []const u8,
 
+        // internal: `array` builds it.
         pub fn init(values: []const T, type_name: []const u8) @This() {
             return .{
                 .values = values,
@@ -35,6 +40,8 @@ pub fn array(comptime T: type, values: []const T) ArrayParameter(T) {
     return ArrayParameter(T).init(values, type_name);
 }
 
+/// A complete set of connection settings. Nothing in this module reads it:
+/// `init` takes a `DbConfig`.
 pub const Config = struct {
     host: []const u8 = "localhost",
     port: u16 = 5432,
@@ -45,12 +52,20 @@ pub const Config = struct {
     timeout_ms: u64 = 5000,
 };
 
+/// The options of `init`. A field left null comes from the environment
+/// (the `.env` files included), then from a built-in default.
 pub const DbConfig = struct {
+    /// Server address. null: `PG_HOST`, or "localhost".
     host: ?[]const u8 = null,
+    /// Server port. null: `PG_PORT`, or 5432.
     port: ?u16 = null,
+    /// Database name. null: `PG_DB`, or "spider_db".
     database: ?[]const u8 = null,
+    /// null: `PG_USER`, or "spider".
     user: ?[]const u8 = null,
+    /// null: `PG_PASSWORD`, or "spider".
     password: ?[]const u8 = null,
+    /// Connections kept open. null: 10 (no variable is read).
     pool_size: ?usize = null,
     /// What typed mapping does with a column missing from the result or a
     /// NULL in a non-optional field (fields with a declared default use it
@@ -60,6 +75,7 @@ pub const DbConfig = struct {
     mapping: MappingMode = .fail,
 };
 
+/// The values of `DbConfig.mapping`: see that field.
 pub const MappingMode = enum { fail, warn };
 
 var db_pool: ?*pg_lib.Pool = null;
@@ -75,6 +91,18 @@ fn getEnvInt(key: []const u8, default: u16) u16 {
     return std.fmt.parseInt(u16, val, 10) catch default;
 }
 
+/// Opens the connection pool. Call it once at startup, before any query,
+/// and `deinit()` at exit. `allocator` and `io` must outlive the pool.
+///
+/// A connection that can't be opened is tried five times in all, waiting
+/// 1, 2, 4 and 8 seconds, then the error is returned. An answer from
+/// Postgres itself (wrong password, unknown database) is logged and returned
+/// at once as error.PG.
+///
+/// ```zig
+/// try spider.pg.init(allocator, io, .{});
+/// defer spider.pg.deinit();
+/// ```
 pub fn init(allocator: std.mem.Allocator, io: std.Io, overrides: DbConfig) !void {
     db_allocator = allocator;
     mapping_mode = overrides.mapping;
@@ -127,6 +155,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, overrides: DbConfig) !void
     }
 }
 
+/// Closes the pool. No query may run after it.
 pub fn deinit() void {
     if (db_pool) |p| {
         p.deinit();
@@ -135,14 +164,18 @@ pub fn deinit() void {
     db_allocator = null;
 }
 
+// internal: a raw driver connection from the pool; apps use query() or begin().
 pub fn acquireConn() !*pg_lib.Conn {
     return db_pool.?.acquire();
 }
 
+// internal: gives back a connection taken with acquireConn().
 pub fn releaseConn(conn: *pg_lib.Conn) void {
     db_pool.?.release(conn);
 }
 
+/// What `query(T, ...)` returns: nothing for `void`, one value for `i32`
+/// and `i64`, a slice `[]T` for a struct.
 pub fn QueryResult(comptime T: type) type {
     return switch (T) {
         void => void,
@@ -185,6 +218,7 @@ pub const DbError = error{
 /// Typed-mapping failures (see DbConfig.mapping).
 pub const MappingError = error{ ColumnMissing, UnexpectedNull, TypeMismatch, IntegerOverflow };
 
+// internal: the DbError for a SQLSTATE; pub for the tests.
 pub fn errorForCode(code: []const u8) DbError {
     const eq = std.mem.eql;
     if (eq(u8, code, "23505")) return error.UniqueViolation;
@@ -223,8 +257,10 @@ pub fn isDbError(err: anyerror) bool {
 
 /// Details of the last Postgres error raised on this thread.
 pub const ErrorInfo = struct {
+    /// The SQLSTATE, e.g. "23505".
     code: []const u8,
     message: []const u8,
+    /// Can contain row values: not for end users.
     detail: ?[]const u8,
     constraint: ?[]const u8,
     table: ?[]const u8,
@@ -591,6 +627,32 @@ fn execTypedOne(
     return out;
 }
 
+/// Runs one statement with `$1`, `$2`... parameters on a connection of the
+/// pool and gives back what `T` asks for:
+/// - a struct: every row as a `[]T` allocated in `arena`. A field takes the
+///   column of the same name. Fields may be `[]const u8`, `bool`, integers,
+///   floats, enums (the label of a Postgres enum or a text) and optionals of
+///   those. A `[]const u8` field accepts any column and gets it as text
+///   (uuid, numeric, date, "2026-09-26T18:40:33.183Z" for a timestamptz).
+/// - `i32` or `i64`: the first column of the first row; 0 when there is no
+///   row or the value is NULL.
+/// - `void`: nothing; for INSERT, UPDATE and DELETE.
+///
+/// Fails with:
+/// - a `DbError` when Postgres refuses the statement (`lastError()` has the
+///   details), e.g. error.UniqueViolation;
+/// - a `MappingError` when a row does not fit `T`: error.ColumnMissing and
+///   error.UnexpectedNull (a field that is neither optional nor has a
+///   default; see `DbConfig.mapping`), error.TypeMismatch,
+///   error.IntegerOverflow; error.InvalidEnumValue for an unknown enum label;
+/// - error.UseBeginForTransactions for BEGIN, COMMIT, ROLLBACK or SAVEPOINT:
+///   each call may run on a different connection. Use `begin()`.
+///
+/// ```zig
+/// const posts = try spider.pg.query(Post, c.arena, "SELECT id, title FROM posts WHERE author_id = $1", .{author_id});
+/// const total = try spider.pg.query(i64, c.arena, "SELECT count(*) FROM posts", .{});
+/// try spider.pg.query(void, c.arena, "DELETE FROM posts WHERE id = $1", .{id});
+/// ```
 pub fn query(
     comptime T: type,
     arena: std.mem.Allocator,
@@ -603,6 +665,13 @@ pub fn query(
     return execTyped(conn, T, arena, sql, params);
 }
 
+/// The first row of a statement, or null when it returns no row. `T` is a
+/// struct, mapped as in `query`, or `i32`/`i64` for the first column (null
+/// when that value is NULL). Further rows are discarded. Fails as `query`.
+///
+/// ```zig
+/// const post = try spider.pg.queryOne(Post, c.arena, "SELECT id, title FROM posts WHERE id = $1", .{id}) orelse return error.NotFound;
+/// ```
 pub fn queryOne(
     comptime T: type,
     arena: std.mem.Allocator,
@@ -616,6 +685,17 @@ pub fn queryOne(
 }
 
 /// Execute raw SQL without parameters. Supports multiple statements separated by ';'.
+///
+/// With `void` as `T` the script (DDL, migrations) runs statement by
+/// statement on one connection and stops at the first that fails; the ones
+/// before it stay applied unless the script has its own `BEGIN; ...;
+/// COMMIT`, which is allowed here when balanced. A `;` inside a string, a
+/// comment or a `$$ ... $$` body does not split. With another `T` it is
+/// `query` for one statement without parameters.
+///
+/// ```zig
+/// try spider.pg.queryExecute(void, arena, "CREATE TABLE IF NOT EXISTS posts (id serial PRIMARY KEY, title text NOT NULL)");
+/// ```
 pub fn queryExecute(
     comptime T: type,
     arena: std.mem.Allocator,
@@ -648,6 +728,17 @@ pub fn queryOneExecute(
     return execTypedOne(conn, T, arena, sql, .{});
 }
 
+/// Starts a transaction: takes a connection from the pool, sends BEGIN and
+/// keeps the connection for the `Transaction` until `commit()` or
+/// `rollback()`. Always `defer tx.rollback()`: it does nothing after a
+/// commit and returns the connection in every other case.
+///
+/// ```zig
+/// var tx = try spider.pg.begin();
+/// defer tx.rollback();
+/// try tx.query(void, c.arena, "INSERT INTO users (name) VALUES ($1)", .{name});
+/// try tx.commit();
+/// ```
 pub fn begin() !Transaction {
     const conn = try db_pool.?.acquire();
     _ = conn.exec("BEGIN", .{}) catch |err| {
@@ -662,9 +753,11 @@ pub fn begin() !Transaction {
 /// commits when it returns normally, rolls back when it returns an error (the
 /// error is passed through).
 ///
-///   const id = try pg.transaction(i64, input, struct {
-///       fn run(tx: *pg.Transaction, in: Input) !i64 { ... }
-///   }.run);
+/// ```zig
+/// const id = try pg.transaction(i64, input, struct {
+///     fn run(tx: *pg.Transaction, in: Input) !i64 { ... }
+/// }.run);
+/// ```
 pub fn transaction(
     comptime R: type,
     context: anytype,
@@ -679,6 +772,7 @@ pub fn transaction(
 
 // ── Transaction-control guard ───────────────────────────────────────────────
 
+// internal: what txControl() tells the guards about a statement.
 pub const TxControl = enum {
     none,
     /// BEGIN / START TRANSACTION
@@ -710,7 +804,7 @@ fn nextWord(sql: []const u8) struct { word: []const u8, rest: []const u8 } {
     return .{ .word = s[0..i], .rest = s[i..] };
 }
 
-/// Classifies the leading keyword(s) of one SQL statement.
+// internal: classifies the leading keyword(s) of one SQL statement.
 pub fn txControl(sql: []const u8) TxControl {
     const first = nextWord(sql);
     const w = first.word;
@@ -878,17 +972,21 @@ fn guardMulti(sql: []const u8) error{UseBeginForTransactions}!void {
 /// Database transaction on ONE pinned connection. Use begin() (or
 /// transaction()) to create one.
 ///
-/// Example:
-///   var tx = try pg.begin();
-///   defer tx.rollback();
-///   try tx.query(void, arena, "INSERT INTO users (name) VALUES ($1)", .{"Alice"});
-///   try tx.commit();
+/// ```zig
+/// var tx = try pg.begin();
+/// defer tx.rollback();
+/// try tx.query(void, arena, "INSERT INTO users (name) VALUES ($1)", .{"Alice"});
+/// try tx.commit();
+/// ```
 ///
 /// After any statement fails, Postgres aborts the transaction: further
 /// statements (and commit) return error.TransactionAborted until rollback().
 pub const Transaction = struct {
+    /// The connection the transaction is pinned to. Set by `begin()`.
     conn: *pg_lib.Conn,
+    /// True once `commit()` succeeded.
     committed: bool = false,
+    /// True once `rollback()` ran.
     rolled_back: bool = false,
 
     fn check(self: *Transaction) !void {
@@ -902,6 +1000,10 @@ pub const Transaction = struct {
         _ = self.conn.exec(sql, params) catch |err| return fail(self.conn, err);
     }
 
+    /// The module's `query`, on the transaction's connection. Also fails
+    /// with error.TransactionAborted after a statement of this transaction
+    /// failed, and with error.TransactionAlreadyFinished after `commit()`
+    /// or `rollback()`.
     pub fn query(
         self: *Transaction,
         comptime T: type,
@@ -913,6 +1015,8 @@ pub const Transaction = struct {
         return execTyped(self.conn, T, arena, sql, params);
     }
 
+    /// The module's `queryOne`, on the transaction's connection. Fails as
+    /// `Transaction.query`.
     pub fn queryOne(
         self: *Transaction,
         comptime T: type,
@@ -924,6 +1028,10 @@ pub const Transaction = struct {
         return execTypedOne(self.conn, T, arena, sql, params);
     }
 
+    /// Sends COMMIT and returns the connection to the pool. Fails with
+    /// error.TransactionAborted when a statement failed before, and with
+    /// error.TransactionAlreadyFinished on a second call.
+    ///
     /// On failure the transaction stays open; the usual `defer tx.rollback()`
     /// then cleans it up and returns the connection.
     pub fn commit(self: *Transaction) !void {
@@ -933,6 +1041,9 @@ pub const Transaction = struct {
         self.committed = true;
     }
 
+    /// Undoes the transaction and returns the connection to the pool. Does
+    /// nothing after `commit()` or a first `rollback()`.
+    ///
     /// Safe to call at any point (also from `defer`), including after a
     /// failed statement: it uses the driver's rollback, which works on an
     /// aborted transaction, so the connection goes back to the pool clean
@@ -960,9 +1071,12 @@ fn pgExecFn(ptr: *anyopaque, sql: []const u8) anyerror!void {
 
 fn pgDeinitFn(_: *anyopaque) void {}
 
+// internal: adapter to the old generic `spider.Database` handle; apps call
+// the functions above.
 pub const PgDriver = struct {
     _dummy: u8 = 0,
 
+    // internal: see PgDriver.
     pub fn database(_: *PgDriver) @import("spider").Database {
         return .{
             .ptr = @constCast(db_pool orelse @panic("PostgreSQL not initialized")),
@@ -1069,6 +1183,7 @@ pub fn queryOneAs(
     return result;
 }
 
+// internal: what the deprecated queryAs() and queryOneAs() return.
 pub fn MappedRows(comptime T: type) type {
     return struct {
         arena: std.heap.ArenaAllocator,
@@ -1076,6 +1191,7 @@ pub fn MappedRows(comptime T: type) type {
 
         const Self = @This();
 
+        // internal: frees the rows.
         pub fn deinit(self: *Self) void {
             self.arena.deinit();
         }
@@ -1084,6 +1200,9 @@ pub fn MappedRows(comptime T: type) type {
 
 // ── Deprecated Result type ──────────────────────────────────────────────────
 
+/// Deprecated: use `query(T, arena, sql, params)`, which returns typed rows.
+/// The untyped result of `queryWith`, `queryRaw` and `queryRow`: every value
+/// as text, with NULL and the empty string both read as "".
 pub const Result = struct {
     _arena: std.heap.ArenaAllocator,
     _col_names: [][]const u8,
@@ -1091,36 +1210,47 @@ pub const Result = struct {
     _row_count: usize,
     _col_count: usize,
 
+    /// Deprecated (see `Result`). Frees the result.
     pub fn deinit(self: *Result) void {
         self._arena.deinit();
     }
 
+    /// Deprecated (see `Result`). Number of rows.
     pub fn rows(self: *const Result) usize {
         return self._row_count;
     }
 
+    /// Deprecated (see `Result`). Number of columns.
     pub fn columns(self: *const Result) usize {
         return self._col_count;
     }
 
+    /// Deprecated (see `Result`). Name of column `col`; "" when out of range.
     pub fn columnName(self: *const Result, col: usize) []const u8 {
         if (col >= self._col_count) return "";
         return self._col_names[col];
     }
 
+    /// Deprecated (see `Result`). Always 0: the type is not kept.
     pub fn columnTypeOid(_: *const Result, _: usize) i32 {
         return 0;
     }
 
+    /// Deprecated (see `Result`). The number of rows returned, the same as
+    /// `rows()`; not the count of rows an UPDATE or DELETE changed.
     pub fn affectedRows(self: *const Result) usize {
         return self._row_count;
     }
 
+    /// Deprecated (see `Result`). The value at `row`, `col` as text; "" for
+    /// NULL or out of range.
     pub fn getValue(self: *const Result, row: usize, col: usize) []const u8 {
         if (row >= self._row_count or col >= self._col_count) return "";
         return self._values[row * self._col_count + col];
     }
 
+    /// Deprecated (see `Result`). The value of column `name` in `row`; ""
+    /// for NULL or an unknown column.
     pub fn get(self: *const Result, row: usize, comptime name: []const u8) []const u8 {
         for (self._col_names, 0..) |n, i| {
             if (std.mem.eql(u8, n, name)) return self.getValue(row, i);
@@ -1128,10 +1258,13 @@ pub const Result = struct {
         return "";
     }
 
+    /// Deprecated (see `Result`). True for NULL and for an empty string.
     pub fn isNull(self: *const Result, row: usize, col: usize) bool {
         return self.getValue(row, col).len == 0;
     }
 
+    /// Deprecated (see `Result`). Every row as a `T`, allocated with
+    /// `alloc`. A number that does not parse becomes 0.
     pub fn mapAll(self: *Result, comptime T: type, alloc: std.mem.Allocator) ![]T {
         const items = try alloc.alloc(T, self._row_count);
         for (items, 0..) |*item, row| {
@@ -1140,6 +1273,7 @@ pub const Result = struct {
         return items;
     }
 
+    /// Deprecated (see `Result`). The first row as a `T`, or null without rows.
     pub fn mapOne(self: *Result, comptime T: type, alloc: std.mem.Allocator) !?T {
         if (self._row_count == 0) return null;
         return try mapResultRow(T, self, 0, alloc);

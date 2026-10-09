@@ -1,3 +1,7 @@
+//! `spider.push`: Web Push. Sends an encrypted notification to a browser's
+//! push subscription (RFC 8291, `aes128gcm`), signed with the app's VAPID
+//! keys (RFC 8292).
+
 const std = @import("std");
 const pacman = @import("pacman");
 const Ctx = @import("../core/context.zig").Ctx;
@@ -11,32 +15,61 @@ const P256 = crypto.ecc.P256;
 
 // ─── Types ─────────────────────────────────────────────────────────
 
+/// A new VAPID key pair as raw bytes, from `WebPush.generateKeys`. To use it
+/// in a `PushConfig` (or in the environment), encode each key as base64url
+/// without padding.
 pub const VapidKeys = struct {
+    /// The P-256 private scalar, big-endian.
     private_key: [32]u8,
+    /// The P-256 public point, uncompressed (it starts with 0x04).
     public_key: [65]u8,
 };
 
+/// The identity the app sends pushes with.
 pub const PushConfig = struct {
+    /// The contact a push service may use, as a `mailto:` or `https:` URL. It goes in the `sub` claim.
     subject: []const u8,
+    /// The VAPID private key: the 32 bytes, base64url without padding.
     private_key: []const u8,
+    /// The VAPID public key: the 65 bytes, base64url without padding. It is the
+    /// `applicationServerKey` the page subscribes with, and is sent as it is.
     public_key: []const u8,
 };
 
+/// One browser subscription, with the three values of the browser's
+/// `PushSubscription.toJSON()`. The app stores them when the user subscribes.
 pub const PushSubscription = struct {
+    /// The push service URL of this subscription.
     endpoint: []const u8,
+    /// The browser's public key (`keys.p256dh`): 65 bytes, base64url without padding.
     p256dh: []const u8,
+    /// The authentication secret (`keys.auth`): 16 bytes, base64url without padding.
     auth: []const u8,
 };
 
 // ─── WebPush Client ────────────────────────────────────────────────
 
+/// The Web Push sender.
+///
+/// ```zig
+/// const wp = spider.push.WebPush.initFromEnv();
+/// try wp.sendRaw(arena, io, .{
+///     .endpoint = s.endpoint,
+///     .p256dh = s.p256dh,
+///     .auth = s.auth,
+/// }, payload, 86400);
+/// ```
 pub const WebPush = struct {
     config: PushConfig,
 
+    /// A sender with the given keys. `config` is not copied: its strings must outlive the sender.
     pub fn init(config: PushConfig) WebPush {
         return .{ .config = config };
     }
 
+    /// A sender configured from the variables `VAPID_SUBJECT`,
+    /// `VAPID_PRIVATE_KEY` and `VAPID_PUBLIC_KEY` (the environment or `.env`).
+    /// A variable that is not set becomes an empty string.
     pub fn initFromEnv() WebPush {
         const env = @import("../internal/env.zig");
         return init(.{
@@ -46,6 +79,7 @@ pub const WebPush = struct {
         });
     }
 
+    /// A new random VAPID key pair. Generate it once and keep it: subscriptions are tied to the public key.
     pub fn generateKeys(io: std.Io) VapidKeys {
         const private_key = P256.scalar.random(io, .big);
         const public_key = P256.basePoint.mul(private_key, .big) catch unreachable;
@@ -55,6 +89,17 @@ pub const WebPush = struct {
         };
     }
 
+    /// Encrypts `payload` for `subscription` and posts it to the subscription's
+    /// push service, outside a request (a job, a boot hook). `ttl` is how many
+    /// seconds the push service keeps the message for a device that is offline.
+    /// The message is sent with `Urgency: high`. Everything is allocated in
+    /// `arena`.
+    ///
+    /// Fails with `error.PushSubscriptionExpired` when the service answers 410
+    /// (delete the subscription), `error.PushForbidden` for 403 (the VAPID keys
+    /// are not the ones the subscription was made with), `error.PushSendFailed`
+    /// for any other status that is not 200, 201 or 204, and with the HTTP
+    /// client's error when the service cannot be reached.
     pub fn sendRaw(
         self: *const WebPush,
         arena: std.mem.Allocator,
@@ -89,6 +134,8 @@ pub const WebPush = struct {
         }
     }
 
+    /// `sendRaw` from a handler: it uses the request's arena and Io, and logs a
+    /// refused push at `err` level with the status and the endpoint. Same errors.
     pub fn send(
         self: *const WebPush,
         c: *Ctx,

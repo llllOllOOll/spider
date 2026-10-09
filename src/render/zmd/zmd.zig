@@ -1,16 +1,51 @@
+//! Markdown to HTML (`spider.zmd`). `parse` gives a fragment to put inside a
+//! page, `parseFull` a whole HTML document. Everything the author typed is
+//! escaped. The HTML of each element comes from a `Formatters` value, which
+//! an app can replace field by field.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const ArrayList = std.ArrayList;
 const Writer = std.Io.Writer;
 
+/// One element of the parsed document: what a formatter function receives.
 pub const Node = @import("zmd/Node.zig");
+// internal: the tokenizer and parser behind `parse`.
 pub const Ast = @import("zmd/Ast.zig");
+// internal: the Markdown syntax table; `Node.token` is one of its `Token`s.
 pub const tokens = @import("zmd/tokens.zig");
+/// The function that writes the HTML of each kind of element. `.{}` is the
+/// default set; name a field to replace one:
+///
+/// ```zig
+/// fn heading(allocator: std.mem.Allocator, node: spider.zmd.Node) std.mem.Allocator.Error![]const u8 {
+///     return std.fmt.allocPrint(allocator, "<h1 class=\"title\">{s}</h1>\n", .{node.content});
+/// }
+///
+/// const html = try spider.zmd.parse(c.arena, text, .{ .h1 = heading });
+/// ```
 pub const Formatters = @import("zmd/Formatters.zig");
 
+// The default set of formatters is `.{}`, not this.
+// internal: an empty `Formatters.Default`, not a `Formatters` value; nothing uses it.
 pub const default_formatters = Formatters.default;
 
+/// Converts Markdown to an HTML fragment (no `<html>` or `<body>` around it).
+/// `formatters` is `.{}` for the default HTML.
+///
+/// ```zig
+/// const html = try spider.zmd.parse(c.arena, post.body, .{});
+/// return c.view("posts/show", .{ .body = spider.RawHtml{ .html = html } }, .{});
+/// ```
+///
+/// The result is allocated with `allocator` and owned by the caller; `input`
+/// is not kept. Text, link addresses and code are escaped, so the result is
+/// safe to wrap in `spider.RawHtml`. `\r\n` line ends are read as `\n`.
+/// The only failure is running out of memory.
+///
+/// A `formatters.root` equal to `Formatters.Default.root` (the whole
+/// document) is replaced by the fragment one; use `parseFull` for a document.
 pub fn parse(
     allocator: Allocator,
     input: []const u8,
@@ -48,6 +83,9 @@ pub fn parse(
     return allocator.dupe(u8, try aw.toOwnedSlice());
 }
 
+/// Like `parse`, but the result is a whole HTML document: the default root
+/// formatter wraps the content in `<!DOCTYPE html>`, `<head>` (charset only)
+/// and `<body><main>`. A custom `formatters.root` is used as given.
 pub fn parseFull(
     allocator: Allocator,
     input: []const u8,

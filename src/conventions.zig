@@ -21,22 +21,41 @@
 
 const std = @import("std");
 
+/// How serious an issue is. `err` fails `spider check` and
+/// `spider.testing.expectConventions()`; `warn` is only listed, and fails
+/// `spider check --strict`.
 pub const Severity = enum { err, warn };
 
+/// One broken convention: where it is, which rule, and how to fix it.
 pub const Issue = struct {
     severity: Severity,
     /// Relative to the project root.
     path: []const u8,
+    /// Line number in the file, starting at 1.
     line: usize,
+    /// The name of the rule, as listed at the top of this file (`kit-class`, `route-access`, ...).
     rule: []const u8,
+    /// What is wrong, in a sentence.
     message: []const u8,
+    /// What to do about it.
     fix: []const u8,
 };
 
+/// The issues found by a check. Start with `.{ .arena = arena }`; everything
+/// it holds is allocated there.
+///
+/// ```zig
+/// var report: conventions.Report = .{ .arena = arena.allocator() };
+/// try conventions.check(io, arena.allocator(), root, &report);
+/// ```
 pub const Report = struct {
+    /// Where the issues and their texts are allocated.
     arena: std.mem.Allocator,
+    /// The issues, in the order they were found.
     issues: std.ArrayListUnmanaged(Issue) = .empty,
 
+    /// Adds an issue. `path` is copied and the message is formatted into the
+    /// report's arena; `rule` and `fix` are kept as given.
     pub fn add(r: *Report, severity: Severity, path: []const u8, line: usize, rule: []const u8, comptime msg_fmt: []const u8, msg_args: anytype, fix: []const u8) !void {
         try r.issues.append(r.arena, .{
             .severity = severity,
@@ -48,6 +67,7 @@ pub const Report = struct {
         });
     }
 
+    /// Number of issues of the given severity.
     pub fn count(r: Report, severity: Severity) usize {
         var n: usize = 0;
         for (r.issues.items) |i| {
@@ -70,6 +90,11 @@ pub const Report = struct {
 
 // ── Checks over the project tree ────────────────────────────────────────
 
+/// Checks the app whose project directory is `root`: every `.zig` and `.html`
+/// file under `src/`, and the features under `src/features/`. Issues are
+/// added to `report`; an app without a `src/` directory adds none. The
+/// `route-access` rule runs only when `src/main.zig` shows an auth
+/// middleware. Fails only on an allocation or a directory read error.
 pub fn check(io: std.Io, arena: std.mem.Allocator, root: std.Io.Dir, report: *Report) !void {
     const main_src = readOrEmpty(io, arena, root, "src/main.zig");
     const styles = readOrEmpty(io, arena, root, "src/styles.css");
@@ -326,6 +351,10 @@ fn setActive(styles: []const u8, set: []const u8) bool {
 /// HTML boolean attributes: present = on, whatever the value.
 const bool_attrs = [_][]const u8{ "disabled", "checked", "selected", "required", "readonly", "hidden", "multiple", "autofocus", "open", "novalidate", "inert" };
 
+/// The template rules for one file: `text` is the template, `path` the name
+/// reported. `styles` is the content of `src/styles.css` (which icon sets it
+/// loads); `has_ui_layer` says whether the app has a `src/ui.css`, without
+/// which the `kit-class` rule and the `ti` icon rule do not apply.
 pub fn checkTemplate(report: *Report, path: []const u8, text: []const u8, styles: []const u8, has_ui_layer: bool) !void {
     var line_no: usize = 0;
     var lines = std.mem.splitScalar(u8, text, '\n');

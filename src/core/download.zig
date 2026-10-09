@@ -1,4 +1,4 @@
-//! Building the headers of a file download.
+//! Internal: building the headers of a file download.
 //!
 //! `Ctx.download` uses this; it is separate so the rules about file
 //! names can be read and tested on their own.

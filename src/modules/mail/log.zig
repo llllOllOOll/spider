@@ -9,10 +9,14 @@ const Receipt = message.Receipt;
 
 const log = std.log.scoped(.mail);
 
+/// The value of `Backend.log`: each mail becomes one `info` log line (scope
+/// `mail`) with sender, recipients and subject, and nothing is delivered.
+/// The receipt has no message id.
 pub const Log = struct {
     /// Also log the body (the text one when there is one, else the HTML).
     body: bool = true,
 
+    // internal: called by Mailer.sendWith; apps send through a Mailer
     pub fn send(self: Log, arena: std.mem.Allocator, mail: Mail) !Receipt {
         log.info("{s}", .{try self.line(arena, mail)});
         return .{};

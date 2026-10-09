@@ -1,7 +1,9 @@
 //! Password hashing for an app's own users.
 //!
-//!     const stored = try spider.password.hash(c, form.password); // save this
-//!     if (!spider.password.verify(c, user.password_hash, form.password)) ...
+//! ```zig
+//! const stored = try spider.password.hash(c, form.password); // save this
+//! if (!spider.password.verify(c, user.password_hash, form.password)) ...
+//! ```
 //!
 //! argon2id with the parameters OWASP recommends. The result is a PHC
 //! string ("$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>"): it carries its
@@ -15,6 +17,8 @@ const argon2 = std.crypto.pwhash.argon2;
 /// time in proportion to nothing a real password needs.
 pub const max_len = 256;
 
+/// What `hash` fails with: `error.PasswordTooLong` (over `max_len` bytes), out
+/// of memory, or an error of the argon2 implementation.
 pub const Error = error{PasswordTooLong} || std.mem.Allocator.Error || std.crypto.pwhash.Error;
 
 /// The hash of `password`, to store. Allocated in the request arena.

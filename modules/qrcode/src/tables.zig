@@ -1,8 +1,8 @@
-//! Fixed data from ISO/IEC 18004:2015. No algorithm logic lives here —
-//! only constants and the handful of closed-form derivations the spec
-//! itself expresses as formulas rather than tables (raw data modules,
-//! alignment pattern positions). Every value here was checked against
-//! the ISO text directly, not copied from a third-party implementation.
+//! Internal: fixed data from ISO/IEC 18004:2015. No algorithm logic lives
+//! here — only constants and the handful of closed-form derivations the
+//! spec itself expresses as formulas rather than tables (raw data modules,
+//! alignment pattern positions). Every value here was checked against the
+//! ISO text directly, not copied from a third-party implementation.
 
 const std = @import("std");
 

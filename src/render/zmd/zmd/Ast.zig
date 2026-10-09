@@ -1,3 +1,6 @@
+//! Internal: the Markdown tokenizer and parser. It turns the input into a
+//! tree of `Node`s that `zmd.parse` then writes as HTML.
+
 const std = @import("std");
 const Node = @import("Node.zig");
 const tokens = @import("tokens.zig");

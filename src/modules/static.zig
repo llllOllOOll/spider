@@ -1,11 +1,22 @@
+//! Static file serving. The server does it by itself, before routing, for the
+//! `static_dir` of the config (or `Server.staticDir` / `Server.staticAt`);
+//! apps only see `StaticConfig`.
+
 const std = @import("std");
 const Response = @import("../core/context.zig").Response;
 
+/// Where static files are read from and under which URL path they are
+/// served. Apps set it through `Config.static_dir`, `Server.staticDir(dir)`
+/// or `Server.staticAt(dir, prefix)`.
 pub const StaticConfig = struct {
+    /// The directory of the files, relative to the working directory. Empty: no static files.
     dir: []const u8 = "./public",
+    /// The start of the URL paths answered from `dir`: with `/assets`,
+    /// `/assets/app.css` is the file `app.css` of `dir`.
     prefix: []const u8 = "/",
 };
 
+// internal: the Content-Type for a file name, by its extension; `application/octet-stream` when unknown.
 pub fn contentType(path: []const u8) []const u8 {
     const ext = std.fs.path.extension(path);
     if (std.mem.eql(u8, ext, ".html")) return "text/html; charset=utf-8";
@@ -30,7 +41,8 @@ pub fn contentType(path: []const u8) []const u8 {
     return "application/octet-stream";
 }
 
-/// What of the request affects caching.
+// internal: the part of a request `serve` needs.
+// What of the request affects caching.
 pub const Request = struct {
     /// The URL's query string (without '?').
     query: ?[]const u8 = null,
@@ -38,13 +50,14 @@ pub const Request = struct {
     if_none_match: ?[]const u8 = null,
 };
 
-/// Adds caching to a static file response: an ETag from the content
-/// always; `Cache-Control: public, max-age=31536000, immutable` when the URL
-/// carries a version (`?v=...`, e.g. from an asset_url helper: the URL
-/// changes when the file does), `no-cache` otherwise (the browser
-/// revalidates and gets 304 while the ETag matches — so sw.js, HTML and
-/// unversioned assets never go stale). A matching If-None-Match is 304
-/// with no body.
+// internal: the caching step of `serve`.
+// Adds caching to a static file response: an ETag from the content
+// always; `Cache-Control: public, max-age=31536000, immutable` when the URL
+// carries a version (`?v=...`, e.g. from an asset_url helper: the URL
+// changes when the file does), `no-cache` otherwise (the browser
+// revalidates and gets 304 while the ETag matches — so sw.js, HTML and
+// unversioned assets never go stale). A matching If-None-Match is 304
+// with no body.
 pub fn withCache(arena: std.mem.Allocator, r: Response, req: Request) !Response {
     const body = r.body orelse "";
     const etag = try std.fmt.allocPrint(arena, "\"{x:0>16}\"", .{std.hash.Wyhash.hash(0, body)});
@@ -83,6 +96,8 @@ fn etagListHas(list: []const u8, etag: []const u8) bool {
     return false;
 }
 
+// internal: called by the server for each request before routing.
+// The response for `request_path`, or null when no file answers it.
 pub fn serve(
     io: std.Io,
     arena: std.mem.Allocator,

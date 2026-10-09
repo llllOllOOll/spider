@@ -1,3 +1,6 @@
+//! Internal: the old generic database handle (`Database`, a pointer plus an
+//! exec function) and the `DatabaseCtx` that `c.db()` returns. Apps use
+//! `spider.pg` or `spider.sqlite` directly.
 const std = @import("std");
 
 pub const Database = struct {

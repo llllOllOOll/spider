@@ -1,4 +1,5 @@
-//! Reed-Solomon error correction codeword generation over GF(2^8).
+//! Internal: Reed-Solomon error correction codeword generation over
+//! GF(2^8).
 //!
 //! ISO/IEC 18004:2015 Annex A: the generator polynomial for `degree`
 //! error correction codewords is the product of the first-degree

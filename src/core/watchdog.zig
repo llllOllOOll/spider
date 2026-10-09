@@ -1,4 +1,4 @@
-//! Connection deadlines for Server.listen().
+//! Internal: connection deadlines for Server.listen().
 //!
 //! Without them a client that connects and sends nothing, sends a request
 //! head one byte at a time, or stops halfway through a body holds its file

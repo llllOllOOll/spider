@@ -7,6 +7,13 @@ const Ctx = ctx_mod.Ctx;
 const Response = ctx_mod.Response;
 const NextFn = ctx_mod.NextFn;
 
+/// A middleware that adds `Vary: HX-Request` to every response whose content
+/// type is `text/html`, so a cache keeps the htmx fragment and the full page
+/// of one URL apart. Other responses pass unchanged.
+///
+/// ```zig
+/// server.use(spider.varyHtmx)
+/// ```
 pub fn varyHtmx(c: *Ctx, next: NextFn) anyerror!Response {
     var resp = try next(c);
     if (std.mem.indexOf(u8, resp.content_type, "text/html") != null) {

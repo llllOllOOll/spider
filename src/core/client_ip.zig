@@ -1,4 +1,5 @@
-//! The client's address behind reverse proxies (`Ctx.clientIp()`).
+//! Internal: the client's address behind reverse proxies
+//! (`Ctx.clientIp()`).
 //!
 //! `X-Forwarded-For` is written by whoever sends the request, so it is only
 //! believed when the TCP peer is one of `Config.trusted_proxies`: then the

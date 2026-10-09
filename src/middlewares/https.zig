@@ -14,6 +14,7 @@ const NextFn = ctx_mod.NextFn;
 const MiddlewareFn = ctx_mod.MiddlewareFn;
 const env = @import("../internal/env.zig");
 
+/// Options of `spider.forceHttps`. Only `default_base_url` is required.
 pub const Options = struct {
     /// Env var with the public origin ("https://example.com"), read per request.
     base_url_env: []const u8 = "BASE_URL",
@@ -22,9 +23,21 @@ pub const Options = struct {
     /// Header carrying the original scheme. Without it (dev, no proxy) the
     /// request is taken as HTTPS and never redirected.
     proto_header: []const u8 = "X-Forwarded-Proto",
+    /// Request targets that are never redirected: an exact match (the query
+    /// string counts), or a prefix when the entry ends in `*`. Unlike a
+    /// route's `.allow_http`, it also covers paths no route matches.
     allow_http_paths: []const []const u8 = &.{},
 };
 
+/// A middleware that redirects a request that arrived over plain HTTP to the
+/// same path and query on the HTTPS origin (302). The scheme is read from
+/// `proto_header`: the app must be behind a proxy that sets it. A request
+/// without that header is taken as HTTPS and passes. Routes with
+/// `.allow_http = true` and the `allow_http_paths` are not redirected.
+///
+/// ```zig
+/// server.use(spider.forceHttps(.{ .default_base_url = "https://example.test", .allow_http_paths = &.{ "/legacy*", "/exact" } }))
+/// ```
 pub fn forceHttps(comptime opts: Options) MiddlewareFn {
     return struct {
         fn mw(c: *Ctx, next: NextFn) anyerror!Response {

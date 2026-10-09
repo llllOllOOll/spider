@@ -1,4 +1,5 @@
 //! Brevo transport: the transactional email API (`POST /v3/smtp/email`).
+//! Apps use only `Brevo`, as `spider.mail.Brevo`; the rest is internal.
 
 const std = @import("std");
 const http = @import("http.zig");
@@ -7,10 +8,16 @@ const Mail = message.Mail;
 const Mailbox = message.Mailbox;
 const Receipt = message.Receipt;
 
+/// Delivery through Brevo: the value of `Backend.brevo`.
 pub const Brevo = struct {
+    /// The API key, from the provider's dashboard (`Mailer.fromEnv`: BREVO_API_KEY).
+    /// Not copied.
     api_key: []const u8,
+    /// The API's address, without a trailing slash. Change it for a mock
+    /// server or a regional endpoint (`Mailer.fromEnv`: MAIL_BASE_URL).
     base_url: []const u8 = "https://api.brevo.com",
 
+    // internal: called by Mailer.sendWith; apps send through a Mailer
     pub fn send(self: Brevo, arena: std.mem.Allocator, io: std.Io, mail: Mail) !Receipt {
         const url = try std.fmt.allocPrint(arena, "{s}/v3/smtp/email", .{self.base_url});
         const reply = try http.postJson(arena, io, url, &.{

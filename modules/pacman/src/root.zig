@@ -1,12 +1,27 @@
+//! The HTTP client (`spider.http_client`): one function per method for a
+//! single request, and `Client` for many requests to the same server over
+//! kept-alive connections. The whole response body is read into memory;
+//! redirects are not followed.
+
 const std = @import("std");
 const Io = std.Io;
 
+/// The body of a request: `.json`, `.form` or `.raw`.
 pub const Body = @import("body.zig").Body;
+/// `jsonBody(text)` is `.{ .json = text }`: a body that is already JSON text.
 pub const jsonBody = @import("body.zig").jsonBody;
+/// A response's headers, with a case-insensitive `get`.
 pub const Headers = @import("headers.zig").Headers;
+/// What every call returns: `status`, `headers` and the whole body
+/// (`text()`, `json(T)`). Call `deinit()` when done with it.
 pub const Response = @import("response.zig").Response;
+/// A client for one server: a base URL, headers sent with every request and
+/// a pool of open connections.
 pub const Client = @import("client.zig").Client;
+/// The options of every request: headers, body, query, timeout, response
+/// size limit, proxy.
 pub const FetchOptions = @import("request.zig").FetchOptions;
+/// The default of `FetchOptions.max_response_bytes`: 64 MiB.
 pub const default_max_response_bytes = @import("request.zig").default_max_response_bytes;
 /// Low-level entry point, for callers that need full per-call control (own
 /// method/headers/uri) while still reusing a persistent http.Client's
@@ -14,16 +29,50 @@ pub const default_max_response_bytes = @import("request.zig").default_max_respon
 /// (fresh Authorization/date headers every call) that doesn't fit Client's
 /// fixed-headers-at-init model. See Client.get/post/etc for the common case.
 pub const request = @import("request.zig").request;
+/// `client.get(path, opts)` as a plain function, to hand to `io.async`:
+/// `io.async(asyncGet, .{ &client, "/users", .{} })`. Nothing in it is
+/// asynchronous by itself.
 pub const asyncGet = @import("client.zig").asyncGet;
+/// `client.post(path, opts)` as a plain function for `io.async`. See `asyncGet`.
 pub const asyncPost = @import("client.zig").asyncPost;
+/// `client.put(path, opts)` as a plain function for `io.async`. See `asyncGet`.
 pub const asyncPut = @import("client.zig").asyncPut;
+/// `client.patch(path, opts)` as a plain function for `io.async`. See `asyncGet`.
 pub const asyncPatch = @import("client.zig").asyncPatch;
+/// `client.delete(path, opts)` as a plain function for `io.async`. See `asyncGet`.
 pub const asyncDelete = @import("client.zig").asyncDelete;
+/// A GET request to `url`. Any HTTP answer is a Response, whatever its
+/// status; an error means no complete answer arrived. The response owns its
+/// memory (taken from `allocator`): call `deinit()`.
+///
+/// ```zig
+/// var res = try spider.http_client.get(c.io(), c.arena, url, .{ .timeout_ms = 3000 });
+/// defer res.deinit();
+/// if (res.status != .ok) return error.BadGateway;
+/// const body = res.text();
+/// ```
 pub const get = @import("request.zig").get;
+/// A POST request to `url`, with `opts.body` as its body.
+///
+/// ```zig
+/// var res = try spider.http_client.post(c.io(), c.arena, token_url, .{
+///     .body = .{ .form = &.{
+///         .{ "grant_type", "authorization_code" },
+///         .{ "code", code },
+///     } },
+/// });
+/// defer res.deinit();
+/// const parsed = try res.json(struct { access_token: []const u8 = "" });
+/// ```
 pub const post = @import("request.zig").post;
+/// A PUT request to `url`. See `get` and `post`.
 pub const put = @import("request.zig").put;
+/// A PATCH request to `url`. See `get` and `post`.
 pub const patch = @import("request.zig").patch;
+/// A DELETE request to `url`. See `get`.
 pub const delete = @import("request.zig").delete;
+/// A HEAD request to `url`: the response has the status and the headers, and
+/// an empty body.
 pub const head = @import("request.zig").head;
 
 test "debug text content" {

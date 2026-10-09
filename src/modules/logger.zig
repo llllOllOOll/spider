@@ -1,3 +1,7 @@
+//! `spider.logger` and `spider.loggerWith`: the middleware that prints one
+//! line per request to stderr (time, status, method, path, duration, request
+//! id, user and org).
+
 const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const NextFn = @import("../core/context.zig").NextFn;
@@ -12,6 +16,7 @@ const blue = "\x1b[34m";
 const yellow = "\x1b[33m";
 const red = "\x1b[31m";
 
+/// Options of `spider.loggerWith`.
 pub const Options = struct {
     /// Paths whose successful (< 400) requests are not logged — heartbeats,
     /// polling, health checks. Segment globs: "*" matches one segment,
@@ -59,8 +64,9 @@ fn formatMs(ns: u64, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{d:.1}ms", .{ms}) catch "?ms";
 }
 
-/// Glob over "/"-separated segments: "*" = exactly one segment, a final
-/// "**" = any remaining segments (including none).
+// internal: the matching behind `Options.quiet_paths`; public for nothing outside this file.
+// Glob over "/"-separated segments: "*" = exactly one segment, a final
+// "**" = any remaining segments (including none).
 pub fn pathMatches(pattern: []const u8, path: []const u8) bool {
     var pit = std.mem.splitScalar(u8, std.mem.trim(u8, pattern, "/"), '/');
     var sit = std.mem.splitScalar(u8, std.mem.trim(u8, path, "/"), '/');

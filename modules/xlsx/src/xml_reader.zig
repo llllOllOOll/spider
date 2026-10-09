@@ -1,4 +1,5 @@
-//! A streaming XML reader, just enough for the parts of a workbook.
+//! Internal: a streaming XML reader, just enough for the parts of a
+//! workbook.
 //!
 //! It is a pull parser: `Parser.next` returns one event at a time
 //! (an element starting, an element ending, a piece of text) and reads

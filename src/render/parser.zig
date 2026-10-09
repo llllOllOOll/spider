@@ -1,3 +1,7 @@
+//! Internal: the template parser. Turns template source into the nodes of
+//! ast.zig, with the layout named by `extends` and the components defined
+//! inline.
+
 const std = @import("std");
 const ast = @import("ast.zig");
 const Node = ast.Node;

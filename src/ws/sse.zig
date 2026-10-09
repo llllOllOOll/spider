@@ -1,3 +1,7 @@
+//! `spider.Sse`: one Server-Sent Events stream, as the handler of an SSE
+//! route receives it. The handler subscribes the stream to channels and
+//! waits; the rest of the app publishes through the hub (`c.sseHub()`).
+
 const std = @import("std");
 const posix = std.posix;
 const net = std.Io.net;
@@ -6,16 +10,42 @@ const Ctx = @import("../core/context.zig").Ctx;
 const Response = @import("../core/context.zig").Response;
 const Handler = @import("../routing/router.zig").Handler;
 
+/// One open SSE stream. An SSE handler (`Server.sse`, `Group.sse`) receives
+/// it after the response headers went out: it picks the channels, then calls
+/// `wait()` so the stream stays open. When the handler returns, the
+/// connection is closed.
+///
+/// ```zig
+/// fn events(sse: *spider.Sse) !void {
+///     const room = sse.param("room") orelse "lobby";
+///     const channel = try std.fmt.allocPrint(sse.arena, "room:{s}", .{room});
+///     try sse.joinWithReplay(channel);
+///     sse.wait();
+/// }
+/// ```
+///
+/// Events for the channel come from anywhere in the app:
+/// `c.sseHub().emitTo("room:lobby", "message", .{ .text = "hi" })`.
+/// An error returned by the handler ends the stream and is not reported.
 pub const Sse = struct {
     _stream: net.Stream,
     _hub: *Hub,
     _conn_id: u64,
+    /// The channel given to `join`, or the first one given to `subscribe`. Empty before that.
     channel: []const u8 = "",
+    /// The request's params at the time the stream opened: route segments and
+    /// what the middlewares set (the `_auth_*` values). See `param`.
     params: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// The request headers. See `header` for a lookup that ignores case.
     headers: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// Lives as long as the stream. Channel names given to `join` belong here.
     arena: std.mem.Allocator,
+    /// The server's Io.
     io: std.Io,
 
+    /// Sends the event `event`, with `data` as JSON, to this connection only.
+    /// It carries no event id and is not recorded for replay. Fails with the
+    /// write error when the client is gone.
     pub fn send(self: *Sse, event: []const u8, data: anytype) !void {
         const json = try std.json.Stringify.valueAlloc(self.arena, data, .{});
         defer self.arena.free(json);
@@ -55,6 +85,10 @@ pub const Sse = struct {
         try writer.flush();
     }
 
+    /// Makes `channel` the only channel of this connection: what
+    /// `Hub.emitTo(channel, ...)` sends then reaches it, and the channels it had
+    /// are dropped. `channel` is not copied: it must stay valid while the stream
+    /// is open, so allocate a built name in `sse.arena`.
     pub fn join(self: *Sse, channel: []const u8) !void {
         self.channel = channel;
         try self._hub.updateChannel(self._conn_id, channel);
@@ -103,6 +137,8 @@ pub const Sse = struct {
         for (all.items) |e| try self.sendRaw(e.id, e.event, e.data);
     }
 
+    /// `join` on the channel `user:<user_id>`, the one `Hub.notifyUser(user_id,
+    /// ...)` sends to. Like `join`, it replaces the channels the connection had.
     pub fn joinUser(self: *Sse, user_id: u64) !void {
         // Must outlive this call — join() stores the slice on self.channel
         // and in the Hub's connection list for the connection's whole
@@ -114,6 +150,8 @@ pub const Sse = struct {
         try self.join(channel);
     }
 
+    /// A request param by name: a route segment (`:room`) or a value a
+    /// middleware set, such as `_auth_sub`. Null when there is none.
     pub fn param(self: *Sse, key: []const u8) ?[]const u8 {
         return self.params.get(key);
     }
@@ -161,6 +199,9 @@ pub const Sse = struct {
         try self.writeFrame(Hub.sendSseWithId, .{ id, event, data });
     }
 
+    /// Blocks until the client closes the connection or the hub drops it (a
+    /// failed write). Call it last: it is what keeps the handler, and so the
+    /// stream, alive.
     pub fn wait(self: *Sse) void {
         var buf: [1]u8 = undefined;
         var read_buf: [256]u8 = undefined;
@@ -173,8 +214,10 @@ pub const Sse = struct {
 // so routing/group.zig can use it without importing app.zig, which would
 // create a circular import (app.zig already imports group.zig for
 // mount()'s parameter type).
+// internal: wraps an SSE handler into a route handler, for `Server.sse` and `Group.sse`.
 pub fn buildHandler(comptime handler: fn (*Sse) anyerror!void) Handler {
     const W = struct {
+        // internal: the route handler `buildHandler` returns.
         pub fn call(ctx: *Ctx) anyerror!Response {
             const hub = ctx._sse_hub orelse return ctx.text("", .{});
 

@@ -1,15 +1,17 @@
 //! Login sessions for an app with its own users: a signed cookie.
 //!
-//!     // after checking the password
-//!     return c.redirectWith("/", try spider.session.start(c, .{
-//!         .id = user_id, .email = user.email, .name = user.name,
-//!     }));
+//! ```zig
+//! // after checking the password
+//! return c.redirectWith("/", try spider.session.start(c, .{
+//!     .id = user_id, .email = user.email, .name = user.name,
+//! }));
 //!
-//!     // main.zig
-//!     server.use(spider.session.middleware())
+//! // main.zig
+//! server.use(spider.session.middleware())
 //!
-//!     // logging out
-//!     return c.redirectWith("/", try spider.session.end(c));
+//! // logging out
+//! return c.redirectWith("/", try spider.session.end(c));
+//! ```
 //!
 //! The cookie holds a token signed with the app's secret (HS256), so the
 //! server keeps no table of sessions: it trusts what it signed. The
@@ -46,10 +48,13 @@ pub const User = struct {
     roles: []const []const u8 = &.{},
 };
 
+/// The settings of the session cookie and its token. Change them through
+/// `spider.session.options` before the server starts.
 pub const Options = struct {
     /// What tokens are signed with. Null: JWT_SECRET from the environment
     /// or .env.
     secret: ?[]const u8 = null,
+    /// Name of the cookie that carries the token.
     cookie: []const u8 = "session",
     /// How long a login lasts, in seconds. Default: 14 days.
     max_age: u32 = 14 * 24 * 60 * 60,
@@ -65,6 +70,7 @@ pub var options: Options = .{};
 /// The placeholder `.env.example` carries: not a secret.
 const placeholder = "change_me_in_production";
 
+/// What `start`, `token` and the middleware fail with when there is no secret.
 pub const Error = error{
     /// No JWT_SECRET (or it is still the placeholder) in a release build.
     SessionSecretMissing,

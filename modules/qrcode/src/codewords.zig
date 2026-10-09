@@ -1,8 +1,8 @@
-//! Assembles the final codeword sequence for a symbol: capacity /
-//! block-size bookkeeping (ISO Table 9 derived from tables.zig),
-//! terminator + padding (ISO 7.4.9/7.4.10), per-block Reed-Solomon
-//! error correction (reed_solomon.zig), and interleaving into the
-//! single sequence that gets placed into the matrix (ISO 7.6).
+//! Internal: assembles the final codeword sequence for a symbol: capacity /
+//! block-size bookkeeping (ISO Table 9 derived from tables.zig), terminator
+//! + padding (ISO 7.4.9/7.4.10), per-block Reed-Solomon error correction
+//! (reed_solomon.zig), and interleaving into the single sequence that gets
+//! placed into the matrix (ISO 7.6).
 
 const std = @import("std");
 const tables = @import("tables.zig");

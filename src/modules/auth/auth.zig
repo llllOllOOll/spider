@@ -1,3 +1,8 @@
+//! HS256 tokens and the older cookie login (`spider.auth`): signing and
+//! checking a JWT with a shared secret, helpers for a cookie named "token",
+//! and the `Auth` middleware over them. New apps use `spider.session`, which
+//! signs and verifies with `jwtSign` and `jwtPayload` from this file.
+
 const std = @import("std");
 const Ctx = @import("../../core/context.zig").Ctx;
 const Response = @import("../../core/context.zig").Response;
@@ -6,21 +11,38 @@ const NextFn = @import("../../core/context.zig").NextFn;
 
 // ─── JWT ────────────────────────────────────────────────────────────────────
 
+/// The claims the `Auth` middleware expects in a token: a numeric user id,
+/// email, name and expiry. Sign one with `jwtSign(alloc, Claims{...}, secret)`.
 pub const Claims = struct {
+    /// The user id.
     sub: i32,
     email: []const u8,
     name: []const u8,
+    /// Expiry, in seconds since the epoch. 0 or less: `jwtVerify` never treats
+    /// the token as expired.
     exp: i64,
 };
 
+/// What checking a token fails with.
 pub const JwtError = error{
+    /// Not three parts, not an HS256 header as `jwtSign` writes it, or a
+    /// payload that is not the expected claims.
     InvalidFormat,
+    /// Signed with another secret, or changed after signing.
     InvalidSignature,
+    /// `exp` is in the past.
     Expired,
 };
 
 const HEADER_B64 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
 
+/// A token (JWT, HS256) carrying `claims`, signed with `secret`. `claims` is
+/// any struct that serializes to JSON; nothing is added to it, so put `exp`
+/// in it yourself. The caller owns the result (allocated with `alloc`).
+///
+/// ```zig
+/// const token = try spider.auth.jwtSign(c.arena, .{ .sub = "7", .exp = expires }, secret);
+/// ```
 pub fn jwtSign(alloc: std.mem.Allocator, claims: anytype, secret: []const u8) ![]u8 {
     const payload_json = try std.json.Stringify.valueAlloc(alloc, claims, .{});
     defer alloc.free(payload_json);
@@ -94,6 +116,21 @@ test "jwtPayload: the payload of a token signed with the secret, nothing else" {
     try std.testing.expectError(JwtError.InvalidSignature, jwtPayload(a, forged, "secret"));
 }
 
+/// Checks the signature of `token` and its `exp`, and returns its payload
+/// parsed as `T` (a struct with at least `sub` and `exp`).
+///
+/// Safe with `T = Claims` (or a `T` with no string or slice field). For any
+/// other `T` the string fields of the result point into memory that is
+/// freed before this function returns: only fields named `email`, `name`
+/// and `locale` are copied; a string `sub`, a list of roles or any other
+/// slice dangles. For your own claims use
+/// `jwtPayload` and parse the payload yourself, as `spider.session` does.
+///
+/// With `Claims`, `email` and `name` are copies allocated with `alloc` (the
+/// caller owns them). Errors: `JwtError.InvalidFormat` (also when the payload
+/// has a field `T` does not, or lacks one it requires),
+/// `JwtError.InvalidSignature`, `JwtError.Expired` (`exp` greater than 0 and
+/// in the past).
 pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, io: std.Io, token: []const u8, secret: []const u8) !T {
     if (!@hasField(T, "sub")) @compileError("Claims must have 'sub' field");
     if (!@hasField(T, "exp")) @compileError("Claims must have 'exp' field");
@@ -131,7 +168,7 @@ pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, io: std.Io, token: 
     };
     defer parsed.deinit();
 
-    // Verificar expiração
+    // Check the expiry
     if (@hasField(T, "exp")) {
         const now = std.Io.Clock.now(.real, io);
         const now_sec: i64 = @intCast(@divFloor(now.nanoseconds, 1_000_000_000));
@@ -168,8 +205,11 @@ pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, io: std.Io, token: 
 
 // ─── Cookie ─────────────────────────────────────────────────────────────────
 
+/// The cookie the `cookie*` helpers below write and read.
 pub const COOKIE_NAME = "token";
 
+/// A `Set-Cookie` value that stores `token` in the "token" cookie: HttpOnly,
+/// SameSite=Lax, Path=/, one day, without `Secure`. The caller owns it.
 pub fn cookieSet(alloc: std.mem.Allocator, token: []const u8) ![]u8 {
     return std.fmt.allocPrint(
         alloc,
@@ -178,6 +218,7 @@ pub fn cookieSet(alloc: std.mem.Allocator, token: []const u8) ![]u8 {
     );
 }
 
+/// `cookieSet`, with the `Secure` attribute when `secure` is true.
 pub fn cookieSetSecure(alloc: std.mem.Allocator, token: []const u8, secure: bool) ![]u8 {
     if (secure) {
         return std.fmt.allocPrint(
@@ -189,6 +230,8 @@ pub fn cookieSetSecure(alloc: std.mem.Allocator, token: []const u8, secure: bool
     return cookieSet(alloc, token);
 }
 
+/// The token in a `Cookie` request header value, or null when it has no
+/// "token" cookie. A slice of `cookie_header`, not a copy.
 pub fn cookieGet(cookie_header: []const u8) ?[]const u8 {
     var it = std.mem.splitScalar(u8, cookie_header, ';');
     while (it.next()) |pair| {
@@ -200,6 +243,12 @@ pub fn cookieGet(cookie_header: []const u8) ?[]const u8 {
     return null;
 }
 
+/// A `Set-Cookie` value that empties and expires the "token" cookie (to log
+/// out). The caller owns it.
+///
+/// ```zig
+/// const cookie = try spider.auth.cookieClear(c.arena);
+/// ```
 pub fn cookieClear(alloc: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(
         alloc,
@@ -210,21 +259,40 @@ pub fn cookieClear(alloc: std.mem.Allocator) ![]u8 {
 
 // ─── Middleware ──────────────────────────────────────────────────────────────
 
+/// What `Auth.init` takes.
 pub const AuthConfig = struct {
+    /// What the tokens were signed with (`jwtSign`). No default.
     secret: []const u8,
+    /// Request targets let through without a token: an exact match, or a
+    /// prefix when the entry ends in `*` ("/assets/*"). Compared with the
+    /// target as sent, query string included. Routes marked `.public` pass
+    /// too. Default: none.
     public_paths: []const []const u8 = &.{},
+    /// Cookie the middleware reads the token from. The `cookie*` helpers
+    /// always use "token", whatever is set here.
     cookie_name: []const u8 = COOKIE_NAME,
+    /// Where a request without a valid token is redirected.
     redirect_to: []const u8 = "/login",
+    /// Not read by anything today.
     secure_cookie: bool = true,
 };
 
+/// The middleware of the cookie login: a request whose cookie holds a valid
+/// `Claims` token goes on, with the user in the params `_user_id`,
+/// `_user_email` and `_user_name` (`c.userId()` reads the first); any other
+/// request is redirected to `redirect_to`. The `Authorization` header is not
+/// read.
 pub const Auth = struct {
+    /// The config given to `init`. Its strings are not copied.
     config: AuthConfig,
 
+    /// Keeps `config`; nothing is allocated.
     pub fn init(config: AuthConfig) Auth {
         return .{ .config = config };
     }
 
+    /// The check itself. Not a `MiddlewareFn` (it takes `self`): give
+    /// `asFn()` to `server.use`.
     pub fn middleware(self: *const Auth, c: *Ctx, next: NextFn) !Response {
         if (c.route().public) return next(c);
         const path = c.getPath();
@@ -254,6 +322,10 @@ pub const Auth = struct {
         return next(c);
     }
 
+    /// The middleware to register: `server.use(auth.asFn())`. It keeps a
+    /// pointer to this Auth, which must stay valid while the server runs, in
+    /// one static slot: a process can use one Auth; a second call replaces
+    /// the first.
     pub fn asFn(self: *const Auth) MiddlewareFn {
         const S = struct {
             // Written once during setup (single thread), then only read

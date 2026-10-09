@@ -1,7 +1,8 @@
-//! Build-time tool behind `devStep()` in build.zig. `spider dev` runs
-//! `zig build dev --watch`; this is the last thing that step does, so it
-//! runs after every build that succeeded and never after one that failed.
-//! It tells the supervisor that a build finished and what it produced.
+//! Internal: build-time tool behind `devStep()` in build.zig. `spider dev`
+//! runs `zig build dev --watch`; this is the last thing that step does, so
+//! it runs after every build that succeeded and never after one that
+//! failed. It tells the supervisor that a build finished and what it
+//! produced.
 //!
 //! Usage: spider-dev-notify <built executable> [asset file...] [--templates=<dir>]
 //!

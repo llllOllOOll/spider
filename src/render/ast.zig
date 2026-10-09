@@ -1,3 +1,6 @@
+//! Internal: the nodes of a parsed template (text, interpolation, if, for,
+//! component, slot, helper call) and how to free them.
+
 const std = @import("std");
 
 pub const Prop = struct {

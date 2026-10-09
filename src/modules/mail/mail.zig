@@ -1,13 +1,15 @@
 //! Sending mail (`spider.mail`). The app builds a `Mail` and hands it to a
 //! `Mailer`; the Mailer's backend decides how it leaves the process:
 //!
-//!   var mailer = try spider.mail.Mailer.fromEnv(); // once, at startup
-//!   _ = try mailer.send(c, .{
-//!       .to = &.{.{ .address = "ada@example.com" }},
-//!       .subject = "Welcome",
-//!       .html = "<h1>Welcome!</h1>",
-//!       .text = "Welcome!",
-//!   });
+//! ```zig
+//! var mailer = try spider.mail.Mailer.fromEnv(); // once, at startup
+//! _ = try mailer.send(c, .{
+//!     .to = &.{.{ .address = "ada@example.com" }},
+//!     .subject = "Welcome",
+//!     .html = "<h1>Welcome!</h1>",
+//!     .text = "Welcome!",
+//! });
+//! ```
 //!
 //! This is a client of mail providers (their HTTP APIs), not a mail server:
 //! it does not deliver to inboxes itself and does not receive mail.
@@ -21,30 +23,66 @@ const Ctx = @import("../../core/context.zig").Ctx;
 const env = @import("../../internal/env.zig");
 const message = @import("message.zig");
 
+/// A message to send: sender, recipients (`to`, `cc`, `bcc`), `reply_to`,
+/// `subject`, and an `html` body, a `text` body or both.
 pub const Mail = message.Mail;
+/// An address with an optional display name: `.{ .address = "ada@example.com" }`,
+/// or `Mailbox.parse("Ada <ada@example.com>")`.
 pub const Mailbox = message.Mailbox;
+/// What a send returns: the id the provider gave the message, when it gave
+/// one.
 pub const Receipt = message.Receipt;
+/// The checks every send runs first, for an app that wants them earlier (a
+/// form, a queue): `try spider.mail.validate(mail)`. Fails with
+/// `MailMissingFrom`, `MailMissingRecipients`, `MailMissingBody`,
+/// `MailInvalidAddress` or `MailInvalidHeader`.
 pub const validate = message.validate;
+/// The `.brevo` backend: `.{ .brevo = .{ .api_key = key } }`.
 pub const Brevo = @import("brevo.zig").Brevo;
+/// The `.resend` backend: `.{ .resend = .{ .api_key = key } }`.
 pub const Resend = @import("resend.zig").Resend;
+/// The `.postmark` backend: `.{ .postmark = .{ .api_key = server_token } }`.
 pub const Postmark = @import("postmark.zig").Postmark;
+/// The `.log` backend: `.{ .log = .{} }`. Writes each mail to the log
+/// instead of delivering it.
 pub const Log = @import("log.zig").Log;
+/// What the `.memory` backend stores into, for tests:
+/// `.{ .memory = &outbox }`, then `outbox.last()`, `outbox.count()`.
 pub const Outbox = @import("memory.zig").Outbox;
 
 /// A transport written by the app (another provider, a queue, ...):
 /// `.{ .custom = .{ .ptr = &my_state, .sendFn = mySend } }`. `sendFn` gets a
 /// message that already passed `validate`, with `from` set.
 pub const Transport = struct {
+    /// The transport's own state, handed back to `sendFn`. Not owned by the Mailer.
     ptr: *anyopaque,
+    /// Delivers `mail`. `arena` and `io` are the ones of the send call
+    /// (the request's, for `Mailer.send`). An error it returns is the send's
+    /// error.
     sendFn: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, io: std.Io, mail: Mail) anyerror!Receipt,
 };
 
+/// How a Mailer delivers. One of these goes in `Mailer.backend`:
+///
+/// ```zig
+/// const mailer: spider.mail.Mailer = .{
+///     .backend = .{ .memory = &outbox },
+///     .from = .{ .address = "app@example.com" },
+/// };
+/// ```
 pub const Backend = union(enum) {
+    /// Brevo's HTTP API.
     brevo: Brevo,
+    /// Resend's HTTP API.
     resend: Resend,
+    /// Postmark's HTTP API.
     postmark: Postmark,
+    /// Nothing is delivered: the mail is written to the log (development).
     log: Log,
+    /// Nothing is delivered: the mail is copied into the Outbox (tests). The
+    /// Outbox must outlive the Mailer.
     memory: *Outbox,
+    /// The app's own delivery function.
     custom: Transport,
 };
 
@@ -55,12 +93,18 @@ pub const Settings = struct {
     transport: []const u8 = "log",
     /// The default sender: "Name <address>" or a bare address.
     from: ?[]const u8 = null,
+    /// The provider's API key (Postmark: the server token). Required unless
+    /// the transport is "log".
     api_key: ?[]const u8 = null,
     /// Replaces the provider's API URL (a mock server, a regional endpoint).
     base_url: ?[]const u8 = null,
 };
 
+/// Sends mail through one backend. Create it once at startup (`fromEnv`,
+/// `fromSettings`, or a literal with a `Backend`) and keep it: it is a plain
+/// value, safe to copy and to use from several requests.
 pub const Mailer = struct {
+    /// Where the mail goes.
     backend: Backend,
     /// The sender of a mail that declares none.
     from: ?Mailbox = null,
@@ -91,7 +135,11 @@ pub const Mailer = struct {
         };
     }
 
-    /// The result borrows the strings of `settings`.
+    /// A Mailer for `settings`. The result borrows the strings of `settings`:
+    /// they must stay valid as long as the Mailer. Errors:
+    /// `MailTransportUnknown` (a transport other than brevo, resend, postmark
+    /// or log), `MailApiKeyMissing` (a provider without a key, or an empty
+    /// one), `MailInvalidAddress` / `MailInvalidHeader` (a bad `from`).
     pub fn fromSettings(settings: Settings) !Mailer {
         const Kind = enum { brevo, resend, postmark, log };
         const kind = std.meta.stringToEnum(Kind, settings.transport) orelse return error.MailTransportUnknown;

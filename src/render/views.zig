@@ -1,3 +1,7 @@
+//! Internal: the index of template files on disk (name -> path), built by
+//! walking the views directory. The server builds it when templates are
+//! read from disk; `Ctx.view()` looks names up in it.
+
 const std = @import("std");
 
 pub const TemplateEntry = struct {

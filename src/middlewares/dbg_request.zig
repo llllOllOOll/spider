@@ -1,3 +1,6 @@
+//! `spider.dbgRequest`: a middleware that prints each incoming request to
+//! stderr. A teaching and debugging aid, not for production.
+
 const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const NextFn = @import("../core/context.zig").NextFn;

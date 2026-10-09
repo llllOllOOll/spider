@@ -18,6 +18,7 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 
+/// What a `Packager` can fail with; all of them are part of `xlsx.Error`.
 pub const Error = error{
     /// The part name is empty, too long, not plain ASCII, absolute,
     /// contains a backslash, or has an empty, `.` or `..` segment.
@@ -41,15 +42,18 @@ pub const Packager = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    /// The two functions of an implementation; `ptr` is passed back to them.
     pub const VTable = struct {
         addPart: *const fn (ptr: *anyopaque, name: []const u8, content: []const u8) Error!void,
         finish: *const fn (ptr: *anyopaque) Error!void,
     };
 
+    /// Adds the part `name` with `content`. Called by the workbook.
     pub fn addPart(p: Packager, name: []const u8, content: []const u8) Error!void {
         return p.vtable.addPart(p.ptr, name, content);
     }
 
+    /// Ends the package. Called by the workbook after the last part.
     pub fn finish(p: Packager) Error!void {
         return p.vtable.finish(p.ptr);
     }
@@ -108,12 +112,15 @@ pub const StoreZip = struct {
         return .{ .allocator = allocator, .out = out };
     }
 
+    /// Frees the list of entries. Writes nothing: call `finish` first.
     pub fn deinit(self: *StoreZip) void {
         for (self.entries.items) |entry| self.allocator.free(entry.name);
         self.entries.deinit(self.allocator);
         self.* = undefined;
     }
 
+    /// This writer as a `Packager`, for `Workbook.writeToPackager`. It points at
+    /// `self`, which must not move or be freed while it is in use.
     pub fn packager(self: *StoreZip) Packager {
         return .{ .ptr = self, .vtable = &.{ .addPart = addPartOpaque, .finish = finishOpaque } };
     }

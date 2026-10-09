@@ -1,3 +1,8 @@
+//! Keycloak login (`spider.keycloak`): the OAuth authorization-code flow
+//! against a realm, plus the middleware that checks the token on every request.
+//! The token check itself is `spider.jwks`; this file adds the login, callback
+//! and refresh routes and the cookies they set.
+
 const std = @import("std");
 const pacman = @import("pacman");
 const Ctx = @import("../core/context.zig").Ctx;
@@ -8,18 +13,48 @@ const jwks = @import("jwks.zig");
 const JwksAuth = jwks.JwksAuth;
 const url_util = @import("../internal/url.zig");
 
+/// What `Keycloak.init` takes. `fromEnv()` fills the connection settings from
+/// the environment; set the other fields on the result.
 pub const KeycloakConfig = struct {
+    /// Address of the Keycloak server, without a trailing slash and without
+    /// `/realms/...` (the issuer is `{base_url}/realms/{realm}`). `fromEnv`:
+    /// KEYCLOAK_BASE_URL. No default.
     base_url: []const u8,
+    /// The realm users log in to. `fromEnv`: KEYCLOAK_REALM. No default.
     realm: []const u8,
+    /// The app's client in that realm. `fromEnv`: KEYCLOAK_CLIENT_ID. No
+    /// default.
     client_id: []const u8,
+    /// The client's secret, sent when a code or a refresh token is exchanged
+    /// for tokens. `fromEnv`: KEYCLOAK_CLIENT_SECRET. No default.
     client_secret: []const u8,
+    /// The full URL of the app's callback route, as registered in the client
+    /// (the route `callbackHandler()` answers). `fromEnv`:
+    /// KEYCLOAK_REDIRECT_URI.
     redirect_uri: []const u8 = "http://localhost:3000/auth/callback",
+    /// Where a browser request without a token is redirected, and where a
+    /// rejected callback or a failed refresh ends. Mount `loginHandler()`
+    /// there.
     login_path: []const u8 = "/auth/login",
+    /// Where the callback redirects once the cookies are set, and where a
+    /// refresh goes when it has no usable `?next=`.
     after_callback_path: []const u8 = "/",
+    /// Not read by anything today.
     state_prefix: []const u8 = "",
+    /// Paths the middleware lets through without a token: the path itself and
+    /// anything under it (`"/auth"` also covers `/auth/login`, not
+    /// `/authors`). The login, callback and refresh routes must be listed, or
+    /// be `.public`. Default: none.
     auth_skip_paths: []const []const u8 = &.{},
+    /// Cookie that keeps the refresh token (HttpOnly, Secure, SameSite=Lax,
+    /// 30 days).
     refresh_cookie_name: []const u8 = "__refresh",
+    /// Where a browser request with an expired token is redirected, as
+    /// `{refresh_path}?next=<the request's target>`. Mount `refreshHandler()`
+    /// there. htmx and SSE requests get 401 instead of the redirect.
     refresh_path: []const u8 = "/auth/refresh",
+    /// true: a request without a valid token gets a 401 with a JSON body
+    /// instead of a redirect.
     api_mode: bool = false,
     /// See JwksConfig.active_org_cookie.
     active_org_cookie: ?[]const u8 = null,
@@ -29,6 +64,7 @@ pub const KeycloakConfig = struct {
     /// pass — a hand-built authorize URL has no matching cookie and its
     /// callback is rejected (redirected back to `login_path`).
     verify_state: bool = true,
+    /// Cookie that keeps the nonce of `verify_state` (HttpOnly, 10 minutes).
     state_cookie_name: []const u8 = "__oauth_state",
     /// Client whose tokens are accepted (see JwksConfig.audience); defaults
     /// to `client_id`, so a token another client of the realm obtained for
@@ -46,8 +82,11 @@ pub const KeycloakConfig = struct {
     /// KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET and
     /// KEYCLOAK_REDIRECT_URI (default http://localhost:3000/auth/callback);
     /// every other field keeps its default. Adjust the result as needed:
-    ///     var cfg = spider.keycloak.KeycloakConfig.fromEnv();
-    ///     cfg.after_callback_path = "/auth/session";
+    ///
+    /// ```zig
+    /// var cfg = spider.keycloak.KeycloakConfig.fromEnv();
+    /// cfg.after_callback_path = "/auth/session";
+    /// ```
     pub fn fromEnv() KeycloakConfig {
         const env = @import("../internal/env.zig");
         return .{
@@ -60,6 +99,7 @@ pub const KeycloakConfig = struct {
     }
 };
 
+/// Which Keycloak page `Keycloak.authorize` sends the user to.
 pub const AuthorizeEndpoint = enum {
     /// Regular login page.
     auth,
@@ -67,7 +107,9 @@ pub const AuthorizeEndpoint = enum {
     registrations,
 };
 
+/// Options of `Keycloak.authorize`.
 pub const AuthorizeOptions = struct {
+    /// The login page (default) or the registration page.
     endpoint: AuthorizeEndpoint = .auth,
     /// App data carried through the OAuth round-trip inside `state`. The
     /// callback understands "invite:<token>" and forwards it as
@@ -79,15 +121,41 @@ pub const AuthorizeOptions = struct {
 
 const nonce_len = 32; // hex chars of a 16-byte random nonce
 
+/// One Keycloak realm for the app: create it once at startup, add its
+/// middleware and mount its three handlers.
+///
+/// ```zig
+/// var kc = try spider.keycloak.Keycloak.init(allocator, io, spider.keycloak.KeycloakConfig.fromEnv());
+/// defer kc.deinit();
+/// server
+///     .use(kc.middleware())
+///     .get("/auth/login", kc.loginHandler(), .{ .public = true })
+///     .get("/auth/callback", kc.callbackHandler(), .{ .public = true })
+///     .get("/auth/refresh", kc.refreshHandler(), .{ .public = true });
+/// ```
+///
+/// The middleware and the handlers keep a pointer to this value: it must not
+/// move or be freed while the server runs. They also keep it in one static
+/// slot each, so a process can use one Keycloak instance; a second one
+/// replaces the first in every handler.
 pub const Keycloak = struct {
+    /// The token verifier (`spider.jwks.JwksAuth`) built from the config.
     jwks: JwksAuth,
+    /// The config given to `init`. Its strings are not copied.
     config: KeycloakConfig,
+    /// `{base_url}/realms/{realm}`: the `iss` every token must carry.
     issuer: []const u8,
     /// Owned here because JwksAuth keeps referencing it (re-fetch on an
     /// unknown `kid`), so it must live as long as the Keycloak instance.
     jwks_url: []const u8,
+    // internal: frees `issuer` and `jwks_url` in deinit()
     allocator: std.mem.Allocator,
 
+    /// Builds the issuer and downloads the realm's signing keys, so Keycloak
+    /// must be reachable when the app starts: error.JwksFetchFailed when it
+    /// does not answer with a key set, or the HTTP client's error when it
+    /// cannot be reached. `config`'s strings are not copied: they must stay
+    /// valid as long as the result.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: KeycloakConfig) !Keycloak {
         const issuer = try std.fmt.allocPrint(allocator, "{s}/realms/{s}", .{ config.base_url, config.realm });
         errdefer allocator.free(issuer);
@@ -116,16 +184,23 @@ pub const Keycloak = struct {
         };
     }
 
+    /// Frees the keys and the two URLs `init` allocated.
     pub fn deinit(self: *Keycloak) void {
         self.jwks.deinit();
         self.allocator.free(self.jwks_url);
         self.allocator.free(self.issuer);
     }
 
+    /// The middleware that checks the token of every request (see
+    /// `JwksAuth.middleware`): `server.use(kc.middleware())`.
     pub fn middleware(self: *Keycloak) MiddlewareFn {
         return self.jwks.middleware();
     }
 
+    /// The login page URL with `state` as given (nothing is URL-encoded and no
+    /// state cookie is set). Allocated with the allocator given to `init`; the
+    /// caller frees it. Prefer `authorize`: with `verify_state` on (the
+    /// default), the callback of a login started from this URL is rejected.
     pub fn authUrl(self: *const Keycloak, state: []const u8) ![]u8 {
         return try std.fmt.allocPrint(
             self.jwks.allocator,
@@ -134,6 +209,8 @@ pub const Keycloak = struct {
         );
     }
 
+    /// The handler for the login route: redirects to Keycloak's login page
+    /// (`authorize` with the default options).
     pub fn loginHandler(self: *Keycloak) Handler {
         const S = struct {
             var instance: ?*Keycloak = null;
@@ -145,6 +222,12 @@ pub const Keycloak = struct {
         return S.h;
     }
 
+    /// The handler for the route named by `redirect_uri`. Checks `state`
+    /// (when it fails: redirect to `login_path`), exchanges `code` for tokens,
+    /// sets the `__session` cookie (the ID token, or the access token when
+    /// there is none; 7 days) and the refresh cookie, then redirects to
+    /// `after_callback_path` (with `?invite=<token>` for an "invite:<token>"
+    /// payload). 400 without `code`; 502 when Keycloak returns no token.
     pub fn callbackHandler(self: *Keycloak) Handler {
         const S = struct {
             var instance: ?*Keycloak = null;
@@ -156,6 +239,11 @@ pub const Keycloak = struct {
         return S.h;
     }
 
+    /// The handler for `refresh_path`: trades the refresh cookie for new
+    /// tokens, sets the cookies again and redirects to `?next=` when that is a
+    /// local path, else to `after_callback_path`. Without a refresh cookie, or
+    /// when Keycloak gives no token, it clears both cookies and redirects to
+    /// `login_path`.
     pub fn refreshHandler(self: *Keycloak) Handler {
         const S = struct {
             var instance: ?*Keycloak = null;

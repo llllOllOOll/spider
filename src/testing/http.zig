@@ -33,6 +33,8 @@ pub const App = struct {
         return .{ .port = self.port, .headers = headers };
     }
 
+    /// GETs `target` (the path, with its query string if any). Free the
+    /// response with `deinit`.
     pub fn get(self: App, target: []const u8) !Response {
         return self.request(.{ .target = target });
     }
@@ -106,6 +108,7 @@ pub const App = struct {
     }
 };
 
+/// The options of `App.request`. Only `target` is required.
 pub const Request = struct {
     method: []const u8 = "GET",
     target: []const u8,
@@ -124,6 +127,7 @@ pub const Response = struct {
     target: []const u8,
     arena: std.heap.ArenaAllocator,
 
+    /// Frees the response: `head`, `body` and what `header` and `cookie` returned.
     pub fn deinit(self: *Response) void {
         self.arena.deinit();
     }
@@ -158,24 +162,30 @@ pub const Response = struct {
         return null;
     }
 
+    /// Fails with `error.TestUnexpectedStatus` when the status is not
+    /// `expected`, after printing the request and the start of the body.
     pub fn expectStatus(self: Response, expected: u16) !void {
         if (self.status == expected) return;
         self.report("expected status {d}, got {d}", .{ expected, self.status });
         return error.TestUnexpectedStatus;
     }
 
+    /// Fails with `error.TestExpectedText` when the body does not contain `text`.
     pub fn expectContains(self: Response, text: []const u8) !void {
         if (std.mem.indexOf(u8, self.body, text) != null) return;
         self.report("the body does not contain: {s}", .{text});
         return error.TestExpectedText;
     }
 
+    /// Fails with `error.TestUnexpectedText` when the body contains `text`.
     pub fn expectNotContains(self: Response, text: []const u8) !void {
         if (std.mem.indexOf(u8, self.body, text) == null) return;
         self.report("the body should not contain: {s}", .{text});
         return error.TestUnexpectedText;
     }
 
+    /// Fails with `error.TestExpectedHeader` when the response has no header
+    /// `name` or its value is not exactly `expected`.
     pub fn expectHeader(self: Response, name: []const u8, expected: []const u8) !void {
         const actual = self.header(name) orelse {
             self.report("no {s} header (expected {s})", .{ name, expected });

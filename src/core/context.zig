@@ -15,15 +15,15 @@ const Watchdog = @import("watchdog.zig").Watchdog;
 const RouteMeta = @import("../routing/router.zig").RouteMeta;
 
 const root = @import("root");
-/// Whether the app's templates were chosen to be read from disk (build
-/// option `templates`; the default does so in a Debug build).
+// internal: whether the app's templates were chosen to be read from disk (build
+// option `templates`; the default does so in a Debug build).
 pub const templates_from_disk = @import("spider_build_options").templates_from_disk;
-/// False when templates are read from disk, even if the app declares
-/// `spider_templates`. `root.spider_templates` is never referenced in that
-/// case, so the compiler does not embed the files and a template edit
-/// changes no binary.
+// internal: false when templates are read from disk, even if the app declares
+// `spider_templates`. `root.spider_templates` is never referenced in that
+// case, so the compiler does not embed the files and a template edit
+// changes no binary.
 pub const has_embed = !templates_from_disk and @hasDecl(root, "spider_templates");
-/// The app has templates to embed and this build reads them from disk.
+// internal: the app has templates to embed and this build reads them from disk.
 pub const embed_skipped = templates_from_disk and @hasDecl(root, "spider_templates");
 /// The app's embedded templates as one map (see render/embedded.zig).
 const embedded_templates: embedded.Map = if (has_embed) embedded.buildMap(root.spider_templates) else .initComptime(.{});
@@ -108,6 +108,7 @@ pub const HtmxHeaders = struct {
     location: ?[]const u8 = null,
     refresh: bool = false,
 
+    /// How htmx puts the response into the page: the values of `hx-swap`.
     pub const Swap = enum { innerHTML, outerHTML, textContent, beforebegin, afterbegin, beforeend, afterend, delete, none };
 };
 
@@ -408,11 +409,11 @@ pub const Ctx = struct {
         }
     }
 
-    /// What view()/viewFragment() need before rendering: the parsed
-    /// template with its components, or the finished response of a
-    /// `-- doc` page. Not generic on purpose: view() is instantiated once
-    /// per `data` type, and everything that depends on the templates
-    /// themselves lives here, compiled once.
+    // internal: what view()/viewFragment() need before rendering: the parsed
+    // template with its components, or the finished response of a
+    // `-- doc` page. Not generic on purpose: view() is instantiated once
+    // per `data` type, and everything that depends on the templates
+    // themselves lives here, compiled once.
     pub const PreparedView = union(enum) {
         done: Response,
         template: Template,
@@ -850,8 +851,9 @@ pub const Ctx = struct {
         };
     }
 
-    /// The hub of the app's WebSocket connections, to send to them from a
-    /// handler. Panics when the app registered no WebSocket route (`Server.ws`).
+    /// The hub of the WebSocket route this request is on. Only a request
+    /// to a WebSocket route (`Server.ws`) has one: called from any other
+    /// handler it panics.
     pub fn wsHub(self: *Ctx) *Hub {
         return self._ws_hub orelse @panic("wsHub: no hub attached — use server.ws()");
     }

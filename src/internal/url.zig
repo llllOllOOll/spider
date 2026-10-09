@@ -1,4 +1,4 @@
-//! Small URL helpers shared by the auth providers.
+//! Internal: small URL helpers shared by the auth providers.
 
 const std = @import("std");
 

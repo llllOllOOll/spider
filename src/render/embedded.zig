@@ -1,5 +1,5 @@
-//! Embedded templates (the app's `spider_templates`, generated into
-//! src/embedded_templates.zig) as one map built at compile time.
+//! Internal: embedded templates (the app's `spider_templates`, generated
+//! into src/embedded_templates.zig) as one map built at compile time.
 //!
 //! Ctx.view() used to walk that struct with `inline for` inside the generic
 //! view function: every `data` type got its own copy of a lookup over every

@@ -1,3 +1,6 @@
+//! `spider.dbgResponse`: a middleware that prints each outgoing response to
+//! stderr. A teaching and debugging aid, not for production.
+
 const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const NextFn = @import("../core/context.zig").NextFn;

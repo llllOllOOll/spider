@@ -20,6 +20,20 @@ const Router = @import("router.zig").Router;
 /// Method, full path (group prefix included), access.
 pub const Row = [3][]const u8;
 
+/// Checks that `group` registers exactly the routes of `expected`, each
+/// with that access; order does not matter.
+///
+/// ```zig
+/// test "posts routes: method, path and access" {
+///     try spider.testing.expectRoutes(routes.build(), &.{
+///         .{ "GET", "/posts", "roles:editor" },
+///         .{ "POST", "/posts/:id/delete", "roles:admin" },
+///     });
+/// }
+/// ```
+///
+/// On a difference it prints the routes missing and the routes not expected,
+/// then the actual table ready to paste, and fails with `error.RoutesDiffer`.
 pub fn expectRoutes(group: Group, expected: []const Row) !void {
     const gpa = std.heap.page_allocator;
     const list = try group.router.entries(gpa);

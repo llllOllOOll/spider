@@ -1,3 +1,5 @@
+//! Internal: nothing imports this file today; it is a candidate for removal.
+
 const std = @import("std");
 
 pub const Level = enum {

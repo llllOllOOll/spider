@@ -1,3 +1,7 @@
+//! The template type: `Template` parses a template source once and renders it
+//! with data. `Ctx.view()` is built on it; apps use it directly to render a
+//! template outside a request (a test of a view, the body of an e-mail).
+
 const std = @import("std");
 const ast = @import("ast.zig");
 const ctx_mod = @import("context.zig");
@@ -8,6 +12,7 @@ const embedded = @import("embedded.zig");
 const Node = ast.Node;
 const freeNode = ast.freeNode;
 const Context = ctx_mod.Context;
+// internal: the value type of `Template.Global`.
 pub const Value = ctx_mod.Value;
 const structToContext = ctx_mod.structToContext;
 const dupeValue = ctx_mod.dupeValue;
@@ -19,17 +24,42 @@ fn isRootTemplate(template_str: []const u8) bool {
     return std.mem.indexOf(u8, template_str, "<html") != null;
 }
 
+/// A parsed template. `init` parses the source, `render` and
+/// `renderFragment` produce the HTML, `deinit` frees the parsed tree.
+///
+/// ```zig
+/// var tmpl = try spider.Template.init(alc, "Hello { name }!");
+/// defer tmpl.deinit();
+/// const html = try tmpl.render(.{ .name = "World" }, alc);
+/// defer alc.free(html);
+/// ```
+///
+/// `{ expr }` is HTML-escaped, except a `spider.RawHtml` value.
 pub const Template = struct {
+    /// The parsed template, owned by the template. Read-only for apps.
     nodes: []Node,
+    /// The allocator given to `init`; `deinit` frees with it.
     allocator: std.mem.Allocator,
+    /// Component and layout sources by name. Set it after `init` to give the
+    /// template the components it uses; the map then stays yours and `deinit`
+    /// does not free it (the first render adds the template's inline
+    /// components to it, allocated with that render's allocator). Left null,
+    /// the first render creates it from the components defined inline in the
+    /// template and `deinit` frees it.
     components: ?std.StringHashMapUnmanaged([]const u8) = null,
+    /// The components the parser found defined inside the template, until the
+    /// first render moves them into `components`.
     inline_components: ?std.StringHashMapUnmanaged([]const u8) = null,
+    /// The name given by `extends "name"` at the very start of the source,
+    /// or null. `render` looks it up among the components.
     layout: ?[]const u8 = null,
+    /// True when the source contains `<html`. Nothing in Spider reads it.
     is_root: bool = false,
     // Set when collectInline() creates `components` itself (no caller-supplied
     // map existed yet), so deinit() knows it must free that map. When a caller
     // (e.g. Ctx.view()) supplies `components` up front, ownership stays with
     // the caller and this flag remains false.
+    /// Read-only: true when `deinit` frees `components`.
     owns_components: bool = false,
     /// Read-only components shared by every render (Ctx.view() passes the
     /// embedded templates here). Looked up after `components`, so inline
@@ -40,6 +70,7 @@ pub const Template = struct {
     /// keeps the data's value. Not copied or freed here.
     globals: []const Global = &.{},
 
+    /// One entry of `globals`: a name and its value.
     pub const Global = struct { name: []const u8, value: Value };
 
     // Not generic: render() is instantiated once per data type.
@@ -50,6 +81,11 @@ pub const Template = struct {
         }
     }
 
+    /// Parses `template_str`. The parsed tree is allocated with `alc` and
+    /// holds copies: the source can be freed after this returns. Fails with
+    /// the parser's error on a malformed template (`error.UnclosedInterpolation`,
+    /// `error.UnclosedBrace`, `error.UnclosedParen`, `error.ExpectedBrace`,
+    /// `error.ExpectedCapture`, `error.UnclosedCapture`) or `error.OutOfMemory`.
     pub fn init(alc: std.mem.Allocator, template_str: []const u8) !Template {
         var parser = Parser.init(alc, template_str);
         const result = try parser.parse();
@@ -65,6 +101,8 @@ pub const Template = struct {
         };
     }
 
+    /// Frees the parsed tree, and `components` when the template created the
+    /// map itself. Strings returned by `render` are not freed here.
     pub fn deinit(self: *Template) void {
         for (self.nodes) |node| freeNode(node, self.allocator);
         self.allocator.free(self.nodes);
@@ -89,7 +127,7 @@ pub const Template = struct {
         }
     }
 
-    /// Component source by name: `components` first, then `base_components`.
+    // internal: component source by name: `components` first, then `base_components`.
     pub fn findComponent(self: *const Template, name: []const u8) ?[]const u8 {
         if (self.components) |comps| {
             if (comps.get(name)) |src| return src;
@@ -98,10 +136,11 @@ pub const Template = struct {
         return null;
     }
 
-    /// Collect inline components: merges `inline_components` from the parser
-    /// into the main `components` map (phase 1), then registers any
-    /// `<Name>...</Name>` root-level definition nodes whose name is not yet
-    /// registered (phase 2). Idempotent — safe to call multiple times.
+    // internal: `render` and `renderFragment` call it first. Collects inline
+    // components: merges `inline_components` from the parser
+    // into the main `components` map (phase 1), then registers any
+    // `<Name>...</Name>` root-level definition nodes whose name is not yet
+    // registered (phase 2). Idempotent — safe to call multiple times.
     pub fn collectInline(self: *Template, alc: std.mem.Allocator) !void {
         // Phase 1: Merge inline_components from parser into the main components map.
         if (self.inline_components) |inline_comps| {
@@ -163,6 +202,17 @@ pub const Template = struct {
         }
     }
 
+    /// Renders the template with `context`, a struct whose fields are the names
+    /// the template reads (`.{}` for none). Returns the HTML, allocated with
+    /// `alc` and owned by the caller.
+    ///
+    /// With `extends "name"`, the result is that layout with this template in
+    /// its slot. A layout that is not among the components is ignored: the
+    /// template renders alone.
+    ///
+    /// Fails with `error.ComponentDepthExceeded` when components nest deeper
+    /// than `spider.template_max_component_depth`, with a parser error from a
+    /// malformed component or layout, or `error.OutOfMemory`.
     pub fn render(self: *Template, context: anytype, alc: std.mem.Allocator) ![]const u8 {
         try self.collectInline(alc);
 

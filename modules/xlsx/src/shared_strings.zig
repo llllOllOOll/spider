@@ -1,4 +1,4 @@
-//! The shared strings table and the `xl/sharedStrings.xml` part.
+//! Internal: the shared strings table and the `xl/sharedStrings.xml` part.
 //!
 //! Text is not stored in the cell: the cell holds an index
 //! (`<c t="s"><v>7</v></c>`) into one workbook-wide list of distinct

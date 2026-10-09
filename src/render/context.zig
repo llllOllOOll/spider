@@ -1,12 +1,18 @@
+//! The data a template renders: `RawHtml` (the one name apps use) and the
+//! internal `Value` / `Context` that structs passed to a view are converted to.
+
 const std = @import("std");
 
 /// Trusted HTML for a template: `{ expr }` escapes every string except a
 /// RawHtml, which is emitted verbatim. Wrap only markup your code built
 /// itself (or already escaped), never user input.
 ///
-///   return c.view("page", .{ .body = spider.RawHtml{ .html = rendered } }, .{});
+/// ```zig
+/// return c.view("page", .{ .body = spider.RawHtml{ .html = rendered } }, .{});
+/// ```
 pub const RawHtml = struct { html: []const u8 };
 
+// internal: one value of a template context; the renderer reads it.
 pub const Value = union(enum) {
     string: []const u8,
     /// Markup emitted verbatim by `{ expr }`: RawHtml values, slots and
@@ -17,13 +23,16 @@ pub const Value = union(enum) {
     object: std.StringHashMapUnmanaged(Value),
 };
 
+// internal: the names a template can read, built from the data of a view.
 pub const Context = struct {
     values: std.StringHashMapUnmanaged(Value),
 
+    // internal: an empty context.
     pub fn init() Context {
         return .{ .values = .{} };
     }
 
+    // internal: frees the keys and the values.
     pub fn deinit(self: *Context, alc: std.mem.Allocator) void {
         var iter = self.values.iterator();
         while (iter.next()) |entry| {
@@ -33,6 +42,7 @@ pub const Context = struct {
         self.values.deinit(alc);
     }
 
+    // internal: copies `key`, takes ownership of `value`; replaces (and frees) a previous value.
     pub fn set(self: *Context, alc: std.mem.Allocator, key: []const u8, value: Value) !void {
         const gop = try self.values.getOrPut(alc, key);
         if (gop.found_existing) {
@@ -45,10 +55,12 @@ pub const Context = struct {
         gop.value_ptr.* = value;
     }
 
+    // internal: the value of `key`, not copied.
     pub fn get(self: *const Context, key: []const u8) ?Value {
         return self.values.get(key);
     }
 
+    // internal: a deep copy.
     pub fn clone(self: *const Context, alc: std.mem.Allocator) !Context {
         var c = Context.init();
         errdefer c.deinit(alc);
@@ -60,6 +72,7 @@ pub const Context = struct {
     }
 };
 
+// internal: Template.render converts its data with this.
 pub fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
     var ctx = Context.init();
     errdefer ctx.deinit(alc);
@@ -185,6 +198,7 @@ fn stringSliceToValueList(alc: std.mem.Allocator, slice: anytype) ![]const Value
     return list;
 }
 
+// internal: converts a struct to the map of a `Value.object`.
 pub fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapUnmanaged(Value) {
     var obj = std.StringHashMapUnmanaged(Value){};
     errdefer {
@@ -278,6 +292,7 @@ pub fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapU
     return obj;
 }
 
+// internal: frees a value built by this file.
 pub fn freeValue(alc: std.mem.Allocator, value: Value) void {
     switch (value) {
         .string, .html => |s| alc.free(s),
@@ -297,6 +312,7 @@ pub fn freeValue(alc: std.mem.Allocator, value: Value) void {
     }
 }
 
+// internal: a deep copy of a value.
 pub fn dupeValue(alc: std.mem.Allocator, value: Value) !Value {
     return switch (value) {
         .string => |s| Value{ .string = try alc.dupe(u8, s) },

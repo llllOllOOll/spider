@@ -1,5 +1,5 @@
-//! The port of the server under test. spider.testing.start sets it; the next
-//! listen() takes it (once) and listens there, on 127.0.0.1.
+//! Internal: the port of the server under test. spider.testing.start sets
+//! it; the next listen() takes it (once) and listens there, on 127.0.0.1.
 const std = @import("std");
 
 var pending: std.atomic.Value(u32) = .init(0);

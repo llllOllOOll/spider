@@ -1,3 +1,7 @@
+//! Environment variables, with the project's `.env` files loaded on first
+//! use (`spider.env`). Order: `.env`, then `.env.<SPIDER_ENV>` (`development`
+//! when SPIDER_ENV is not set), then `.env.local`. A value in `.env` does not
+//! replace a variable that is already set; the other two files do.
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -40,6 +44,16 @@ fn setEnvVarNative(name: [*:0]const u8, value: [*:0]const u8, overwrite: bool) v
     // Without libc, runtime .env loading is unavailable.
 }
 
+/// The value of the variable `key`, or null when it is not set. The first
+/// call loads the `.env` files of the working directory (see the top of this
+/// file).
+///
+/// The result is a copy that is never freed (page allocator): read a
+/// setting once at startup rather than on every request.
+///
+/// ```zig
+/// if (spider.env.get("JWT_SECRET")) |secret| { ... }
+/// ```
 pub fn get(key: []const u8) ?[]const u8 {
     ensureLoaded();
     const getenv = struct {
@@ -51,16 +65,27 @@ pub fn get(key: []const u8) ?[]const u8 {
     return std.heap.page_allocator.dupe(u8, std.mem.sliceTo(val, 0)) catch null;
 }
 
+/// The value of the variable `key`, or `default` (returned as given, not
+/// copied) when it is not set. A variable set to an empty string is set.
+///
+/// ```zig
+/// const realm = spider.env.getOr("KEYCLOAK_REALM", "");
+/// ```
 pub fn getOr(key: []const u8, default: []const u8) []const u8 {
     ensureLoaded();
     return get(key) orelse default;
 }
 
+/// The variable `key` as a base-10 integer of type `T`. Gives `default`
+/// when the variable is not set, is not a number or does not fit in `T`.
 pub fn getInt(comptime T: type, key: []const u8, default: T) T {
     const val = get(key) orelse return default;
     return std.fmt.parseInt(T, val, 10) catch default;
 }
 
+/// The variable `key` as a boolean: "true", "1" and "yes" are true;
+/// "false", "0" and "no" are false (lower case only). Gives `default` when
+/// the variable is not set or holds anything else.
 pub fn getBool(key: []const u8, default: bool) bool {
     const val = get(key) orelse return default;
     if (std.mem.eql(u8, val, "true")) return true;
@@ -72,12 +97,16 @@ pub fn getBool(key: []const u8, default: bool) bool {
     return default;
 }
 
+// internal: reads one KEY=VALUE file into the process environment, keeping
+// variables that are already set; a missing file is not an error.
 pub fn load(allocator: std.mem.Allocator, path: []const u8) !void {
     try loadFile(allocator, path, false);
 }
 
+// internal: the older name of `load`.
 pub const loadEnv = load;
 
+// internal: loads .env, .env.<SPIDER_ENV> and .env.local; listen() and pg.init() call it.
 pub fn autoLoad(allocator: std.mem.Allocator) void {
     loadFile(allocator, ".env", false) catch {};
 
@@ -137,6 +166,7 @@ fn stripQuotes(s: []const u8) []const u8 {
     return s;
 }
 
+// internal: listen() calls it to warn when .gitignore does not mention .env.
 pub fn checkGitignore() void {
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();

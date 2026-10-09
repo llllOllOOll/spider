@@ -1,3 +1,7 @@
+//! Clerk login (`spider.clerk`): the token check of `spider.jwks` configured
+//! from a Clerk publishable key, plus the OAuth callback that sets the session
+//! cookie.
+
 const std = @import("std");
 const pacman = @import("pacman");
 const Ctx = @import("../core/context.zig").Ctx;
@@ -7,11 +11,21 @@ const Handler = @import("../routing/router.zig").Handler;
 const jwks = @import("jwks.zig");
 const JwksAuth = jwks.JwksAuth;
 
+/// What `Clerk.init` takes. Nothing is read from the environment: the app
+/// fills it.
 pub const ClerkConfig = struct {
+    /// The instance's publishable key (`pk_test_...` or `pk_live_...`). The
+    /// issuer and the JWKS URL are derived from it; it is also sent as the
+    /// OAuth `client_id`. No default.
     publishable_key: []const u8,
+    /// Sent as the OAuth `client_secret` when the callback exchanges the code.
+    /// No default.
     secret_key: []const u8,
+    /// The full URL of the app's callback route (`callbackHandler()`).
     redirect_uri: []const u8 = "http://localhost:3000/auth/callback",
+    /// Where a request without a token is redirected.
     login_path: []const u8 = "/login",
+    /// Where the callback redirects once the session cookie is set.
     after_callback_path: []const u8 = "/",
     /// Where the session token carries roles (what `.roles` checks); Clerk
     /// has none by default — add one with a custom session claim, e.g.
@@ -23,11 +37,22 @@ pub const ClerkConfig = struct {
     map_claims: ?*const fn (c: *Ctx, claims: std.json.ObjectMap) anyerror!void = null,
 };
 
+/// One Clerk instance for the app. The middleware and the callback handler
+/// keep a pointer to this value: it must not move or be freed while the
+/// server runs, and a process can use one.
 pub const Clerk = struct {
+    /// The token verifier (`spider.jwks.JwksAuth`), with `.org_claims = .clerk`.
     jwks: JwksAuth,
+    /// The config given to `init`. Its strings are not copied.
     config: ClerkConfig,
+    /// The issuer decoded from the publishable key: the base of the JWKS and
+    /// OAuth URLs.
     domain: []const u8,
 
+    /// Decodes the issuer from the publishable key (error.InvalidClerkKey when
+    /// it has no `pk_live_` / `pk_test_` prefix or decodes to nothing) and
+    /// downloads the signing keys from `{issuer}/.well-known/jwks.json`:
+    /// error.JwksFetchFailed when that does not answer with a key set.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: ClerkConfig) !Clerk {
         const domain = try parseIssuerUrl(allocator, config.publishable_key);
         const jwks_url = try std.fmt.allocPrint(allocator, "{s}/.well-known/jwks.json", .{domain});
@@ -49,10 +74,14 @@ pub const Clerk = struct {
         };
     }
 
+    /// Frees the cached keys.
     pub fn deinit(self: *Clerk) void {
         self.jwks.deinit();
     }
 
+    /// The URL that starts the OAuth flow (`{issuer}/oauth/authorize`), to
+    /// redirect the user to. Allocated in `arena`. The values are not
+    /// URL-encoded and no `state` parameter is added.
     pub fn authUrl(self: *const Clerk, arena: std.mem.Allocator) ![]u8 {
         return std.fmt.allocPrint(
             arena,
@@ -61,10 +90,17 @@ pub const Clerk = struct {
         );
     }
 
+    /// The middleware that checks the `__session` token of every request (see
+    /// `JwksAuth.middleware`): `server.use(clerk.middleware())`.
     pub fn middleware(self: *Clerk) MiddlewareFn {
         return self.jwks.middleware();
     }
 
+    /// The handler for the route named by `redirect_uri`: exchanges `code`
+    /// for tokens, sets the `__session` cookie (the ID token, or the access
+    /// token when there is none; 7 days) and redirects to
+    /// `after_callback_path`. 400 without `code`; 502 when Clerk returns no
+    /// token. The OAuth `state` is not checked.
     pub fn callbackHandler(self: *Clerk) Handler {
         const S = struct {
             var instance: ?*Clerk = null;

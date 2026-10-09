@@ -43,6 +43,8 @@ pub const Mailbox = struct {
         return out.toOwnedSlice(arena);
     }
 
+    /// `error.MailInvalidAddress` when the address is not well formed,
+    /// `error.MailInvalidHeader` when the name has a control character.
     pub fn validate(self: Mailbox) !void {
         if (self.name) |name| try validateHeaderText(name);
         try validateAddress(self.address);

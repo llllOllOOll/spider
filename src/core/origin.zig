@@ -1,6 +1,6 @@
-//! Cross-site request check (CSRF, and cross-site WebSocket hijacking),
-//! on by default: a state-changing request a browser sends from another
-//! site is answered 403 before routing.
+//! Internal: cross-site request check (CSRF, and cross-site WebSocket
+//! hijacking), on by default: a state-changing request a browser sends from
+//! another site is answered 403 before routing.
 //!
 //!   - safe methods (GET/HEAD/OPTIONS) pass, except a WebSocket upgrade;
 //!   - `Sec-Fetch-Site: same-origin | none` passes; `same-site` (a sibling

@@ -1,4 +1,5 @@
-//! Resend transport (`POST /emails`).
+//! Resend transport (`POST /emails`). Apps use only `Resend`, as
+//! `spider.mail.Resend`; the rest is internal.
 
 const std = @import("std");
 const http = @import("http.zig");
@@ -7,10 +8,17 @@ const Mail = message.Mail;
 const Mailbox = message.Mailbox;
 const Receipt = message.Receipt;
 
+/// Delivery through Resend: the value of `Backend.resend`. Recipients and
+/// `reply_to` are sent as bare addresses: their display names are dropped.
 pub const Resend = struct {
+    /// The API key, from the provider's dashboard (`Mailer.fromEnv`: RESEND_API_KEY).
+    /// Not copied.
     api_key: []const u8,
+    /// The API's address, without a trailing slash. Change it for a mock
+    /// server or a regional endpoint (`Mailer.fromEnv`: MAIL_BASE_URL).
     base_url: []const u8 = "https://api.resend.com",
 
+    // internal: called by Mailer.sendWith; apps send through a Mailer
     pub fn send(self: Resend, arena: std.mem.Allocator, io: std.Io, mail: Mail) !Receipt {
         const url = try std.fmt.allocPrint(arena, "{s}/emails", .{self.base_url});
         const reply = try http.postJson(arena, io, url, &.{

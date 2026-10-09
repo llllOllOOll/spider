@@ -1,26 +1,54 @@
+//! `multipart/form-data` parsing: the text fields and the uploaded files of
+//! a form. Handlers call `c.parseMultipart()`; `parse` and `extractBoundary`
+//! are for a body that did not come through a request.
+
 const std = @import("std");
 
+/// One uploaded file of a multipart body.
+///
+/// ```zig
+/// const mp = try c.parseMultipart();
+/// const files = mp.getFile("avatar") orelse return error.BadRequest;
+/// const first = files[0];
+/// ```
 pub const UploadedFile = struct {
+    /// The file name the client sent, as it sent it. It is not checked: never
+    /// use it as a path.
     filename: []const u8,
+    /// The `Content-Type` of the part, as the client sent it;
+    /// `application/octet-stream` when the part had none.
     content_type: []const u8,
+    /// The bytes of the file. Not copied: a slice of the body given to `parse`,
+    /// valid as long as that body is.
     data: []const u8,
+    /// Length of `data` in bytes.
     size: usize,
 };
 
+/// The parsed parts of a multipart body: what `c.parseMultipart()` and `parse`
+/// return. Read it with `getValue` and `getFile`.
 pub const MultipartData = struct {
+    /// The text fields by name. When a name comes more than once, the last one stays.
     value: std.StringHashMap([]const u8),
+    /// The uploaded files by field name; one field can carry several.
     file: std.StringHashMapUnmanaged(std.ArrayList(UploadedFile)),
+    /// The allocator given to `parse`; `deinit` frees with it.
     allocator: std.mem.Allocator,
 
+    /// The text field `name`, or null when the form has none.
     pub fn getValue(self: *const MultipartData, name: []const u8) ?[]const u8 {
         return self.value.get(name);
     }
 
+    /// The files uploaded in the field `name`, in the order they came, or null
+    /// when the field has no file part.
     pub fn getFile(self: *const MultipartData, name: []const u8) ?[]UploadedFile {
         const entry = self.file.get(name) orelse return null;
         return entry.items;
     }
 
+    /// Frees the names, the field values and the file metadata. Not needed when
+    /// the data came from `c.parseMultipart()`: the request arena frees it.
     pub fn deinit(self: *MultipartData) void {
         {
             var it = self.value.iterator();
@@ -80,6 +108,9 @@ fn extractFieldValue(input: []const u8, field: []const u8) ?[]const u8 {
     return null;
 }
 
+/// The boundary of a `Content-Type: multipart/form-data; boundary=...` header
+/// value, without its quotes. Null when the type is not `multipart/form-data`
+/// or has no usable boundary. A slice of `content_type`.
 pub fn extractBoundary(content_type: []const u8) ?[]const u8 {
     const mp_prefix = "multipart/form-data";
     const directive_start = std.mem.indexOf(u8, content_type, mp_prefix) orelse return null;
@@ -101,6 +132,20 @@ pub fn extractBoundary(content_type: []const u8) ?[]const u8 {
     return raw[0..end];
 }
 
+/// Parses a multipart `body` whose parts are separated by `boundary` (as
+/// `extractBoundary` gives it). Names and field values are copied with
+/// `allocator`; file contents are not (see `UploadedFile.data`), so `body`
+/// must outlive the result. Free with `deinit`.
+///
+/// Fails with `error.InvalidMultipartEncoding` when the body does not follow
+/// the format, `error.MissingFieldName` for a part without a `name`, and
+/// `error.BoundaryTooLong` for a boundary over 254 bytes.
+///
+/// ```zig
+/// var mp = try spider.multipart.parse(allocator, body, boundary);
+/// defer mp.deinit();
+/// const info = mp.getValue("info");
+/// ```
 pub fn parse(allocator: std.mem.Allocator, body: []const u8, boundary: []const u8) !MultipartData {
     var value_map = std.StringHashMap([]const u8).init(allocator);
     errdefer {

@@ -1,3 +1,8 @@
+//! Cloudflare R2 object storage (`spider.r2`, build option `-Dr2`): put, get,
+//! delete, head and copy objects of one bucket over R2's S3 API, and build
+//! presigned URLs so a browser uploads or downloads directly. Requests are
+//! signed with AWS Signature V4.
+
 const std = @import("std");
 const pacman = @import("pacman");
 const Ctx = @import("spider").Ctx;
@@ -9,24 +14,50 @@ const UPPER_HEX = "0123456789ABCDEF";
 
 // ─── Config ──────────────────────────────────────────────────────
 
+/// The bucket and the credentials of an R2 API token. The strings are not
+/// copied: they must stay valid while the `R2` is in use.
 pub const R2Config = struct {
+    /// The Cloudflare account id: the host is `<account_id>.r2.cloudflarestorage.com`.
     account_id: []const u8,
+    /// Access key id of the R2 API token.
     access_key: []const u8,
+    /// Secret access key of the R2 API token.
     secret_key: []const u8,
     bucket: []const u8,
+    /// Base address of the bucket's public domain, without a trailing slash.
+    /// Only `publicUrl` uses it.
     pub_url: []const u8 = "",
+    /// The region put in the signature. R2 uses `auto`.
     region: []const u8 = "auto",
 };
 
 // ─── R2 Client ────────────────────────────────────────────────────
 
+/// A client for one R2 bucket. Create it once at startup and share it.
+///
+/// ```zig
+/// var store = try spider.r2.R2.initFromEnv(io);
+/// defer store.deinit();
+///
+/// // in a handler
+/// try store.put(c, "reports/2026-10.pdf", pdf, "application/pdf");
+/// const url = try store.presignedGet(c.arena, "reports/2026-10.pdf", 300);
+/// ```
+///
+/// `put`, `get`, `delete`, `head` and `copyObject` call R2 and take the
+/// request's `Ctx`: they use its `Io` and allocate in `c.arena`. The
+/// presigned URL functions and `publicUrl` make no network call. A key may
+/// contain `/`; it is percent-encoded for the request.
 pub const R2 = struct {
+    /// The configuration given to `init`.
     config: R2Config,
     /// Persistent — created once in init()/initFromEnv(), reused (with its
     /// connection pool) across every put/get/delete/head/copyObject call
     /// instead of dialing a fresh TCP+TLS connection every time.
     client: pacman.Client,
 
+    /// Creates the client for `config`. Makes no network call, so wrong
+    /// credentials show up on the first operation. Free it with `deinit`.
     pub fn init(io: std.Io, config: R2Config) !R2 {
         const base_url = try std.fmt.allocPrint(
             std.heap.smp_allocator,
@@ -37,6 +68,10 @@ pub const R2 = struct {
         return .{ .config = config, .client = client };
     }
 
+    /// `init` with the configuration read from the environment (or `.env`):
+    /// `R2_ACCOUNT_ID`, `R2_ACCESS_KEY`, `R2_SECRET_KEY`, `R2_BUCKET` and
+    /// `R2_PUBLIC_URL`. A missing variable becomes an empty string without an
+    /// error; the region is `auto`.
     pub fn initFromEnv(io: std.Io) !R2 {
         const env = @import("spider").env;
         return init(io, .{
@@ -48,12 +83,18 @@ pub const R2 = struct {
         });
     }
 
+    /// Closes the HTTP client and its pooled connections.
     pub fn deinit(self: *R2) void {
         self.client.deinit();
     }
 
     // ─── Operations ──────────────────────────────────────────────
 
+    /// Uploads `body` as the object `key`, with `content_type` as its
+    /// `Content-Type`. An object already at `key` is replaced. Fails with
+    /// `error.R2PutFailed` when R2 answers anything but 200 or 204 (the status
+    /// and R2's answer are logged), or with the HTTP client's error when R2
+    /// cannot be reached.
     pub fn put(self: *R2, c: *Ctx, key: []const u8, body: []const u8, content_type: []const u8) !void {
         const host = try self.endpointHost(c.arena);
         const path = try self.requestPath(c.arena, key);
@@ -87,12 +128,16 @@ pub const R2 = struct {
         }
     }
 
-    /// Copia um objeto server-side (R2 -> R2), sem baixar o body pro cliente.
-    /// x-amz-copy-source segue o formato "/{bucket}/{key-url-encoded}" — igual
-    /// ao que requestPath() ja produz, reusado aqui pra montar o valor do header
-    /// (confirmado na doc do CopyObject da AWS S3, que R2 implementa).
-    /// CopyObject nao tem corpo de requisicao, entao o payload_hash e o de
-    /// string vazia (mesmo padrao ja usado em get/delete/head).
+    // x-amz-copy-source has the form "/{bucket}/{url-encoded key}", which is
+    // what requestPath() already builds, so it is reused for the header value
+    // (per the CopyObject documentation of AWS S3, which R2 implements).
+    // CopyObject has no request body, so the payload hash is that of the
+    // empty string (as in get/delete/head).
+    /// Copies `source_key` to `dest_key` inside the bucket, on R2's side: the
+    /// content is not downloaded. An object already at `dest_key` is replaced.
+    /// Fails with `error.R2CopyFailed` on any answer other than 200 (a missing
+    /// source included; the status and R2's answer are logged), or with the
+    /// HTTP client's error when R2 cannot be reached.
     pub fn copyObject(self: *R2, c: *Ctx, source_key: []const u8, dest_key: []const u8) !void {
         const host = try self.endpointHost(c.arena);
         const dest_path = try self.requestPath(c.arena, dest_key);
@@ -133,6 +178,10 @@ pub const R2 = struct {
         }
     }
 
+    /// Downloads the object `key` and returns its whole content, allocated in
+    /// `c.arena`. Fails with `error.NotFound` when there is no such object
+    /// (a 404 if a handler lets it through), `error.R2GetFailed` on any other
+    /// status than 200, or the HTTP client's error.
     pub fn get(self: *R2, c: *Ctx, key: []const u8) ![]u8 {
         const host = try self.endpointHost(c.arena);
         const path = try self.requestPath(c.arena, key);
@@ -164,6 +213,9 @@ pub const R2 = struct {
         return c.arena.dupe(u8, res.text());
     }
 
+    /// Deletes the object `key`. Fails with `error.NotFound` when R2 answers
+    /// 404, `error.R2DeleteFailed` on any other status than 200 or 204, or the
+    /// HTTP client's error.
     pub fn delete(self: *R2, c: *Ctx, key: []const u8) !void {
         const host = try self.endpointHost(c.arena);
         const path = try self.requestPath(c.arena, key);
@@ -192,6 +244,8 @@ pub const R2 = struct {
         if (res.status != .ok and res.status != .no_content) return error.R2DeleteFailed;
     }
 
+    /// Whether the object `key` exists: true on 200, false on 404. The content
+    /// is not downloaded. Any other status fails with `error.R2HeadFailed`.
     pub fn head(self: *R2, c: *Ctx, key: []const u8) !bool {
         const host = try self.endpointHost(c.arena);
         const path = try self.requestPath(c.arena, key);
@@ -222,6 +276,15 @@ pub const R2 = struct {
 
     // ─── Presigned URLs ──────────────────────────────────────────
 
+    /// A URL that lets its holder upload the object `key` with a `PUT`, for
+    /// `expires_sec` seconds from now, without credentials. The upload must
+    /// send a `Content-Type` header equal to `content_type`: it is part of the
+    /// signature. Nothing is sent to R2 and the bucket does not change until
+    /// the URL is used.
+    ///
+    /// The URL is allocated with `allocator`. Pass an arena (`c.arena`): the
+    /// strings built on the way are not freed. Fails with `error.NoSpaceLeft`
+    /// when the secret key is longer than 252 bytes, or `error.OutOfMemory`.
     pub fn presignedPut(self: *const R2, allocator: std.mem.Allocator, key: []const u8, content_type: []const u8, expires_sec: u32) ![]const u8 {
         const dt = currentDateTime();
         const date_str = dt.date[0..];
@@ -300,6 +363,15 @@ pub const R2 = struct {
         });
     }
 
+    /// A URL that lets its holder download the object `key` with a `GET`, for
+    /// `expires_sec` seconds from now, without credentials. Nothing is sent to
+    /// R2, so a URL is returned for a key that does not exist too.
+    ///
+    /// ```zig
+    /// const url = try store.presignedGet(c.arena, key, 300);
+    /// ```
+    ///
+    /// Allocation and errors as in `presignedPut`.
     pub fn presignedGet(self: *const R2, allocator: std.mem.Allocator, key: []const u8, expires_sec: u32) ![]const u8 {
         const dt = currentDateTime();
         const date_str = dt.date[0..];
@@ -362,10 +434,15 @@ pub const R2 = struct {
 
     // ─── Utilities ───────────────────────────────────────────────
 
+    /// `config.pub_url`, a `/` and `key`, allocated with `allocator`. The key
+    /// is not percent-encoded and the object is not checked. Only useful for a
+    /// bucket with a public domain.
     pub fn publicUrl(self: *const R2, allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
         return std.fmt.allocPrint(allocator, "{s}/{s}", .{ self.config.pub_url, key });
     }
 
+    /// Builds the key `tenant_id/category/filename`, allocated with
+    /// `allocator`. The parts are joined as given, without validation.
     pub fn objectKey(self: *const R2, allocator: std.mem.Allocator, tenant_id: []const u8, category: []const u8, filename: []const u8) ![]const u8 {
         _ = self;
         return std.fmt.allocPrint(allocator, "{s}/{s}/{s}", .{ tenant_id, category, filename });
@@ -417,9 +494,9 @@ pub const R2 = struct {
         const host = try self.endpointHost(allocator);
         const path = try self.requestPath(allocator, key);
 
-        // SigV4 exige CanonicalHeaders/SignedHeaders em ordem alfabetica por
-        // nome — monta todos os headers (fixos + extras) e ordena antes de
-        // construir as strings, em vez de assumir uma ordem fixa.
+        // SigV4 requires CanonicalHeaders/SignedHeaders in alphabetical order
+        // by name: gather every header (fixed and extra) and sort before
+        // building the strings, instead of assuming a fixed order.
         var all_headers = std.ArrayList([2][]const u8).empty;
         defer all_headers.deinit(allocator);
         try all_headers.append(allocator, .{ "host", host });

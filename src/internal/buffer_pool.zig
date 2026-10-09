@@ -1,3 +1,5 @@
+//! Internal: nothing imports this file today; it is a candidate for removal.
+
 const std = @import("std");
 
 const SMALL_BUFFER_SIZE = 4096; // 4KB - headers

@@ -1,3 +1,6 @@
+//! `Client`: many requests to one server over connections that stay open.
+//! The `async*` functions at the end are the same calls as plain functions.
+
 const std = @import("std");
 
 const Io = std.Io;
@@ -8,11 +11,29 @@ const FetchOptions = @import("request.zig").FetchOptions;
 const doRequest = @import("request.zig").request;
 const proxy = @import("proxy.zig");
 
+/// A client bound to one base URL, with a pool of kept-alive connections.
+/// Create it once and share it; requests may run through it concurrently.
+///
+/// ```zig
+/// var client = try spider.http_client.Client.init(io, allocator, .{
+///     .base_url = "https://api.example.com",
+///     .headers = &.{.{ .name = "Authorization", .value = bearer }},
+/// });
+/// defer client.deinit();
+///
+/// var res = try client.get("/users", .{ .timeout_ms = 3000 });
+/// defer res.deinit();
+/// ```
 pub const Client = struct {
+    // internal: the Io every request of this client runs on
     io: Io,
+    // internal: what responses and connections are allocated with
     allocator: std.mem.Allocator,
+    /// The `base_url` given to `init`.
     base_url: []const u8,
+    /// The `headers` given to `init`.
     headers: []const std.http.Header,
+    /// The `proxy_url` given to `init`.
     proxy_url: ?[]const u8,
     /// Persistent — created once here, reused (with its connection pool)
     /// across every .get()/.post()/etc made through this Client. Closed by
@@ -22,9 +43,18 @@ pub const Client = struct {
     /// Owns the proxy settings `http_client` points at.
     proxy_arena: std.heap.ArenaAllocator,
 
+    /// A client for `opts.base_url`. No connection is opened yet. Fails when
+    /// `proxy_url` is not a valid URL, or out of memory. The strings and the
+    /// header list of `opts` are not copied: they must stay valid as long as
+    /// the Client.
     pub fn init(io: Io, allocator: std.mem.Allocator, opts: struct {
+        /// Scheme and host, and a path prefix if any. Each request's `path`
+        /// is appended to it as it is, so write one slash between them.
         base_url: []const u8,
+        /// Sent with every request (an API key, a user agent). Default: none.
         headers: []const std.http.Header = &.{},
+        /// The proxy for every request of this client, fixed here. null: the
+        /// proxy environment variables apply (see `FetchOptions.proxy_url`).
         proxy_url: ?[]const u8 = null,
         /// A connection left unused for longer than this is closed rather
         /// than reused. Servers drop idle connections on their side
@@ -70,22 +100,31 @@ pub const Client = struct {
         self.proxy_arena.deinit();
     }
 
+    /// A GET to `base_url ++ path`. Like the standalone `get`, with two
+    /// differences: the connection is reused, and `opts.headers` is NOT
+    /// sent — every request carries the headers given to `init` and nothing
+    /// else. `error.ProxyMismatch` when `opts.proxy_url` is set to something
+    /// other than the client's proxy.
     pub fn get(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.GET, path, opts);
     }
 
+    /// A POST to `base_url ++ path` with `opts.body`. See `get`.
     pub fn post(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.POST, path, opts);
     }
 
+    /// A PUT to `base_url ++ path`. See `get`.
     pub fn put(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.PUT, path, opts);
     }
 
+    /// A PATCH to `base_url ++ path`. See `get`.
     pub fn patch(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.PATCH, path, opts);
     }
 
+    /// A DELETE to `base_url ++ path`. See `get`.
     pub fn delete(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.DELETE, path, opts);
     }
@@ -115,22 +154,28 @@ pub const Client = struct {
     }
 };
 
+/// `client.get(path, opts)` as a plain function, to hand to `io.async`.
+/// It does not start anything by itself.
 pub fn asyncGet(client: *Client, path: []const u8, opts: FetchOptions) !Response {
     return client.get(path, opts);
 }
 
+/// `client.post(path, opts)` as a plain function, for `io.async`.
 pub fn asyncPost(client: *Client, path: []const u8, opts: FetchOptions) !Response {
     return client.post(path, opts);
 }
 
+/// `client.put(path, opts)` as a plain function, for `io.async`.
 pub fn asyncPut(client: *Client, path: []const u8, opts: FetchOptions) !Response {
     return client.put(path, opts);
 }
 
+/// `client.patch(path, opts)` as a plain function, for `io.async`.
 pub fn asyncPatch(client: *Client, path: []const u8, opts: FetchOptions) !Response {
     return client.patch(path, opts);
 }
 
+/// `client.delete(path, opts)` as a plain function, for `io.async`.
 pub fn asyncDelete(client: *Client, path: []const u8, opts: FetchOptions) !Response {
     return client.delete(path, opts);
 }

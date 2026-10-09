@@ -1,3 +1,6 @@
+//! `spider.gzip`: a middleware that compresses response bodies for the
+//! clients that accept gzip.
+
 const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const NextFn = @import("../core/context.zig").NextFn;
@@ -19,6 +22,15 @@ fn clientAcceptsGzip(headers: std.StringHashMapUnmanaged([]const u8)) bool {
     return false;
 }
 
+/// Compresses the response body with gzip when the request's
+/// `Accept-Encoding` mentions gzip and the body has at least 1024 bytes, and
+/// adds `content-encoding: gzip` and `vary: accept-encoding`. Smaller bodies,
+/// responses without a body and streams (SSE, WebSocket) pass unchanged. The
+/// compressed body is allocated in the request arena.
+///
+/// ```zig
+/// server.use(spider.gzip)
+/// ```
 pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
     // 1. Skip if client does not accept gzip
     if (!clientAcceptsGzip(c._headers)) {

@@ -21,11 +21,19 @@ const Response = ctx_mod.Response;
 const ErrorHandler = ctx_mod.ErrorHandler;
 const statusForError = ctx_mod.statusForError;
 
+/// The texts `spider.errorHandler` shows, by status. Replace the ones the
+/// app words differently (or translates): `.messages = .{ .not_found = "..." }`.
+/// A status not listed here (401, 413, ...) shows the name of the error.
 pub const Messages = struct {
+    /// 403.
     forbidden: []const u8 = "You don't have permission to do this.",
+    /// 404.
     not_found: []const u8 = "Not found.",
+    /// 409.
     conflict: []const u8 = "This record already exists or is still in use.",
+    /// 422.
     unprocessable: []const u8 = "This operation isn't allowed.",
+    /// 503.
     busy: []const u8 = "The system is busy right now. Try again in a moment.",
     /// Used for 400 when the error carries no detail (c.setErrorDetail).
     bad_request: []const u8 = "Invalid data. Check it and try again.",
@@ -33,6 +41,7 @@ pub const Messages = struct {
     internal: []const u8 = "Unexpected error. Try again (ref. {s}).",
 };
 
+/// Options of `spider.errorHandler`. Every field has a default.
 pub const Options = struct {
     /// error.Unauthorized redirects here for every kind of request
     /// (null: answered like any other error, 401).
@@ -49,9 +58,27 @@ pub const Options = struct {
     forbidden_view: ?[]const u8 = null,
     /// error.TemplateNotFound answers 404 instead of 500.
     template_not_found_is_404: bool = false,
+    /// The message shown for each status.
     messages: Messages = .{},
 };
 
+/// A ready-made handler for `Server.onError`: it turns an error returned by a
+/// handler or a middleware into the response its caller can use (JSON, an
+/// htmx toast event, a page or plain text; see the top of this file). The
+/// status is the one of `spider.statusForError`.
+///
+/// ```zig
+/// server.onError(spider.errorHandler(.{ .template_not_found_is_404 = true }))
+/// ```
+///
+/// An app that treats some errors itself calls it for the rest:
+///
+/// ```zig
+/// const fallback = spider.errorHandler(.{
+///     .unauthorized_redirect = "/auth/login",
+///     .forbidden_view = "forbidden",
+/// });
+/// ```
 pub fn errorHandler(comptime opts: Options) ErrorHandler {
     return struct {
         fn handle(c: *Ctx, err: anyerror) anyerror!Response {

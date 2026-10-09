@@ -1,3 +1,6 @@
+//! Internal: the SOCKS5 handshake (RFC 1928, RFC 1929 credentials): the
+//! messages, and `connect`, which runs it over a stream open to the proxy.
+
 const std = @import("std");
 const Io = std.Io;
 

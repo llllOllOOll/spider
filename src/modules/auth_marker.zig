@@ -19,6 +19,12 @@ const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 var marked: [16]MiddlewareFn = undefined;
 var count: usize = 0;
 
+/// Tells Spider that `mw` is a middleware that authenticates requests
+/// (`spider.markAuthMiddleware`). An app with its own session or token
+/// middleware marks it before `listen()`; Spider's providers mark theirs.
+/// With auth present, the route listing and `spider routes --check` flag the
+/// routes that declare no access. Marking twice is harmless. Panics past 16
+/// marked middlewares.
 pub fn mark(mw: MiddlewareFn) void {
     if (isMarked(mw)) return;
     if (count == marked.len) @panic("spider.markAuthMiddleware: more than 16 auth middlewares");
@@ -26,6 +32,7 @@ pub fn mark(mw: MiddlewareFn) void {
     count += 1;
 }
 
+// internal: the server asks it for each `use`/`useAt` middleware.
 pub fn isMarked(mw: MiddlewareFn) bool {
     for (marked[0..count]) |m| if (m == mw) return true;
     return false;

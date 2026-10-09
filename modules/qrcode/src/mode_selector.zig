@@ -1,4 +1,5 @@
-//! Mode detection and data-segment encoding (ISO/IEC 18004:2015 7.3-7.4).
+//! Internal: mode detection and data-segment encoding (ISO/IEC 18004:2015
+//! 7.3-7.4).
 //!
 //! Scope: Numeric, Alphanumeric, and Byte modes only — Kanji is out of
 //! scope for this project (see project scope notes), so detectMode()

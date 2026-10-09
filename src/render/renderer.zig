@@ -1,3 +1,7 @@
+//! Internal: renders parsed template nodes to HTML: escaped interpolation,
+//! `if` / `for`, components with props and slots, and `template_helpers`
+//! calls. `Template.render` drives it.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const ast = @import("ast.zig");

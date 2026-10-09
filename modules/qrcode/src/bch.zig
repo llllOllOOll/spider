@@ -1,7 +1,7 @@
-//! Format information (ISO/IEC 18004:2015 Annex C / 7.9.1) and version
-//! information (Annex D / 7.10) — the two small BCH/Golay-coded fields
-//! placed around the finder patterns so a scanner can recover the ECC
-//! level, mask pattern, and (for version >= 7) the symbol version
+//! Internal: format information (ISO/IEC 18004:2015 Annex C / 7.9.1) and
+//! version information (Annex D / 7.10) — the two small BCH/Golay-coded
+//! fields placed around the finder patterns so a scanner can recover the
+//! ECC level, mask pattern, and (for version >= 7) the symbol version
 //! before it can even attempt to read the data region.
 //!
 //! Binary polynomial (GF(2), XOR-arithmetic) division — distinct from

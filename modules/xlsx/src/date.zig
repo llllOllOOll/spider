@@ -11,6 +11,7 @@
 
 const std = @import("std");
 
+/// What `Date.serial`, `DateTime.serial` and `DateTime.fromUnix` fail with.
 pub const Error = error{
     /// Not a real calendar date or time, or outside 1900-01-01 ..
     /// 9999-12-31, the range a spreadsheet can show.

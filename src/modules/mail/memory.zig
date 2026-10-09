@@ -10,15 +10,25 @@ const Receipt = message.Receipt;
 /// Where the memory transport keeps messages. Safe to send to from several
 /// threads (handlers) while a test reads it.
 pub const Outbox = struct {
+    // internal: the fields are the Outbox's state; read it through sent(), count() and last()
     arena: std.heap.ArenaAllocator,
     mails: std.ArrayList(Mail) = .empty,
     next_id: u64 = 1,
     lock: std.atomic.Mutex = .unlocked,
 
+    /// An empty Outbox. The copies of the mails are allocated with
+    /// `allocator`; call `deinit()` when done.
+    ///
+    /// ```zig
+    /// var outbox: spider.mail.Outbox = .init(std.testing.allocator);
+    /// defer outbox.deinit();
+    /// const mailer: spider.mail.Mailer = .{ .backend = .{ .memory = &outbox } };
+    /// ```
     pub fn init(allocator: std.mem.Allocator) Outbox {
         return .{ .arena = .init(allocator) };
     }
 
+    /// Frees every stored mail.
     pub fn deinit(self: *Outbox) void {
         self.arena.deinit();
     }
@@ -41,6 +51,7 @@ pub const Outbox = struct {
         return self.mails.items;
     }
 
+    /// How many mails were sent since init() or the last clear().
     pub fn count(self: *Outbox) usize {
         return self.sent().len;
     }

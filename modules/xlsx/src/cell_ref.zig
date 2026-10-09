@@ -7,6 +7,7 @@ const Writer = std.Io.Writer;
 
 /// Excel's sheet size: rows 0..1,048,575 and columns 0..16,383 (XFD).
 pub const max_rows: u32 = 1_048_576;
+/// Columns per sheet (A to XFD).
 pub const max_cols: u32 = 16_384;
 
 /// Writes the letters of a zero-based column: 0 is `A`, 25 `Z`, 26

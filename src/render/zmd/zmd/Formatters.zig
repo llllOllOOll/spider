@@ -1,15 +1,29 @@
+//! The HTML of each Markdown element (`spider.zmd.Formatters`): one function
+//! per kind of element, each with a default. Pass `.{}` to `zmd.parse` for
+//! the defaults, or name the fields to replace.
+
 const std = @import("std");
 const Node = @import("Node.zig");
 const Formatters = @This();
 const Allocator = std.mem.Allocator;
 const allocPrint = std.fmt.allocPrint;
+/// A formatter: gets one element and returns its HTML. `node.content` is the
+/// inner HTML, already rendered and escaped; `node.href`, `node.title` and
+/// `node.meta` are as the author typed them and must be escaped with
+/// `escape` (and an address checked with `safeAddress`). The result must be
+/// allocated with the given allocator: the caller frees it.
 pub const Handler = fn (Allocator, Node) Allocator.Error![]const u8;
 
+// internal: an empty `Default`; only `zmd.default_formatters` names it.
 pub const default = Default{};
 
+/// The whole document. The default returns the content as a fragment.
 root: Handler = Default.root_partial,
+/// A fenced code block; `node.meta` is its language, if any.
 block: Handler = Default.block,
+/// `[text](address)`: `node.title` is the text, `node.href` the address.
 link: Handler = Default.link,
+/// `![title](address)`: `node.title` and `node.href`.
 image: Handler = Default.image,
 h1: Handler = Default.h1,
 h2: Handler = Default.h2,
@@ -17,18 +31,27 @@ h3: Handler = Default.h3,
 h4: Handler = Default.h4,
 h5: Handler = Default.h5,
 h6: Handler = Default.h6,
+/// A line starting with `> `.
 blockquote: Handler = Default.blockquote,
+/// `**text**`.
 bold: Handler = Default.bold,
+/// `_text_` or `*text*`.
 italic: Handler = Default.italic,
 unordered_list: Handler = Default.unordered_list,
 ordered_list: Handler = Default.ordered_list,
 list_item: Handler = Default.list_item,
+/// Inline code between backticks.
 code: Handler = Default.code,
+/// A top-level paragraph.
 paragraph: Handler = Default.paragraph,
+/// Text between `{% raw %}` and `{% endraw %}`, kept as typed (escaped).
 raw_block: Handler = Default.raw_block,
+/// Every element without a field of its own (plain text, nested paragraphs).
 default_handler: Handler = Default.default,
 
+/// The default formatters, one per field of `Formatters`.
 pub const Default = struct {
+    /// A whole HTML document around the content; `zmd.parseFull` uses it.
     pub fn root(allocator: Allocator, node: Node) ![]const u8 {
         const html =
             \\<!DOCTYPE html>
@@ -48,10 +71,12 @@ pub const Default = struct {
         return allocPrint(allocator, html, .{content});
     }
 
+    /// The content alone; `zmd.parse` uses it.
     pub fn root_partial(allocator: Allocator, node: Node) ![]const u8 {
         return joinQuotes(allocator, node.content);
     }
 
+    /// `<div class="code-block">` with `<pre><code>`, and a bar naming the language when the block has one.
     pub fn block(allocator: Allocator, node: Node) ![]const u8 {
         if (node.meta) |meta| {
             const lang = try escape(allocator, meta);
@@ -87,6 +112,7 @@ pub const Default = struct {
         , .{ href, text });
     }
 
+    /// `<img src title>`, both escaped; an address that is not safe leaves only the title.
     pub fn image(allocator: Allocator, node: Node) ![]const u8 {
         const title = try escape(allocator, node.title.?);
         if (!safeAddress(node.href.?)) return title;
@@ -98,6 +124,7 @@ pub const Default = struct {
         , .{ src, title });
     }
 
+    /// `<h1>`.
     pub fn h1(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<h1>{s}</h1>
@@ -105,6 +132,7 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<h2>`.
     pub fn h2(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<h2>{s}</h2>
@@ -112,6 +140,7 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<h3>`.
     pub fn h3(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<h3>{s}</h3>
@@ -119,6 +148,7 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<h4>`.
     pub fn h4(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<h4>{s}</h4>
@@ -126,6 +156,7 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<h5>`.
     pub fn h5(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<h5>{s}</h5>
@@ -133,6 +164,7 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<h6>`.
     pub fn h6(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<h6>{s}</h6>
@@ -140,6 +172,7 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<blockquote>`.
     pub fn blockquote(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<blockquote>{s}</blockquote>
@@ -147,14 +180,17 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<b>`.
     pub fn bold(allocator: Allocator, node: Node) ![]const u8 {
         return wrap(allocator, node.content, "b");
     }
 
+    /// `<i>`.
     pub fn italic(allocator: Allocator, node: Node) ![]const u8 {
         return wrap(allocator, node.content, "i");
     }
 
+    /// `<ul>`.
     pub fn unordered_list(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<ul>
@@ -163,6 +199,7 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<ol>`.
     pub fn ordered_list(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<ol>
@@ -171,6 +208,7 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<li>`.
     pub fn list_item(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\  <li>{s}</li>
@@ -178,12 +216,14 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// `<code>`.
     pub fn code(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<code>{s}</code>
         , .{node.content});
     }
 
+    /// `<p>`.
     pub fn paragraph(allocator: Allocator, node: Node) ![]const u8 {
         return allocPrint(allocator,
             \\<p>{s}</p>
@@ -191,10 +231,12 @@ pub const Default = struct {
         , .{node.content});
     }
 
+    /// The content as it is.
     pub fn raw_block(allocator: Allocator, node: Node) ![]const u8 {
         return allocator.dupe(u8, node.content);
     }
 
+    /// The content as it is.
     pub fn default(allocator: Allocator, node: Node) ![]const u8 {
         _ = allocator;
         return node.content;

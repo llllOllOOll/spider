@@ -27,11 +27,17 @@ const date_mod = @import("date.zig");
 const styles_mod = @import("styles.zig");
 const shared_strings = @import("shared_strings.zig");
 
+// internal: short name for this file; apps use `xlsx.Date`.
 pub const Date = date_mod.Date;
+// internal: short name for this file; apps use `xlsx.DateTime`.
 pub const DateTime = date_mod.DateTime;
+// internal: short name for this file; apps use `xlsx.Style`.
 pub const Style = styles_mod.Style;
+// internal: short name for this file; apps use `xlsx.Range`.
 pub const Range = cell_ref.Range;
 
+/// Everything building or writing a workbook can fail with. A value is
+/// checked when it is set, so the error comes from the call that passed it.
 pub const Error = error{
     /// Row index past the last row of a sheet (1,048,576 rows).
     RowOutOfRange,
@@ -102,16 +108,21 @@ pub const Error = error{
 
 /// Excel's limits, enforced when a value is set.
 pub const max_rows = cell_ref.max_rows;
+/// Columns per sheet (A to XFD).
 pub const max_cols = cell_ref.max_cols;
 /// Characters per cell, counted as Excel does (UTF-16 code units).
 pub const max_text_len = 32_767;
+/// Characters per formula.
 pub const max_formula_len = 8_192;
+/// Characters per sheet name.
 pub const max_sheet_name_len = 31;
+/// Widest column, in characters of the default font.
 pub const max_column_width = 255;
 /// Row height, in points.
 pub const max_row_height = 409;
 /// Longest link target, in bytes.
 pub const max_link_len = 2_079;
+/// Links per sheet.
 pub const max_links_per_sheet = 65_530;
 
 /// How spreadsheet programs draw a link: blue and underlined. A link
@@ -119,6 +130,7 @@ pub const max_links_per_sheet = 65_530;
 /// with the cell's value.
 pub const link_style: Style = .{ .underline = true, .font_color = 0x0563C1 };
 
+/// Paper sizes for `PageSetup.paper`.
 pub const Paper = enum(u8) {
     letter = 1,
     legal = 5,
@@ -127,6 +139,7 @@ pub const Paper = enum(u8) {
     a5 = 11,
 };
 
+/// Which way the page is turned when printed.
 pub const Orientation = enum {
     portrait,
     landscape,
@@ -172,12 +185,13 @@ pub const PageSetup = struct {
 /// notation: `&L`, `&C` and `&R` start the left, centre and right
 /// parts; `&P` is the page number, `&N` the number of pages, `&D` the
 /// date, `&A` the sheet name; `&&` is a literal `&`.
-/// Example footer: `"&LRelatório&RPágina &P de &N"`.
+/// Example footer: `"&LReport&RPage &P of &N"`.
 pub const HeaderFooter = struct {
     header: ?[]const u8 = null,
     footer: ?[]const u8 = null,
 };
 
+/// Characters per header or footer.
 pub const max_header_footer_len = 255;
 
 /// Options of `Workbook.protect` and `Sheet.protect`.
@@ -704,6 +718,9 @@ pub const Workbook = struct {
         return self;
     }
 
+    /// Frees the workbook with its sheets and everything set on them. `*Sheet`
+    /// pointers are invalid afterwards; bytes returned by `toOwnedSlice` are
+    /// not touched.
     pub fn deinit(self: *Workbook) void {
         const gpa = self.gpa;
         self.arena.deinit();

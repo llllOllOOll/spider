@@ -1,4 +1,4 @@
-//! The third argument of every route registration: `.{}` or any of
+//! Internal: the third argument of every route registration, `.{}` or any of
 //!
 //!   .roles     = &.{"admin"}        realm roles (any of)       -> 403 otherwise
 //!   .org_roles = &.{"admin"}        roles in the active org    -> 403 otherwise

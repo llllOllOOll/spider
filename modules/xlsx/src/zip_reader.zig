@@ -1,4 +1,4 @@
-//! Reads a zip archive that is already in memory: the bytes of an
+//! Internal: reads a zip archive that is already in memory: the bytes of an
 //! uploaded file. It exists because `std.zip` only reads from a file on
 //! disk, does not check CRC-32s and trusts the sizes it is told.
 //!
