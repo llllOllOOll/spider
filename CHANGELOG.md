@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Found while writing the new documentation site and its example app.
+## [0.9.1] - 2026-10-09
+
+Fixes found while writing the new documentation site and its example app,
+and one found in production (the HTTP client on connections the server
+closed). Nothing here asks an existing app to change its code; "What an
+app may notice" lists the differences in behaviour.
+
+### What an app may notice
+
+- Markdown output: quotes in text are written as `&quot;` / `&#39;`, and
+  what used to pass through unescaped (see Security) no longer does.
+- `sqlite.queryExecute` and the PostgreSQL script calls no longer split a
+  script on every `;`.
+- An app that calls `listen()` WITHOUT a port takes `PORT` from the
+  environment or `.env` when it is set. An app that passes `.port` is not
+  affected.
+- A persistent HTTP `Client` closes connections idle for more than 30 s.
+- Only for projects created from now on: migrations applied at startup,
+  `listen(.{})`, the new Dockerfile, no compose file without `--pg`.
 
 ### Security
 
