@@ -310,3 +310,28 @@ test "a line that starts with > is a blockquote" {
 test "consecutive > lines are one blockquote" {
     try expectHtml("> one\n> two\n\nafter", "<blockquote>one\ntwo</blockquote>\n<p>after</p>");
 }
+
+test "zmd: an underscore inside a word is not italics" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Names, as documentation is full of them.
+    try std.testing.expectEqualStrings(
+        "<p>Set max_body_bytes and static_max_file_bytes.</p>\n",
+        try parse(a, "Set max_body_bytes and static_max_file_bytes.", .{}),
+    );
+    try std.testing.expectEqualStrings(
+        "<p>Keys: org_roles, quiet_log, allow_http.</p>\n",
+        try parse(a, "Keys: org_roles, quiet_log, allow_http.", .{}),
+    );
+    try std.testing.expectEqualStrings("<h3>Hub.default_heartbeat_ms</h3>\n", try parse(a, "### Hub.default_heartbeat_ms", .{}));
+    // A name that starts or ends with one.
+    try std.testing.expectEqualStrings("<p>The _auth_sub param and the __session cookie.</p>\n", try parse(a, "The _auth_sub param and the __session cookie.", .{}));
+
+    // Italics still work where they are meant: around a word or a phrase.
+    try std.testing.expectEqualStrings("<p>This is <i>important</i> here.</p>\n", try parse(a, "This is _important_ here.", .{}));
+    try std.testing.expectEqualStrings("<p><i>Two words</i>, then text.</p>\n", try parse(a, "_Two words_, then text.", .{}));
+    try std.testing.expectEqualStrings("<p>With a star: <i>this</i>.</p>\n", try parse(a, "With a star: *this*.", .{}));
+    try std.testing.expectEqualStrings("<p>An <i>italic with snake_case inside</i> works.</p>\n", try parse(a, "An _italic with snake_case inside_ works.", .{}));
+}

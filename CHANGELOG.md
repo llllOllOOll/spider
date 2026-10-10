@@ -132,6 +132,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `client.get(path, .{ .headers = ... })` sent only the headers given to
   `Client.init`. Both are sent now; a request header with the name of a
   client header replaces it for that request.
+- **Markdown: an underscore inside a word started italics.**
+  `max_body_bytes` came out as "max", italic "body", "bytes", and two
+  names on one line lost an underscore each. `_` now opens italics only at
+  the start of a word and closes them at the end of one, as in CommonMark:
+  names stay as written, `_this_` is still italic, and `*` is unchanged.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

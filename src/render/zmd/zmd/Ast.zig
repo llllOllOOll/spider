@@ -427,6 +427,31 @@ fn insertText(self: *Ast, allocator: Allocator, index: usize, start: usize, end:
     });
 }
 
+/// Where the mark that closes the one at `cursor` is, counted from the end
+/// of the opening mark, or null when the opening mark is only text.
+///
+/// `**` and `*` close at their next occurrence. `_` is different, because
+/// names are full of it: it opens only at the start of a word and closes
+/// only at the end of one (as in CommonMark), so `max_body_bytes` and
+/// `org_roles, quiet_log` stay as written and `_this_` is still italic.
+fn closingMark(input: []const u8, cursor: usize, mark: []const u8) ?usize {
+    const offset = cursor + mark.len;
+    if (!std.mem.eql(u8, mark, "_")) return std.mem.indexOf(u8, input[offset..], mark);
+
+    if (cursor > 0 and isWordByte(input[cursor - 1])) return null;
+    if (offset >= input.len or input[offset] == ' ' or input[offset] == '_') return null;
+    var at = offset;
+    while (std.mem.indexOfScalarPos(u8, input, at, '_')) |close| : (at = close + 1) {
+        const ends_word = close + 1 >= input.len or !isWordByte(input[close + 1]);
+        if (ends_word and input[close - 1] != ' ') return close - offset;
+    }
+    return null;
+}
+
+fn isWordByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte >= 0x80;
+}
+
 fn parseText(self: *Ast, allocator: Allocator, node: *Node) !void {
     const input = self.input[node.token.start..node.token.end];
     var cursor: usize = 0;
@@ -439,11 +464,7 @@ fn parseText(self: *Ast, allocator: Allocator, node: *Node) !void {
 
             const offset = cursor + element.syntax.len;
 
-            const end_index = std.mem.indexOf(
-                u8,
-                input[offset..],
-                element.syntax,
-            ) orelse continue;
+            const end_index = closingMark(input, cursor, element.syntax) orelse continue;
 
             const pre_text_node = try self.createNode(allocator, .{
                 .element = tokens.Text,
