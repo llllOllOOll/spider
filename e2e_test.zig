@@ -1029,6 +1029,14 @@ test "accept loop: running out of file descriptors does not stop the server" {
     const port = try reserveEphemeralPort(io);
     (try std.Thread.spawn(.{}, runPlainApp, .{port})).detach();
     try waitForPort(io, port);
+    // waitForPort connects and hangs up at once; the server may still be
+    // about to accept that connection, which costs it a descriptor. A whole
+    // request first: by its end the server has taken the earlier one and is
+    // back to waiting, so nothing of this test is in flight when the
+    // descriptors are counted below.
+    const warm_up = try request(io, env.arena.allocator(), port, "/fast", .{});
+    try std.testing.expectEqual(@as(u16, 200), warm_up.status);
+    std.Io.sleep(io, .fromMilliseconds(50), .real) catch {};
 
     // Leave this process exactly one free descriptor, spend it on a client
     // socket: the server's accept() for that connection then fails with

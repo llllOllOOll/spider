@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then trades the code and returns the profile. `authUrlWith(arena,
   config, .{ .state })` is there for an app that keeps the state its own
   way.
+- **`server.wsWith(path, handler, config)`**: a WebSocket route that says
+  who may open it, like `sseWith`. `ws()` took no config, so its routes
+  declared no access: any app with a WebSocket route could not start with
+  `require_route_access` on, and a socket could not be limited to signed-in
+  users at the route. A request that fails the checks is answered 401 or
+  403 before the protocol is switched.
 - **`current_user` in every view.** When the request has a user (a session,
   a token, `c.setUser`), templates can read `current_user.id`,
   `current_user.email` and `current_user.name` without the handler passing

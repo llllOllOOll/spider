@@ -27,6 +27,7 @@ const Router = @import("../routing/router.zig").Router;
 const auth_marker = @import("../modules/auth_marker.zig");
 const Handler = @import("../routing/router.zig").Handler;
 const Route = @import("../routing/router.zig").Route;
+const RouteMeta = @import("../routing/router.zig").RouteMeta;
 const Group = @import("../routing/group.zig").Group;
 const Config = @import("../internal/config.zig").Config;
 const Env = @import("../internal/config.zig").Env;
@@ -1104,11 +1105,28 @@ pub fn Server(comptime T: type) type {
         /// such a route exists. A request that is not a WebSocket upgrade gets
         /// an empty 200.
         pub fn ws(self: *Self, path: []const u8, comptime handler: fn (*Ws) anyerror!void) *Self {
+            return self.wsRoute(path, handler, &.{}, .{});
+        }
+
+        /// `ws()` with a route config, like `get`: `.public`,
+        /// `.authenticated`, `.roles`, `.org_roles`, `.policy`,
+        /// `.quiet_log`, `.allow_http`. The checks run on the request that
+        /// asks for the socket: one that fails them is answered 401 or 403
+        /// and the protocol is not switched.
+        ///
+        /// ```zig
+        /// server.wsWith("/chat", chat, .{ .authenticated = true })
+        /// ```
+        pub fn wsWith(self: *Self, path: []const u8, comptime handler: fn (*Ws) anyerror!void, comptime config: anytype) *Self {
+            return self.wsRoute(path, handler, comptime route_config.middlewares(config), comptime route_config.metaOf(config));
+        }
+
+        fn wsRoute(self: *Self, path: []const u8, comptime handler: fn (*Ws) anyerror!void, middlewares: []const MiddlewareFn, meta: RouteMeta) *Self {
             var threaded = std.Io.Threaded.init_single_threaded;
             const hub_ptr = std.heap.smp_allocator.create(Hub) catch unreachable;
             hub_ptr.* = Hub.init(std.heap.smp_allocator, threaded.io());
             const H = buildWsWrapper(handler);
-            self.router.add(.GET, path, H) catch unreachable;
+            self.router.addRoute(.GET, path, .{ .handler = H, .middlewares = middlewares, .meta = meta }) catch unreachable;
             self.ws_route_hubs.append(std.heap.smp_allocator, .{
                 .handler = H,
                 .hub = hub_ptr,

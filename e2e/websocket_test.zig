@@ -44,6 +44,8 @@ fn run() !void {
     defer server.deinit();
     try server
         .ws("/chat", chat)
+        .wsWith("/members", chat, .{ .authenticated = true })
+        .wsWith("/open", chat, .{ .public = true })
         .get("/alive", alive, .{ .public = true })
         .listen(.{});
 }
@@ -60,6 +62,13 @@ const Client = struct {
     at: usize,
 
     fn open(self: *Client, io: std.Io, port: u16) !void {
+        try self.request(io, port, "/chat");
+        try std.testing.expect(std.mem.startsWith(u8, self.seen[0..self.len], "HTTP/1.1 101"));
+    }
+
+    /// Asks for a WebSocket at `path` and reads the answer's head; what it
+    /// says is the caller's to check.
+    fn request(self: *Client, io: std.Io, port: u16, comptime path: []const u8) !void {
         self.io = io;
         const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
         self.stream = try address.connect(io, .{ .mode = .stream });
@@ -67,14 +76,13 @@ const Client = struct {
         const tv = std.posix.timeval{ .sec = 3, .usec = 0 };
         try std.posix.setsockopt(self.stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
 
-        try self.write("GET /chat HTTP/1.1\r\nHost: 127.0.0.1\r\n" ++
+        try self.write("GET " ++ path ++ " HTTP/1.1\r\nHost: 127.0.0.1\r\n" ++
             "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" ++
             "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n");
 
         self.reader = self.stream.reader(io, &self.rbuf);
         self.len = 0;
         while (std.mem.indexOf(u8, self.seen[0..self.len], "\r\n\r\n") == null) try self.more();
-        try std.testing.expect(std.mem.startsWith(u8, self.seen[0..self.len], "HTTP/1.1 101"));
         self.at = std.mem.indexOf(u8, self.seen[0..self.len], "\r\n\r\n").? + 4;
     }
 
@@ -249,4 +257,22 @@ test "websocket: a handler's own send and a broadcast from another connection ne
     }
     try std.testing.expectEqual(@as(usize, flood_count), from_send);
     try std.testing.expectEqual(@as(usize, flood_count), from_broadcast);
+}
+
+test "websocket: wsWith says who may open the socket" {
+    const app = try spider.testing.start(run);
+
+    // Nobody signed in: refused before the protocol is switched.
+    var anonymous: Client = undefined;
+    try anonymous.request(std.testing.io, app.port, "/members");
+    defer anonymous.close();
+    try std.testing.expect(std.mem.startsWith(u8, anonymous.seen[0..anonymous.len], "HTTP/1.1 401"));
+
+    // A public one opens and works like any other.
+    var visitor: Client = undefined;
+    try visitor.request(std.testing.io, app.port, "/open");
+    defer visitor.close();
+    try std.testing.expect(std.mem.startsWith(u8, visitor.seen[0..visitor.len], "HTTP/1.1 101"));
+    try visitor.sendText("hello");
+    try visitor.expectText("hello");
 }

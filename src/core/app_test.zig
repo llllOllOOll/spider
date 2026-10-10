@@ -412,6 +412,20 @@ test "require_route_access: plain sse() routes declare nothing" {
     try std.testing.expectError(error.RouteAccessUndeclared, s.checkRouteAccess());
 }
 
+fn featSocket(_: *@import("../ws/ws.zig").Ws) anyerror!void {}
+
+test "require_route_access: a WebSocket route declares its access with wsWith" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.wsWith("/chat", featSocket, .{ .authenticated = true }).requireRouteAccess();
+    try s.checkRouteAccess();
+
+    var plain = Server(NoDeco).init();
+    defer plain.deinit();
+    _ = plain.ws("/chat", featSocket).requireRouteAccess();
+    try std.testing.expectError(error.RouteAccessUndeclared, plain.checkRouteAccess());
+}
+
 test "built-ins: /up and /_spider/health are public; live reload is not registered (disabled)" {
     var s = app_mod.appWithConfig(.{ .views_dir = null, .static_dir = null, .env = .development });
     defer s.deinit();
