@@ -125,7 +125,7 @@ Needs `.sqlite = true` on the dependency. `init(allocator, io, .{ .path = ?[]con
 
 ## Other modules
 
-`spider.env`: `get(key) ?[]const u8`, `getOr(key, default)`, `getInt(T, key, default)`, `getBool(key, default)` (`.env`, `.env.<SPIDER_ENV>`, `.env.local` load on first use).
+`spider.env`: `get(key) ?[]const u8`, `getOr(key, default)`, `getInt(T, key, default)`, `getBool(key, default)` (`.env`, `.env.<SPIDER_ENV>`, `.env.local` load on first use; a later file wins over an earlier one, and a variable the process already has wins over all of them).
 `spider.logger` / `spider.loggerWith(.{ .quiet_paths = &.{"/up"} })` request logging; `spider.logFn` (timestamped `std_options.logFn`); `spider.gzip`.
 `spider.errorHandler(.{ .unauthorized_redirect, .json_key = "error", .always_json = false, .toast_event = "spider:toast", .forbidden_view, .template_not_found_is_404, .messages = .{ .forbidden, .not_found, .conflict, .unprocessable, .busy, .bad_request, .internal } })` → an `onError`: JSON `{<json_key>, request_id}` (callers that accept JSON; every caller with `.always_json`, for APIs), htmx (status kept, `HX-Reswap: none`, `HX-Trigger` toast `{message, type}`), page (`forbidden_view` or text); 5xx logged with rid/user/org.
 `spider.forceHttps(.{ .default_base_url, .base_url_env = "BASE_URL", .proto_header = "X-Forwarded-Proto", .allow_http_paths = &.{"/exact", "/prefix*"} })` middleware; `spider.varyHtmx` (`Vary: HX-Request` on HTML).

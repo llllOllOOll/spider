@@ -1181,9 +1181,11 @@ config fields too.
 
 Loaded when the server is created (or on the first `spider.env.get`):
 
-1. `.env` — base (never overrides variables already set in the process)
-2. `.env.<SPIDER_ENV>` — e.g. `.env.production` when `SPIDER_ENV=production` (default `development`)
-3. `.env.local` — local overrides (highest priority)
+1. `.env` — base
+2. `.env.<SPIDER_ENV>` — e.g. `.env.production` when `SPIDER_ENV=production` (default `development`); wins over `.env`
+3. `.env.local` — local overrides; wins over the two above
+
+A variable the process already has (the shell, the container, CI) wins over all three files: they only fill in what is missing.
 
 ```bash
 PG_HOST=localhost

@@ -1,7 +1,8 @@
 //! Environment variables, with the project's `.env` files loaded on first
-//! use (`spider.env`). Order: `.env`, then `.env.<SPIDER_ENV>` (`development`
-//! when SPIDER_ENV is not set), then `.env.local`. A value in `.env` does not
-//! replace a variable that is already set; the other two files do.
+//! use (`spider.env`). A variable the process already has (set by the shell,
+//! the container, a CI job) always wins: the files only fill in what is
+//! missing. Among the files, `.env.local` wins over `.env.<SPIDER_ENV>`
+//! (`development` when SPIDER_ENV is not set), which wins over `.env`.
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -27,6 +28,27 @@ fn getInternal(key: []const u8) ?[]const u8 {
     defer std.heap.page_allocator.free(key_z);
     const val = getenv(key_z.ptr) orelse return null;
     return std.heap.page_allocator.dupe(u8, std.mem.sliceTo(val, 0)) catch null;
+}
+
+/// The names this module set from a file. A later file may replace those,
+/// and only those: a name that is set and is not here was the process's
+/// own. Filled while the app starts, before requests are served.
+var from_files: std.StringHashMapUnmanaged(void) = .empty;
+
+/// Sets `key` from a file. `replaces_files`: this file wins over the files
+/// loaded before it (`.env.<env>` and `.env.local` over `.env`). No file
+/// replaces a variable the process already had.
+fn setFromFile(key: [:0]const u8, value: [:0]const u8, replaces_files: bool) void {
+    const getenv = struct {
+        extern fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+    }.getenv;
+    const ours = from_files.contains(key);
+    if (getenv(key.ptr) != null and !(replaces_files and ours)) return;
+    setEnvVarNative(key.ptr, value.ptr, true);
+    if (!ours) {
+        const kept = std.heap.page_allocator.dupe(u8, key) catch return;
+        from_files.put(std.heap.page_allocator, kept, {}) catch std.heap.page_allocator.free(kept);
+    }
 }
 
 fn setEnvVarNative(name: [*:0]const u8, value: [*:0]const u8, overwrite: bool) void {
@@ -150,7 +172,7 @@ fn loadFile(allocator: std.mem.Allocator, path: []const u8, overwrite: bool) !vo
             const value_z = try allocator.dupeSentinel(u8, value, 0);
             defer allocator.free(value_z);
 
-            setEnvVarNative(key_z.ptr, value_z.ptr, overwrite);
+            setFromFile(key_z, value_z, overwrite);
         }
     }
 }
@@ -186,4 +208,41 @@ pub fn checkGitignore() void {
             .{},
         );
     }
+}
+
+test "env files: a later file replaces an earlier file's value, never a variable of the process" {
+    if (!builtin.link_libc) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "base.env", .data = 
+        \\SPIDER_ENVTEST_FILE=from_base
+        \\SPIDER_ENVTEST_REAL=from_base
+        \\SPIDER_ENVTEST_ONLY_BASE=from_base
+        \\
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "local.env", .data = 
+        \\SPIDER_ENVTEST_FILE=from_local
+        \\SPIDER_ENVTEST_REAL=from_local
+        \\SPIDER_ENVTEST_ONLY_LOCAL=from_local
+        \\
+    });
+    const base = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/base.env", .{tmp.sub_path});
+    defer a.free(base);
+    const local = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/local.env", .{tmp.sub_path});
+    defer a.free(local);
+
+    // What a container, a shell or a CI job sets before the app starts.
+    setEnvVarNative("SPIDER_ENVTEST_REAL", "from_process", true);
+
+    // Twice, as the server does (first use, then listen()).
+    for (0..2) |_| {
+        try loadFile(a, base, false); // the way `.env` is loaded
+        try loadFile(a, local, true); // the way `.env.<env>` and `.env.local` are
+    }
+
+    try std.testing.expectEqualStrings("from_process", getInternal("SPIDER_ENVTEST_REAL").?);
+    try std.testing.expectEqualStrings("from_local", getInternal("SPIDER_ENVTEST_FILE").?);
+    try std.testing.expectEqualStrings("from_base", getInternal("SPIDER_ENVTEST_ONLY_BASE").?);
+    try std.testing.expectEqualStrings("from_local", getInternal("SPIDER_ENVTEST_ONLY_LOCAL").?);
 }

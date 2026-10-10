@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The process's own environment wins over every `.env` file.**
+  `.env.<SPIDER_ENV>` and `.env.local` used to replace variables the
+  process already had (a container's `PORT`, a secret set by the
+  platform); only `.env` respected them. Now no file does: the files fill
+  in what is missing, `.env.local` over `.env.<SPIDER_ENV>` over `.env`,
+  as before among themselves. This is what Next.js, Vite, Rails and
+  Symfony do. **A deploy that ships a `.env.production` or `.env.local`
+  whose value differs from the container's now gets the container's.**
 - **SQLite: a row that does not fit the struct is an error.** A struct
   field with no column of its name used to get 0, `""` or `false` without
   a word, and a NULL column read into a field that is not optional became
