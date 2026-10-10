@@ -261,6 +261,7 @@ test {
     _ = @import("core/http_client_mtls.zig");
     _ = @import("providers/jwks.zig");
     _ = @import("providers/google.zig");
+    _ = @import("providers/clerk.zig");
     _ = @import("internal/env.zig");
     _ = @import("binding/form_parser.zig");
     _ = @import("testing.zig");

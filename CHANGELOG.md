@@ -187,6 +187,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxy on a line of its own lost part of the chain; the same header in
   two letter cases was two headers. The values are joined into one list
   now, in the order received.
+- **Clerk: a real publishable key did not work.** The key decodes to the
+  instance's host followed by `$` (`example.accounts.dev$`); the provider
+  used that text as the issuer's address as it was, so `Clerk.init`
+  failed with any key from Clerk's dashboard. The host is read, over
+  https, and base64 with padding is accepted. Not yet tried against a
+  live Clerk instance.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

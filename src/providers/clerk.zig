@@ -62,16 +62,16 @@ pub const Clerk = struct {
 
     /// Decodes the issuer from the publishable key and downloads the signing
     /// keys from `{issuer}/.well-known/jwks.json`. What follows the key's
-    /// `pk_live_` / `pk_test_` prefix is decoded as base64url without
-    /// padding; the result is the issuer, taken as it is (when it starts with
-    /// `{` it is read as JSON and its `issuer` field is used). Nothing is
-    /// added to it: it has to be a full address, scheme included
-    /// (`https://...`).
+    /// `pk_live_` / `pk_test_` prefix is base64 of the host of the
+    /// instance's Frontend API followed by a `$`
+    /// (`example.accounts.dev$`): the issuer is that host over https. (A
+    /// key that decodes to JSON with an `issuer` field is used as that
+    /// issuer, scheme included: for tests against a server of your own.)
     ///
-    /// Errors: error.InvalidClerkKey (no such prefix, or it decodes to
-    /// nothing), the base64 or JSON decoder's error for a key that is
-    /// neither, error.JwksFetchFailed when the address does not answer with
-    /// a key set, or the HTTP client's error when it cannot be reached.
+    /// Errors: error.InvalidClerkKey (no such prefix, not base64, or it
+    /// decodes to nothing), error.JwksFetchFailed when the address does not
+    /// answer with a key set, or the HTTP client's error when it cannot be
+    /// reached.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: ClerkConfig) !Clerk {
         const domain = try parseIssuerUrl(allocator, config.publishable_key);
         errdefer allocator.free(domain);
@@ -192,22 +192,66 @@ fn parseIssuerUrl(allocator: std.mem.Allocator, publishable_key: []const u8) ![]
     else
         return error.InvalidClerkKey;
 
-    const b64_data = publishable_key[prefix.len..];
-
-    const decoded_len = try std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(b64_data);
-    const decoded = try allocator.alloc(u8, decoded_len);
+    // What follows the prefix is base64 of the instance's address. Clerk
+    // writes it with the standard alphabet and its `=` padding; the other
+    // alphabet, and no padding, are read too.
+    const b64_data = std.mem.trimEnd(u8, publishable_key[prefix.len..], "=");
+    if (b64_data.len == 0) return error.InvalidClerkKey;
+    const decoded = blk: {
+        inline for (.{ std.base64.standard_no_pad, std.base64.url_safe_no_pad }) |codec| {
+            if (codec.Decoder.calcSizeForSlice(b64_data)) |size| {
+                const buf = try allocator.alloc(u8, size);
+                if (codec.Decoder.decode(buf, b64_data)) |_| break :blk buf else |_| allocator.free(buf);
+            } else |_| {}
+        }
+        return error.InvalidClerkKey;
+    };
     defer allocator.free(decoded);
-    try std.base64.url_safe_no_pad.Decoder.decode(decoded, b64_data);
 
     if (decoded.len == 0) return error.InvalidClerkKey;
 
     if (decoded[0] == '{') {
-        const parsed = try std.json.parseFromSlice(struct {
+        const parsed = std.json.parseFromSlice(struct {
             issuer: []const u8,
-        }, allocator, decoded[0..decoded_len], .{});
+        }, allocator, decoded, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidClerkKey,
+        };
         defer parsed.deinit();
         return try allocator.dupe(u8, parsed.value.issuer);
     }
 
-    return try allocator.dupe(u8, decoded[0..decoded_len]);
+    // A real key: the host of the instance's Frontend API, then a `$` that
+    // marks the end ("example.accounts.dev$"). The issuer of its tokens,
+    // and the base of its addresses, is that host over https.
+    const host = std.mem.trimEnd(u8, decoded, "$");
+    if (host.len == 0) return error.InvalidClerkKey;
+    if (std.mem.indexOf(u8, host, "://") != null) return try allocator.dupe(u8, host);
+    return try std.fmt.allocPrint(allocator, "https://{s}", .{host});
+}
+
+test "parseIssuerUrl: a publishable key is the instance's host in base64, with a $ at the end" {
+    const a = std.testing.allocator;
+
+    // The example of Clerk's own documentation: "example.accounts.dev$".
+    const dev = try parseIssuerUrl(a, "pk_test_ZXhhbXBsZS5hY2NvdW50cy5kZXYk");
+    defer a.free(dev);
+    try std.testing.expectEqualStrings("https://example.accounts.dev", dev);
+
+    // A production key, and one whose base64 carries padding.
+    const live = try parseIssuerUrl(a, "pk_live_Y2xlcmsuZXhhbXBsZS5jb20k");
+    defer a.free(live);
+    try std.testing.expectEqualStrings("https://clerk.example.com", live);
+    const padded = try parseIssuerUrl(a, "pk_test_YS5iJA==");
+    defer a.free(padded);
+    try std.testing.expectEqualStrings("https://a.b", padded);
+
+    // The JSON form the tests use (an issuer with its scheme) still works.
+    const json = try parseIssuerUrl(a, "pk_test_eyJpc3N1ZXIiOiJodHRwOi8vMTI3LjAuMC4xOjkifQ");
+    defer a.free(json);
+    try std.testing.expectEqualStrings("http://127.0.0.1:9", json);
+
+    try std.testing.expectError(error.InvalidClerkKey, parseIssuerUrl(a, "sk_test_ZXhhbXBsZQ"));
+    try std.testing.expectError(error.InvalidClerkKey, parseIssuerUrl(a, "pk_test_"));
+    try std.testing.expectError(error.InvalidClerkKey, parseIssuerUrl(a, "pk_test_JA")); // only the "$"
 }
