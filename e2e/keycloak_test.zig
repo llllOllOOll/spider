@@ -88,6 +88,11 @@ fn makeJwtKid(alc: std.mem.Allocator, kid: []const u8, exp: i64, extra_json: []c
 /// token was issued to.
 fn makeJwtFull(alc: std.mem.Allocator, kid: []const u8, exp: i64, claims_json: []const u8) ![]const u8 {
     const header = try std.fmt.allocPrint(alc, "{{\"alg\":\"RS256\",\"typ\":\"JWT\",\"kid\":\"{s}\"}}", .{kid});
+    return makeJwtWithHeader(alc, header, exp, claims_json);
+}
+
+/// A token signed with the test key whatever its header says.
+fn makeJwtWithHeader(alc: std.mem.Allocator, header: []const u8, exp: i64, claims_json: []const u8) ![]const u8 {
     const payload = try std.fmt.allocPrint(alc, "{{\"sub\":\"user-1\",\"email\":\"u@test\",\"iss\":\"{s}\",\"exp\":{d}{s}}}", .{ try issuer(alc), exp, claims_json });
 
     const h_enc = try alc.alloc(u8, b64.Encoder.calcSize(header.len));
@@ -112,11 +117,20 @@ fn idpCerts(c: *spider.Ctx) !spider.Response {
     _ = certs_calls.fetchAdd(1, .seq_cst);
     var n_enc: [b64.Encoder.calcSize(256)]u8 = undefined;
     _ = b64.Encoder.encode(&n_enc, &n_bytes);
-    const Key = struct { kid: []const u8, kty: []const u8, n: []const u8, e: []const u8 };
-    const k1: Key = .{ .kid = "k1", .kty = "RSA", .n = &n_enc, .e = "AQAB" };
-    const k2: Key = .{ .kid = "k2", .kty = "RSA", .n = &n_enc, .e = "AQAB" };
-    if (serve_k2.load(.seq_cst)) return c.json(.{ .keys = &[_]Key{ k1, k2 } }, .{});
-    return c.json(.{ .keys = &[_]Key{k1} }, .{});
+    // What a real provider publishes: its RSA signing keys, and next to
+    // them keys of other kinds (an EC key, an RSA key for encryption).
+    const others =
+        \\{"kid":"ec1","kty":"EC","crv":"P-256","use":"sig","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU","y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"},
+        \\{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}
+    ;
+    const rsa_key = "{{\"kid\":\"{s}\",\"kty\":\"RSA\",\"alg\":\"RS256\",\"use\":\"sig\",\"n\":\"{s}\",\"e\":\"AQAB\"}}";
+    const k1 = try std.fmt.allocPrint(c.arena, rsa_key, .{ "k1", &n_enc });
+    const k2 = try std.fmt.allocPrint(c.arena, rsa_key, .{ "k2", &n_enc });
+    const body = if (serve_k2.load(.seq_cst))
+        try std.fmt.allocPrint(c.arena, "{{\"keys\":[{s},{s},{s}]}}", .{ others, k1, k2 })
+    else
+        try std.fmt.allocPrint(c.arena, "{{\"keys\":[{s},{s}]}}", .{ others, k1 });
+    return .{ .body = body, .content_type = "application/json" };
 }
 
 fn idpToken(c: *spider.Ctx) !spider.Response {
@@ -434,6 +448,42 @@ test "jwks: valid token passes, bad signature and no token do not" {
     const none = try e.get("/tickets", &.{});
     try std.testing.expectEqual(@as(u16, 302), none.status);
     try std.testing.expectEqualStrings("/auth/login", none.header("Location").?);
+}
+
+test "jwks: a token that names another algorithm, or none, is refused" {
+    var e = try Env.init();
+    defer e.deinit();
+    const claims = own_client;
+    // Signed with the right key all the same: the header is what is wrong.
+    for ([_][]const u8{
+        "{\"alg\":\"HS256\",\"typ\":\"JWT\",\"kid\":\"k1\"}",
+        "{\"alg\":\"none\",\"typ\":\"JWT\",\"kid\":\"k1\"}",
+        "{\"typ\":\"JWT\",\"kid\":\"k1\"}",
+    }) |header| {
+        const jwt = try makeJwtWithHeader(e.alc(), header, far_future, claims);
+        const res = try e.get("/tickets", &.{try std.fmt.allocPrint(e.alc(), "Cookie: __session={s}", .{jwt})});
+        try std.testing.expectEqual(@as(u16, 401), res.status);
+        try std.testing.expectEqualStrings("UnsupportedAlgorithm", res.body);
+    }
+}
+
+test "keycloak: over plain http the cookies are not Secure (a browser would drop them)" {
+    var e = try Env.init();
+    defer e.deinit();
+    // This app's redirect_uri is http://127.0.0.1:...
+    const res = try e.get("/auth/login", &.{});
+    const set_cookie = res.header("Set-Cookie").?;
+    try std.testing.expect(std.mem.indexOf(u8, set_cookie, "HttpOnly") != null);
+    try std.testing.expect(std.mem.indexOf(u8, set_cookie, "Secure") == null);
+}
+
+test "keycloak authUrl: the state and the config values are encoded" {
+    var e = try Env.init();
+    defer e.deinit();
+    const url = try kc.authUrl("a b&c=d");
+    defer std.heap.smp_allocator.free(url);
+    try std.testing.expect(std.mem.endsWith(u8, url, "&state=a%20b%26c%3Dd"));
+    try std.testing.expect(std.mem.indexOf(u8, url, "redirect_uri=http%3A//127.0.0.1%3A") != null);
 }
 
 test "jwks: a token issued to another client of the realm is rejected" {

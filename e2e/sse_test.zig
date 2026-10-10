@@ -41,6 +41,12 @@ fn count(c: *spider.Ctx) !spider.Response {
     return c.text(try std.fmt.allocPrint(c.arena, "{d}", .{c.sseHub().count()}), .{});
 }
 
+/// How many connections are on one room.
+fn roomCount(c: *spider.Ctx) !spider.Response {
+    const channel = try std.fmt.allocPrint(c.arena, "room:{s}", .{c.params.get("room") orelse "lobby"});
+    return c.text(try std.fmt.allocPrint(c.arena, "{d}", .{c.sseHub().channelCount(channel)}), .{});
+}
+
 fn boom(_: *spider.Ctx) !spider.Response {
     return error.Forbidden;
 }
@@ -62,6 +68,7 @@ fn runApp(p: u16) void {
         .sse("/failing", failing)
         .post("/emit/:room", emit, .{})
         .get("/sse-count", count, .{})
+        .get("/sse-count/:room", roomCount, .{})
         .get("/hello", hello, .{})
         .get("/boom", boom, .{})
         .listen(.{ .port = p, .host = "127.0.0.1" }) catch |err| {
@@ -130,15 +137,19 @@ const SseClient = struct {
 };
 
 fn waitForCount(io: std.Io, arena: std.mem.Allocator, want: usize) !void {
+    return waitForCountAt(io, arena, "/sse-count", want);
+}
+
+fn waitForCountAt(io: std.Io, arena: std.mem.Allocator, target: []const u8, want: usize) !void {
     var tries: usize = 0;
-    while (tries < 100) : (tries += 1) {
-        const res = try h.request(io, arena, port, "/sse-count", .{});
+    while (tries < 250) : (tries += 1) {
+        const res = try h.request(io, arena, port, target, .{});
         const n = try std.fmt.parseInt(usize, res.body, 10);
         if (n == want) return;
         std.Io.sleep(io, .fromMilliseconds(20), .real) catch {};
     }
-    const res = try h.request(io, arena, port, "/sse-count", .{});
-    std.debug.print("\n  hub count: expected {d}, got {s}\n", .{ want, res.body });
+    const res = try h.request(io, arena, port, target, .{});
+    std.debug.print("\n  {s}: expected {d}, got {s}\n", .{ target, want, res.body });
     return error.UnexpectedConnectionCount;
 }
 
@@ -150,8 +161,6 @@ fn fanOut(n: usize, room: []const u8) !void {
     defer arena.deinit();
     try ensureStarted(io);
 
-    const before = try std.fmt.parseInt(usize, (try h.request(io, arena.allocator(), port, "/sse-count", .{})).body, 10);
-
     const clients = try std.testing.allocator.alloc(SseClient, n);
     defer std.testing.allocator.free(clients);
     var opened: usize = 0;
@@ -160,7 +169,9 @@ fn fanOut(n: usize, room: []const u8) !void {
         try c.open(io, room);
         opened += 1;
     }
-    try waitForCount(io, arena.allocator(), before + n);
+    // Counted on this test's own room: the whole hub's count still holds
+    // the connections an earlier test closed, until the hub notices.
+    try waitForCountAt(io, arena.allocator(), try std.fmt.allocPrint(arena.allocator(), "/sse-count/{s}", .{room}), n);
 
     // Normal requests are still served while n SSE connections are held.
     const hello_res = try h.request(io, arena.allocator(), port, "/hello", .{});

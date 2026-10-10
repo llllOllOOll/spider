@@ -143,3 +143,20 @@ test "decoded encoded-attack payloads are rejected" {
         try t.expect(!isSafeLocalRedirect(dec));
     }
 }
+
+// internal: the rule the auth providers share for their cookies.
+/// Whether a cookie set by an app reached at `app_url` (its OAuth redirect
+/// address) carries `Secure`: yes, unless that address is plain http. A
+/// browser does not keep a Secure cookie that arrives over http, so a
+/// login on a developer's machine would never complete.
+pub fn cookiesSecureFor(app_url: []const u8) bool {
+    return !std.ascii.startsWithIgnoreCase(app_url, "http://");
+}
+
+test "cookiesSecureFor: Secure unless the app is reached over plain http" {
+    try std.testing.expect(cookiesSecureFor("https://app.example.com/auth/callback"));
+    try std.testing.expect(!cookiesSecureFor("http://localhost:3000/auth/callback"));
+    try std.testing.expect(!cookiesSecureFor("HTTP://192.168.0.10/auth/callback"));
+    // Anything that is not clearly http stays on the safe side.
+    try std.testing.expect(cookiesSecureFor("/auth/callback"));
+}

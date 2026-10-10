@@ -39,15 +39,14 @@ pub const KeycloakConfig = struct {
     /// Where the callback redirects once the cookies are set, and where a
     /// refresh goes when it has no usable `?next=`.
     after_callback_path: []const u8 = "/",
-    /// Not read by anything today.
-    state_prefix: []const u8 = "",
     /// Paths the middleware lets through without a token: the path itself and
     /// anything under it (`"/auth"` also covers `/auth/login`, not
     /// `/authors`). The login, callback and refresh routes must be listed, or
     /// be `.public`. Default: none.
     auth_skip_paths: []const []const u8 = &.{},
-    /// Cookie that keeps the refresh token (HttpOnly, Secure, SameSite=Lax,
-    /// 30 days).
+    /// Cookie that keeps the refresh token (HttpOnly, SameSite=Lax, 30 days;
+    /// Secure unless `redirect_uri` is plain http, like every cookie set
+    /// here: a browser drops a Secure cookie that arrives over http).
     refresh_cookie_name: []const u8 = "__refresh",
     /// Where a browser request with an expired token is redirected, as
     /// `{refresh_path}?next=<the request's target>`. Mount `refreshHandler()`
@@ -64,7 +63,7 @@ pub const KeycloakConfig = struct {
     /// pass — a hand-built authorize URL has no matching cookie and its
     /// callback is rejected (redirected back to `login_path`).
     verify_state: bool = true,
-    /// Cookie that keeps the nonce of `verify_state` (HttpOnly, Secure,
+    /// Cookie that keeps the nonce of `verify_state` (HttpOnly,
     /// SameSite=Lax, 10 minutes).
     state_cookie_name: []const u8 = "__oauth_state",
     /// Client whose tokens are accepted (see JwksConfig.audience); defaults
@@ -200,16 +199,31 @@ pub const Keycloak = struct {
         return self.jwks.middleware();
     }
 
-    /// The login page URL with `state` as given (nothing is URL-encoded and no
-    /// state cookie is set). Allocated with the allocator given to `init`; the
-    /// caller frees it. Prefer `authorize`: with `verify_state` on (the
-    /// default), the callback of a login started from this URL is rejected.
+    /// The login page URL with `state` (URL-encoded, like the client id and
+    /// the redirect address; no state cookie is set). Allocated with the
+    /// allocator given to `init`; the caller frees it. Prefer `authorize`:
+    /// with `verify_state` on (the default), the callback of a login started
+    /// from this URL is rejected.
     pub fn authUrl(self: *const Keycloak, state: []const u8) ![]u8 {
+        const allocator = self.jwks.allocator;
+        const client_id = try url_util.encodeQueryValue(allocator, self.config.client_id);
+        defer allocator.free(client_id);
+        const redirect_uri = try url_util.encodeQueryValue(allocator, self.config.redirect_uri);
+        defer allocator.free(redirect_uri);
+        const encoded_state = try url_util.encodeQueryValue(allocator, state);
+        defer allocator.free(encoded_state);
         return try std.fmt.allocPrint(
-            self.jwks.allocator,
+            allocator,
             "{s}/protocol/openid-connect/auth?client_id={s}&redirect_uri={s}&response_type=code&scope=openid+email+profile&state={s}",
-            .{ self.issuer, self.config.client_id, self.config.redirect_uri, state },
+            .{ self.issuer, client_id, redirect_uri, encoded_state },
         );
+    }
+
+    /// Whether the cookies set here carry `Secure`: always, unless the app
+    /// itself is reached over plain http (a developer's machine), where a
+    /// browser would refuse to keep them.
+    fn secureCookies(self: *const Keycloak) bool {
+        return url_util.cookiesSecureFor(self.config.redirect_uri);
     }
 
     /// The handler for the login route: redirects to Keycloak's login page
@@ -269,8 +283,7 @@ pub const Keycloak = struct {
     /// stored in a short-lived HttpOnly cookie, so `callbackHandler()` can tell
     /// its own round-trips from forged ones. Use this for every login,
     /// registration or IdP-hinted flow instead of hand-building the URL. The
-    /// answer is a 302; the cookie is Secure, so the browser keeps it only
-    /// over https or on localhost.
+    /// answer is a 302.
     pub fn authorize(self: *Keycloak, c: *Ctx, opts: AuthorizeOptions) !Response {
         var rand_buf: [nonce_len / 2]u8 = undefined;
         std.Io.random(c._io, &rand_buf);
@@ -295,7 +308,7 @@ pub const Keycloak = struct {
 
         const state_cookie = try c.setCookie(self.config.state_cookie_name, &nonce, .{
             .http_only = true,
-            .secure = true,
+            .secure = self.secureCookies(),
             .same_site = "Lax",
             .path = "/",
             .max_age = 600,
@@ -331,7 +344,7 @@ pub const Keycloak = struct {
     fn clearStateCookie(self: *Keycloak, c: *Ctx) ![]const u8 {
         return c.setCookie(self.config.state_cookie_name, "", .{
             .http_only = true,
-            .secure = true,
+            .secure = self.secureCookies(),
             .same_site = "Lax",
             .path = "/",
             .max_age = 0,
@@ -388,7 +401,7 @@ pub const Keycloak = struct {
         try hdrs.append(c.arena, .{ "Location", location });
         try hdrs.append(c.arena, .{ "Set-Cookie", try c.setCookie("__session", jwt, .{
             .http_only = true,
-            .secure = true,
+            .secure = self.secureCookies(),
             .same_site = "Lax",
             .path = "/",
             .max_age = 86400 * 7,
@@ -396,7 +409,7 @@ pub const Keycloak = struct {
         if (parsed.value.refresh_token.len > 0) {
             try hdrs.append(c.arena, .{ "Set-Cookie", try c.setCookie(self.config.refresh_cookie_name, parsed.value.refresh_token, .{
                 .http_only = true,
-                .secure = true,
+                .secure = self.secureCookies(),
                 .same_site = "Lax",
                 .path = "/",
                 .max_age = 86400 * 30,
@@ -438,7 +451,7 @@ pub const Keycloak = struct {
 
         const session_cookie = try c.setCookie("__session", jwt, .{
             .http_only = true,
-            .secure = true,
+            .secure = self.secureCookies(),
             .same_site = "Lax",
             .path = "/",
             .max_age = 86400 * 7,
@@ -447,7 +460,7 @@ pub const Keycloak = struct {
         if (parsed.value.refresh_token.len > 0) {
             const refresh_cookie = try c.setCookie(self.config.refresh_cookie_name, parsed.value.refresh_token, .{
                 .http_only = true,
-                .secure = true,
+                .secure = self.secureCookies(),
                 .same_site = "Lax",
                 .path = "/",
                 .max_age = 86400 * 30,
@@ -468,14 +481,14 @@ pub const Keycloak = struct {
     fn redirectToLogin(self: *Keycloak, c: *Ctx) !Response {
         const clear_session = try c.setCookie("__session", "", .{
             .http_only = true,
-            .secure = true,
+            .secure = self.secureCookies(),
             .same_site = "Lax",
             .path = "/",
             .max_age = 0,
         });
         const clear_refresh = try c.setCookie(self.config.refresh_cookie_name, "", .{
             .http_only = true,
-            .secure = true,
+            .secure = self.secureCookies(),
             .same_site = "Lax",
             .path = "/",
             .max_age = 0,

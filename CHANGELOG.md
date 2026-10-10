@@ -43,6 +43,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: a JWT must say `"alg":"RS256"` in its header**
+  (`spider.jwks`, and so Keycloak and Clerk). The header's `alg` was not
+  read: every token was checked as RS256 whatever it claimed. A token
+  that names another algorithm, `none`, or no algorithm is now refused
+  with `error.UnsupportedAlgorithm` (a 401 from the middleware).
+- **Breaking: Keycloak's cookies are `Secure` only when the app is reached
+  over https** (`redirect_uri` does not start with `http://`). They were
+  always Secure, and a browser drops a Secure cookie that arrives over
+  plain http: on a developer's machine at an address other than
+  localhost, the login never completed. Nothing changes for an app
+  served over https.
+- **Breaking: `KeycloakConfig.state_prefix` is gone.** Nothing read it.
+  Remove the line from the config.
+- **`Keycloak.authUrl` URL-encodes** the state, the client id and the
+  redirect address. They went into the URL as given: a `&` in the state
+  became another parameter.
+- **A token not valid yet (`nbf`) in `api_mode`** gets the same JSON 401
+  as the other refusals; it was the one answered in plain text.
 - **Breaking: a path parameter arrives percent-decoded.** `/users/:name`
   asked as `/users/Ana%20Ribeiro` gave `Ana%20Ribeiro`; it now gives
   `Ana Ribeiro`, and `a%2Fb` gives `a/b` (one value, not two segments).
@@ -106,6 +124,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A key set with a key that is not RSA made the whole login fail**
+  (`spider.jwks`): one EC or Ed25519 key in the provider's JWKS, as
+  Keycloak realms and Auth0 tenants can publish, and `init` returned
+  `error.JwksFetchFailed`. Keys of other kinds are now skipped; the
+  error is kept for a set with no usable RSA key.
+- **JWT verification allocated three pages from the system on every
+  request** (`page_allocator`, one `mmap` each). It uses the stack now.
+- **A failed key download was printed to stderr** with the whole
+  response body, outside the log. It is a `warn` line with the first
+  200 bytes.
 - **`server.use()` dropped the 17th middleware without a word**, and a
   request ran at most 64 middlewares in all. An app that added its
   authentication after sixteen others ran without it. Both limits are

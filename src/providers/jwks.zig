@@ -28,8 +28,9 @@ const JwkEntry = struct {
 /// valid as long as the JwksAuth.
 pub const JwksConfig = struct {
     /// URL of the provider's key set (a JSON object with a `keys` list; each
-    /// key needs `kid`, `n` and `e`, so RSA keys only: a set that also lists
-    /// a key without them, such as an EC key, is refused whole with
+    /// RSA
+    /// key with a `kid`, an `n` and an `e` is kept; keys of other kinds, such
+    /// as EC ones, are skipped, and a set with no usable key is
     /// error.JwksFetchFailed). Downloaded by `init` and again when a token
     /// names an unknown key. No default.
     jwks_url: []const u8,
@@ -62,8 +63,7 @@ pub const JwksConfig = struct {
     refresh_path: ?[]const u8 = null,
     /// true: a missing, invalid or expired token is answered with a 401 and a
     /// JSON body (`{"error":"unauthorized","message":...}`), never a
-    /// redirect. (A token whose `nbf` is still in the future gets a 401 with
-    /// a plain-text body in both modes.)
+    /// redirect.
     api_mode: bool = false,
     /// Cookie holding the org the user picked (e.g. "orbitx_condo"). When
     /// present and naming an org the user belongs to, its value becomes
@@ -208,24 +208,21 @@ pub const JwksAuth = struct {
         defer res.deinit();
 
         if (res.status != .ok) {
-            std.debug.print(
-                "[spider] JWKS fetch failed: status={s}, url={s}\n  body: {s}\n",
-                .{ @tagName(res.status), self.config.jwks_url, res.body_text },
-            );
+            std.log.warn("[spider] JWKS fetch failed: {s} answered {d}: {s}", .{ self.config.jwks_url, @backingInt(res.status), excerpt(res.body_text) });
             return error.JwksFetchFailed;
         }
 
+        // A key set lists keys of several kinds; only what an RSA key
+        // needs is asked of each, and the ones that are not RSA are skipped.
         const parsed = res.json(struct {
             keys: []const struct {
-                kid: []const u8,
-                n: []const u8,
-                e: []const u8,
+                kty: ?[]const u8 = null,
+                kid: ?[]const u8 = null,
+                n: ?[]const u8 = null,
+                e: ?[]const u8 = null,
             },
         }) catch |err| {
-            std.debug.print(
-                "[spider] JWKS response parse failed: {s}\n  url: {s}\n  body: {s}\n",
-                .{ @errorName(err), self.config.jwks_url, res.body_text },
-            );
+            std.log.warn("[spider] JWKS fetch failed: {s} did not answer with a key set ({s}): {s}", .{ self.config.jwks_url, @errorName(err), excerpt(res.body_text) });
             return error.JwksFetchFailed;
         };
         defer parsed.deinit();
@@ -236,13 +233,22 @@ pub const JwksAuth = struct {
         var fresh: KeyMap = .{};
         errdefer freeKeyMap(self.allocator, &fresh);
         for (parsed.value.keys) |key| {
-            const kid = try self.allocator.dupe(u8, key.kid);
+            if (key.kty) |kty| if (!std.mem.eql(u8, kty, "RSA")) continue;
+            const key_kid = key.kid orelse continue;
+            const key_n = key.n orelse continue;
+            const key_e = key.e orelse continue;
+            if (fresh.contains(key_kid)) continue;
+            const kid = try self.allocator.dupe(u8, key_kid);
             errdefer self.allocator.free(kid);
-            const n = try self.allocator.dupe(u8, key.n);
+            const n = try self.allocator.dupe(u8, key_n);
             errdefer self.allocator.free(n);
-            const e = try self.allocator.dupe(u8, key.e);
+            const e = try self.allocator.dupe(u8, key_e);
             errdefer self.allocator.free(e);
             try fresh.put(self.allocator, kid, .{ .n = n, .e = e });
+        }
+        if (fresh.count() == 0) {
+            std.log.warn("[spider] JWKS fetch failed: {s} lists no RSA key with a kid", .{self.config.jwks_url});
+            return error.JwksFetchFailed;
         }
 
         self.keys_lock.lockUncancelable(io);
@@ -289,15 +295,15 @@ pub const JwksAuth = struct {
     /// The claims of `token` once its signature (RSA PKCS#1 v1.5 with
     /// SHA-256), issuer and audience are checked. It does NOT check `exp` or
     /// `nbf`: compare them yourself (the middleware does). `allocator` should
-    /// be an arena. Errors: InvalidToken (not three parts), UnknownKey (no key
+    /// be an arena. Errors: InvalidToken (not three parts),
+    /// UnsupportedAlgorithm (the header's `alg` is not "RS256"), UnknownKey (no key
     /// for the token's `kid`, even after a re-fetch, or the re-fetch was
     /// skipped because the last one was under `min_refetch_interval_ms`
     /// ago), InvalidSignature, UnsupportedKeySize (the signature is not 1024,
     /// 2048, 3072 or 4096 bits), MissingIssuer, InvalidIssuer,
     /// InvalidAudience. A token malformed in another way fails with the error
     /// of the base64, JSON or RSA code (error.MissingField when the payload
-    /// has no `sub` or no `exp`). The header's `alg` is not read: the
-    /// signature is always checked as RS256.
+    /// has no `sub` or no `exp`).
     pub fn verifyToken(self: *JwksAuth, allocator: std.mem.Allocator, token: []const u8) !Claims {
         return self.verifyTokenIo(self.io, allocator, token);
     }
@@ -317,8 +323,12 @@ pub const JwksAuth = struct {
 
         const parsed_hdr = try std.json.parseFromSlice(struct {
             kid: []const u8 = "",
+            alg: []const u8 = "",
         }, allocator, hdr_buf[0..hdr_len], .{ .ignore_unknown_fields = true });
         defer parsed_hdr.deinit();
+        // RS256 is the one algorithm checked here: a token that says it was
+        // signed another way (or with "none") is not one of ours.
+        if (!std.mem.eql(u8, parsed_hdr.value.alg, "RS256")) return error.UnsupportedAlgorithm;
 
         const jwk = try self.resolveKey(io, allocator, parsed_hdr.value.kid);
 
@@ -379,8 +389,8 @@ pub const JwksAuth = struct {
     ///
     /// Without a token: redirect (302) to `login_path`. With one that does
     /// not verify: 401 with the error's
-    /// name as the body. Expired: see `refresh_path`. In `api_mode` all three
-    /// are a JSON 401. Not valid yet (`nbf`): 401, plain text.
+    /// name as the body. Expired: see `refresh_path`. Not valid yet (`nbf`):
+    /// 401. In `api_mode` all four are a JSON 401.
     ///
     /// The instance is kept in one static slot: a process can use the
     /// middleware of one JwksAuth; a second call replaces the first.
@@ -422,25 +432,7 @@ pub const JwksAuth = struct {
         };
 
         const claims = self.verifyTokenIo(c._io, c.arena, token) catch |err| switch (err) {
-            error.InvalidToken,
-            error.UnknownKey,
-            error.InvalidIssuer,
-            error.MissingIssuer,
-            error.InvalidAudience,
-            error.UnsupportedKeySize,
-            error.InvalidSignature,
-            => {
-                if (self.config.api_mode) {
-                    return c.json(.{ .@"error" = "unauthorized", .message = @errorName(err) }, .{ .status = .unauthorized });
-                }
-                return c.text(@errorName(err), .{ .status = .unauthorized });
-            },
-            else => |e| {
-                if (self.config.api_mode) {
-                    return c.json(.{ .@"error" = "unauthorized", .message = @errorName(e) }, .{ .status = .unauthorized });
-                }
-                return c.text(@errorName(e), .{ .status = .unauthorized });
-            },
+            else => return unauthorized(c, self.config.api_mode, @errorName(err)),
         };
 
         const now_sec: i64 = @intCast(@divFloor(
@@ -465,8 +457,7 @@ pub const JwksAuth = struct {
             return c.text("Token expired", .{ .status = .unauthorized });
         }
         if (claims.nbf) |nbf| {
-            if (nbf > now_sec)
-                return c.text("Token not yet valid", .{ .status = .unauthorized });
+            if (nbf > now_sec) return unauthorized(c, self.config.api_mode, "Token not yet valid");
         }
 
         try c.params.put(c.arena, try c.arena.dupe(u8, "_auth_sub"), try c.arena.dupe(u8, claims.sub));
@@ -597,6 +588,18 @@ fn stringField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return if (v == .string) v.string else null;
 }
 
+/// The 401 of a token that is not accepted: JSON in `api_mode`, plain text
+/// otherwise.
+fn unauthorized(c: *Ctx, api_mode: bool, message: []const u8) !Response {
+    if (api_mode) return c.json(.{ .@"error" = "unauthorized", .message = message }, .{ .status = .unauthorized });
+    return c.text(message, .{ .status = .unauthorized });
+}
+
+/// The start of a response body, for a log line.
+fn excerpt(body: []const u8) []const u8 {
+    return body[0..@min(body.len, 200)];
+}
+
 fn redirect(c: *Ctx, url: []const u8) Response {
     const headers = c.arena.alloc([2][]const u8, 1) catch
         return Response{ .status = .found, .body = url, .content_type = "text/plain" };
@@ -623,24 +626,22 @@ fn splitToken(token: []const u8) ?struct { header: []const u8, payload: []const 
 }
 
 fn verifyRsaSha256(sig_b64url: []const u8, msg: []const u8, n_b64url: []const u8, e_b64url: []const u8) !void {
-    const aa = std.heap.page_allocator;
+    // On the stack: this runs for every request. 512 bytes is a 4096-bit
+    // key, the largest one checked (a modulus may carry one leading zero).
+    var sig_buf: [512]u8 = undefined;
+    var n_buf: [513]u8 = undefined;
+    var e_buf: [8]u8 = undefined;
+    const sig = try decodeInto(&sig_buf, sig_b64url);
+    const n = try decodeInto(&n_buf, n_b64url);
+    const e = try decodeInto(&e_buf, e_b64url);
+    try verifyRsaSha256Raw(sig, msg, n, e);
+}
 
-    const sig_len = try b64.Decoder.calcSizeForSlice(sig_b64url);
-    const sig_buf = try aa.alloc(u8, sig_len);
-    defer aa.free(sig_buf);
-    try b64.Decoder.decode(sig_buf, sig_b64url);
-
-    const n_len = try b64.Decoder.calcSizeForSlice(n_b64url);
-    const n_buf = try aa.alloc(u8, n_len);
-    defer aa.free(n_buf);
-    try b64.Decoder.decode(n_buf, n_b64url);
-
-    const e_len = try b64.Decoder.calcSizeForSlice(e_b64url);
-    const e_buf = try aa.alloc(u8, e_len);
-    defer aa.free(e_buf);
-    try b64.Decoder.decode(e_buf, e_b64url);
-
-    try verifyRsaSha256Raw(sig_buf[0..sig_len], msg, n_buf[0..n_len], e_buf[0..e_len]);
+fn decodeInto(buf: []u8, text: []const u8) ![]const u8 {
+    const len = try b64.Decoder.calcSizeForSlice(text);
+    if (len > buf.len) return error.UnsupportedKeySize;
+    try b64.Decoder.decode(buf[0..len], text);
+    return buf[0..len];
 }
 
 /// OIDC client check: issued to `client` (azp), or addressed to it (aud as
@@ -804,4 +805,25 @@ test "applyClaims: map_claims runs after the built-in mapping; its error is the 
     cfg.map_claims = rejectAll;
     var d = testCtx(arena.allocator());
     try std.testing.expectError(error.Forbidden, testClaims(&d, cfg, "{\"sub\":\"u\"}"));
+}
+
+test "unauthorized: JSON in api_mode, plain text otherwise" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = testCtx(arena.allocator());
+
+    const plain = try unauthorized(&c, false, "Token not yet valid");
+    try std.testing.expectEqual(std.http.Status.unauthorized, plain.status);
+    try std.testing.expectEqualStrings("Token not yet valid", plain.body.?);
+
+    const json = try unauthorized(&c, true, "Token not yet valid");
+    try std.testing.expectEqual(std.http.Status.unauthorized, json.status);
+    try std.testing.expectEqualStrings("application/json", json.content_type);
+    try std.testing.expect(std.mem.indexOf(u8, json.body.?, "\"message\":\"Token not yet valid\"") != null);
+}
+
+test "decodeInto: a value too large for a 4096-bit key is refused, not written past the buffer" {
+    var buf: [4]u8 = undefined;
+    try std.testing.expectEqualStrings("abc", try decodeInto(&buf, "YWJj"));
+    try std.testing.expectError(error.UnsupportedKeySize, decodeInto(&buf, "YWJjZGVmZw"));
 }
