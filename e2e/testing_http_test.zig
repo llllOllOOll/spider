@@ -24,9 +24,17 @@ fn echoJson(c: *spider.Ctx) !spider.Response {
     return c.json(.{ .title = note.title }, .{});
 }
 
+const Order = struct { quantity: i32, code: [2]u8 = .{ 0, 0 }, note: []const u8 = "" };
+
+fn order(c: *spider.Ctx) !spider.Response {
+    const sent = try c.bodyJson(Order);
+    return c.json(.{ .quantity = sent.quantity }, .{});
+}
+
 fn onError(c: *spider.Ctx, err: anyerror) anyerror!spider.Response {
     if (err == error.NotFound) return c.text("no such note", .{ .status = .not_found });
-    return err;
+    // Everything else: the status Spider gives the error by default.
+    return c.text(@errorName(err), .{ .status = spider.statusForError(err) });
 }
 
 fn run() !void {
@@ -37,6 +45,7 @@ fn run() !void {
         .get("/notes/:id", show, .{ .public = true })
         .post("/notes", create, .{ .public = true })
         .post("/echo", echoJson, .{ .public = true })
+        .post("/order", order, .{ .public = true })
         .onError(onError)
         .listen(.{ .port = 3000, .host = "0.0.0.0" });
 }
@@ -90,4 +99,35 @@ test "testing.start: JSON in and out, and the same server for every test" {
     try res.expectStatus(200);
     try res.expectHeader("Content-Type", "application/json");
     try res.expectContains("From JSON");
+}
+
+test "bodyJson: JSON that does not fit the type is the client's mistake, a 400" {
+    const app = try spider.testing.start(run);
+
+    var good = try app.postJson("/order", "{\"quantity\": 3}");
+    defer good.deinit();
+    try good.expectStatus(200);
+
+    // Each of these used to answer 500, as if the server had failed.
+    const bad = [_][]const u8{
+        "{\"quantity\": 99999999999}", // too big for the field
+        "{\"quantity\": \"12a\"}", // a number written as text, badly
+        "{\"quantity\": 1, \"code\": [1, 2, 3]}", // three values for two places
+    };
+    for (bad) |body| {
+        var res = try app.request(.{ .method = "POST", .target = "/order", .headers = &.{"Content-Type: application/json"}, .body = body });
+        defer res.deinit();
+        res.expectStatus(400) catch |err| {
+            std.debug.print("\n  body: {s}\n", .{body});
+            return err;
+        };
+    }
+
+    // What already was a 400 still is.
+    var broken = try app.request(.{ .method = "POST", .target = "/order", .headers = &.{"Content-Type: application/json"}, .body = "{\"quantity\": " });
+    defer broken.deinit();
+    try broken.expectStatus(400);
+    var missing = try app.request(.{ .method = "POST", .target = "/order", .headers = &.{"Content-Type: application/json"}, .body = "{}" });
+    defer missing.deinit();
+    try missing.expectStatus(400);
 }

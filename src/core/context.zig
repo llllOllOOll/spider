@@ -552,11 +552,11 @@ pub const Ctx = struct {
     /// JSON that `T` does not have are ignored; a field `T` needs and the
     /// JSON lacks is an error (`error.MissingField`), as is JSON that does
     /// not parse (`error.SyntaxError`, `error.UnexpectedToken`, ...).
-    /// `error.BodyEmpty` when there is no body. These answer 400 by default.
-    /// Three errors of `std.json` are not in `statusForError` and answer
-    /// 500: `error.Overflow` (a number too big for its field),
-    /// `error.InvalidCharacter` and `error.LengthMismatch` (an array of the
-    /// wrong length).
+    /// `error.BodyEmpty` when there is no body. A body that parses and does
+    /// not fit `T` in another way (a number too big for its field, a number
+    /// written as bad text, an array of the wrong length) is
+    /// `error.InvalidJson`, with the parser's own name for it in
+    /// `c.errorDetail()`. All of these answer 400 by default.
     ///
     /// ```zig
     /// const Input = struct { title: []const u8, body: []const u8 = "" };
@@ -564,9 +564,29 @@ pub const Ctx = struct {
     /// ```
     pub fn bodyJson(self: *Ctx, comptime T: type) !T {
         const raw = self.body orelse return error.BodyEmpty;
-        const parsed = try std.json.parseFromSlice(T, self.arena, raw, .{
+        const parsed = std.json.parseFromSlice(T, self.arena, raw, .{
             .ignore_unknown_fields = true,
-        });
+        }) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            // What the parser reports about a body by a name of its own
+            // already answers 400 (see statusForError).
+            error.SyntaxError,
+            error.UnexpectedEndOfInput,
+            error.UnexpectedToken,
+            error.MissingField,
+            error.UnknownField,
+            error.DuplicateField,
+            error.InvalidNumber,
+            error.InvalidEnumTag,
+            => return err,
+            // The rest have names any code may use (Overflow,
+            // InvalidCharacter, LengthMismatch...): here they all mean "the
+            // body does not fit `T`", which is the client's mistake.
+            else => {
+                self.setErrorDetail(@errorName(err));
+                return error.InvalidJson;
+            },
+        };
         return parsed.value;
     }
 
@@ -1205,6 +1225,7 @@ pub fn statusForError(err: anyerror) std.http.Status {
         error.DuplicateField,
         error.InvalidNumber,
         error.InvalidEnumTag,
+        error.InvalidJson,
         => .bad_request,
         // A sign-in through a provider (spider.google): a callback that
         // is not this browser's or has no code is the client's; a code the

@@ -201,6 +201,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed with any key from Clerk's dashboard. The host is read, over
   https, and base64 with padding is accepted. Not yet tried against a
   live Clerk instance.
+- **`c.bodyJson`: some bad JSON answered 500.** A number too big for its
+  field, a number written as bad text, or an array of the wrong length
+  came out as errors with generic names (`Overflow`, `InvalidCharacter`,
+  `LengthMismatch`) that no status was mapped to, so the client got
+  "internal server error" and the log blamed the server. They are
+  `error.InvalidJson` now, a 400, with the parser's name for the problem
+  in `c.errorDetail()`. The errors `bodyJson` already returned by name
+  (`MissingField`, `SyntaxError`, ...) are unchanged.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.
