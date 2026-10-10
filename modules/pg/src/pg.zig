@@ -51,18 +51,6 @@ pub fn array(comptime T: type, values: []const T) ArrayParameter(T) {
     return ArrayParameter(T).init(values, type_name);
 }
 
-/// A complete set of connection settings. Nothing in this module reads it:
-/// `init` takes a `DbConfig`.
-pub const Config = struct {
-    host: []const u8 = "localhost",
-    port: u16 = 5432,
-    database: []const u8,
-    user: []const u8,
-    password: []const u8 = "",
-    pool_size: usize = 10,
-    timeout_ms: u64 = 5000,
-};
-
 /// The options of `init`. A field left null comes from the environment
 /// (the `.env` files included), then from a built-in default.
 pub const DbConfig = struct {
@@ -738,7 +726,8 @@ pub fn queryOne(
 /// With `void` as `T` the script (DDL, migrations) runs statement by
 /// statement on one connection and stops at the first that fails; the ones
 /// before it stay applied unless the script has its own `BEGIN; ...;
-/// COMMIT`, which is allowed here when balanced. A `;` inside a string, a
+/// COMMIT`, which is allowed here when balanced: a failure inside it rolls
+/// the transaction back. A `;` inside a string, a
 /// comment or a `$$ ... $$` body does not split. With another `T` it is
 /// `query` for one statement without parameters.
 ///
@@ -754,15 +743,31 @@ pub fn queryExecute(
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
 
-    if (T == void) {
-        var it: Statements = .{ .sql = sql };
-        while (it.next()) |stmt| {
-            _ = conn.exec(stmt, .{}) catch |err| return fail(conn, err);
-        }
-        return {};
-    }
+    if (T == void) return runScript(conn, sql);
 
     return execTyped(conn, T, arena, sql, .{});
+}
+
+/// Runs a script statement by statement on `conn`. When a statement fails
+/// inside a transaction the script opened itself (`BEGIN; ...; COMMIT`),
+/// that transaction is rolled back before the error is returned: the
+/// connection used to go back to the pool mid-transaction, where it was
+/// closed and opened again.
+fn runScript(conn: *pg_lib.Conn, sql: []const u8) !void {
+    var in_transaction = false;
+    var it: Statements = .{ .sql = sql };
+    while (it.next()) |stmt| {
+        _ = conn.exec(stmt, .{}) catch |err| {
+            const failure = fail(conn, err);
+            if (in_transaction) conn.rollback() catch {};
+            return failure;
+        };
+        switch (txControl(stmt)) {
+            .open => in_transaction = true,
+            .close => in_transaction = false,
+            .none, .inside => {},
+        }
+    }
 }
 
 /// The first row of one statement without parameters:
@@ -1119,10 +1124,7 @@ fn pgExecFn(ptr: *anyopaque, sql: []const u8) anyerror!void {
     _ = ptr;
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
-    var it: Statements = .{ .sql = sql };
-    while (it.next()) |stmt| {
-        _ = conn.exec(stmt, .{}) catch |err| return fail(conn, err);
-    }
+    return runScript(conn, sql);
 }
 
 fn pgDeinitFn(_: *anyopaque) void {}
@@ -1157,10 +1159,7 @@ pub fn execRaw(sql: []const u8) !void {
     try guardMulti(sql);
     const conn = try db_pool.?.acquire();
     defer db_pool.?.release(conn);
-    var it: Statements = .{ .sql = sql };
-    while (it.next()) |stmt| {
-        _ = conn.exec(stmt, .{}) catch |err| return fail(conn, err);
-    }
+    return runScript(conn, sql);
 }
 
 /// Deprecated: use query(T, arena, sql, params) instead.
@@ -1172,19 +1171,7 @@ pub fn queryWith(sql: []const u8, params: anytype) !Result {
     var pg_result = conn.queryOpts(sql, params, .{ .column_names = true }) catch |err| return fail(conn, err);
     defer pg_result.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(db_allocator.?);
-    errdefer arena.deinit();
-
-    return collectResult(pg_result, arena);
-}
-
-/// Deprecated: use queryOne(T, arena, sql, params) instead.
-/// The strings of the result are allocated with the allocator given to
-/// `init` and are never freed.
-pub fn queryOneWith(comptime T: type, sql: []const u8, params: anytype) !?T {
-    var result = try queryWith(sql, params);
-    defer result.deinit();
-    return try result.mapOne(T, db_allocator.?);
+    return collectResult(pg_result, std.heap.ArenaAllocator.init(db_allocator.?)) catch |err| return fail(conn, err);
 }
 
 /// Deprecated: use query(T, arena, sql, params) instead.
@@ -1377,6 +1364,7 @@ fn parseField(comptime T: type, raw: []const u8, alloc: std.mem.Allocator) !T {
 
 fn collectResult(pg_result: *pg_lib.Result, arena: std.heap.ArenaAllocator) !Result {
     var owned_arena = arena;
+    errdefer owned_arena.deinit();
     const aa = owned_arena.allocator();
 
     const num_cols = pg_result.number_of_columns;
@@ -1635,20 +1623,7 @@ test "mapRow - i64 and optional fields" {
     try std.testing.expectEqualStrings("hello", rows[1].maybe.?);
 }
 
-test "Config - defaults" {
-    const cfg = Config{
-        .host = "localhost",
-        .port = 5432,
-        .database = "mydb",
-        .user = "myuser",
-    };
-    try std.testing.expectEqualStrings("localhost", cfg.host);
-    try std.testing.expectEqual(@as(u16, 5432), cfg.port);
-    try std.testing.expectEqualStrings("mydb", cfg.database);
-    try std.testing.expectEqualStrings("myuser", cfg.user);
-    try std.testing.expectEqual(@as(usize, 10), cfg.pool_size);
-    try std.testing.expectEqual(@as(u64, 5000), cfg.timeout_ms);
-
+test "DbConfig - defaults" {
     const dbcfg = DbConfig{};
     try std.testing.expect(dbcfg.host == null);
     try std.testing.expect(dbcfg.port == null);
@@ -2138,4 +2113,37 @@ test "array: a list of values for ANY($1), and a plain slice does the same" {
     const names = [_][]const u8{ "ana", "bia" };
     const text_sql = "SELECT count(*) FROM (VALUES ('ana'), ('caio')) AS t(name) WHERE name = ANY($1)";
     try std.testing.expectEqual(@as(i64, 1), try query(i64, a, text_sql, .{array([]const u8, &names)}));
+}
+
+test "queryExecute - a script that fails inside its own BEGIN is rolled back, and the connection is kept" {
+    if (test_threaded == null) test_threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    try init(std.testing.allocator, test_threaded.?.io(), .{ .pool_size = 1 });
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try execRaw("DROP TABLE IF EXISTS spider_script_tx; CREATE TABLE spider_script_tx (id integer PRIMARY KEY)");
+    defer execRaw("DROP TABLE IF EXISTS spider_script_tx") catch {};
+    const pid_before = try query(i32, a, "SELECT pg_backend_pid()", .{});
+
+    // The second INSERT repeats the key: the script stops there, inside
+    // its transaction.
+    try std.testing.expectError(error.UniqueViolation, queryExecute(void, a, "BEGIN; INSERT INTO spider_script_tx VALUES (1); INSERT INTO spider_script_tx VALUES (1); COMMIT"));
+    try std.testing.expectError(error.UniqueViolation, execRaw("BEGIN; INSERT INTO spider_script_tx VALUES (2); INSERT INTO spider_script_tx VALUES (2); COMMIT"));
+
+    // Nothing of it stayed, and the one connection of the pool is the same
+    // one, ready for the next statement: it was not left mid-transaction
+    // for the pool to throw away and open again.
+    try std.testing.expectEqual(@as(usize, 0), try countRows(a, "spider_script_tx"));
+    try std.testing.expectEqual(pid_before, try query(i32, a, "SELECT pg_backend_pid()", .{}));
+}
+
+test "queryWith (deprecated) - a failure is a typed error with lastError(), like every other call" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+
+    // Fails while the rows are read, not when the statement is sent.
+    try std.testing.expectError(error.DivisionByZero, queryWith("SELECT 1 / (2 - g) AS v FROM generate_series(1, 3) AS g", .{}));
+    try std.testing.expectEqualStrings("22012", lastError().?.code);
 }

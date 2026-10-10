@@ -56,6 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: `spider.pg.queryOneWith` and `spider.pg.Config` are gone.**
+  `queryOneWith` (deprecated) allocated the strings of every result
+  with the allocator given to `init` and never freed them: use
+  `queryOne(T, arena, sql, params)`. `pg.Config` was read by nothing:
+  `init` takes a `DbConfig`.
+- **SQLite: `queryExecute(i64, ...)`** did not compile, with an error
+  about types deep in the module. It now says what to do: a script
+  returns no rows, pass `void`.
 - **Breaking: `.roles` and `.org_roles` answer 401 to a request that is
   nobody's**, as `.authenticated` and `.policy` already did. They
   answered 403, which says "you may not" to someone who only has to log
@@ -158,6 +166,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SQLite: a stored integer that does not fit the field stopped the
+  process** (a 300 read into a `u8`, a negative number into an
+  unsigned field) in a build with safety checks. It is
+  `error.IntegerOverflow` now, as in `spider.pg`.
+- **SQLite: `begin()` kept the connection when the transaction could not
+  start.** With a pool, each failure took one connection away for good.
+- **SQLite: the old `spider.Database` bridge split its script on `;`**,
+  cutting triggers and any `;` inside a string, which `queryExecute`
+  had stopped doing. The script now runs whole.
+- **Postgres: a script that failed inside its own `BEGIN; ...; COMMIT`**
+  (`queryExecute(void, ...)`, `execRaw`) returned its connection to the
+  pool mid-transaction, where it was closed and a new one opened. The
+  transaction is now rolled back and the connection kept.
+- **Postgres: the deprecated `queryWith`** returned the raw `error.PG`
+  for a statement that failed while its rows were read (no typed error,
+  no `lastError()`), and leaked what it had read so far.
 - **`spider.auth.jwtVerify` leaked the strings it had copied** when a
   later copy ran out of memory (its `errdefer`s were written inside
   blocks that had already ended).

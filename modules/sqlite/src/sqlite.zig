@@ -104,8 +104,9 @@ fn decodeField(comptime T: type, row: zqlite.Row, col: usize, arena: std.mem.All
     return switch (T) {
         []const u8 => try arena.dupe(u8, row.text(col)),
         bool => row.boolean(col),
-        i8, i16, i32, i64 => @intCast(row.int(col)),
-        u8, u16, u32, u64 => @intCast(row.int(col)),
+        // error.IntegerOverflow, as in spider.pg: a stored 300 into a u8
+        // used to stop the process in a build with safety checks.
+        i8, i16, i32, i64, u8, u16, u32, u64 => std.math.cast(T, row.int(col)) orelse error.IntegerOverflow,
         f32, f64 => @floatCast(row.float(col)),
         else => @compileError("decodeField: unsupported type " ++ @typeName(T)),
     };
@@ -114,8 +115,9 @@ fn decodeField(comptime T: type, row: zqlite.Row, col: usize, arena: std.mem.All
 // ── Mapping a row to a struct ─────────────────────────────
 
 /// What a row can fail to give a struct: no column with the field's name,
-/// or a NULL where the field cannot hold one.
-pub const MappingError = error{ ColumnMissing, UnexpectedNull };
+/// a NULL where the field cannot hold one, or an integer that does not fit
+/// the field's type.
+pub const MappingError = error{ ColumnMissing, UnexpectedNull, IntegerOverflow };
 
 /// A field the row cannot fill: logged with the struct and the field, and
 /// returned. (At warn under test: the default test runner fails a test that
@@ -172,8 +174,8 @@ fn mapRow(comptime T: type, row: zqlite.Row, arena: std.mem.Allocator) !T {
 ///   `arena`), `bool` (true for the integer 1), integers (`i8` to `i64`,
 ///   `u8` to `u64`), `f32`, `f64`, enums (stored as their name;
 ///   error.InvalidEnumValue for another text) and optionals of those.
-///   A stored integer that does not fit the field's type is not an error:
-///   it is a panic in a build with safety checks.
+///   A stored integer that does not fit the field's type is
+///   error.IntegerOverflow.
 /// - `i64`: the first column of the first row, 0 when there is no row.
 /// - `void`: nothing; for INSERT, UPDATE and DELETE.
 ///
@@ -252,7 +254,9 @@ pub fn queryExecute(comptime T: type, _: std.mem.Allocator, sql: []const u8) !Qu
     const sql_z = try gpa.dupeSentinel(u8, sql, 0);
     defer gpa.free(sql_z);
     try conn.execNoArgs(sql_z);
-    return if (T == void) {} else &[_]T{};
+    if (T == void) return;
+    if (@typeInfo(T) != .@"struct") @compileError("spider.sqlite.queryExecute runs a script and returns no rows: pass void, not " ++ @typeName(T) ++ " (use query for a value)");
+    return &[_]T{};
 }
 
 // ── exec (for Database bridge) ───────────────────────────────
@@ -332,6 +336,7 @@ pub const Transaction = struct {
 /// ```
 pub fn begin() !Transaction {
     const conn = try acquireConn();
+    errdefer releaseConn(conn);
     try conn.transaction();
     return Transaction{ .conn = conn };
 }
@@ -343,12 +348,8 @@ fn runMigrations(_: zqlite.Conn, _: ?*anyopaque) !void {}
 
 fn sqliteExecFn(ptr: *anyopaque, sql: []const u8) anyerror!void {
     _ = ptr;
-    var it = std.mem.splitScalar(u8, sql, ';');
-    while (it.next()) |stmt| {
-        const s = std.mem.trim(u8, stmt, " \n\r\t");
-        if (s.len == 0) continue;
-        try exec(s);
-    }
+    // The script whole: splitting on ';' cut triggers and strings.
+    try exec(sql);
 }
 
 fn sqliteDeinitFn(_: *anyopaque) void {}
@@ -650,4 +651,52 @@ test "mapRow - i64 and optional fields" {
 
     try std.testing.expectEqual(@as(i64, 9000000000000), rows[1].bigval);
     try std.testing.expectEqualStrings("hello", rows[1].maybe.?);
+}
+
+test "begin - a transaction that cannot start gives its connection back" {
+    // A pool: with a single connection there is nothing to give back.
+    try init(std.testing.allocator, std.testing.io, .{ .path = ":memory:", .size = 2 });
+    defer deinit();
+
+    // The connection the pool hands out next is left inside a transaction
+    // (a script that forgot its COMMIT): BEGIN on it fails.
+    try exec("BEGIN");
+    defer exec("ROLLBACK") catch {};
+    try std.testing.expectEqual(@as(usize, 2), db_pool.?.available);
+    try std.testing.expect(std.meta.isError(begin()));
+    // Kept, the pool would run dry one failed begin() at a time.
+    try std.testing.expectEqual(@as(usize, 2), db_pool.?.available);
+}
+
+test "query - a stored integer that does not fit the field is an error, not a crash" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try exec("CREATE TEMP TABLE big (val INTEGER); INSERT INTO big VALUES (300), (-1)");
+    const Small = struct { val: u8 };
+    try std.testing.expectError(error.IntegerOverflow, query(Small, arena.allocator(), "SELECT val FROM big WHERE val = 300", .{}));
+    try std.testing.expectError(error.IntegerOverflow, query(Small, arena.allocator(), "SELECT val FROM big WHERE val = -1", .{}));
+    const Signed = struct { val: i8 };
+    try std.testing.expectError(error.IntegerOverflow, queryOne(Signed, arena.allocator(), "SELECT val FROM big WHERE val = 300", .{}));
+    const fits = (try queryOne(Signed, arena.allocator(), "SELECT val FROM big WHERE val = -1", .{})).?;
+    try std.testing.expectEqual(@as(i8, -1), fits.val);
+}
+
+test "the Database bridge runs a script whole (a trigger has semicolons of its own)" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    try sqliteExecFn(undefined,
+        \\CREATE TEMP TABLE notes (id INTEGER PRIMARY KEY, body TEXT);
+        \\CREATE TEMP TABLE log (note_id INTEGER, what TEXT);
+        \\CREATE TEMP TRIGGER notes_log AFTER INSERT ON notes BEGIN
+        \\  INSERT INTO log VALUES (new.id, 'added; really');
+        \\END;
+        \\INSERT INTO notes (body) VALUES ('a;b');
+    );
+    try std.testing.expectEqual(@as(i64, 1), try query(i64, arena.allocator(), "SELECT count(*) FROM log WHERE what = 'added; really'", .{}));
 }
