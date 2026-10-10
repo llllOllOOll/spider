@@ -137,6 +137,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names on one line lost an underscore each. `_` now opens italics only at
   the start of a word and closes them at the end of one, as in CommonMark:
   names stay as written, `_this_` is still italic, and `*` is unchanged.
+- **Markdown: `zmd.parseFull` ignored custom formatters.**
+  `parseFull(a, text, .{ .h1 = heading })` threw the whole value away
+  unless `root` was customised too. The formatters given are used now, in
+  `parseFull` and in `parse`.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

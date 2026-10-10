@@ -47,10 +47,10 @@ pub const default_formatters = Formatters.default;
 /// The only failure is running out of memory (`error.OutOfMemory`, or
 /// `error.WriteFailed` from the buffer the HTML is written to).
 ///
-/// `formatters` must be known at compile time. Passing `Formatters.Default.root`
-/// (the whole document) as `formatters.root` discards the WHOLE value: the
-/// result is the default fragment and the other fields given are ignored too.
-/// Use `parseFull` for a document.
+/// `formatters` must be known at compile time. The result is always a
+/// fragment: `Formatters.Default.root` (the whole document) given as
+/// `formatters.root` is replaced by the fragment root, and the other fields
+/// are used as given. Use `parseFull` for a document.
 pub fn parse(
     allocator: Allocator,
     input: []const u8,
@@ -72,8 +72,9 @@ pub fn parse(
     var aw: Writer.Allocating = .init(alloc);
     defer aw.deinit();
 
-    const fmt = if (formatters.root == Formatters.Default.root)
-        Formatters{ .root = Formatters.Default.root_partial }
+    // A fragment: the full-page root is replaced, the other formatters kept.
+    const fmt = comptime if (formatters.root == Formatters.Default.root)
+        withRoot(formatters, Formatters.Default.root_partial)
     else
         formatters;
 
@@ -88,13 +89,20 @@ pub fn parse(
     return allocator.dupe(u8, try aw.toOwnedSlice());
 }
 
+/// `formatters` with another `root`, everything else as given.
+fn withRoot(comptime formatters: Formatters, comptime root: Formatters.Handler) Formatters {
+    var out = formatters;
+    out.root = root;
+    return out;
+}
+
 /// Like `parse`, but the result is a whole HTML document: the default root
 /// formatter wraps the content in `<!DOCTYPE html>`, `<head>` (charset only)
 /// and `<body><main>`.
 ///
-/// The other fields of `formatters` only count together with a `root` of your
-/// own: while `root` is left at its default, the whole value is replaced by
-/// the default set and a field such as `.h1` is ignored.
+/// The other fields of `formatters` are used as given (`.{ .h1 = heading }`
+/// changes the headings of the document); a `root` of your own replaces the
+/// document wrapper.
 pub fn parseFull(
     allocator: Allocator,
     input: []const u8,
@@ -116,8 +124,10 @@ pub fn parseFull(
     var aw: Writer.Allocating = .init(alloc);
     defer aw.deinit();
 
-    const fmt = if (formatters.root == Formatters.Default.root_partial)
-        Formatters{ .root = Formatters.Default.root }
+    // The whole page: the fragment root (the default) is replaced, the
+    // other formatters kept.
+    const fmt = comptime if (formatters.root == Formatters.Default.root_partial)
+        withRoot(formatters, Formatters.Default.root)
     else
         formatters;
 
@@ -334,4 +344,26 @@ test "zmd: an underscore inside a word is not italics" {
     try std.testing.expectEqualStrings("<p><i>Two words</i>, then text.</p>\n", try parse(a, "_Two words_, then text.", .{}));
     try std.testing.expectEqualStrings("<p>With a star: <i>this</i>.</p>\n", try parse(a, "With a star: *this*.", .{}));
     try std.testing.expectEqualStrings("<p>An <i>italic with snake_case inside</i> works.</p>\n", try parse(a, "An _italic with snake_case inside_ works.", .{}));
+}
+
+fn shoutingHeading(allocator: Allocator, node: Node) Allocator.Error![]const u8 {
+    return std.fmt.allocPrint(allocator, "<h1 class=\"shout\">{s}</h1>\n", .{node.content});
+}
+
+test "zmd: a custom formatter is used by parse and by parseFull" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const fragment = try parse(a, "# Title", .{ .h1 = shoutingHeading });
+    try std.testing.expectEqualStrings("<h1 class=\"shout\">Title</h1>\n", fragment);
+
+    // The whole document: the same formatter, inside the page parseFull wraps around it.
+    const page = try parseFull(a, "# Title", .{ .h1 = shoutingHeading });
+    try std.testing.expect(std.mem.indexOf(u8, page, "<h1 class=\"shout\">Title</h1>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "<html>") != null);
+
+    // And parse with the full-page root asked for by name still gives a fragment.
+    const forced = try parse(a, "# Title", .{ .root = Formatters.Default.root, .h1 = shoutingHeading });
+    try std.testing.expectEqualStrings("<h1 class=\"shout\">Title</h1>\n", forced);
 }
