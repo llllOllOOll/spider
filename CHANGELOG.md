@@ -113,6 +113,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocol header had to be exactly `https`; a chain of proxies sends a
   list (`https, http`). The first value, the client's, decides now, in
   any letter case.
+- **HTTP client: a `Client` ignored the headers of each request.**
+  `client.get(path, .{ .headers = ... })` sent only the headers given to
+  `Client.init`. Both are sent now; a request header with the name of a
+  client header replaces it for that request.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

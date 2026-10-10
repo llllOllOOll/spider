@@ -9,12 +9,17 @@ fn echoTarget(c: *spider.Ctx) !spider.Response {
     return c.text(c.getPath(), .{});
 }
 
+fn echoHeaders(c: *spider.Ctx) !spider.Response {
+    return c.text(try std.fmt.allocPrint(c.arena, "{s}|{s}", .{ c.header("X-Key") orelse "-", c.header("X-Trace") orelse "-" }), .{});
+}
+
 fn run() !void {
     var server = spider.app(.{});
     defer server.deinit();
     try server
         .get("/items/:id", echoTarget, .{ .public = true })
         .get("/items/:id/parts/:part", echoTarget, .{ .public = true })
+        .get("/headers", echoHeaders, .{ .public = true })
         .listen(.{});
 }
 
@@ -72,4 +77,36 @@ test "http client: a param value stays one path segment" {
     try std.testing.expectEqualStrings("/items/a%2Fb%20c%3Fd", try sent(arena.allocator(), app.port, "/items/:id", .{
         .params = &.{.{ "id", "a/b c?d" }},
     }));
+}
+
+test "http client: a Client sends its own headers and the ones of each request" {
+    const app = try spider.testing.start(run);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var client = try spider.http_client.Client.init(std.testing.io, a, .{
+        .base_url = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{app.port}),
+        .headers = &.{.{ .name = "X-Key", .value = "client-key" }},
+    });
+    defer client.deinit();
+
+    // The client's alone.
+    var plain = try client.get("/headers", .{});
+    defer plain.deinit();
+    try std.testing.expectEqualStrings("client-key|-", plain.body_text);
+
+    // Plus one given for this request.
+    var traced = try client.get("/headers", .{ .headers = &.{.{ .name = "X-Trace", .value = "t-1" }} });
+    defer traced.deinit();
+    try std.testing.expectEqualStrings("client-key|t-1", traced.body_text);
+
+    // A request's header replaces the client's of the same name, for that request.
+    var replaced = try client.get("/headers", .{ .headers = &.{.{ .name = "x-key", .value = "other-key" }} });
+    defer replaced.deinit();
+    try std.testing.expectEqualStrings("other-key|-", replaced.body_text);
+
+    var after = try client.get("/headers", .{});
+    defer after.deinit();
+    try std.testing.expectEqualStrings("client-key|-", after.body_text);
 }

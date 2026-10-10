@@ -100,11 +100,12 @@ pub const Client = struct {
         self.proxy_arena.deinit();
     }
 
-    /// A GET to `base_url ++ path`. Like the standalone `get`, with two
-    /// differences: the connection is reused, and `opts.headers` is NOT
-    /// sent — every request carries the headers given to `init` and nothing
-    /// else. `error.ProxyMismatch` when `opts.proxy_url` is set to something
-    /// other than the client's proxy.
+    /// A GET to `base_url ++ path`. Like the standalone `get`, but the
+    /// connection is reused, and the request carries the headers given to
+    /// `init` followed by `opts.headers` (one of those with the name of a
+    /// client header replaces it, for this request). `error.ProxyMismatch`
+    /// when `opts.proxy_url` is set to something other than the client's
+    /// proxy.
     pub fn get(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.GET, path, opts);
     }
@@ -145,9 +146,25 @@ pub const Client = struct {
         const full_url = try std.mem.concat(self.allocator, u8, &.{ self.base_url, path });
         defer self.allocator.free(full_url);
 
+        // The client's headers, then the request's. A request header with
+        // the name of one of the client's replaces it for this request.
+        const headers = try self.allocator.alloc(http.Header, self.headers.len + opts.headers.len);
+        defer self.allocator.free(headers);
+        var n: usize = 0;
+        for (self.headers) |own| {
+            const replaced = for (opts.headers) |given| {
+                if (std.ascii.eqlIgnoreCase(given.name, own.name)) break true;
+            } else false;
+            if (replaced) continue;
+            headers[n] = own;
+            n += 1;
+        }
+        @memcpy(headers[n..][0..opts.headers.len], opts.headers);
+        n += opts.headers.len;
+
         var call_opts = opts;
         call_opts.method = method;
-        call_opts.headers = self.headers;
+        call_opts.headers = headers[0..n];
         call_opts.proxy_url = self.proxy_url;
 
         return doRequest(self.io, self.allocator, full_url, call_opts, &self.http_client);
