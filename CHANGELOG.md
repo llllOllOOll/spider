@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-10
+
+What building a second example app on PostgreSQL and htmx 4 turned up.
+Nothing here asks an app to change: pages with lists render much
+faster, an SSE stream no longer misses the event sent right after it
+opens, and there is more to use (array columns in `spider.pg`,
+`c.htmxRedirect`, `spider new --htmx=4`).
+
+(The entries of 0.10.0 below were still under "Unreleased" in the
+changelog shipped with that release.)
+
 ### Added
 
 - **`spider new --htmx=4`**: a project on htmx 4. Its layouts load
@@ -35,6 +46,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into text in the query. One dimension; a NULL element needs an
   optional element type (`[]const ?i32`), otherwise it is
   `error.UnexpectedNull`; an array of arrays is `error.TypeMismatch`.
+
+### Changed
+
+- **`spider install` fetches htmx 2.0.11** (it was 2.0.4). A project
+  that already has `public/js/htmx.min.js` keeps the file it has:
+  delete it and run `spider install` to get the new one.
+
+### Fixed
+
+- **A `for` in a template copied the whole page's data on every
+  iteration**, and so did every component. A list inside a list cost
+  its size squared: a grid of 20 rows by 20 cells made 835,000
+  allocations, and a page with a 6 by 24 grid took 200 to 350 ms to
+  render where its neighbours took 5. An iteration and a component now
+  open a small context on top of the page's (they see everything, and
+  hold only their own item and props). The same grid: under 10,000
+  allocations.
+- **Two generators run in the same second gave their migrations the
+  same number** (`spider g feature a && spider g feature b` in a
+  script). A new migration is now numbered after every one the project
+  has.
+- Doc comments that were no longer true: `Mailer.send` said a delivery
+  had no time limit (it has had one since 0.10.0), and `HtmxHeaders`
+  did not say that `trigger_after_swap` and `trigger_after_settle` are
+  ignored by htmx 4.
+- **An SSE stream looked open to the client before its handler was on a
+  channel.** The response head was sent as soon as the request arrived;
+  the handler joined its channel a moment later, and an event emitted
+  in between was lost with nothing to show for it (a page that opened
+  its stream and missed the change that came right after). The head is
+  now sent when the handler listens (`join`, `subscribe`, `wait`) or
+  with its first event. `subscribeWithReplay` opens after every channel
+  is added.
+
+## [0.10.0] - 2026-10-10
+
+A review of the whole library: every public name documented and checked
+(`zig build test` now fails on one that is not), and the defects that
+review found, fixed one by one with a test each. Several fixes change
+what an app sees, which is why this is 0.10 and not a patch: the entries
+marked **Breaking** under "Changed" say what to adjust. The ones most
+apps should read first: a `.env` file never replaces a variable of the
+process; forms use the defaults of their struct; a path parameter
+arrives decoded; `.roles` and `.org_roles` answer 401 to a request that
+is nobody's; SSE sends CORS headers only for `sse_allowed_origins`;
+SQLite maps rows strictly; `useAt` matches whole path segments.
+
+### Added
+
 - **`QR.encodeAuto(allocator, text, ecc)`** (`spider.qrcode`): the
   smallest version the text fits in. `encode` takes a fixed version, so
   every app wrote its own loop over the versions.
@@ -97,9 +157,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`spider install` fetches htmx 2.0.11** (it was 2.0.4). A project
-  that already has `public/js/htmx.min.js` keeps the file it has:
-  delete it and run `spider install` to get the new one.
 - **`Config.layout` and `Config.env` are deprecated.** Nothing reads
   either (a template names its layout with `extends`; the environment
   changes no behaviour). They still compile, and will be removed in a
@@ -236,30 +293,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A `for` in a template copied the whole page's data on every
-  iteration**, and so did every component. A list inside a list cost
-  its size squared: a grid of 20 rows by 20 cells made 835,000
-  allocations, and a page with a 6 by 24 grid took 200 to 350 ms to
-  render where its neighbours took 5. An iteration and a component now
-  open a small context on top of the page's (they see everything, and
-  hold only their own item and props). The same grid: under 10,000
-  allocations.
-- **Two generators run in the same second gave their migrations the
-  same number** (`spider g feature a && spider g feature b` in a
-  script). A new migration is now numbered after every one the project
-  has.
-- Doc comments that were no longer true: `Mailer.send` said a delivery
-  had no time limit (it has had one since 0.10.0), and `HtmxHeaders`
-  did not say that `trigger_after_swap` and `trigger_after_settle` are
-  ignored by htmx 4.
-- **An SSE stream looked open to the client before its handler was on a
-  channel.** The response head was sent as soon as the request arrived;
-  the handler joined its channel a moment later, and an event emitted
-  in between was lost with nothing to show for it (a page that opened
-  its stream and missed the change that came right after). The head is
-  now sent when the handler listens (`join`, `subscribe`, `wait`) or
-  with its first event. `subscribeWithReplay` opens after every channel
-  is added.
 - **R2: a secret key over 252 bytes failed every signed call** with
   `error.NoSpaceLeft` (a fixed buffer). Any length works.
 - **R2: `presignedPut` and `presignedGet` left a dozen strings

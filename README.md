@@ -1,4 +1,4 @@
-# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider v0.10.0
+# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider v0.10.1
 
 Build web servers in Zig — performant, productive, and batteries-included.
 
@@ -31,7 +31,7 @@ curl -fsSL https://spiderme.org/install.sh | bash
 Or a specific version:
 
 ```bash
-curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.10.0
+curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.10.1
 ```
 
 Then `spider new myapp` creates a project with Spider already added as a
