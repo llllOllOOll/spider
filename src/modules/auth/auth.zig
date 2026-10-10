@@ -277,6 +277,21 @@ pub const AuthConfig = struct {
     secure_cookie: bool = true,
 };
 
+/// Whether `target` (a request target: the path, and the query string
+/// when there is one) is one of `public_paths`. An entry is a path, or a
+/// prefix ending in `*`.
+fn isPublicPath(public_paths: []const []const u8, target: []const u8) bool {
+    const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
+    for (public_paths) |public_path| {
+        if (std.mem.eql(u8, path, public_path)) return true;
+        if (std.mem.endsWith(u8, public_path, "*")) {
+            const prefix = public_path[0 .. public_path.len - 1];
+            if (std.mem.startsWith(u8, path, prefix)) return true;
+        }
+    }
+    return false;
+}
+
 /// The middleware of the cookie login: a request whose cookie holds a valid
 /// `Claims` token goes on, with the user in the params `_user_id`,
 /// `_user_email` and `_user_name` (`c.userId()` reads the first); any other
@@ -295,15 +310,7 @@ pub const Auth = struct {
     /// `asFn()` to `server.use`.
     pub fn middleware(self: *const Auth, c: *Ctx, next: NextFn) !Response {
         if (c.route().public) return next(c);
-        const path = c.getPath();
-
-        for (self.config.public_paths) |public_path| {
-            if (std.mem.eql(u8, path, public_path)) return next(c);
-            if (std.mem.endsWith(u8, public_path, "*")) {
-                const prefix = public_path[0 .. public_path.len - 1];
-                if (std.mem.startsWith(u8, path, prefix)) return next(c);
-            }
-        }
+        if (isPublicPath(self.config.public_paths, c.getPath())) return next(c);
 
         const token = c.cookie(self.config.cookie_name) orelse
             return c.redirect(self.config.redirect_to);
@@ -356,4 +363,14 @@ test "jwtVerify: a signed token whose payload isn't the claims is InvalidFormat 
     defer a.free(token);
     try std.testing.expectError(error.InvalidFormat, jwtVerify(Claims, a, std.testing.io, token, secret));
     try std.testing.expectError(error.InvalidSignature, jwtVerify(Claims, a, std.testing.io, token, "other"));
+}
+
+test "isPublicPath: the query string does not make a public path private" {
+    const paths = [_][]const u8{ "/login", "/assets/*" };
+    try std.testing.expect(isPublicPath(&paths, "/login"));
+    try std.testing.expect(isPublicPath(&paths, "/login?next=/dashboard"));
+    try std.testing.expect(isPublicPath(&paths, "/assets/app.css?v=3"));
+    try std.testing.expect(!isPublicPath(&paths, "/dashboard"));
+    try std.testing.expect(!isPublicPath(&paths, "/dashboard?x=/login"));
+    try std.testing.expect(!isPublicPath(&paths, "/loginx"));
 }

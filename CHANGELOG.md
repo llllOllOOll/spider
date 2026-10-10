@@ -76,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   statement that failed while running looked the same as one with no row.
   The error is returned now, for `spider.sqlite.query` and inside a
   transaction.
+- **`spider.auth` middleware: a public path with a query string was not
+  public.** `public_paths` was compared with the path and its query
+  string, so `/login?next=/home` was sent back to the login page. Only the
+  path counts now.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.
