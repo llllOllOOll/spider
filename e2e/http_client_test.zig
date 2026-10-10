@@ -110,3 +110,20 @@ test "http client: a Client sends its own headers and the ones of each request" 
     defer after.deinit();
     try std.testing.expectEqualStrings("client-key|-", after.body_text);
 }
+
+test "http client: a body with GET, HEAD or DELETE is an error, not a crash" {
+    const app = try spider.testing.start(run);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const url = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}/items/7", .{app.port});
+
+    try std.testing.expectError(error.BodyNotAllowed, spider.http_client.get(std.testing.io, a, url, .{ .body = .{ .raw = "x" } }));
+    try std.testing.expectError(error.BodyNotAllowed, spider.http_client.delete(std.testing.io, a, url, .{ .body = .{ .raw = "x" } }));
+    try std.testing.expectError(error.BodyNotAllowed, spider.http_client.head(std.testing.io, a, url, .{ .body = .{ .raw = "x" } }));
+
+    // Without one they go as before.
+    var res = try spider.http_client.get(std.testing.io, a, url, .{});
+    defer res.deinit();
+    try std.testing.expectEqualStrings("/items/7", res.body_text);
+}

@@ -167,6 +167,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   login.** Without a token, any path no route matches was redirected to
   `login_path`; after signing in, the visitor got the 404. It is a 404
   from the start now, for everyone, as with `spider.session`.
+- **HTTP client: a body on GET, HEAD or DELETE crashed the process.** The
+  HTTP layer asserts that those methods carry none; `spider.http_client`
+  passed the body along. It is `error.BodyNotAllowed` now, before anything
+  is sent.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

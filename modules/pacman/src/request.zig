@@ -31,8 +31,8 @@ pub const FetchOptions = struct {
     headers: []const http.Header = &.{},
     /// The request body. null: none (POST, PUT and PATCH then send an empty
     /// one, `Content-Length: 0`). Only for POST, PUT and PATCH: with any
-    /// other method (GET, DELETE, HEAD) a body trips an assertion of the
-    /// HTTP layer, a panic in Debug and ReleaseSafe builds.
+    /// other method (GET, DELETE, HEAD) a body is `error.BodyNotAllowed`
+    /// and nothing is sent.
     body: ?Body = null,
     /// Name/value pairs added to the URL as its query string, names and
     /// values percent-encoded (after a `?`, or a `&` when the URL already
@@ -256,6 +256,10 @@ fn discard(outcome: Race) void {
 /// `base_url` and headers are NOT applied here: `url` and `opts.headers` are
 /// sent as given.
 pub fn request(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*HttpClient) !Response {
+    // The HTTP layer takes a body with a method that has none (GET, HEAD,
+    // DELETE) as a programming error, an assertion: say it as an error
+    // here, before anything is opened.
+    if (opts.body != null and !opts.method.requestHasBody()) return error.BodyNotAllowed;
     if (opts.timeout_ms == 0) return requestNoDeadline(io, allocator, url, opts, existing_client);
 
     // The request runs as a task of its own, raced against a clock. Whoever
