@@ -47,7 +47,11 @@ fn setFromFile(key: [:0]const u8, value: [:0]const u8, replaces_files: bool) voi
         extern fn getenv(name: [*:0]const u8) ?[*:0]const u8;
     }.getenv;
     const ours = from_files.contains(key);
-    if (getenv(key.ptr) != null and !(replaces_files and ours)) return;
+    const current = getenv(key.ptr);
+    if (current != null and !(replaces_files and ours)) return;
+    // Already that value (the files are loaded more than once): setting
+    // it again would replace the string `get` has handed out.
+    if (current) |held| if (std.mem.eql(u8, std.mem.sliceTo(held, 0), value)) return;
     setEnvVarNative(key.ptr, value.ptr, true);
     if (!ours) {
         const kept = std.heap.page_allocator.dupe(u8, key) catch return;
@@ -356,4 +360,24 @@ test "loadFile: a file over the size limit is an error (and a warning), not sile
     try std.testing.expectError(error.EnvFileTooLarge, loadFile(a, path, false));
     // A file that is not there is not an error.
     try loadFile(a, ".zig-cache/tmp/no-such-file.env", false);
+}
+
+test "env files loaded again: a value that did not change is left where it is" {
+    if (!builtin.link_libc) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "again.env", .data = "SPIDER_ENVTEST_AGAIN=same\n" });
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/again.env", .{tmp.sub_path});
+    defer a.free(path);
+
+    try loadFile(a, path, true);
+    const before = lookup("SPIDER_ENVTEST_AGAIN").?;
+    // The server loads the files a second time when it starts. What an
+    // app read before that (`get` returns the process's own string) must
+    // still be there: some C libraries free a value they replace.
+    try loadFile(a, path, true);
+    const after = lookup("SPIDER_ENVTEST_AGAIN").?;
+    try std.testing.expectEqual(before.ptr, after.ptr);
+    try std.testing.expectEqualStrings("same", before);
 }

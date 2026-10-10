@@ -62,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A page that `extends` a layout nobody registered says so in the
+  log.** It rendered without the layout and without a word (a typo in
+  the name, a layout file outside the views directory).
 - **`spider.env.getBool` reads any letter case**, and `on` / `off`:
   `TRUE`, `Yes` and `On` used to give the default.
 - **A `.env` file over 64 KiB, or one that cannot be read, is a warning
@@ -180,6 +183,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A page with a layout that failed half way kept memory** when
+  rendered with an allocator that is not an arena (the slot being
+  written was never freed), and so did the conversion of the data
+  given to a view when it ran out of memory: a key was allocated before
+  its value, lists freed none of the items they had made, and a failed
+  `set` left an entry without a key behind. `c.view()` uses the request
+  arena and was not affected; `Template.render` with your own allocator
+  was.
+- **Loading the `.env` files a second time replaced values that had not
+  changed** (the server loads them again when it starts). On musl that
+  freed the string `spider.env.get` had already handed out.
+- Two files nothing imported are gone (`src/internal/buffer_pool.zig`,
+  and `src/internal/logger.zig`, which no longer compiled).
 - **`spider.env.get` allocated a copy on every call and never freed
   it** (a page from the system each time, `getOr`, `getInt` and
   `getBool` included). It returns the process's own value now: reading

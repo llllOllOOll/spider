@@ -310,3 +310,29 @@ test "escape: layout slots carry rendered HTML verbatim" {
     try comps.add("layout", "<main>{ slot }</main><aside>{ slot_side }</aside>");
     try expectRender(&comps, "extends \"layout\"\n<p>{ a }</p>{ slot_side }<em>{ b }</em>", .{ .a = "<1>", .b = "<2>" }, "<main><p>&lt;1&gt;</p></main><aside><em>&lt;2&gt;</em></aside>");
 }
+
+// ── a render that fails half way ────────────────────────────────────────
+
+test "layout: a page that fails after writing part of itself leaves nothing allocated" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("layout", "<html><head>{ slot_header }</head><body>{ slot }</body></html>");
+    try comps.add("Loop", "<div><Loop /></div>");
+    // Some output in the default slot, a named slot, more output, and then
+    // a component that never ends: the testing allocator reports whatever
+    // the failed render kept.
+    const page =
+        \\extends "layout"
+        \\<p>before</p>
+        \\{ slot_header }
+        \\<title>{ title }</title>
+        \\<Loop />
+    ;
+    try t.expectError(error.ComponentDepthExceeded, renderWith(&comps, page, .{ .title = "T" }));
+}
+
+test "layout: a page that extends a layout nobody registered renders alone (and says so in the log)" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps, "extends \"nowhere\"\n<p>{ a }</p>", .{ .a = "1" }, "<p>1</p>");
+}

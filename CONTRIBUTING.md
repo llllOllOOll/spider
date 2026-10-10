@@ -209,10 +209,7 @@ spider/
 │   │   └── zmd/                — Markdown support
 │   ├── internal/
 │   │   ├── config.zig          — spider.Config, Env enum
-│   │   ├── env.zig             — .env loader, autoLoad, priority
-│   │   ├── logger.zig          — structured JSON logging
-│   │   ├── metrics.zig         — request metrics
-│   │   └── buffer_pool.zig     — buffer pooling
+│   │   └── env.zig             — .env loader, autoLoad, priority
 │   ├── ws/
 │   │   ├── websocket.zig       — WebSocket protocol (RFC 6455)
 │   │   └── hub.zig             — broadcast hub

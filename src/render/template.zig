@@ -207,8 +207,8 @@ pub const Template = struct {
     /// `alc` and owned by the caller.
     ///
     /// With `extends "name"`, the result is that layout with this template in
-    /// its slot. A layout that is not among the components is ignored: the
-    /// template renders alone.
+    /// its slot. A layout that is not among the components is not an error:
+    /// the template renders alone, and a warning in the log names the layout.
     ///
     /// Fails with `error.ComponentDepthExceeded` when components nest deeper
     /// than `spider.template_max_component_depth`, with a parser error from a
@@ -235,15 +235,17 @@ pub const Template = struct {
                     slot_bufs.deinit(alc);
                 }
 
+                // The slot being written. It belongs to this function
+                // until it is put in `slot_bufs`, which frees the others.
                 var cur_buf = std.ArrayList(u8).empty;
+                errdefer cur_buf.deinit(alc);
                 var cur_key: []const u8 = "slot";
 
                 for (self.nodes) |node| {
                     if (node == .interpolation) {
                         const expr = node.interpolation;
                         if (std.mem.startsWith(u8, expr, "slot_")) {
-                            const key = try alc.dupe(u8, cur_key);
-                            try slot_bufs.put(alc, key, cur_buf);
+                            try keepSlot(alc, &slot_bufs, cur_key, cur_buf);
                             cur_key = expr;
                             cur_buf = std.ArrayList(u8).empty;
                             continue;
@@ -251,17 +253,17 @@ pub const Template = struct {
                     }
                     try renderNode(node, &ctx, alc, &cur_buf, &state);
                 }
-                {
-                    const key = try alc.dupe(u8, cur_key);
-                    try slot_bufs.put(alc, key, cur_buf);
-                }
+                try keepSlot(alc, &slot_bufs, cur_key, cur_buf);
+                cur_buf = .empty;
 
                 var layout_ctx = try ctx.clone(alc);
                 defer layout_ctx.deinit(alc);
 
                 var iter = slot_bufs.iterator();
                 while (iter.next()) |entry| {
-                    try layout_ctx.set(alc, entry.key_ptr.*, Value{ .html = try alc.dupe(u8, entry.value_ptr.*.items) });
+                    const html = try alc.dupe(u8, entry.value_ptr.*.items);
+                    errdefer alc.free(html);
+                    try layout_ctx.set(alc, entry.key_ptr.*, Value{ .html = html });
                 }
 
                 var layout_parser = Parser.init(alc, layout_template);
@@ -280,6 +282,10 @@ pub const Template = struct {
 
                 return layout_result_bytes.toOwnedSlice(alc);
             }
+            // Not an error (the page still renders), but never what the
+            // author meant: a typo in the name, or a layout file that is
+            // not where the views are.
+            std.log.warn("template: extends \"{s}\", but no layout of that name was found; rendered without a layout", .{layout_name});
         }
 
         var result: std.ArrayList(u8) = .empty;
@@ -290,6 +296,21 @@ pub const Template = struct {
         }
 
         return result.toOwnedSlice(alc);
+    }
+
+    /// Hands a finished slot to `slots`, which owns it from here. A slot
+    /// name that comes twice keeps the last one.
+    fn keepSlot(alc: std.mem.Allocator, slots: *std.StringHashMapUnmanaged(std.ArrayList(u8)), name: []const u8, buf: std.ArrayList(u8)) !void {
+        const gop = try slots.getOrPut(alc, name);
+        if (gop.found_existing) {
+            gop.value_ptr.deinit(alc);
+        } else {
+            gop.key_ptr.* = alc.dupe(u8, name) catch |err| {
+                slots.removeByPtr(gop.key_ptr);
+                return err;
+            };
+        }
+        gop.value_ptr.* = buf;
     }
 
     /// Renders only a single named component (inline or file) from this
