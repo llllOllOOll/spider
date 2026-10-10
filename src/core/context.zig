@@ -829,7 +829,9 @@ pub const Ctx = struct {
     }
 
     /// The value of a request header, or null. The name is matched without
-    /// regard to case: `c.header("content-type")`.
+    /// regard to case: `c.header("content-type")`. A header the client sent
+    /// on several lines is one value, the lines joined with ", " in the
+    /// order received (`Cookie` with "; ").
     pub fn header(self: *Ctx, name: []const u8) ?[]const u8 {
         var iter = self._headers.iterator();
         while (iter.next()) |entry| {

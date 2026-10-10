@@ -371,6 +371,21 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                     std.log.err("{s} {s}: dropped header {s} ({s})", .{ @tagName(request.head.method), path, h.name, @errorName(err) });
                     continue;
                 };
+                // A header may come on several lines (two Cookie lines, an
+                // X-Forwarded-For per proxy): they are one list, joined in
+                // the order received. Names are the same in any letter case.
+                var it = headers_map.iterator();
+                const earlier = while (it.next()) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) break entry.value_ptr;
+                } else null;
+                if (earlier) |held| {
+                    const separator = if (std.ascii.eqlIgnoreCase(name, "cookie")) "; " else ", ";
+                    held.* = std.mem.concat(arena, u8, &.{ held.*, separator, value }) catch |err| {
+                        std.log.err("{s} {s}: dropped header {s} ({s})", .{ @tagName(request.head.method), path, h.name, @errorName(err) });
+                        continue;
+                    };
+                    continue;
+                }
                 headers_map.put(arena, name, value) catch |err| {
                     std.log.err("{s} {s}: dropped header {s} ({s})", .{ @tagName(request.head.method), path, h.name, @errorName(err) });
                 };

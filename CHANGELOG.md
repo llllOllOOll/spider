@@ -182,6 +182,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`bufPrint(&buf, "room:{d}", .{id})`) pointed at memory that was reused,
   and the stream silently received nothing. `Sse.join`, `Sse.subscribe`
   and `Ws.join` copy the name now.
+- **A request header sent on several lines kept only one of them.** Two
+  `Cookie` lines lost a cookie; an `X-Forwarded-For` written by each
+  proxy on a line of its own lost part of the chain; the same header in
+  two letter cases was two headers. The values are joined into one list
+  now, in the order received.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.
