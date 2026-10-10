@@ -262,6 +262,7 @@ test {
     _ = @import("providers/jwks.zig");
     _ = @import("providers/google.zig");
     _ = @import("internal/env.zig");
+    _ = @import("binding/form_parser.zig");
     _ = @import("testing.zig");
     _ = @import("doc_check.zig");
     _ = @import("testing/http.zig");

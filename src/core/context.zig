@@ -597,11 +597,15 @@ pub const Ctx = struct {
     /// one of them; another type is a compile error. Text is copied into
     /// `c.arena`.
     ///
-    /// No field is required: one the form does not have is `""`, `0` or
-    /// `false`, or null when it is optional. The defaults declared in `T`
-    /// are not used. A number that does not parse is `0`. A `bool` is true
-    /// for "true", "1" and "on". Check what must be there after parsing.
+    /// No field is required. One the form does not send takes the default
+    /// declared in `T`; without a default it is null when optional, else
+    /// `""` or `0`. A number field left blank counts as not sent. A `bool`
+    /// is true for "true", "1" and "on", and false when it is not sent,
+    /// whatever its default: a browser sends nothing for an unchecked box.
+    /// Check what must be there after parsing.
     ///
+    /// `error.InvalidNumber` (a 400) when a number field holds text that is
+    /// not a number of the field's type ("12,50", "abc", a value too big);
     /// `error.BodyEmpty` when the request has no body; `error.MissingField`
     /// when a multipart form lacks a non-optional `UploadedFile`.
     pub fn parseForm(self: *Ctx, comptime T: type) !T {

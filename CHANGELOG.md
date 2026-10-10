@@ -48,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before among themselves. This is what Next.js, Vite, Rails and
   Symfony do. **A deploy that ships a `.env.production` or `.env.local`
   whose value differs from the container's now gets the container's.**
+- **Forms: a number field with text that is not a number is an error.**
+  `c.parseForm` and `spider.Form` turned "12,50" or "abc" in a number
+  field into 0 and went on. It is `error.InvalidNumber` now, a 400. A
+  number field left blank is still accepted (it counts as not sent).
+  **A form that relied on bad input becoming 0 now answers 400**: validate
+  on the page, or take the field as text and convert it yourself.
 - **SQLite: a row that does not fit the struct is an error.** A struct
   field with no column of its name used to get 0, `""` or `false` without
   a word, and a NULL column read into a field that is not optional became
@@ -141,6 +147,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `parseFull(a, text, .{ .h1 = heading })` threw the whole value away
   unless `root` was customised too. The formatters given are used now, in
   `parseFull` and in `parse`.
+- **Forms: the defaults of the struct were ignored.** With `per_page: u32
+  = 20`, a form that did not send `per_page` gave 0. A field the form does
+  not send now takes its default. (A checkbox is the exception: not sent
+  means unchecked, so it is false whatever the default.)
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.
