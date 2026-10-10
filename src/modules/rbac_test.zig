@@ -28,7 +28,7 @@ fn passThrough(c: *Ctx) anyerror!Response {
 /// Runs `mw` and reports whether it let the request through.
 fn allows(mw: ctx_mod.MiddlewareFn, c: *Ctx) !bool {
     _ = mw(c, passThrough) catch |err| switch (err) {
-        error.Forbidden => return false,
+        error.Forbidden, error.Unauthorized => return false,
         else => return err,
     };
     return true;
@@ -430,4 +430,33 @@ test "policySet: can() asks a rule about an already loaded resource; find() uses
     try std.testing.expect(try Posts.can(&c, .delete, &post));
     var missing = try postCtx(a, "1", "99");
     try std.testing.expect((try Posts.find(&missing)) == null);
+}
+
+test "roles and org_roles: nobody signed in is Unauthorized (401); signed in without the role is Forbidden (403)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const roles = rbac.requireRoles(admin_only);
+    const org_roles = rbac.requireOrgRoles(admin_only);
+
+    // No user, no role, no organization: the request has to log in first.
+    var anon = Ctx{ .request = undefined, .arena = a, .params = .{}, .body = null };
+    try std.testing.expectEqual(@as(?anyerror, error.Unauthorized), failure(roles, &anon));
+    try std.testing.expectEqual(@as(?anyerror, error.Unauthorized), failure(org_roles, &anon));
+
+    // Someone, without the role: logging in again would not help.
+    var user = Ctx{ .request = undefined, .arena = a, .params = .{}, .body = null };
+    try user.setUser(.{ .id = "7" });
+    try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(roles, &user));
+    try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(org_roles, &user));
+
+    // Roles set by a middleware that names no user still count as someone.
+    var viewer = try makeCtx(a, &.{"viewer"}, &.{});
+    try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(roles, &viewer));
+    var resident = try makeCtx(a, &.{}, &.{.{ .id = "orgA", .role = "resident" }});
+    try std.testing.expectEqual(@as(?anyerror, error.Forbidden), failure(org_roles, &resident));
+
+    var admin = try makeCtx(a, &.{"admin"}, &.{.{ .id = "orgA", .role = "admin" }});
+    try std.testing.expectEqual(@as(?anyerror, null), failure(roles, &admin));
+    try std.testing.expectEqual(@as(?anyerror, null), failure(org_roles, &admin));
 }

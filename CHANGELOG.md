@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`auth.cookieFor(alloc, token)` and `auth.cookieCleared(alloc)`**
+  (`spider.auth.Auth`): the Set-Cookie values for the cookie that Auth
+  reads. They follow `AuthConfig.cookie_name` and `secure_cookie`, which
+  nothing honoured: the free `cookieSet`/`cookieClear` always wrote a
+  cookie named "token", so an app that set `cookie_name` wrote one
+  cookie and read another.
 - **`clerk.loginHandler()` / `clerk.login(c)`**: the login route for
   Clerk's OAuth flow. It redirects with a random `state` that it also
   keeps in a cookie. `Clerk.authUrlWith(arena, .{ .state })` is there
@@ -50,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: `.roles` and `.org_roles` answer 401 to a request that is
+  nobody's**, as `.authenticated` and `.policy` already did. They
+  answered 403, which says "you may not" to someone who only has to log
+  in, and an `onError` that sends 401 to the login page never saw it.
+  Someone signed in without the role still gets 403. (Nobody's: no
+  user, no role and no organization on the request.)
+- **`spider.session`: a bad `Authorization: Bearer` no longer hides a
+  good cookie.** The header was the only token looked at when present,
+  so a browser session behind something that adds its own Authorization
+  header was anonymous. The cookie is now tried when the header is not
+  a valid token.
 - **Breaking: the Clerk callback checks the OAuth `state`**
   (`ClerkConfig.verify_state`, on by default). It did not: anyone could
   send a visitor a callback link carrying a code of their own, and the
@@ -141,6 +158,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`spider.auth.jwtVerify` leaked the strings it had copied** when a
+  later copy ran out of memory (its `errdefer`s were written inside
+  blocks that had already ended).
 - **A key set with a key that is not RSA made the whole login fail**
   (`spider.jwks`): one EC or Ed25519 key in the provider's JWKS, as
   Keycloak realms and Auth0 tenants can publish, and `init` returned

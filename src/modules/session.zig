@@ -111,10 +111,10 @@ pub fn end(c: *Ctx) !ResponseOptions {
 }
 
 /// The middleware: `server.use(spider.session.middleware())`. It takes the
-/// token from `Authorization: Bearer <token>` or, when the request has no
-/// such header, from the cookie, and sets the request's user and roles
-/// when the token is valid. A forged, expired or malformed token counts as
-/// no token. A request left without a user fails with `error.Unauthorized`
+/// token from `Authorization: Bearer <token>` and, when that is not there
+/// or is not a valid token, from the cookie, and sets the request's user
+/// and roles from the first valid one. A forged, expired or malformed
+/// token counts as no token. A request left without a user fails with `error.Unauthorized`
 /// (401), unless its route is `.public` or no route matched it (that one
 /// goes on to its 404).
 pub fn middleware() MiddlewareFn {
@@ -123,32 +123,31 @@ pub fn middleware() MiddlewareFn {
 }
 
 fn run(c: *Ctx, next: NextFn) anyerror!Response {
-    if (presented(c)) |sent| {
-        // A token that does not verify is the same as none.
-        if (verify(c.arena, c._io, try secret(c._io), sent)) |user| {
-            try c.setUser(.{
-                .id = user.id,
-                .email = if (user.email.len > 0) user.email else null,
-                .name = if (user.name.len > 0) user.name else null,
-            });
-            try c.setRoles(user.roles);
-        } else |_| {}
+    // The header first, then the cookie. A token that does not verify is
+    // the same as none: a header that is not ours (another scheme's, a
+    // stale one) does not hide a good cookie.
+    for ([_]?[]const u8{ bearer(c), c.cookie(options.cookie) }) |presented| {
+        const sent = presented orelse continue;
+        const user = verify(c.arena, c._io, try secret(c._io), sent) catch continue;
+        try c.setUser(.{
+            .id = user.id,
+            .email = if (user.email.len > 0) user.email else null,
+            .name = if (user.name.len > 0) user.name else null,
+        });
+        try c.setRoles(user.roles);
+        break;
     }
     // An address that is no route gets its 404 whoever asks.
     if (c.userId() == null and c.hasRoute() and !c.route().public) return error.Unauthorized;
     return next(c);
 }
 
-/// The token the request carries: the Authorization header first, then the
-/// cookie.
-fn presented(c: *Ctx) ?[]const u8 {
-    if (c.header("Authorization")) |value| {
-        const scheme = "Bearer ";
-        if (value.len > scheme.len and std.ascii.eqlIgnoreCase(value[0..scheme.len], scheme)) {
-            return std.mem.trim(u8, value[scheme.len..], " ");
-        }
-    }
-    return c.cookie(options.cookie);
+/// The token of an `Authorization: Bearer <token>` header.
+fn bearer(c: *Ctx) ?[]const u8 {
+    const value = c.header("Authorization") orelse return null;
+    const scheme = "Bearer ";
+    if (value.len <= scheme.len or !std.ascii.eqlIgnoreCase(value[0..scheme.len], scheme)) return null;
+    return std.mem.trim(u8, value[scheme.len..], " ");
 }
 
 const Claims = struct {

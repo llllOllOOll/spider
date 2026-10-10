@@ -184,29 +184,18 @@ pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, io: std.Io, token: 
         }
     }
 
-    if (T == Claims) {
-        return Claims{
-            .sub = parsed.value.sub,
-            .email = try alloc.dupe(u8, parsed.value.email),
-            .name = try alloc.dupe(u8, parsed.value.name),
-            .exp = parsed.value.exp,
-        };
-    }
-
+    // The three strings are copied out of the parsed payload, which is
+    // freed on return. A copy that fails frees the ones made before it.
     var result = parsed.value;
-    if (@hasField(T, "email")) {
-        result.email = try alloc.dupe(u8, parsed.value.email);
-        errdefer alloc.free(result.email);
+    const copied = [_][]const u8{ "email", "name", "locale" };
+    var done: usize = 0;
+    errdefer inline for (copied, 0..) |field, i| {
+        if (@hasField(T, field) and i < done) alloc.free(@field(result, field));
+    };
+    inline for (copied, 0..) |field, i| {
+        if (@hasField(T, field)) @field(result, field) = try alloc.dupe(u8, @field(parsed.value, field));
+        done = i + 1;
     }
-    if (@hasField(T, "name")) {
-        result.name = try alloc.dupe(u8, parsed.value.name);
-        errdefer alloc.free(result.name);
-    }
-    if (@hasField(T, "locale")) {
-        result.locale = try alloc.dupe(u8, parsed.value.locale);
-        errdefer alloc.free(result.locale);
-    }
-
     return result;
 }
 
@@ -276,12 +265,15 @@ pub const AuthConfig = struct {
     /// query string is ignored ("/login" also lets "/login?next=/x"
     /// through). Routes marked `.public` pass too. Default: none.
     public_paths: []const []const u8 = &.{},
-    /// Cookie the middleware reads the token from. The `cookie*` helpers
-    /// always use "token", whatever is set here.
+    /// Cookie the middleware reads the token from. `Auth.cookieFor` and
+    /// `Auth.cookieCleared` write it; the free `cookie*` functions always
+    /// use "token", whatever is set here.
     cookie_name: []const u8 = COOKIE_NAME,
     /// Where a request without a valid token is redirected.
     redirect_to: []const u8 = "/login",
-    /// Not read by anything today.
+    /// Whether `Auth.cookieFor` and `Auth.cookieCleared` add `Secure`. Turn
+    /// it off only where the app is reached over plain http (a developer's
+    /// machine): a browser drops a Secure cookie that arrives over http.
     secure_cookie: bool = true,
 };
 
@@ -313,6 +305,27 @@ pub const Auth = struct {
     /// Keeps `config`; nothing is allocated.
     pub fn init(config: AuthConfig) Auth {
         return .{ .config = config };
+    }
+
+    /// A `Set-Cookie` value that stores `token` in the cookie this Auth
+    /// reads (`cookie_name`): HttpOnly, SameSite=Lax, Path=/, one day, and
+    /// `Secure` unless `secure_cookie` is off. The caller owns it.
+    ///
+    /// ```zig
+    /// const cookie = try auth.cookieFor(c.arena, token);
+    /// ```
+    pub fn cookieFor(self: *const Auth, alloc: std.mem.Allocator, token: []const u8) ![]u8 {
+        return std.fmt.allocPrint(alloc, "{s}={s}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400{s}", .{
+            self.config.cookie_name, token, if (self.config.secure_cookie) "; Secure" else "",
+        });
+    }
+
+    /// A `Set-Cookie` value that empties and expires that cookie (to log
+    /// out). The caller owns it.
+    pub fn cookieCleared(self: *const Auth, alloc: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(alloc, "{s}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0{s}", .{
+            self.config.cookie_name, if (self.config.secure_cookie) "; Secure" else "",
+        });
     }
 
     /// The check itself. Not a `MiddlewareFn` (it takes `self`): give
@@ -382,4 +395,46 @@ test "isPublicPath: the query string does not make a public path private" {
     try std.testing.expect(!isPublicPath(&paths, "/dashboard"));
     try std.testing.expect(!isPublicPath(&paths, "/dashboard?x=/login"));
     try std.testing.expect(!isPublicPath(&paths, "/loginx"));
+}
+
+const WideClaims = struct { sub: i32, email: []const u8, name: []const u8, locale: []const u8, exp: i64 };
+
+fn verifyClaimsThenFree(alloc: std.mem.Allocator, token: []const u8) !void {
+    const claims = try jwtVerify(Claims, alloc, std.testing.io, token, "secret");
+    alloc.free(claims.email);
+    alloc.free(claims.name);
+}
+
+fn verifyWideThenFree(alloc: std.mem.Allocator, token: []const u8) !void {
+    const claims = try jwtVerify(WideClaims, alloc, std.testing.io, token, "secret");
+    alloc.free(claims.email);
+    alloc.free(claims.name);
+    alloc.free(claims.locale);
+}
+
+test "jwtVerify: nothing is left allocated when it runs out of memory half way" {
+    const a = std.testing.allocator;
+    const token = try jwtSign(a, Claims{ .sub = 7, .email = "ana@example.com", .name = "Ana", .exp = 0 }, "secret");
+    defer a.free(token);
+    try std.testing.checkAllAllocationFailures(a, verifyClaimsThenFree, .{token});
+
+    const wide = try jwtSign(a, WideClaims{ .sub = 7, .email = "ana@example.com", .name = "Ana", .locale = "en", .exp = 0 }, "secret");
+    defer a.free(wide);
+    try std.testing.checkAllAllocationFailures(a, verifyWideThenFree, .{wide});
+}
+
+test "Auth.cookieFor / cookieCleared: the cookie the middleware reads, Secure as configured" {
+    const a = std.testing.allocator;
+    const auth: Auth = .init(.{ .secret = "s", .cookie_name = "sid" });
+    const set = try auth.cookieFor(a, "abc");
+    defer a.free(set);
+    try std.testing.expectEqualStrings("sid=abc; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400; Secure", set);
+    const cleared = try auth.cookieCleared(a);
+    defer a.free(cleared);
+    try std.testing.expectEqualStrings("sid=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure", cleared);
+
+    const plain: Auth = .init(.{ .secret = "s", .secure_cookie = false });
+    const dev = try plain.cookieFor(a, "abc");
+    defer a.free(dev);
+    try std.testing.expectEqualStrings("token=abc; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400", dev);
 }

@@ -43,16 +43,30 @@ pub fn requireAuthenticated(c: *Ctx, next: NextFn) anyerror!Response {
     return next(c);
 }
 
+/// What a role check answers to a request it does not let through: 401 when
+/// nobody is signed in (logging in may help), 403 when someone is (it will
+/// not). A request counts as someone's when it has a user, a role or an
+/// organization: a middleware may set roles without naming a user.
+fn refusal(c: *Ctx) anyerror {
+    if (c.userId() != null) return error.Forbidden;
+    for ([_][]const u8{ "_auth_roles_count", "_auth_orgs_count" }) |key| {
+        const text = c.params.get(key) orelse continue;
+        if ((std.fmt.parseInt(usize, text, 10) catch 0) > 0) return error.Forbidden;
+    }
+    return error.Unauthorized;
+}
+
 /// Returns a middleware that requires the user to hold at least one of `roles`
 /// (roles of the account: `c.hasRole`); otherwise `error.Forbidden` (403),
-/// also for a request with no user. Must run AFTER the auth middleware.
+/// or `error.Unauthorized` (401) for a request that is nobody's: no user,
+/// no role and no organization. Must run AFTER the auth middleware.
 pub fn requireRoles(comptime roles: []const []const u8) MiddlewareFn {
     const S = struct {
         fn mw(c: *Ctx, next: NextFn) anyerror!Response {
             for (roles) |required| {
                 if (c.hasRole(required)) return next(c);
             }
-            return error.Forbidden;
+            return refusal(c);
         }
     };
     return S.mw;
@@ -60,7 +74,8 @@ pub fn requireRoles(comptime roles: []const []const u8) MiddlewareFn {
 
 /// Returns a middleware that requires the user to hold at least one of `roles`
 /// in an organization (the org roles the auth provider read from the token,
-/// or `c.addOrgRole`); otherwise `error.Forbidden` (403).
+/// or `c.addOrgRole`); otherwise `error.Forbidden` (403), or
+/// `error.Unauthorized` (401) for a request that is nobody's.
 ///
 /// When an active org is set (`c.activeOrgId()`, from the provider's
 /// `active_org_cookie` or an app middleware calling `c.setActiveOrg`), only
@@ -71,7 +86,7 @@ pub fn requireOrgRoles(comptime roles: []const []const u8) MiddlewareFn {
     const S = struct {
         fn mw(c: *Ctx, next: NextFn) anyerror!Response {
             if (c.orgRoleIn(roles, c.activeOrgId())) return next(c);
-            return error.Forbidden;
+            return refusal(c);
         }
     };
     return S.mw;

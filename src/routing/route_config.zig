@@ -1,7 +1,7 @@
 //! Internal: the third argument of every route registration, `.{}` or any of
 //!
-//!   .roles     = &.{"admin"}        realm roles (any of)       -> 403 otherwise
-//!   .org_roles = &.{"admin"}        roles in the active org    -> 403 otherwise
+//!   .roles     = &.{"admin"}        realm roles (any of)       -> 403 otherwise (401 anonymous)
+//!   .org_roles = &.{"admin"}        roles in the active org    -> 403 otherwise (401 anonymous)
 //!   .public    = true               no login required
 //!   .authenticated = true           any logged-in user          -> 401 otherwise
 //!   .policy = spider.policy("post_owner", isPostOwner)

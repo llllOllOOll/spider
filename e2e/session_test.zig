@@ -204,6 +204,18 @@ test "session: an API sends the token in the Authorization header" {
     try mine.expectStatus(200);
     try mine.expectContains("id=9 name=API client");
 
+    // A header that is no token of ours next to a good cookie: the cookie
+    // is what identifies the visitor.
+    var signed_in = try app.postForm("/login", .{ .email = "ana@example.com", .password = "open sesame 42" });
+    defer signed_in.deinit();
+    try signed_in.expectRedirect("/me");
+    var cookie_buf: [1024]u8 = undefined;
+    const cookie = try cookieHeader(&cookie_buf, signed_in);
+    var both = try app.request(.{ .target = "/me", .headers = &.{ "Authorization: Bearer nope", cookie } });
+    defer both.deinit();
+    try both.expectStatus(200);
+    try both.expectContains("id=7");
+
     var bad = try app.request(.{ .target = "/me", .headers = &.{"Authorization: Bearer nope"} });
     defer bad.deinit();
     try bad.expectStatus(401);

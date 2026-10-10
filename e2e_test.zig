@@ -440,7 +440,7 @@ test "download: the client gets the bytes, with each header once" {
 test "rbac: static route denies without role and allows with it" {
     var env = TestEnv.init();
     defer env.deinit();
-    try expectStatus(403, &env, "/r/static", .{});
+    try expectStatus(401, &env, "/r/static", .{});
     try expectStatus(403, &env, "/r/static", .{ .headers = &.{"X-Test-Roles: viewer"} });
     try expectStatus(200, &env, "/r/static", .{ .headers = &.{"X-Test-Roles: admin"} });
 }
@@ -448,7 +448,7 @@ test "rbac: static route denies without role and allows with it" {
 test "rbac: route with :param denies without role" {
     var env = TestEnv.init();
     defer env.deinit();
-    try expectStatus(403, &env, "/r/items/42", .{});
+    try expectStatus(401, &env, "/r/items/42", .{});
     try expectStatus(403, &env, "/r/items/42", .{ .headers = &.{"X-Test-Roles: viewer"} });
     try expectStatus(200, &env, "/r/items/42", .{ .headers = &.{"X-Test-Roles: admin"} });
 }
@@ -457,7 +457,7 @@ test "rbac: every HTTP method on a :param route is enforced" {
     var env = TestEnv.init();
     defer env.deinit();
     for ([_][]const u8{ "POST", "PUT", "DELETE", "PATCH" }) |m| {
-        try expectStatus(403, &env, "/r/items/7", .{ .method = m, .body = "" });
+        try expectStatus(401, &env, "/r/items/7", .{ .method = m, .body = "" });
         try expectStatus(200, &env, "/r/items/7", .{ .method = m, .body = "", .headers = &.{"X-Test-Roles: admin"} });
     }
 }
@@ -465,16 +465,16 @@ test "rbac: every HTTP method on a :param route is enforced" {
 test "rbac: multi-param and wildcard routes are enforced" {
     var env = TestEnv.init();
     defer env.deinit();
-    try expectStatus(403, &env, "/r/items/1/sub/2", .{});
+    try expectStatus(401, &env, "/r/items/1/sub/2", .{});
     try expectStatus(200, &env, "/r/items/1/sub/2", .{ .headers = &.{"X-Test-Roles: admin"} });
-    try expectStatus(403, &env, "/r/files/report.pdf", .{});
+    try expectStatus(401, &env, "/r/files/report.pdf", .{});
     try expectStatus(200, &env, "/r/files/report.pdf", .{ .headers = &.{"X-Test-Roles: admin"} });
 }
 
 test "rbac: org_roles on :param route is enforced" {
     var env = TestEnv.init();
     defer env.deinit();
-    try expectStatus(403, &env, "/r/org/9", .{});
+    try expectStatus(401, &env, "/r/org/9", .{});
     try expectStatus(403, &env, "/r/org/9", .{ .headers = &.{"X-Test-Orgs: orgA=resident"} });
     try expectStatus(200, &env, "/r/org/9", .{ .headers = &.{"X-Test-Orgs: orgA=admin"} });
 }
@@ -491,7 +491,7 @@ test "rbac: static route does not inherit RBAC of a dynamic sibling" {
     var env = TestEnv.init();
     defer env.deinit();
     try expectStatus(200, &env, "/amb/new", .{});
-    try expectStatus(403, &env, "/amb/5", .{});
+    try expectStatus(401, &env, "/amb/5", .{});
     try expectStatus(200, &env, "/amb/5", .{ .headers = &.{"X-Test-Roles: admin"} });
 }
 
@@ -504,11 +504,11 @@ test "rbac: public :param route stays public" {
 test "rbac: Group-mounted routes enforce roles, with and without :param" {
     var env = TestEnv.init();
     defer env.deinit();
-    try expectStatus(403, &env, "/g/things", .{});
+    try expectStatus(401, &env, "/g/things", .{});
     try expectStatus(200, &env, "/g/things", .{ .headers = &.{"X-Test-Orgs: orgA=admin"} });
-    try expectStatus(403, &env, "/g/things/3", .{});
+    try expectStatus(401, &env, "/g/things/3", .{});
     try expectStatus(200, &env, "/g/things/3", .{ .headers = &.{"X-Test-Orgs: orgA=admin"} });
-    try expectStatus(403, &env, "/g/things/3/edit", .{ .method = "POST", .body = "" });
+    try expectStatus(401, &env, "/g/things/3/edit", .{ .method = "POST", .body = "" });
     try expectStatus(200, &env, "/g/things/3/edit", .{ .method = "POST", .body = "", .headers = &.{"X-Test-Roles: admin"} });
     try expectStatus(200, &env, "/g/open/3", .{});
 }
@@ -1228,7 +1228,7 @@ const org_admin = "X-Test-Orgs: orgA=admin";
 test "group defaults: routes inherit the group's org roles" {
     var env = TestEnv.init();
     defer env.deinit();
-    try expectStatus(403, &env, "/g2/inherit/1", .{});
+    try expectStatus(401, &env, "/g2/inherit/1", .{});
     try expectStatus(200, &env, "/g2/inherit/1", .{ .headers = &.{org_admin} });
 }
 
@@ -1249,7 +1249,7 @@ test "group: extractor handlers work (and inherit the defaults)" {
     var env = TestEnv.init();
     defer env.deinit();
     const port = try appPort(env.io());
-    try expectStatus(403, &env, "/g2/typed/5", .{});
+    try expectStatus(401, &env, "/g2/typed/5", .{});
     const res = try request(env.io(), env.arena.allocator(), port, "/g2/typed/5", .{ .headers = &.{org_admin} });
     try std.testing.expectEqualStrings("typed:5", res.body);
     try expectStatus(400, &env, "/g2/typed/abc", .{ .headers = &.{org_admin} });
@@ -1259,7 +1259,7 @@ test "group: patch and head" {
     var env = TestEnv.init();
     defer env.deinit();
     try expectStatus(200, &env, "/g2/p/1", .{ .method = "PATCH", .headers = &.{org_admin} });
-    try expectStatus(403, &env, "/g2/p/1", .{ .method = "PATCH" });
+    try expectStatus(401, &env, "/g2/p/1", .{ .method = "PATCH" });
     try expectStatus(200, &env, "/g2/h", .{ .method = "HEAD", .headers = &.{org_admin} });
 }
 
@@ -1273,7 +1273,7 @@ test "group use(): runs on every route of the group, after the RBAC check" {
     const open = try request(env.io(), a, port, "/g2/open", .{});
     try std.testing.expectEqualStrings("g2", open.header("X-Group").?);
     const denied = try request(env.io(), a, port, "/g2/inherit/1", .{});
-    try std.testing.expectEqual(@as(u16, 403), denied.status);
+    try std.testing.expectEqual(@as(u16, 401), denied.status);
     try std.testing.expect(denied.header("X-Group") == null); // the gate ran first
     const other = try request(env.io(), a, port, "/public/1", .{});
     try std.testing.expect(other.header("X-Group") == null); // not in the group
