@@ -91,39 +91,23 @@ fn pathCovers(pattern: []const u8, request_path: []const u8) bool {
     return path.len == base.len or path[base.len] == '/';
 }
 
+/// The middlewares of one request, in the order they run: the global ones,
+/// the ones whose path covers the request, the route's own.
 fn collectMiddlewares(
+    arena: std.mem.Allocator,
     global_middlewares: []const MiddlewareFn,
     path_middlewares: []const PathMiddlewareEntry,
     path: []const u8,
     route_middlewares: []const MiddlewareFn,
-    buf: []MiddlewareFn,
-) usize {
-    var count: usize = 0;
-
-    for (global_middlewares) |m| {
-        if (count < buf.len) {
-            buf[count] = m;
-            count += 1;
-        }
-    }
-
+) ![]const MiddlewareFn {
+    var list: std.ArrayList(MiddlewareFn) = .empty;
+    try list.ensureTotalCapacity(arena, global_middlewares.len + path_middlewares.len + route_middlewares.len);
+    list.appendSliceAssumeCapacity(global_middlewares);
     for (path_middlewares) |entry| {
-        if (pathCovers(entry.path, path)) {
-            if (count < buf.len) {
-                buf[count] = entry.middleware;
-                count += 1;
-            }
-        }
+        if (pathCovers(entry.path, path)) list.appendAssumeCapacity(entry.middleware);
     }
-
-    for (route_middlewares) |m| {
-        if (count < buf.len) {
-            buf[count] = m;
-            count += 1;
-        }
-    }
-
-    return count;
+    list.appendSliceAssumeCapacity(route_middlewares);
+    return list.items;
 }
 
 const WorkerCtx = struct {
@@ -467,7 +451,8 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             break;
         }
 
-        {
+        // A file answers a GET or a HEAD; any other method is for the routes.
+        if (request.head.method == .GET or request.head.method == .HEAD) {
             const static_hit = static_mod.serve(ctx.io, arena, ctx.static_config, path, .{
                 .query = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[q + 1 ..] else null,
                 .if_none_match = headerIgnoreCase(headers_map, "If-None-Match"),
@@ -598,10 +583,10 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._route = m.meta,
             };
 
-            var mw_buf: [64]MiddlewareFn = undefined;
-            const mw_count = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, m.middlewares, &mw_buf);
+            const chain = collectMiddlewares(arena, ctx.global_middlewares, ctx.path_middlewares, path, m.middlewares) catch |err|
+                break :blk respondToError(ctx.error_handler, &ctx_req, err);
 
-            break :blk runChain(&ctx_req, mw_buf[0..mw_count], m.handler) catch |err|
+            break :blk runChain(&ctx_req, chain, m.handler) catch |err|
                 respondToError(ctx.error_handler, &ctx_req, err);
         } else blk: {
             var ctx_req = Ctx{
@@ -624,8 +609,8 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._sse_allowed_origins = ctx.config.sse_allowed_origins,
                 ._dev_reload = dev_reload.compiled_in and (ctx.config.dev_reload orelse false),
             };
-            var mw_buf_404: [64]MiddlewareFn = undefined;
-            const mw_count_404 = collectMiddlewares(ctx.global_middlewares, ctx.path_middlewares, path, &.{}, &mw_buf_404);
+            const chain = collectMiddlewares(arena, ctx.global_middlewares, ctx.path_middlewares, path, &.{}) catch |err|
+                break :blk respondToError(ctx.error_handler, &ctx_req, err);
             // No route: error.NotFound through the same path as any handler
             // error, so an app's onError renders its own 404 (it used to be a
             // fixed text response that bypassed onError).
@@ -634,28 +619,10 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                     return error.NotFound;
                 }
             }.h;
-            break :blk runChain(&ctx_req, mw_buf_404[0..mw_count_404], notFoundHandler) catch |err|
+            break :blk runChain(&ctx_req, chain, notFoundHandler) catch |err|
                 respondToError(ctx.error_handler, &ctx_req, err);
         };
 
-        var extra_headers_buf: [32]std.http.Header = undefined;
-        var header_count: usize = 0;
-        extra_headers_buf[header_count] = .{ .name = "content-type", .value = response.content_type };
-        header_count += 1;
-        extra_headers_buf[header_count] = .{ .name = "X-Request-Id", .value = request_id };
-        header_count += 1;
-        for (response.headers) |h| {
-            if (header_count < 32) {
-                extra_headers_buf[header_count] = .{ .name = h[0], .value = h[1] };
-                header_count += 1;
-            }
-        }
-        for (response.cookies) |c| {
-            if (header_count < 32) {
-                extra_headers_buf[header_count] = .{ .name = "Set-Cookie", .value = c[1] };
-                header_count += 1;
-            }
-        }
         if (response.raw) {
             // The handler wrote a stream to this connection itself (SSE,
             // WebSocket) and has returned: the stream is over. It had no
@@ -663,6 +630,15 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             // no further HTTP request can be read from it.
             break;
         }
+
+        const extra_headers = arena.alloc(std.http.Header, 2 + response.headers.len + response.cookies.len) catch |err| {
+            std.log.err("rid={s} {s} {s}: no memory for the response headers: {s}", .{ request_id, method_name, path, @errorName(err) });
+            break;
+        };
+        extra_headers[0] = .{ .name = "content-type", .value = response.content_type };
+        extra_headers[1] = .{ .name = "X-Request-Id", .value = request_id };
+        for (response.headers, 2..) |h, i| extra_headers[i] = .{ .name = h[0], .value = h[1] };
+        for (response.cookies, 2 + response.headers.len..) |c, i| extra_headers[i] = .{ .name = "Set-Cookie", .value = c[1] };
 
         var final_body = response.body orelse "";
         if (dev_reload.compiled_in and (ctx.config.dev_reload orelse false) and dev_reload.isHtml(response.content_type)) {
@@ -685,7 +661,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
 
         request.respond(final_body, .{
             .status = response.status,
-            .extra_headers = extra_headers_buf[0..header_count],
+            .extra_headers = extra_headers,
             .keep_alive = !malformed_body_request,
         }) catch |err| {
             logRespondError(err, request_id, method_name, path);
@@ -892,8 +868,7 @@ pub fn Server(comptime T: type) type {
         gpa: std.mem.Allocator,
         router: Router,
         decorations: T,
-        global_middlewares: [16]MiddlewareFn = undefined,
-        global_middleware_count: usize = 0,
+        global_middlewares: std.ArrayListUnmanaged(MiddlewareFn) = .empty,
         path_middlewares: [32]PathMiddlewareEntry = undefined,
         path_middleware_count: usize = 0,
         error_handler: ?ErrorHandler = null,
@@ -924,7 +899,6 @@ pub fn Server(comptime T: type) type {
                 .gpa = undefined,
                 .router = Router.init(std.heap.page_allocator) catch unreachable,
                 .decorations = undefined,
-                .global_middleware_count = 0,
                 .path_middleware_count = 0,
             };
             self.allocator = std.heap.page_allocator;
@@ -954,22 +928,18 @@ pub fn Server(comptime T: type) type {
             if (self.sse_hub) |*h| h.deinit();
             if (self.sse_threaded) |*t| t.deinit();
             self.interval_threads.deinit(std.heap.smp_allocator);
+            self.global_middlewares.deinit(std.heap.smp_allocator);
             if (self._db) |db_ptr| db_ptr.deinit();
             _ = self.spider_gpa.deinit();
             self.spider_arena.deinit();
         }
 
         /// Adds a middleware that runs on every request, in the order added,
-        /// before the route's own access checks. At most 16; one added after that
-        /// is ignored. It also runs for a request no route matches (on its way
-        /// to a 404), but not for a static file, which is answered before any
-        /// middleware. One request runs at most 64 middlewares in all (these,
-        /// the `useAt` ones and the route's own): the rest are skipped.
+        /// before the route's own access checks, as many as are added. It also
+        /// runs for a request no route matches (on its way to a 404), but not
+        /// for a static file, which is answered before any middleware.
         pub fn use(self: *Self, m: MiddlewareFn) *Self {
-            if (self.global_middleware_count < 16) {
-                self.global_middlewares[self.global_middleware_count] = m;
-                self.global_middleware_count += 1;
-            }
+            self.global_middlewares.append(std.heap.smp_allocator, m) catch @panic("Server.use: out of memory");
             return self;
         }
 
@@ -1577,7 +1547,7 @@ pub fn Server(comptime T: type) type {
         /// requests (Spider's providers, or one marked with
         /// spider.markAuthMiddleware).
         pub fn hasAuth(self: *Self) bool {
-            for (self.global_middlewares[0..self.global_middleware_count]) |m| {
+            for (self.global_middlewares.items) |m| {
                 if (auth_marker.isMarked(m)) return true;
             }
             for (self.path_middlewares[0..self.path_middleware_count]) |e| {
@@ -1698,7 +1668,7 @@ pub fn Server(comptime T: type) type {
                 .decorations = if (@sizeOf(T) == 0) null else @as(*const anyopaque, @ptrCast(&self.decorations)),
                 .ws_route_hubs = self.ws_route_hubs.items,
                 .sse_hub = if (self.sse_hub) |*h| h else null,
-                .global_middlewares = self.global_middlewares[0..self.global_middleware_count],
+                .global_middlewares = self.global_middlewares.items,
                 .path_middlewares = self.path_middlewares[0..self.path_middleware_count],
                 .watchdog = &watchdog,
             };
@@ -1772,7 +1742,7 @@ pub fn Server(comptime T: type) type {
                 .decorations = if (@sizeOf(T) == 0) null else @as(*const anyopaque, @ptrCast(&self.decorations)),
                 .ws_route_hubs = self.ws_route_hubs.items,
                 .sse_hub = if (self.sse_hub) |*h| h else null,
-                .global_middlewares = self.global_middlewares[0..self.global_middleware_count],
+                .global_middlewares = self.global_middlewares.items,
                 .path_middlewares = self.path_middlewares[0..self.path_middleware_count],
                 .watchdog = &watchdog,
             };

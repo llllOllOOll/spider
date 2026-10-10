@@ -413,7 +413,15 @@ pub const Router = struct {
             if (node.children.get(segment)) |child| {
                 node = child;
             } else if (node.param_child) |child| {
-                const value = try allocator.dupe(u8, segment);
+                // The value as the client meant it: "Ana%20Ribeiro" is
+                // "Ana Ribeiro", and "a%2Fb" is "a/b" in one segment.
+                const value = if (std.mem.indexOfScalar(u8, segment, '%') == null)
+                    try allocator.dupe(u8, segment)
+                else decoded: {
+                    const scratch = try allocator.dupe(u8, segment);
+                    defer allocator.free(scratch);
+                    break :decoded try allocator.dupe(u8, std.Uri.percentDecodeInPlace(scratch));
+                };
                 errdefer allocator.free(value);
                 try values.append(allocator, value);
                 node = child;

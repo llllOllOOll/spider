@@ -23,8 +23,8 @@ pub const Options = struct {
     /// a trailing "**" matches the rest ("/tickets/*/presence",
     /// "/api/access/intelbras/**"). Errors and 4xx/5xx are always logged.
     quiet_paths: []const []const u8 = &.{},
-    /// Also log SSE/WebSocket connections ("open" lines, written when the
-    /// stream's handler returns).
+    /// Also log SSE/WebSocket connections: one line when the stream ends,
+    /// with `stream` and how long it stayed open.
     log_stream_open: bool = true,
 };
 
@@ -42,8 +42,8 @@ pub const Options = struct {
 /// A successful request (status under 400) of a route with `.quiet_log` is
 /// not logged. A request that fails with an error is logged with the
 /// status that error has by default (`spider.statusForError`), its name
-/// and its detail. An SSE or WebSocket stream gets its line, with `open`
-/// in place of the duration, when the stream ends.
+/// and its detail. An SSE or WebSocket stream gets its line when it ends,
+/// with `stream` before how long it stayed open.
 pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
     return run(.{}, c, next);
 }
@@ -79,6 +79,16 @@ fn resetColor() []const u8 {
 fn formatMs(ns: u64, buf: []u8) []const u8 {
     const ms = @as(f64, @floatFromInt(ns)) / 1_000_000.0;
     return std.fmt.bufPrint(buf, "{d:.1}ms", .{ms}) catch "?ms";
+}
+
+/// How long a stream stayed open: milliseconds under a second, then
+/// seconds, then minutes and seconds.
+fn formatDuration(ns: u64, buf: []u8) []const u8 {
+    const ms = ns / std.time.ns_per_ms;
+    if (ms < 1000) return std.fmt.bufPrint(buf, "{d}ms", .{ms}) catch "?";
+    const secs = ms / 1000;
+    if (secs < 60) return std.fmt.bufPrint(buf, "{d}.{d}s", .{ secs, (ms % 1000) / 100 }) catch "?";
+    return std.fmt.bufPrint(buf, "{d}m{d}s", .{ secs / 60, secs % 60 }) catch "?";
 }
 
 // internal: the matching behind `Options.quiet_paths`; public for nothing outside this file.
@@ -140,7 +150,8 @@ fn run(comptime opts: Options, c: *Ctx, next: NextFn) anyerror!Response {
     const ts = logfmt.utc(&ts_buf, logfmt.nowNs());
     const sc = statusColor(status_int);
     if (resp.raw) {
-        std.debug.print("{s} {s}[{d}]{s} {s: <6} {s}  open  rid={s} user={s} org={s}\n", .{ ts, sc, status_int, resetColor(), method, path, c.requestId(), userOf(c), orgOf(c) });
+        var lat_buf: [32]u8 = undefined;
+        std.debug.print("{s} {s}[{d}]{s} {s: <6} {s}  stream {s}  rid={s} user={s} org={s}\n", .{ ts, sc, status_int, resetColor(), method, path, formatDuration(elapsed(start, c), &lat_buf), c.requestId(), userOf(c), orgOf(c) });
     } else {
         var lat_buf: [32]u8 = undefined;
         std.debug.print("{s} {s}[{d}]{s} {s: <6} {s}  {s}  rid={s} user={s} org={s}\n", .{ ts, sc, status_int, resetColor(), method, path, formatMs(elapsed(start, c), &lat_buf), c.requestId(), userOf(c), orgOf(c) });
@@ -183,4 +194,11 @@ test "shouldLog: route .quiet_log and quiet_paths silence successes only" {
     try t.expect(!shouldLog(o, false, "/up", 204)); // quiet path
     try t.expect(shouldLog(o, true, "/keepalive", 500)); // errors always logged
     try t.expect(shouldLog(o, false, "/up", 404));
+}
+
+test "formatDuration: how long a stream stayed open" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("250ms", formatDuration(250 * std.time.ns_per_ms, &buf));
+    try std.testing.expectEqualStrings("3.4s", formatDuration(3_400 * std.time.ns_per_ms, &buf));
+    try std.testing.expectEqualStrings("12m5s", formatDuration(725 * std.time.ns_per_s, &buf));
 }

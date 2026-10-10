@@ -43,6 +43,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: a path parameter arrives percent-decoded.** `/users/:name`
+  asked as `/users/Ana%20Ribeiro` gave `Ana%20Ribeiro`; it now gives
+  `Ana Ribeiro`, and `a%2Fb` gives `a/b` (one value, not two segments).
+  Code that decoded the value itself must stop: decoding twice turns a
+  literal `%41` into `A`.
+- **Breaking: a static file answers GET and HEAD only.** A POST, PUT or
+  DELETE to the address of a file in `public/` was answered with the
+  file, before the routes and before the cross-site check. It now goes
+  to the routes like any other request (a route there answers it; none
+  is a 404).
+- **The logger's line for an SSE or WebSocket stream** said `open` and
+  was printed when the stream ended. It now says `stream` and how long
+  it stayed open (`stream 3.4s`).
 - **SSE streams are no longer readable from any site.** Every stream
   answered `Access-Control-Allow-Origin: *`, fixed in the code: a page on
   any other site could read a stream that did not depend on cookies. The
@@ -93,6 +106,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`server.use()` dropped the 17th middleware without a word**, and a
+  request ran at most 64 middlewares in all. An app that added its
+  authentication after sixteen others ran without it. Both limits are
+  gone: every middleware added runs.
+- **A response lost its headers and cookies after the 30th**, also
+  without a word. All of them are sent.
 - **A WebSocket client could stop the whole server with one frame.** A
   frame with a reserved opcode made the server panic. It now closes that
   connection with code 1002 (protocol error) and keeps serving.

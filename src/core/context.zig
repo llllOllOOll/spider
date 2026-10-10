@@ -122,9 +122,7 @@ pub const HtmxHeaders = struct {
 pub const ResponseOptions = struct {
     status: std.http.Status = .ok,
     /// Extra response headers, as `.{ name, value }` pairs. They must stay
-    /// valid until the response is sent: allocate them in `c.arena`. The
-    /// server sends at most 30 headers and cookies of one response (see
-    /// `Response.headers`).
+    /// valid until the response is sent: allocate them in `c.arena`.
     headers: []const [2][]const u8 = &.{},
     /// `.{ name, full Set-Cookie value }` pairs: each is sent as one
     /// `Set-Cookie` header with the second item as its value (the name is
@@ -162,9 +160,8 @@ pub const Response = struct {
     body: ?[]const u8 = null,
     content_type: []const u8 = "text/plain",
     /// Extra headers, as `.{ name, value }` pairs. The server adds
-    /// `content-type`, `X-Request-Id` and the length itself, and has room
-    /// for 30 more: the headers first, then the cookies. Any after the 30th
-    /// is dropped without notice.
+    /// `content-type`, `X-Request-Id` and the length itself, then sends
+    /// these, then the cookies.
     headers: []const [2][]const u8 = &.{},
     /// `.{ name, full Set-Cookie value }` pairs, each sent as one
     /// `Set-Cookie` header.
