@@ -92,11 +92,16 @@ pub const CookieOptions = struct {
     encode: bool = false,
 };
 
-/// htmx response headers (htmx 2 names), built by `Ctx.htmx`.
+/// htmx response headers, built by `Ctx.htmx`. htmx 2 and htmx 4 read the
+/// same ones, except the two marked below.
 pub const HtmxHeaders = struct {
     /// HX-Trigger: an event name, or JSON from `Ctx.hxEvent` to send data.
     trigger: ?[]const u8 = null,
+    /// HX-Trigger-After-Swap. htmx 2 only: htmx 4 ignores the header (use
+    /// `trigger`).
     trigger_after_swap: ?[]const u8 = null,
+    /// HX-Trigger-After-Settle. htmx 2 only: htmx 4 ignores the header (use
+    /// `trigger`).
     trigger_after_settle: ?[]const u8 = null,
     retarget: ?[]const u8 = null,
     reswap: ?Swap = null,
@@ -915,8 +920,26 @@ pub const Ctx = struct {
         };
     }
 
+    /// Where to go after a form, whoever posted it. A form htmx posted gets
+    /// the address in an `HX-Redirect` header (with a 200): a 3xx there is
+    /// followed by the browser itself, and htmx receives the next page as
+    /// the content to swap into the form's target. Any other request gets
+    /// a 303 See Other. Works with htmx 2 and htmx 4.
+    ///
+    /// ```zig
+    /// const id = try repository.create(c.arena, input);
+    /// return c.htmxRedirect(try std.fmt.allocPrint(c.arena, "/posts/{d}", .{id}));
+    /// ```
+    ///
+    /// error.InvalidHeaderValue for a `url` with a line break.
+    pub fn htmxRedirect(self: *Ctx, url: []const u8) !Response {
+        if (!self.isHtmx()) return self.redirectWith(url, .{});
+        return Response{ .status = .ok, .body = null, .content_type = "text/plain", .headers = try self.htmx(.{ .redirect = url }) };
+    }
+
     /// A 302 redirect to `url`. After a form was saved, `redirectWith` is the
-    /// better one: it answers 303, and can set a cookie.
+    /// better one: it answers 303, and can set a cookie; `htmxRedirect` is
+    /// the one for a form that htmx may have posted.
     pub fn redirect(self: *Ctx, url: []const u8) !Response {
         const hdrs = try self.arena.alloc([2][]const u8, 1);
         hdrs[0] = .{ "Location", url };

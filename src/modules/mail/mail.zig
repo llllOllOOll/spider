@@ -121,8 +121,9 @@ pub const Mailer = struct {
     /// `MailUnauthorized` (the provider refused the API key), `MailRejected`
     /// (it refused this message), `MailDeliveryFailed` (network, rate limit or
     /// provider failure: worth retrying). A `.custom` transport returns its
-    /// own errors. The request to the provider has no deadline and is not
-    /// retried: a provider that never answers keeps the handler waiting.
+    /// own errors. The request to the provider is given up after the
+    /// transport's `timeout_ms` (30 seconds unless set otherwise: also
+    /// `MailDeliveryFailed`) and is not retried.
     /// The receipt's id is allocated in the request arena.
     pub fn send(self: Mailer, c: *Ctx, mail: Mail) anyerror!Receipt {
         return self.sendWith(c.arena, c._io, mail);

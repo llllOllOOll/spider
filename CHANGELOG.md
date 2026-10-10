@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`c.htmxRedirect(url)`**: where to go after a form, whoever posted
+  it. A form htmx posted gets the address in `HX-Redirect`; any other
+  request a 303. Answering htmx with a plain redirect makes the browser
+  follow it and hand htmx the next page as the content to swap in,
+  which is a classic way to end up with a page inside a form.
 - **SSE messages without a name.** An event name of `""`
   (`hub.emitHtmlTo(channel, "", html)`, `sse.sendHtml("", html)`) sends
   the data with no `event:` line. htmx 4 swaps only such messages into
@@ -221,6 +226,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Doc comments that were no longer true: `Mailer.send` said a delivery
+  had no time limit (it has had one since 0.10.0), and `HtmxHeaders`
+  did not say that `trigger_after_swap` and `trigger_after_settle` are
+  ignored by htmx 4.
 - **An SSE stream looked open to the client before its handler was on a
   channel.** The response head was sent as soon as the request arrived;
   the handler joined its channel a moment later, and an event emitted

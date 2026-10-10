@@ -252,3 +252,28 @@ test "io() is the Io the server gave the request" {
     c._io = std.testing.io;
     try std.testing.expectEqual(std.testing.io.vtable, c.io().vtable);
 }
+
+test "htmxRedirect: a header for a request htmx made, an ordinary redirect for any other" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const alc = arena.allocator();
+
+    // A form htmx posted: the next address goes in HX-Redirect. A 3xx
+    // would be followed by the browser, and htmx would be handed the next
+    // page as the thing to swap in.
+    var posted = try makeCtx(alc, &.{.{ "HX-Request", "true" }});
+    const for_htmx = try posted.htmxRedirect("/bookings/7");
+    try std.testing.expectEqual(std.http.Status.ok, for_htmx.status);
+    try std.testing.expectEqual(@as(usize, 1), for_htmx.headers.len);
+    try std.testing.expectEqualStrings("HX-Redirect", for_htmx.headers[0][0]);
+    try std.testing.expectEqualStrings("/bookings/7", for_htmx.headers[0][1]);
+
+    // The same form posted by the browser itself.
+    var plain = try makeCtx(alc, &.{});
+    const for_browser = try plain.htmxRedirect("/bookings/7");
+    try std.testing.expectEqual(std.http.Status.see_other, for_browser.status);
+    try std.testing.expectEqualStrings("Location", for_browser.headers[0][0]);
+    try std.testing.expectEqualStrings("/bookings/7", for_browser.headers[0][1]);
+
+    try std.testing.expectError(error.InvalidHeaderValue, posted.htmxRedirect("/x\r\nSet-Cookie: a=b"));
+}
