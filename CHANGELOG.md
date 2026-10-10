@@ -67,6 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SSE: an error returned by a stream's handler left no trace.** It was
   dropped silently. The server now logs it, with the request id and the
   path; a client that simply went away is still not logged.
+- **A stream whose handler returned was left open.** After an SSE or
+  WebSocket handler returned, the server kept the connection and waited
+  on it for another HTTP request, so the client only learned that the
+  stream was over when the idle timeout closed it. The connection is now
+  closed as soon as the handler returns.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

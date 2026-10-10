@@ -294,3 +294,22 @@ test "sse: a handler that returns an error does not disturb the server" {
     const res = try h.request(io, arena.allocator(), port, "/hello", .{});
     try std.testing.expectEqualStrings("hello", res.body);
 }
+
+test "sse: when the handler returns, the server closes the stream" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    try ensureStarted(io);
+
+    var client: SseClient = .{ .stream = undefined, .reader = undefined, .rbuf = undefined };
+    try client.openPath(io, "/failing");
+    defer client.close(io);
+    try client.expectContains("event: hello");
+
+    // A stream has no length: the only way a client learns that it is over
+    // (and reconnects, for an EventSource) is the connection closing.
+    const ended = while (true) {
+        _ = client.reader.interface.takeByte() catch |err| break err;
+    };
+    try std.testing.expectEqual(error.EndOfStream, ended);
+}

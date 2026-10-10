@@ -591,8 +591,11 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             }
         }
         if (response.raw) {
-            if (!request.head.keep_alive) break;
-            continue;
+            // The handler wrote a stream to this connection itself (SSE,
+            // WebSocket) and has returned: the stream is over. It had no
+            // length, so closing the connection is what tells the client;
+            // no further HTTP request can be read from it.
+            break;
         }
 
         var final_body = response.body orelse "";
