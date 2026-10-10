@@ -116,15 +116,13 @@ pub fn request(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const nonce = Io.Clock.now(.real, io).nanoseconds;
-
-    const out_path = try std.fmt.allocPrint(arena, "/tmp/spider-mtls-out-{d}.bin", .{nonce});
+    const out_path = try tempPath(arena, io, "out", ".bin");
     defer Io.Dir.deleteFileAbsolute(io, out_path) catch {};
 
     var body_path: ?[]const u8 = null;
     defer if (body_path) |p| Io.Dir.deleteFileAbsolute(io, p) catch {};
     if (opts.body) |body| {
-        const path = try std.fmt.allocPrint(arena, "/tmp/spider-mtls-body-{d}.bin", .{nonce});
+        const path = try tempPath(arena, io, "body", ".bin");
         body_path = path;
         try writeTempFile(io, path, body);
     }
@@ -141,18 +139,18 @@ pub fn request(
 
     const cert_files: CertFiles = switch (cert) {
         .pem => |pem| blk: {
-            const cp = try std.fmt.allocPrint(arena, "/tmp/spider-mtls-cert-{d}.pem", .{nonce});
+            const cp = try tempPath(arena, io, "cert", ".pem");
             cert_path = cp;
             try writeTempFile(io, cp, pem.cert);
 
-            const kp = try std.fmt.allocPrint(arena, "/tmp/spider-mtls-key-{d}.pem", .{nonce});
+            const kp = try tempPath(arena, io, "key", ".pem");
             key_path = kp;
             try writeTempFile(io, kp, pem.key);
 
             break :blk .{ .pem = .{ .cert_path = cp, .key_path = kp } };
         },
         .pkcs12 => |p12| blk: {
-            const cp = try std.fmt.allocPrint(arena, "/tmp/spider-mtls-cert-{d}.p12", .{nonce});
+            const cp = try tempPath(arena, io, "cert", ".p12");
             cert_path = cp;
             try writeTempFile(io, cp, p12.data);
 
@@ -163,7 +161,7 @@ pub fn request(
             // handling), and it's what curl's own docs recommend for
             // secrets that shouldn't show up in `ps`.
             const cfg = try buildP12Config(arena, cp, p12.password);
-            const cfgp = try std.fmt.allocPrint(arena, "/tmp/spider-mtls-config-{d}", .{nonce});
+            const cfgp = try tempPath(arena, io, "config", "");
             config_path = cfgp;
             try writeTempFile(io, cfgp, cfg);
 
@@ -196,12 +194,12 @@ pub fn request(
     // deliberate: it mirrors how `pacman.Response` treats HTTP error status
     // codes as data, not as a Zig error.
     if (!result.term.success()) {
-        std.debug.print("[http_client_mtls] curl failed: {s}\n", .{result.stderr});
+        std.log.warn("[http_client_mtls] curl failed: {s}", .{std.mem.trim(u8, result.stderr, " \r\n")});
         return error.MtlsTransportFailed;
     }
 
     const status_code = parseStatusCode(result.stdout) catch {
-        std.debug.print("[http_client_mtls] unparseable curl status output: {s}\n", .{result.stdout});
+        std.log.warn("[http_client_mtls] unparseable curl status output: {s}", .{std.mem.trim(u8, result.stdout, " \r\n")});
         return error.MtlsTransportFailed;
     };
 
@@ -211,8 +209,19 @@ pub fn request(
     return .{ .status = @enumFromInt(status_code), .body = body };
 }
 
+/// A path in /tmp for one request's file: `kind`, then 16 random bytes.
+/// (The names used to come from the clock: two requests in the same
+/// nanosecond shared their files, and anyone could tell the next name.)
+fn tempPath(arena: std.mem.Allocator, io: Io, kind: []const u8, extension: []const u8) ![]const u8 {
+    var random: [16]u8 = undefined;
+    io.random(&random);
+    return std.fmt.allocPrint(arena, "/tmp/spider-mtls-{s}-{s}{s}", .{ kind, &std.fmt.bytesToHex(random, .lower), extension });
+}
+
 fn writeTempFile(io: Io, path: []const u8, data: []const u8) !void {
-    var file = try Io.Dir.createFileAbsolute(io, path, .{ .permissions = .fromMode(0o600) });
+    // Exclusive: a file or a link someone left at this name is an error,
+    // never a place the certificate is written to.
+    var file = try Io.Dir.createFileAbsolute(io, path, .{ .permissions = .fromMode(0o600), .exclusive = true });
     defer file.close(io);
     try file.writeStreamingAll(io, data);
 }
@@ -475,4 +484,29 @@ test "request: connection refused maps to MtlsTransportFailed and leaves no temp
             return error.LeftoverTempFile;
         }
     }
+}
+
+test "tempPath: a name nobody can guess, different on every call" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const first = try tempPath(arena, std.testing.io, "cert", ".pem");
+    const second = try tempPath(arena, std.testing.io, "cert", ".pem");
+    try std.testing.expect(std.mem.startsWith(u8, first, "/tmp/spider-mtls-cert-"));
+    try std.testing.expect(std.mem.endsWith(u8, first, ".pem"));
+    // 16 random bytes in hex between the two.
+    try std.testing.expectEqual("/tmp/spider-mtls-cert-".len + 32 + ".pem".len, first.len);
+    try std.testing.expect(!std.mem.eql(u8, first, second));
+}
+
+test "writeTempFile: never writes into a file that is already there" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const io = std.testing.io;
+    const path = try tempPath(arena_state.allocator(), io, "test", ".bin");
+    defer Io.Dir.deleteFileAbsolute(io, path) catch {};
+    try writeTempFile(io, path, "first");
+    // Someone who put a file (or a link) at that name first must not
+    // receive the certificate.
+    try std.testing.expectError(error.PathAlreadyExists, writeTempFile(io, path, "second"));
 }

@@ -77,6 +77,12 @@ fn scripted(c: *spider.Ctx, rejected: std.http.Status) !?spider.Response {
     if (std.mem.indexOf(u8, body, "reject@example.com") != null) {
         return try c.json(.{ .code = "invalid_parameter", .message = "recipient refused" }, .{ .status = rejected });
     }
+    if (std.mem.indexOf(u8, body, "stall@example.com") != null) {
+        // A provider that accepted the connection and then says nothing
+        // for a while.
+        std.Io.sleep(c.io(), .fromMilliseconds(3000), .awake) catch {};
+        return try c.json(.{ .message = "late" }, .{});
+    }
     if (std.mem.indexOf(u8, body, "busy@example.com") != null) {
         return try c.json(.{ .message = "slow down" }, .{ .status = .too_many_requests });
     }
@@ -166,6 +172,7 @@ fn sendVia(c: *spider.Ctx) !spider.Response {
         .from = "App <app@example.com>",
         .api_key = c.query("key") orelse good_key,
         .base_url = try providerUrl(c.arena),
+        .timeout_ms = if (c.query("timeout")) |ms| try std.fmt.parseInt(u32, ms, 10) else 30_000,
     }) catch |err| return report(c, err);
     const to = [_]mail.Mailbox{.{ .name = "Bob", .address = c.query("to") orelse "bob@example.com" }};
     var message = sample("unused@example.com");
@@ -373,6 +380,18 @@ test "mail: a provider failure is MailDeliveryFailed" {
     var e = try Env.init();
     defer e.deinit();
     try expectFailure(&e, "to=boom@example.com", "MailDeliveryFailed");
+}
+
+test "mail: a provider that does not answer in time is MailDeliveryFailed, not a request that waits for ever" {
+    var e = try Env.init();
+    defer e.deinit();
+    for (providers) |provider| {
+        const began = std.Io.Clock.now(.awake, std.testing.io);
+        const target = try std.fmt.allocPrint(e.alc(), "/via/{s}?to=stall@example.com&timeout=300", .{provider});
+        try expectAnswer(try e.post(target), 502, "MailDeliveryFailed");
+        const waited_ms = @divFloor(began.durationTo(std.Io.Clock.now(.awake, std.testing.io)).nanoseconds, std.time.ns_per_ms);
+        try std.testing.expect(waited_ms < 2500);
+    }
 }
 
 test "mail: a rate limit is MailDeliveryFailed" {

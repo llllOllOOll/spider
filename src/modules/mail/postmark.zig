@@ -16,11 +16,14 @@ pub const Postmark = struct {
     /// The API's address, without a trailing slash. Change it for a mock
     /// server or a regional endpoint (`Mailer.fromEnv`: MAIL_BASE_URL).
     base_url: []const u8 = "https://api.postmarkapp.com",
+    /// How long one delivery may take, in milliseconds; past that it fails
+    /// with `error.MailDeliveryFailed`. 0: no limit.
+    timeout_ms: u32 = 30_000,
 
     // internal: called by Mailer.sendWith; apps send through a Mailer
     pub fn send(self: Postmark, arena: std.mem.Allocator, io: std.Io, mail: Mail) !Receipt {
         const url = try std.fmt.allocPrint(arena, "{s}/email", .{self.base_url});
-        const reply = try http.postJson(arena, io, url, &.{
+        const reply = try http.postJson(arena, io, url, self.timeout_ms, &.{
             .{ .name = "X-Postmark-Server-Token", .value = self.api_key },
             .{ .name = "Accept", .value = "application/json" },
         }, try payload(arena, mail));

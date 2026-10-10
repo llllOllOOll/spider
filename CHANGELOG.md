@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A time limit for sending mail**: `MAIL_TIMEOUT_MS` (or
+  `Settings.timeout_ms`, and `timeout_ms` on `Brevo`, `Resend` and
+  `Postmark`), 30 seconds by default. A provider that accepted the
+  connection and then stayed silent held the request that was sending
+  for as long as it liked; the delivery now fails with
+  `error.MailDeliveryFailed`. 0 keeps the old behaviour.
 - **`auth.cookieFor(alloc, token)` and `auth.cookieCleared(alloc)`**
   (`spider.auth.Auth`): the Set-Cookie values for the cookie that Auth
   reads. They follow `AuthConfig.cookie_name` and `secure_cookie`, which
@@ -56,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`spider.env.getBool` reads any letter case**, and `on` / `off`:
+  `TRUE`, `Yes` and `On` used to give the default.
+- **A `.env` file over 64 KiB, or one that cannot be read, is a warning
+  in the log.** It was skipped without a word and the app started
+  without its settings.
+- **The `.gitignore` warning looks at what the file ignores.** A line
+  such as `.env.example` contained the text ".env" and was enough to
+  silence it while `.env` itself was not ignored.
 - **Breaking: `spider.pg.queryOneWith` and `spider.pg.Config` are gone.**
   `queryOneWith` (deprecated) allocated the strings of every result
   with the allocator given to `init` and never freed them: use
@@ -166,6 +180,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`spider.env.get` allocated a copy on every call and never freed
+  it** (a page from the system each time, `getOr`, `getInt` and
+  `getBool` included). It returns the process's own value now: reading
+  a setting inside a handler no longer grows the process.
+- **mTLS client (`spider.http_client_mtls`): the temporary files of the
+  certificate were named after the clock.** Two requests in the same
+  nanosecond shared them, and the next name could be guessed by anyone
+  on the machine. The names are random now, and a file is never
+  written where one already exists. Its failures go to the log instead
+  of straight to stderr.
 - **SQLite: a stored integer that does not fit the field stopped the
   process** (a 300 read into a `u8`, a negative number into an
   unsigned field) in a build with safety checks. It is

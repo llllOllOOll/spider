@@ -98,6 +98,11 @@ pub const Settings = struct {
     api_key: ?[]const u8 = null,
     /// Replaces the provider's API URL (a mock server, a regional endpoint).
     base_url: ?[]const u8 = null,
+    /// How long one delivery may take, in milliseconds, before it fails
+    /// with `error.MailDeliveryFailed`. 0: no limit. A provider that
+    /// accepts the connection and then stays silent used to hold the
+    /// request that was sending for as long as it liked.
+    timeout_ms: u32 = 30_000,
 };
 
 /// Sends mail through one backend. Create it once at startup (`fromEnv`,
@@ -166,11 +171,18 @@ pub const Mailer = struct {
             .postmark => |*postmark| postmark.base_url = base_url,
             else => unreachable,
         };
+        switch (mailer.backend) {
+            .brevo => |*brevo| brevo.timeout_ms = settings.timeout_ms,
+            .resend => |*resend| resend.timeout_ms = settings.timeout_ms,
+            .postmark => |*postmark| postmark.timeout_ms = settings.timeout_ms,
+            else => unreachable,
+        }
         return mailer;
     }
 
     /// Reads MAIL_TRANSPORT (brevo | resend | postmark | log, default log),
-    /// MAIL_FROM, MAIL_BASE_URL and the transport's key: BREVO_API_KEY,
+    /// MAIL_FROM, MAIL_BASE_URL, MAIL_TIMEOUT_MS (default 30000; 0 for no
+    /// limit) and the transport's key: BREVO_API_KEY,
     /// RESEND_API_KEY or POSTMARK_SERVER_TOKEN. Call it once at startup and
     /// keep the Mailer (each call copies the variables it reads).
     pub fn fromEnv() !Mailer {
@@ -193,6 +205,7 @@ pub const Mailer = struct {
             .from = nonEmpty(lookup("MAIL_FROM")),
             .api_key = if (key_var) |name| lookup(name) else null,
             .base_url = nonEmpty(lookup("MAIL_BASE_URL")),
+            .timeout_ms = if (nonEmpty(lookup("MAIL_TIMEOUT_MS"))) |text| std.fmt.parseInt(u32, text, 10) catch 30_000 else 30_000,
         });
     }
 };

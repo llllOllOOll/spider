@@ -14,18 +14,21 @@ pub const Reply = struct {
     body: []const u8,
 };
 
-/// POSTs `body` as JSON. A request that gets no answer at all is
-/// `error.MailDeliveryFailed`; any HTTP answer comes back as a Reply.
+/// POSTs `body` as JSON. A request that gets no answer at all, or none
+/// within `timeout_ms` (0: no limit), is `error.MailDeliveryFailed`; any
+/// HTTP answer comes back as a Reply.
 pub fn postJson(
     arena: std.mem.Allocator,
     io: std.Io,
     url: []const u8,
+    timeout_ms: u32,
     headers: []const std.http.Header,
     body: []const u8,
 ) !Reply {
     var res = pacman.post(io, arena, url, .{
         .body = .{ .json = body },
         .headers = headers,
+        .timeout_ms = timeout_ms,
     }) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         log("mail: request to {s} failed: {s}", .{ url, @errorName(err) });
