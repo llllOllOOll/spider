@@ -80,11 +80,14 @@ pub const Ws = struct {
     }
 
     /// Puts this connection on `channel`, leaving the one it was on:
-    /// `broadcastTo(channel, ...)` then reaches it. `channel` is not copied: it
-    /// must stay valid while the connection is open.
+    /// `broadcastTo(channel, ...)` then reaches it. The name is copied: the
+    /// caller's buffer may be reused.
     pub fn join(self: *Ws, channel: []const u8) !void {
-        self.channel = channel;
-        try self._hub.updateChannel(self._conn_id, channel);
+        // A copy of its own: the connection and the hub keep the name, and
+        // the caller's buffer usually does not last (see Sse.join).
+        const owned = try self.arena.dupe(u8, channel);
+        self.channel = owned;
+        try self._hub.updateChannel(self._conn_id, owned);
     }
 
     /// Sends a text message to this connection only. It takes the same lock

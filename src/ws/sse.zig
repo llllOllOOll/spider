@@ -95,11 +95,14 @@ pub const Sse = struct {
 
     /// Makes `channel` the only channel of this connection: what
     /// `Hub.emitTo(channel, ...)` sends then reaches it, and the channels it had
-    /// are dropped. `channel` is not copied: it must stay valid while the stream
-    /// is open, so allocate a built name in `sse.arena`.
+    /// are dropped. The name is copied: the caller's buffer may be reused.
     pub fn join(self: *Sse, channel: []const u8) !void {
-        self.channel = channel;
-        try self._hub.updateChannel(self._conn_id, channel);
+        // The stream and the hub keep the name for as long as the
+        // connection lives: a copy of their own, since a handler usually
+        // builds it in a buffer that does not last.
+        const owned = try self.arena.dupe(u8, channel);
+        self.channel = owned;
+        try self._hub.updateChannel(self._conn_id, owned);
     }
 
     /// join() plus replay: if the client reconnected with a Last-Event-ID
@@ -107,8 +110,7 @@ pub const Sse = struct {
     /// that id (bounded history: the last 50 events of the channel, at most
     /// 5 minutes old), so a dropped connection doesn't silently miss events
     /// between reconnects. No-op replay (just a plain join) if there's no
-    /// Last-Event-ID header or nothing newer is in history. As with `join`,
-    /// `channel` is not copied.
+    /// Last-Event-ID header or nothing newer is in history.
     pub fn joinWithReplay(self: *Sse, channel: []const u8) !void {
         try self.join(channel);
         const last_id = self.lastEventId() orelse return;
@@ -122,12 +124,10 @@ pub const Sse = struct {
     /// already has (unlike join(), which replaces them). Lets one EventSource
     /// carry several channels — browsers cap HTTP/1.1 connections per origin
     /// at 6, so one EventSource per channel per tab runs out after a few tabs.
-    /// The hub keeps its own copy of the name; the `channel` field keeps the
-    /// slice given by the first call, which must then stay valid while the
-    /// field is read.
+    /// The name is copied; the `channel` field holds the first one given.
     pub fn subscribe(self: *Sse, channel: []const u8) !void {
         try self._hub.addChannel(self._conn_id, channel);
-        if (self.channel.len == 0) self.channel = channel;
+        if (self.channel.len == 0) self.channel = try self.arena.dupe(u8, channel);
     }
 
     /// subscribe() to every channel, then replay what the client missed
@@ -846,4 +846,41 @@ test "corsOrigin: only a listed origin, or anyone when the list says so" {
     try std.testing.expect(corsOrigin(one, null) == null);
     try std.testing.expectEqualStrings("*", corsOrigin(any, "https://anywhere.example").?);
     try std.testing.expectEqualStrings("*", corsOrigin(any, null).?);
+}
+
+test "join and subscribe keep their own copy of the channel name" {
+    var threaded = std.Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    const sockets = try makeSocketPair();
+    // sockets[0] belongs to the hub from here on (Hub.deinit closes it).
+    defer sockets[1].close(io);
+
+    var hub = Hub.init(testing.allocator, io);
+    defer hub.deinit();
+    try hub.add(.{ .id = 1, .stream = .{ .socket = sockets[0] }, .type = .sse });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var sse = Sse{ ._stream = .{ .socket = sockets[0] }, ._hub = &hub, ._conn_id = 1, .arena = arena.allocator(), .io = io };
+
+    // The way a handler builds a name: in a buffer of its own, which is
+    // reused or gone once the handler moves on.
+    var buf: [32]u8 = undefined;
+    try sse.join(try std.fmt.bufPrint(&buf, "room:{d}", .{42}));
+    @memset(&buf, 'x');
+    try testing.expectEqualStrings("room:42", sse.channel);
+    try testing.expectEqual(@as(usize, 1), hub.channelCount("room:42"));
+
+    try sse.subscribe(try std.fmt.bufPrint(&buf, "user:{d}", .{7}));
+    @memset(&buf, 'y');
+    try testing.expectEqual(@as(usize, 1), hub.channelCount("user:7"));
+    try testing.expectEqual(@as(usize, 1), hub.channelCount("room:42"));
+
+    // subscribe on a stream that joined nothing yet: the first name is kept.
+    try hub.add(.{ .id = 2, .stream = .{ .socket = sockets[0] }, .type = .sse });
+    var second = Sse{ ._stream = .{ .socket = sockets[0] }, ._hub = &hub, ._conn_id = 2, .arena = arena.allocator(), .io = io };
+    try second.subscribe(try std.fmt.bufPrint(&buf, "feed:{d}", .{1}));
+    @memset(&buf, 'z');
+    try testing.expectEqualStrings("feed:1", second.channel);
+    hub.remove(2);
 }
