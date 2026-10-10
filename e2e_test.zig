@@ -636,6 +636,7 @@ test {
     _ = @import("e2e/google_test.zig");
     _ = @import("e2e/sse_cors_test.zig");
     _ = @import("e2e/request_headers_test.zig");
+    _ = @import("e2e/use_at_test.zig");
 }
 
 // ── middleware chain isolation ──────────────────────────────────────────

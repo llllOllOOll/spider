@@ -179,8 +179,8 @@ pub const Group = struct {
         return self.route(.GET, path, sse_mod.buildHandler(handler), config);
     }
 
-    /// Adds a middleware for the requests whose path starts with the group's
-    /// prefix followed by `path_suffix` (compared as text, like
+    /// Adds a middleware for the group's prefix followed by `path_suffix`,
+    /// and everything under that path (whole segments, like
     /// `Server.useAt`). It is tied to the path, not to the routes: `use` is
     /// the one for "every route of this group". At most 32 per group, and 32
     /// in the server the group is mounted on: one more panics.

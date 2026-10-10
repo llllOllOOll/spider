@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before among themselves. This is what Next.js, Vite, Rails and
   Symfony do. **A deploy that ships a `.env.production` or `.env.local`
   whose value differs from the container's now gets the container's.**
+- **`useAt` covers a path and what is under it, by whole segments.** The
+  path was compared as text: a middleware on `"/admin"` also ran for
+  `/administrators`, and one on `"/admin/*"` did **not** run for `/admin`
+  itself, which left that page without the guard. `"/admin"`, `"/admin/"`
+  and `"/admin/*"` now all mean `/admin` and everything below it, and
+  nothing else. **Check each `useAt` of your app**: a page that was
+  outside a guard by this accident is inside it now, and the other way
+  round.
 - **Forms: a number field with text that is not a number is an error.**
   `c.parseForm` and `spider.Form` turned "12,50" or "abc" in a number
   field into 0 and went on. It is `error.InvalidNumber` now, a 400. A

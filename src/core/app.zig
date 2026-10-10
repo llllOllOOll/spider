@@ -76,6 +76,21 @@ const PathMiddlewareEntry = struct {
     middleware: MiddlewareFn,
 };
 
+/// Whether a `useAt` path covers a request path: the path itself and
+/// whatever is under it. "/admin", "/admin/" and "/admin/*" are the same
+/// and cover "/admin" and "/admin/users", not "/administrators". The match
+/// is by whole segments: comparing the text alone let a guard on "/admin"
+/// run for "/administrators", and one on "/admin/*" miss "/admin" itself.
+fn pathCovers(pattern: []const u8, request_path: []const u8) bool {
+    var base = pattern;
+    if (std.mem.endsWith(u8, base, "*")) base = base[0 .. base.len - 1];
+    base = std.mem.trimEnd(u8, base, "/");
+    const path = if (std.mem.indexOfScalar(u8, request_path, '?')) |q| request_path[0..q] else request_path;
+    if (base.len == 0) return true; // "/", "/*": everything
+    if (!std.mem.startsWith(u8, path, base)) return false;
+    return path.len == base.len or path[base.len] == '/';
+}
+
 fn collectMiddlewares(
     global_middlewares: []const MiddlewareFn,
     path_middlewares: []const PathMiddlewareEntry,
@@ -93,11 +108,7 @@ fn collectMiddlewares(
     }
 
     for (path_middlewares) |entry| {
-        const prefix = if (std.mem.endsWith(u8, entry.path, "*"))
-            entry.path[0 .. entry.path.len - 1]
-        else
-            entry.path;
-        if (std.mem.startsWith(u8, path, prefix)) {
+        if (pathCovers(entry.path, path)) {
             if (count < buf.len) {
                 buf[count] = entry.middleware;
                 count += 1;
@@ -962,10 +973,10 @@ pub fn Server(comptime T: type) type {
             return self;
         }
 
-        /// Adds a middleware for the requests whose path starts with `path`,
-        /// compared as text: `"/admin"` also covers `/admin/users` and
-        /// `/administrators`. A final `*` is dropped before comparing, so
-        /// `"/admin/*"` covers what is under `/admin/` but not `/admin` itself.
+        /// Adds a middleware for `path` and everything under it: `"/admin"`
+        /// covers `/admin` and `/admin/users`, not `/administrators`.
+        /// `"/admin/"` and `"/admin/*"` mean the same as `"/admin"`; `"/"`
+        /// covers every request.
         /// It runs after the global ones, matched route or not. `path` is not
         /// copied. At most 32 in the whole server, the ones of mounted groups
         /// included: one more panics.
