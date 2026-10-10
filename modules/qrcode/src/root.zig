@@ -45,8 +45,8 @@ pub const Ecc = tables.Ecc;
 /// // qr.size == 21; qr.getModule(x, y) is true for a dark module
 /// ```
 ///
-/// `encode` does not choose the version. To get the smallest symbol that
-/// fits, try versions in order while the error is `error.DataTooLarge`.
+/// `encode` takes the version; `encodeAuto` picks the smallest one the
+/// text fits in.
 pub const QR = struct {
     /// The allocator given to `encode`; `deinit` frees with it.
     allocator: std.mem.Allocator,
@@ -69,11 +69,10 @@ pub const QR = struct {
     ///
     /// The result owns its modules, allocated with `allocator`: free it
     /// with `deinit`. Returns `error.DataTooLarge` if `text` does not fit
-    /// the data capacity of that version and level, or `error.OutOfMemory`.
-    /// A `version` outside 1-40 is not an error but an assertion: it stops
-    /// a Debug or ReleaseSafe build and is undefined in the other modes.
+    /// the data capacity of that version and level, `error.InvalidVersion`
+    /// for a `version` outside 1-40, or `error.OutOfMemory`.
     pub fn encode(allocator: std.mem.Allocator, text: []const u8, version: u8, ecc: Ecc) !QR {
-        std.debug.assert(version >= 1 and version <= 40);
+        if (version < 1 or version > 40) return error.InvalidVersion;
 
         const mode = mode_selector.detectMode(text);
         const layout = codewords.blockLayout(version, ecc);
@@ -119,6 +118,24 @@ pub const QR = struct {
             .size = size,
             .modules = modules,
         };
+    }
+
+    /// `encode` with the smallest version (1 to 40) that holds `text` at
+    /// this error correction level. `error.DataTooLarge` when not even
+    /// version 40 does.
+    ///
+    /// ```zig
+    /// var qr = try spider.qrcode.QR.encodeAuto(c.arena, link, .medium);
+    /// ```
+    pub fn encodeAuto(allocator: std.mem.Allocator, text: []const u8, ecc: Ecc) !QR {
+        var version: u8 = 1;
+        while (version <= 40) : (version += 1) {
+            return encode(allocator, text, version, ecc) catch |err| switch (err) {
+                error.DataTooLarge => continue,
+                else => return err,
+            };
+        }
+        return error.DataTooLarge;
     }
 
     /// Frees the modules.
@@ -199,4 +216,31 @@ test "QR.encode frees everything it allocates (no leaks under std.testing.alloca
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "QR.encode: a version that does not exist is an error, not a stop" {
+    try std.testing.expectError(error.InvalidVersion, QR.encode(std.testing.allocator, "HELLO", 0, .medium));
+    try std.testing.expectError(error.InvalidVersion, QR.encode(std.testing.allocator, "HELLO", 41, .medium));
+}
+
+test "QR.encodeAuto: the smallest version the text fits in" {
+    const a = std.testing.allocator;
+    var small = try QR.encodeAuto(a, "HELLO WORLD", .medium);
+    defer small.deinit();
+    try std.testing.expectEqual(@as(u8, 1), small.version);
+    try std.testing.expectEqual(@as(u16, 21), small.size);
+
+    // A link with a token: too long for the first versions.
+    const link = "https://app.example.com/access/visits/4f3c2b1a-9d8e-7f6a-5b4c-3d2e1f0a9b8c?t=0123456789abcdef0123456789abcdef";
+    var bigger = try QR.encodeAuto(a, link, .medium);
+    defer bigger.deinit();
+    try std.testing.expect(bigger.version > 1);
+    // The version before it does not hold the text.
+    try std.testing.expectError(error.DataTooLarge, QR.encode(a, link, bigger.version - 1, .medium));
+
+    // More than any version holds.
+    const huge = try a.alloc(u8, 3000);
+    defer a.free(huge);
+    @memset(huge, 'x');
+    try std.testing.expectError(error.DataTooLarge, QR.encodeAuto(a, huge, .high));
 }

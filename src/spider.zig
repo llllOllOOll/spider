@@ -95,7 +95,8 @@ pub const session = @import("modules/session.zig");
 pub const password = @import("modules/password.zig");
 /// Static file serving; the server uses it by itself for the `static_dir` of the config.
 pub const static = @import("modules/static.zig");
-/// Browser reload under `spider dev` (the server wires it in by itself).
+// internal: the server wires the browser reload in by itself; apps do not call it.
+// Browser reload under `spider dev` (the server wires it in by itself).
 pub const dev_reload = @import("modules/dev_reload.zig");
 /// The handlers behind `/up` and `/_spider/health`, which `spider.app` registers.
 pub const health = @import("modules/health.zig");

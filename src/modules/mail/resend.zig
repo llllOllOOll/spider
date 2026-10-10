@@ -43,8 +43,9 @@ const Payload = struct {
     text: ?[]const u8,
 };
 
-/// The request body for a validated mail. Recipients go as bare addresses:
-/// their display names are not sent.
+// internal: the transport builds its request body with it; public for the tests.
+// The request body for a validated mail. Recipients go as bare addresses:
+// their display names are not sent.
 pub fn payload(arena: std.mem.Allocator, mail: Mail) ![]const u8 {
     return http.stringify(arena, Payload{
         .from = try mail.from.?.toHeader(arena),

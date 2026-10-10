@@ -48,7 +48,8 @@ const Payload = struct {
     textContent: ?[]const u8,
 };
 
-/// The request body for a validated mail.
+// internal: the transport builds its request body with it; public for the tests.
+// The request body for a validated mail.
 pub fn payload(arena: std.mem.Allocator, mail: Mail) ![]const u8 {
     return http.stringify(arena, Payload{
         .sender = contact(mail.from.?),

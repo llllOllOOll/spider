@@ -59,13 +59,13 @@ test "equal texts share an id, in first-seen order" {
     const arena = arena_state.allocator();
     var table: Table = .{};
 
-    try testing.expectEqual(@as(u32, 0), try table.intern(arena, "Sim"));
-    try testing.expectEqual(@as(u32, 1), try table.intern(arena, "Não"));
-    try testing.expectEqual(@as(u32, 0), try table.intern(arena, "Sim"));
+    try testing.expectEqual(@as(u32, 0), try table.intern(arena, "Yes"));
+    try testing.expectEqual(@as(u32, 1), try table.intern(arena, "No"));
+    try testing.expectEqual(@as(u32, 0), try table.intern(arena, "Yes"));
     try testing.expectEqual(@as(u32, 2), try table.intern(arena, ""));
     try testing.expectEqual(@as(u32, 3), try table.intern(arena, "sim"));
     try testing.expectEqual(@as(usize, 4), table.count());
-    try testing.expectEqualStrings("Não", table.get(1));
+    try testing.expectEqualStrings("No", table.get(1));
 
     // The table keeps its own copy.
     var buffer: [4]u8 = "Nulo".*;
@@ -77,10 +77,10 @@ test "equal texts share an id, in first-seen order" {
 test "sharedStrings.xml" {
     var out: Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
-    try write(&out.writer, &.{ "Opção A", " padded ", "a < b & c", "=SUM(A1:A9)", "tab\there\r" }, 9);
+    try write(&out.writer, &.{ "Café A", " padded ", "a < b & c", "=SUM(A1:A9)", "tab\there\r" }, 9);
     try testing.expectEqualStrings(xml.declaration ++
         "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"9\" uniqueCount=\"5\">" ++
-        "<si><t>Opção A</t></si>" ++
+        "<si><t>Café A</t></si>" ++
         "<si><t xml:space=\"preserve\"> padded </t></si>" ++
         "<si><t>a &lt; b &amp; c</t></si>" ++
         "<si><t>=SUM(A1:A9)</t></si>" ++

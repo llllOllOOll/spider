@@ -115,10 +115,11 @@ pub const TimeOfDay = struct {
     }
 };
 
-/// The date and time a serial number stands for, or null when it is
-/// not a date a spreadsheet can show: not finite, negative, past
-/// 9999-12-31, or, in the 1900 system, below 1 (day 0, a time of day
-/// alone) or the phantom day 60. The time is rounded to the millisecond.
+// internal: used inside the xlsx module; apps do not call it.
+// The date and time a serial number stands for, or null when it is
+// not a date a spreadsheet can show: not finite, negative, past
+// 9999-12-31, or, in the 1900 system, below 1 (day 0, a time of day
+// alone) or the phantom day 60. The time is rounded to the millisecond.
 pub fn fromSerial(serial: f64, system: DateSystem) ?DateTime {
     if (!std.math.isFinite(serial) or serial < 0 or serial >= 2_958_466) return null;
     var day: u32 = @intFromFloat(@floor(serial));

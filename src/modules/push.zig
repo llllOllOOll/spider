@@ -23,6 +23,23 @@ pub const VapidKeys = struct {
     private_key: [32]u8,
     /// The P-256 public point, uncompressed (it starts with 0x04).
     public_key: [65]u8,
+
+    /// The private key as `PushConfig.private_key` and `VAPID_PRIVATE_KEY`
+    /// take it: base64url without padding (43 characters).
+    pub fn privateKeyText(self: VapidKeys) [43]u8 {
+        var out: [43]u8 = undefined;
+        _ = std.base64.url_safe_no_pad.Encoder.encode(&out, &self.private_key);
+        return out;
+    }
+
+    /// The public key as `PushConfig.public_key`, `VAPID_PUBLIC_KEY` and the
+    /// page's `applicationServerKey` take it: base64url without padding (87
+    /// characters).
+    pub fn publicKeyText(self: VapidKeys) [87]u8 {
+        var out: [87]u8 = undefined;
+        _ = std.base64.url_safe_no_pad.Encoder.encode(&out, &self.public_key);
+        return out;
+    }
 };
 
 /// The identity the app sends pushes with.
@@ -80,6 +97,7 @@ pub const WebPush = struct {
     }
 
     /// A new random VAPID key pair. Generate it once and keep it: subscriptions are tied to the public key.
+    /// `keys.privateKeyText()` and `keys.publicKeyText()` are the two values to put in the config.
     pub fn generateKeys(io: std.Io) VapidKeys {
         const private_key = P256.scalar.random(io, .big);
         const public_key = P256.basePoint.mul(private_key, .big) catch unreachable;
@@ -135,16 +153,20 @@ pub const WebPush = struct {
         defer res.deinit();
 
         if (res.status != .ok and res.status != .no_content and res.status != .created) {
+            // The service only: the rest of the endpoint is what lets
+            // anyone holding it push to that device.
+            std.log.warn("push refused status={d} service={s}", .{ @intFromEnum(res.status), audience });
             return switch (res.status) {
-                .gone => error.PushSubscriptionExpired,
-                .forbidden => error.PushForbidden,
+                .gone => error.PushSubscriptionExpired, // 410: the subscription is gone for good
+                .forbidden => error.PushForbidden, // 403: not the VAPID keys it was made with
                 else => error.PushSendFailed,
             };
         }
     }
 
-    /// `sendRaw` from a handler: it uses the request's arena and Io, and logs a
-    /// refused push at `err` level with the status and the endpoint. Same errors.
+    /// `sendRaw` from a handler: it uses the request's arena and Io. Same
+    /// errors; both log a refused push at `warn` with the status and the
+    /// push service (never the whole endpoint).
     pub fn send(
         self: *const WebPush,
         c: *Ctx,
@@ -152,31 +174,7 @@ pub const WebPush = struct {
         payload: []const u8,
         ttl: u32,
     ) !void {
-        const encrypted = try encryptPayload(c.arena, c._io, subscription, payload);
-        const audience = try extractOrigin(c.arena, subscription.endpoint);
-        const jwt = try buildVapidJwt(c.arena, c._io, self.config, audience);
-        const pub_key_b64 = self.config.public_key;
-
-        var res = try pacman.post(c._io, c.arena, subscription.endpoint, .{
-            .body = .{ .raw = encrypted },
-            .headers = &.{
-                .{ .name = "Authorization", .value = try std.fmt.allocPrint(c.arena, "vapid t={s},k={s}", .{ jwt, pub_key_b64 }) },
-                .{ .name = "Content-Encoding", .value = "aes128gcm" },
-                .{ .name = "Content-Type", .value = "application/octet-stream" },
-                .{ .name = "TTL", .value = try std.fmt.allocPrint(c.arena, "{d}", .{ttl}) },
-                .{ .name = "Urgency", .value = "high" },
-            },
-        });
-        defer res.deinit();
-
-        if (res.status != .ok and res.status != .no_content and res.status != .created) {
-            std.log.err("push send failed status={d} endpoint={s}", .{ @intFromEnum(res.status), subscription.endpoint });
-            return switch (res.status) {
-                .gone => error.PushSubscriptionExpired, // 410 — subscription permanently invalid
-                .forbidden => error.PushForbidden, // 403 — VAPID key mismatch or wrong origin
-                else => error.PushSendFailed,
-            };
-        }
+        return self.sendRaw(c.arena, c.io(), subscription, payload, ttl);
     }
 };
 
@@ -529,4 +527,27 @@ test "the VAPID token is valid JSON whatever the subject holds" {
     // Twelve hours from now, by the clock of the Io it was given.
     const now: i64 = @intCast(@divFloor(std.Io.Clock.now(.real, io).nanoseconds, std.time.ns_per_s));
     try std.testing.expect(claims.exp > now + 43000 and claims.exp < now + 43400);
+}
+
+test "VapidKeys: the two texts are what PushConfig and the page take" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const keys = WebPush.generateKeys(std.testing.io);
+    const private_text = keys.privateKeyText();
+    const public_text = keys.publicKeyText();
+
+    // base64url without padding of 32 and of 65 bytes.
+    try std.testing.expectEqual(@as(usize, 43), private_text.len);
+    try std.testing.expectEqual(@as(usize, 87), public_text.len);
+    var private_back: [32]u8 = undefined;
+    try base64urlDecode(&private_back, &private_text);
+    try std.testing.expectEqualSlices(u8, &keys.private_key, &private_back);
+    var public_back: [65]u8 = undefined;
+    try base64urlDecode(&public_back, &public_text);
+    try std.testing.expectEqualSlices(u8, &keys.public_key, &public_back);
+
+    // And a config made of them signs.
+    const config: PushConfig = .{ .subject = "mailto:ops@example.com", .private_key = &private_text, .public_key = &public_text };
+    const jwt = try buildVapidJwt(arena.allocator(), std.testing.io, config, "https://push.example.com");
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, jwt, "."));
 }

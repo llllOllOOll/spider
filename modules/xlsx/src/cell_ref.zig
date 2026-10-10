@@ -10,8 +10,9 @@ pub const max_rows: u32 = 1_048_576;
 /// Columns per sheet (A to XFD).
 pub const max_cols: u32 = 16_384;
 
-/// Writes the letters of a zero-based column: 0 is `A`, 25 `Z`, 26
-/// `AA`, 16,383 `XFD`. `col` must be below `max_cols` (asserted).
+// internal: used inside the xlsx module; apps do not call it.
+// Writes the letters of a zero-based column: 0 is `A`, 25 `Z`, 26
+// `AA`, 16,383 `XFD`. `col` must be below `max_cols` (asserted).
 pub fn writeColumnName(w: *Writer, col: u32) Writer.Error!void {
     std.debug.assert(col < max_cols);
     var buffer: [3]u8 = undefined;
@@ -26,13 +27,15 @@ pub fn writeColumnName(w: *Writer, col: u32) Writer.Error!void {
     try w.writeAll(buffer[start..]);
 }
 
-/// `B7` for row 6, column 1.
+// internal: used inside the xlsx module; apps do not call it.
+// `B7` for row 6, column 1.
 pub fn writeCell(w: *Writer, row: u32, col: u32) Writer.Error!void {
     try writeColumnName(w, col);
     try w.print("{d}", .{row + 1});
 }
 
-/// `$B$7`, the absolute form defined names use.
+// internal: used inside the xlsx module; apps do not call it.
+// `$B$7`, the absolute form defined names use.
 pub fn writeAbsoluteCell(w: *Writer, row: u32, col: u32) Writer.Error!void {
     try w.writeByte('$');
     try writeColumnName(w, col);

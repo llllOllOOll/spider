@@ -47,9 +47,7 @@ pub const R2Config = struct {
 /// `put`, `get`, `delete`, `head` and `copyObject` call R2 and take the
 /// request's `Ctx`: they use its `Io` and allocate in `c.arena`. The
 /// presigned URL functions and `publicUrl` make no network call. A key may
-/// contain `/`; it is percent-encoded for the request. Every signed call
-/// fails with `error.NoSpaceLeft` when the secret key is longer than 252
-/// bytes.
+/// contain `/`; it is percent-encoded for the request.
 pub const R2 = struct {
     /// The configuration given to `init`.
     config: R2Config,
@@ -137,7 +135,7 @@ pub const R2 = struct {
 
         if (res.status != .ok and res.status != .no_content) {
             const res_body = res.text();
-            std.log.err("r2 put failed status={d} url={s} body={s}", .{ @intFromEnum(res.status), path, res_body });
+            logFailure("r2 put failed status={d} url={s} body={s}", .{ @intFromEnum(res.status), path, res_body });
             return error.R2PutFailed;
         }
     }
@@ -187,7 +185,7 @@ pub const R2 = struct {
 
         if (res.status != .ok) {
             const res_body = res.text();
-            std.log.err("r2 copyObject failed status={d} dest={s} source={s} body={s}", .{ @intFromEnum(res.status), dest_path, copy_source, res_body });
+            logFailure("r2 copyObject failed status={d} dest={s} source={s} body={s}", .{ @intFromEnum(res.status), dest_path, copy_source, res_body });
             return error.R2CopyFailed;
         }
     }
@@ -221,7 +219,7 @@ pub const R2 = struct {
 
         if (res.status == .not_found) return error.NotFound;
         if (res.status != .ok) {
-            std.log.err("r2 get: status={d} path={s}", .{ @intFromEnum(res.status), path });
+            logFailure("r2 get: status={d} path={s}", .{ @intFromEnum(res.status), path });
             return error.R2GetFailed;
         }
         return c.arena.dupe(u8, res.text());
@@ -256,7 +254,7 @@ pub const R2 = struct {
 
         if (res.status == .not_found) return error.NotFound;
         if (res.status != .ok and res.status != .no_content) {
-            std.log.err("r2 delete failed status={d} path={s}", .{ @intFromEnum(res.status), path });
+            logFailure("r2 delete failed status={d} path={s}", .{ @intFromEnum(res.status), path });
             return error.R2DeleteFailed;
         }
     }
@@ -300,10 +298,17 @@ pub const R2 = struct {
     /// signature. Nothing is sent to R2 and the bucket does not change until
     /// the URL is used.
     ///
-    /// The URL is allocated with `allocator`. Pass an arena (`c.arena`): the
-    /// strings built on the way are not freed. Fails with `error.NoSpaceLeft`
-    /// when the secret key is longer than 252 bytes, or `error.OutOfMemory`.
+    /// The URL is allocated with `allocator` and is the caller's; nothing
+    /// else is left allocated. Fails with `error.OutOfMemory`.
     pub fn presignedPut(self: *const R2, allocator: std.mem.Allocator, key: []const u8, content_type: []const u8, expires_sec: u32) ![]const u8 {
+        // What is built on the way lives in an arena of this call; only
+        // the URL is the caller's.
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        return allocator.dupe(u8, try self.presignedPutIn(scratch.allocator(), key, content_type, expires_sec));
+    }
+
+    fn presignedPutIn(self: *const R2, allocator: std.mem.Allocator, key: []const u8, content_type: []const u8, expires_sec: u32) ![]const u8 {
         const dt = currentDateTime(self.client.io);
         const date_str = dt.date[0..];
         const datetime_str = dt.datetime[0..];
@@ -391,6 +396,12 @@ pub const R2 = struct {
     ///
     /// Allocation and errors as in `presignedPut`.
     pub fn presignedGet(self: *const R2, allocator: std.mem.Allocator, key: []const u8, expires_sec: u32) ![]const u8 {
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        return allocator.dupe(u8, try self.presignedGetIn(scratch.allocator(), key, expires_sec));
+    }
+
+    fn presignedGetIn(self: *const R2, allocator: std.mem.Allocator, key: []const u8, expires_sec: u32) ![]const u8 {
         const dt = currentDateTime(self.client.io);
         const date_str = dt.date[0..];
         const datetime_str = dt.datetime[0..];
@@ -612,6 +623,11 @@ fn hexLower(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return result;
 }
 
+// An operation the service refused. (warn under test: the default test
+// runner fails a test that logs an error, and a test of these paths
+// provokes the refusal on purpose.)
+const logFailure = if (@import("builtin").is_test) std.log.warn else std.log.err;
+
 fn hmacSha256(key: []const u8, data: []const u8) [HmacSha256.mac_length]u8 {
     var out: [HmacSha256.mac_length]u8 = undefined;
     HmacSha256.create(&out, data, key);
@@ -619,8 +635,24 @@ fn hmacSha256(key: []const u8, data: []const u8) [HmacSha256.mac_length]u8 {
 }
 
 fn signingKey(secret: []const u8, date: []const u8, region: []const u8, service: []const u8) ![HmacSha256.mac_length]u8 {
-    var key_buf: [256]u8 = undefined;
-    const aws4_key = try std.fmt.bufPrint(&key_buf, "AWS4{s}", .{secret});
+    // The first key is "AWS4" + secret. HMAC is fed the two parts one
+    // after the other, so the secret may have any length (a fixed buffer
+    // used to refuse one over 252 bytes with error.NoSpaceLeft). A key
+    // longer than the hash's block is its SHA-256, by HMAC's definition.
+    const prefix = "AWS4";
+    var short: [Sha256.block_length]u8 = undefined;
+    var digest: [Sha256.digest_length]u8 = undefined;
+    const aws4_key: []const u8 = if (prefix.len + secret.len <= short.len) key: {
+        @memcpy(short[0..prefix.len], prefix);
+        @memcpy(short[prefix.len..][0..secret.len], secret);
+        break :key short[0 .. prefix.len + secret.len];
+    } else key: {
+        var hasher = Sha256.init(.{});
+        hasher.update(prefix);
+        hasher.update(secret);
+        hasher.final(&digest);
+        break :key &digest;
+    };
     const k_date = hmacSha256(aws4_key, date);
     const k_region = hmacSha256(&k_date, region);
     const k_service = hmacSha256(&k_region, service);
@@ -790,4 +822,46 @@ test "dateTimeAt: the date and time of a moment, as the signature wants them" {
     try std.testing.expectEqualStrings("20261010T123456Z", &at.datetime);
     const leap = dateTimeAt(1709164800); // 2024-02-29 00:00:00 UTC
     try std.testing.expectEqualStrings("20240229T000000Z", &leap.datetime);
+}
+
+test "signingKey: a secret key of any length" {
+    // Longer than the 252 bytes the fixed buffer used to hold.
+    const secret: [300]u8 = @splat('s');
+    const got = try signingKey(&secret, "20261010", "auto", "s3");
+
+    // The same derivation with the key built on the heap.
+    const full = try std.mem.concat(std.testing.allocator, u8, &.{ "AWS4", &secret });
+    defer std.testing.allocator.free(full);
+    const k_date = hmacSha256(full, "20261010");
+    const k_region = hmacSha256(&k_date, "auto");
+    const k_service = hmacSha256(&k_region, "s3");
+    const expected = hmacSha256(&k_service, "aws4_request");
+    try std.testing.expectEqualSlices(u8, &expected, &got);
+
+    // A short one is unchanged.
+    const short = try signingKey("secret", "20261010", "auto", "s3");
+    const k1 = hmacSha256("AWS4secret", "20261010");
+    const k2 = hmacSha256(&k1, "auto");
+    const k3 = hmacSha256(&k2, "s3");
+    try std.testing.expectEqualSlices(u8, &hmacSha256(&k3, "aws4_request"), &short);
+}
+
+test "presigned URLs: only the URL is allocated for the caller" {
+    // The testing allocator reports anything the call leaves behind:
+    // these used to need an arena.
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    var r2 = try R2.init(threaded.io(), .{ .account_id = "acct", .access_key = "key", .secret_key = "secret", .bucket = "bucket" });
+    defer r2.deinit();
+
+    const put = try r2.presignedPut(allocator, "docs/a b.pdf", "application/pdf", 300);
+    defer allocator.free(put);
+    try std.testing.expect(std.mem.startsWith(u8, put, "https://acct.r2.cloudflarestorage.com/bucket/docs/a%20b.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256"));
+    try std.testing.expect(std.mem.indexOf(u8, put, "&X-Amz-Signature=") != null);
+
+    const get = try r2.presignedGet(allocator, "docs/a b.pdf", 300);
+    defer allocator.free(get);
+    try std.testing.expect(std.mem.startsWith(u8, get, "https://acct.r2.cloudflarestorage.com/bucket/docs/a%20b.pdf?"));
+    try std.testing.expect(std.mem.indexOf(u8, get, "&X-Amz-Signature=") != null);
 }

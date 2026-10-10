@@ -59,12 +59,14 @@ pub const Packager = struct {
     }
 };
 
-/// Longest part name accepted. The zip format allows 65,535 bytes; no
-/// part of a workbook comes close to this.
+// internal: used inside the xlsx module; apps do not call it.
+// Longest part name accepted. The zip format allows 65,535 bytes; no
+// part of a workbook comes close to this.
 pub const max_part_name_len = 255;
 
-/// Checks a part name the way a careful reader would: forward slashes
-/// only, relative, printable ASCII, no empty, `.` or `..` segment.
+// internal: used inside the xlsx module; apps do not call it.
+// Checks a part name the way a careful reader would: forward slashes
+// only, relative, printable ASCII, no empty, `.` or `..` segment.
 pub fn validatePartName(name: []const u8) Error!void {
     if (name.len == 0 or name.len > max_part_name_len) return error.InvalidPartName;
     if (name[0] == '/' or name[name.len - 1] == '/') return error.InvalidPartName;

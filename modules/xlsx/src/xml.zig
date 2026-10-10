@@ -129,7 +129,7 @@ test "attribute values escape quotes and whitespace controls" {
 test "cell text: markup, line breaks and accents" {
     try expectWritten(writeCellText, "a &lt; b &amp;&amp; c &gt; d", "a < b && c > d");
     try expectWritten(writeCellText, "linha 1\nlinha 2\tfim", "linha 1\nlinha 2\tfim");
-    try expectWritten(writeCellText, "Opção — ação ✓ 😀", "Opção — ação ✓ 😀");
+    try expectWritten(writeCellText, "Café — naïve ✓ 😀", "Café — naïve ✓ 😀");
     try expectWritten(writeCellText, "\"quoted\" 'text'", "\"quoted\" 'text'");
 }
 
@@ -167,7 +167,7 @@ test "space preservation is asked for leading and trailing whitespace only" {
 
 test "isXmlSafe refuses what XML cannot carry" {
     try testing.expect(isXmlSafe("Plan 1\tok\n"));
-    try testing.expect(isXmlSafe("ação"));
+    try testing.expect(isXmlSafe("naïve"));
     try testing.expect(!isXmlSafe("a\x00b"));
     try testing.expect(!isXmlSafe("a\x1bb"));
     try testing.expect(!isXmlSafe("a\u{FFFF}b"));

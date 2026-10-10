@@ -1307,9 +1307,9 @@ fn expectHandError(expected: Error, hand: Hand, limits: Limits) !void {
 test "round trip: what the writer writes, the reader reads" {
     const wb = try writer_mod.Workbook.init(testing.allocator);
     defer wb.deinit();
-    const first = try wb.addSheet("Resultado");
-    try first.setRow(0, 0, &.{ .{ .text = "Opção" }, .{ .text = "Votos" }, .{ .text = "%" } }, .{ .bold = true, .fill = 0xDDEEFF });
-    try first.set(1, 0, .{ .text = " Sim\n(duas linhas) " });
+    const first = try wb.addSheet("Result");
+    try first.setRow(0, 0, &.{ .{ .text = "Café" }, .{ .text = "Votes" }, .{ .text = "%" } }, .{ .bold = true, .fill = 0xDDEEFF });
+    try first.set(1, 0, .{ .text = " Yes\n(two lines) " });
     try first.set(1, 1, .int(12));
     try first.setStyled(1, 2, .{ .number = 0.75 }, .{ .number_format = .percent });
     try first.set(2, 0, .{ .text = "_x000D_ literal & <tag> \x01 control\r" });
@@ -1328,27 +1328,27 @@ test "round trip: what the writer writes, the reader reads" {
     try first.mergeCells(.{ .first_row = 8, .first_col = 0, .last_row = 9, .last_col = 2 });
     const second = try wb.addSheet("Vazia");
     _ = second;
-    const third = try wb.addSheet("Só títulos");
-    try third.set(0, 0, .{ .text = "Opção" });
+    const third = try wb.addSheet("Only café");
+    try third.set(0, 0, .{ .text = "Café" });
     const bytes = try wb.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(bytes);
 
     const book = try Reader.open(testing.allocator, bytes, .{});
     defer book.deinit();
     try testing.expectEqual(@as(usize, 3), book.sheets().len);
-    try testing.expectEqualStrings("Resultado", book.sheets()[0].name);
-    try testing.expectEqualStrings("Só títulos", book.sheets()[2].name);
+    try testing.expectEqualStrings("Result", book.sheets()[0].name);
+    try testing.expectEqualStrings("Only café", book.sheets()[2].name);
     try testing.expectEqual(Visibility.visible, book.sheets()[1].visibility);
-    try testing.expectEqual(@as(?usize, 2), book.sheetIndex("só títulos"));
-    try testing.expectEqual(@as(?usize, 0), book.sheetIndex("RESULTADO"));
+    try testing.expectEqual(@as(?usize, 2), book.sheetIndex("only café"));
+    try testing.expectEqual(@as(?usize, 0), book.sheetIndex("RESULT"));
     try testing.expectEqual(@as(?usize, null), book.sheetIndex("Outra"));
 
     const got = try dump(testing.allocator, bytes, .{}, .{ .formulas = true });
     defer testing.allocator.free(got);
     try testing.expectEqualStrings(
-        \\0: 0='Opção' 1='Votos' 2='%'
-        \\1: 0=' Sim
-        \\(duas linhas) ' 1=12 2=0.75
+        \\0: 0='Café' 1='Votes' 2='%'
+        \\1: 0=' Yes
+        \\(two lines) ' 1=12 2=0.75
     ++ "\n2: 0='_x000D_ literal & <tag> \x01 control\r' 1=-1234.5 2=true 3=false\n" ++
         \\4: 0=2026-10-07T00:00:00 1=2026-10-07T13:01:01 2=1900-03-01T00:00:00 3=1900-01-01T09:30:00 4=12345678901
         \\5: 0=_[=SUM(B2:B3)]
@@ -1465,7 +1465,7 @@ test "sheet list: hidden sheets, chart sheets, lookup, and no shared strings or 
     const bytes = try package(&.{
         .{ "_rels/.rels", root_rels },
         .{ "xl/workbook.xml", "<workbook " ++ ns ++ "><sheets><sheet name=\"A\" sheetId=\"1\" r:id=\"rId1\"/><sheet name=\"Oculta\" sheetId=\"2\" state=\"hidden\" r:id=\"rId2\"/>" ++
-            "<sheet name=\"Muito oculta\" sheetId=\"3\" state=\"veryHidden\" r:id=\"rId3\"/><sheet name=\"Gráfico\" sheetId=\"4\" r:id=\"rId4\"/></sheets></workbook>" },
+            "<sheet name=\"Very hidden\" sheetId=\"3\" state=\"veryHidden\" r:id=\"rId3\"/><sheet name=\"Résumé\" sheetId=\"4\" r:id=\"rId4\"/></sheets></workbook>" },
         .{ "xl/_rels/workbook.xml.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" ++
             "<Relationship Id=\"rId2\" Type=\"" ++ rel ++ "/worksheet\" Target=\"/xl/worksheets/b.xml\"/>" ++
             "<Relationship Id=\"rId1\" Type=\"" ++ rel ++ "/worksheet\" Target=\"worksheets/a.xml\"/>" ++
@@ -1497,7 +1497,7 @@ test "what is not an .xlsx: old .xls, encrypted files, .xlsb, a zip without a wo
     try testing.expectError(error.Unsupported, Reader.open(testing.allocator, ole, .{}));
     const encrypted = ole ++ "E\x00n\x00c\x00r\x00y\x00p\x00t\x00e\x00d\x00P\x00a\x00c\x00k\x00a\x00g\x00e\x00";
     try testing.expectError(error.Encrypted, Reader.open(testing.allocator, encrypted, .{}));
-    try testing.expectError(error.InvalidZip, Reader.open(testing.allocator, "Nome,Idade\nAna,30\n", .{}));
+    try testing.expectError(error.InvalidZip, Reader.open(testing.allocator, "Name,Age\nAna,30\n", .{}));
     try testing.expectError(error.InvalidZip, Reader.open(testing.allocator, "", .{}));
 
     const xlsb = try package(&.{ .{ "_rels/.rels", root_rels }, .{ "xl/workbook.bin", "\x83\x01\x00" } });
@@ -1590,7 +1590,7 @@ fn sampleBytes(gpa: std.mem.Allocator) ![]u8 {
     const wb = try writer_mod.Workbook.init(gpa);
     defer wb.deinit();
     const sheet = try wb.addSheet("S");
-    try sheet.setRow(0, 0, &.{ .{ .text = "Nome" }, .{ .text = "Valor" }, .{ .text = "Data" } }, .{ .bold = true });
+    try sheet.setRow(0, 0, &.{ .{ .text = "Name" }, .{ .text = "Value" }, .{ .text = "Date" } }, .{ .bold = true });
     for (1..40) |row| {
         try sheet.set(@intCast(row), 0, .{ .text = if (row % 2 == 0) "Fulano & Cia" else "Beltrano <b>" });
         try sheet.set(@intCast(row), 1, .{ .number = @as(f64, @floatFromInt(row)) * 1.5 });

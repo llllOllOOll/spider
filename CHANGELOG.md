@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`QR.encodeAuto(allocator, text, ecc)`** (`spider.qrcode`): the
+  smallest version the text fits in. `encode` takes a fixed version, so
+  every app wrote its own loop over the versions.
+- **`keys.privateKeyText()` and `keys.publicKeyText()`** on what
+  `WebPush.generateKeys` returns: the two values as `PushConfig` and
+  the `VAPID_*` variables take them. `generateKeys` gave raw bytes and
+  the config wanted base64url, with nothing in between.
+- **`zig build test-qrcode`**: the QR code module's tests, which no
+  build step ran.
 - **A time limit for sending mail**: `MAIL_TIMEOUT_MS` (or
   `Settings.timeout_ms`, and `timeout_ms` on `Brevo`, `Resend` and
   `Postmark`), 30 seconds by default. A provider that accepted the
@@ -62,6 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: `QR.encode` with a version outside 1-40 is
+  `error.InvalidVersion`.** It was an assertion: a stop in a Debug
+  build and undefined behaviour in a release one.
+- **A refused push is logged once, at `warn`, with the push service
+  only.** `send` logged it at `err` with the whole endpoint (which is
+  what lets its holder push to that device) and `sendRaw` did not log
+  it at all.
+- A handful of helpers of the xlsx module, the mail transports'
+  `payload` and `spider.dev_reload` are marked internal: they were
+  documented as API but no app can reach them (or should).
 - **A page that `extends` a layout nobody registered says so in the
   log.** It rendered without the layout and without a word (a typo in
   the name, a layout file outside the views directory).
@@ -183,6 +202,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **R2: a secret key over 252 bytes failed every signed call** with
+  `error.NoSpaceLeft` (a fixed buffer). Any length works.
+- **R2: `presignedPut` and `presignedGet` left a dozen strings
+  allocated** unless given an arena. Only the URL is the caller's now.
 - **A page with a layout that failed half way kept memory** when
   rendered with an allocator that is not an arena (the slot being
   written was never freed), and so did the conversion of the data

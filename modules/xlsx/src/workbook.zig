@@ -196,7 +196,8 @@ pub const HeaderFooter = struct {
     footer: ?[]const u8 = null,
 };
 
-/// Characters per header or footer.
+// internal: used inside the xlsx module; apps do not call it.
+// Characters per header or footer.
 pub const max_header_footer_len = 255;
 
 /// Options of `Workbook.protect` and `Sheet.protect`.
@@ -1373,14 +1374,14 @@ fn buildSample(gpa: std.mem.Allocator) Error!*Workbook {
     const wb = try Workbook.init(gpa);
     errdefer wb.deinit();
 
-    const result = try wb.addSheet("Resultado");
+    const result = try wb.addSheet("Result");
     try result.setColumnWidth(0, 30);
     const header: Style = .{ .bold = true, .fill = 0xDDEEFF, .border = .thin };
-    try result.setRow(0, 0, &.{ .{ .text = "Opção" }, .{ .text = "Votos" }, .{ .text = "%" } }, header);
-    try result.set(1, 0, .{ .text = "Sim" });
+    try result.setRow(0, 0, &.{ .{ .text = "Café" }, .{ .text = "Votes" }, .{ .text = "%" } }, header);
+    try result.set(1, 0, .{ .text = "Yes" });
     try result.set(1, 1, .int(12));
     try result.setStyled(1, 2, .{ .number = 0.75 }, .{ .number_format = .percent });
-    try result.set(2, 0, .{ .text = "Não" });
+    try result.set(2, 0, .{ .text = "No" });
     try result.set(2, 1, .int(4));
     try result.setStyled(2, 2, .{ .number = 0.25 }, .{ .number_format = .percent });
     try result.set(3, 0, .{ .text = "Total" });
@@ -1391,9 +1392,9 @@ fn buildSample(gpa: std.mem.Allocator) Error!*Workbook {
     try result.freeze(1, 0);
     try result.setAutoFilter(.{ .first_row = 0, .first_col = 0, .last_row = 2, .last_col = 2 });
 
-    const votes = try wb.addSheet("Votos d'água");
-    try votes.setRow(0, 0, &.{ .{ .text = "Unidade" }, .{ .text = "Opção" } }, header);
-    try votes.setRow(1, 0, &.{ .{ .text = "101" }, .{ .text = "Sim" } }, .{});
+    const votes = try wb.addSheet("Chef's café");
+    try votes.setRow(0, 0, &.{ .{ .text = "Unit" }, .{ .text = "Café" } }, header);
+    try votes.setRow(1, 0, &.{ .{ .text = "101" }, .{ .text = "Yes" } }, .{});
     try votes.freeze(1, 1);
     try votes.setAutoFilter(.{ .first_row = 0, .first_col = 0, .last_row = 1, .last_col = 1 });
     return wb;
@@ -1419,11 +1420,11 @@ test "a full workbook: the XML of each part" {
 
     try testing.expectEqualStrings(workbook_open ++
         "<bookViews><workbookView/></bookViews>" ++
-        "<sheets><sheet name=\"Resultado\" sheetId=\"1\" r:id=\"rId1\"/>" ++
-        "<sheet name=\"Votos d'água\" sheetId=\"2\" r:id=\"rId2\"/></sheets>" ++
+        "<sheets><sheet name=\"Result\" sheetId=\"1\" r:id=\"rId1\"/>" ++
+        "<sheet name=\"Chef's café\" sheetId=\"2\" r:id=\"rId2\"/></sheets>" ++
         "<definedNames>" ++
-        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Resultado'!$A$1:$C$3</definedName>" ++
-        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"1\" hidden=\"1\">'Votos d''água'!$A$1:$B$2</definedName>" ++
+        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Result'!$A$1:$C$3</definedName>" ++
+        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"1\" hidden=\"1\">'Chef''s café'!$A$1:$B$2</definedName>" ++
         "</definedNames>" ++
         "<calcPr fullCalcOnLoad=\"1\"/>" ++
         "</workbook>", recorder.part("xl/workbook.xml").?);
@@ -1462,8 +1463,8 @@ test "a full workbook: the XML of each part" {
 
     try testing.expectEqualStrings(xml.declaration ++
         "<sst xmlns=\"" ++ ns_main ++ "\" count=\"10\" uniqueCount=\"8\">" ++
-        "<si><t>Opção</t></si><si><t>Votos</t></si><si><t>%</t></si><si><t>Sim</t></si>" ++
-        "<si><t>Não</t></si><si><t>Total</t></si><si><t>Unidade</t></si><si><t>101</t></si>" ++
+        "<si><t>Café</t></si><si><t>Votes</t></si><si><t>%</t></si><si><t>Yes</t></si>" ++
+        "<si><t>No</t></si><si><t>Total</t></si><si><t>Unit</t></si><si><t>101</t></si>" ++
         "</sst>", recorder.part("xl/sharedStrings.xml").?);
 
     // Header, percent, date, date and time: four records after the default.
@@ -1716,10 +1717,10 @@ test "sheet names follow Excel's rules" {
     try testing.expectError(error.InvalidUtf8, wb.addSheet("caf\xe9"));
 
     _ = try wb.addSheet("1234567890123456789012345678901");
-    _ = try wb.addSheet("Março — ações (2026)");
-    _ = try wb.addSheet("Resultado");
-    try testing.expectError(error.DuplicateSheetName, wb.addSheet("Resultado"));
-    try testing.expectError(error.DuplicateSheetName, wb.addSheet("RESULTADO"));
+    _ = try wb.addSheet("March — café (2026)");
+    _ = try wb.addSheet("Result");
+    try testing.expectError(error.DuplicateSheetName, wb.addSheet("Result"));
+    try testing.expectError(error.DuplicateSheetName, wb.addSheet("RESULT"));
     try testing.expectEqual(@as(usize, 3), wb.sheets.items.len);
 }
 
@@ -2006,12 +2007,12 @@ test "real data: accents, a non-breaking space and markup characters" {
     const wb = try Workbook.init(testing.allocator);
     defer wb.deinit();
     const sheet = try wb.addSheet("S");
-    try sheet.setRow(0, 0, &.{ .{ .text = "FULANO AÇÃO" }, .{ .text = "Lote\u{00A0}12" }, .{ .text = "Exemplo & Teste <matriz>" } }, .{});
+    try sheet.setRow(0, 0, &.{ .{ .text = "JOHN CAFÉ" }, .{ .text = "Lot\u{00A0}12" }, .{ .text = "Example & Test <matrix>" } }, .{});
     var recorder = try record(wb);
     defer recorder.deinit();
-    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, "<si><t>FULANO AÇÃO</t></si>" ++
-        "<si><t>Lote\u{00A0}12</t></si>" ++
-        "<si><t>Exemplo &amp; Teste &lt;matriz&gt;</t></si>") != null);
+    try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, "<si><t>JOHN CAFÉ</t></si>" ++
+        "<si><t>Lot\u{00A0}12</t></si>" ++
+        "<si><t>Example &amp; Test &lt;matrix&gt;</t></si>") != null);
 }
 
 test "real data: the same text in many cells is stored once" {
@@ -2019,12 +2020,12 @@ test "real data: the same text in many cells is stored once" {
     defer wb.deinit();
     const sheet = try wb.addSheet("S");
     for (0..600) |row| {
-        try sheet.set(@intCast(row), 0, .{ .text = if (row % 3 == 0) "Inquilino" else "Proprietário" });
+        try sheet.set(@intCast(row), 0, .{ .text = if (row % 3 == 0) "Tenant" else "Owner" });
     }
     var recorder = try record(wb);
     defer recorder.deinit();
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/sharedStrings.xml").?, " count=\"600\" uniqueCount=\"2\">" ++
-        "<si><t>Inquilino</t></si><si><t>Proprietário</t></si></sst>") != null);
+        "<si><t>Tenant</t></si><si><t>Owner</t></si></sst>") != null);
 }
 
 test "real data: empty cells in the middle of a row keep their borders" {
@@ -2032,7 +2033,7 @@ test "real data: empty cells in the middle of a row keep their borders" {
     defer wb.deinit();
     const sheet = try wb.addSheet("S");
     const boxed: Style = .{ .border = .thin, .fill = 0xFFFFFF };
-    try sheet.setRow(0, 0, &.{ .{ .text = "A" }, .blank, .{ .text = "Nome" }, .blank, .blank, .int(7) }, boxed);
+    try sheet.setRow(0, 0, &.{ .{ .text = "A" }, .blank, .{ .text = "Name" }, .blank, .blank, .int(7) }, boxed);
     var recorder = try record(wb);
     defer recorder.deinit();
     try testing.expectEqualStrings("<row r=\"1\"><c r=\"A1\" s=\"1\" t=\"s\"><v>0</v></c><c r=\"B1\" s=\"1\"/>" ++
@@ -2045,7 +2046,7 @@ test "real data: a title above the header, the filter starting on the third row,
     const sheet = try wb.addSheet("S");
     try sheet.setStyled(1, 0, .{ .text = "Cadastro" }, .{ .bold = true, .h_align = .center });
     try sheet.mergeCells(.{ .first_row = 1, .first_col = 0, .last_row = 1, .last_col = 2 });
-    try sheet.setRow(2, 0, &.{ .{ .text = "Quadra" }, .{ .text = "Lote" }, .{ .text = "Nome" } }, .{ .bold = true });
+    try sheet.setRow(2, 0, &.{ .{ .text = "Block" }, .{ .text = "Lot" }, .{ .text = "Name" } }, .{ .bold = true });
     try sheet.setRow(3, 0, &.{ .{ .text = "A" }, .int(1), .{ .text = "Fulano" } }, .{});
     // Rows 5 to 9 do not exist in the file; a note sits further down.
     try sheet.set(9, 0, .{ .text = "Obs." });
@@ -2073,7 +2074,7 @@ test "real data: a sheet of many differently styled cells shares a handful of re
     for (0..300) |row| {
         try sheet.setStyled(@intCast(row), 0, .{ .text = "A" }, centered);
         try sheet.setStyled(@intCast(row), 1, .int(row), centered);
-        try sheet.setStyled(@intCast(row), 2, .{ .text = "Nome Sobrenome" }, wrapped);
+        try sheet.setStyled(@intCast(row), 2, .{ .text = "First Last" }, wrapped);
         try sheet.setStyled(@intCast(row), 3, .blank, base);
     }
     var recorder = try record(wb);
@@ -2139,7 +2140,7 @@ test "page setup: paper, orientation and margins" {
 test "rows repeated at the top of every printed page" {
     const wb = try Workbook.init(testing.allocator);
     defer wb.deinit();
-    const first = try wb.addSheet("Lista d'água");
+    const first = try wb.addSheet("Chef's café");
     try first.setPrintTitleRows(2, 2);
     try first.setAutoFilter(.{ .first_row = 2, .first_col = 0, .last_row = 9, .last_col = 3 });
     const second = try wb.addSheet("Outra");
@@ -2151,8 +2152,8 @@ test "rows repeated at the top of every printed page" {
     var recorder = try record(wb);
     defer recorder.deinit();
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/workbook.xml").?, "<definedNames>" ++
-        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Lista d''água'!$A$3:$D$10</definedName>" ++
-        "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'Lista d''água'!$3:$3</definedName>" ++
+        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Chef''s café'!$A$3:$D$10</definedName>" ++
+        "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'Chef''s café'!$3:$3</definedName>" ++
         "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"1\">'Outra'!$1:$2</definedName>" ++
         "</definedNames>") != null);
 }
@@ -2226,7 +2227,7 @@ test "only http, https and mailto links are accepted" {
     try testing.expectError(error.InvalidUtf8, sheet.setLink(0, 0, "https://exemplo.com.br/\xff"));
     try testing.expectError(error.RowOutOfRange, sheet.setLink(max_rows, 0, "https://exemplo.com.br"));
     try testing.expectError(error.ColumnOutOfRange, sheet.setLink(0, max_cols, "https://exemplo.com.br"));
-    try sheet.setLink(0, 0, "https://exemplo.com.br/ação?x=1#topo");
+    try sheet.setLink(0, 0, "https://example.com/café?x=1#top");
 
     var buffer: [22]u8 = "https://exemplo.com.br".*;
     try sheet.setLink(1, 0, &buffer);
@@ -2352,7 +2353,7 @@ test "hidden rows and columns" {
 test "print scale, fit to page, print area, page breaks, header and footer" {
     const wb = try Workbook.init(testing.allocator);
     defer wb.deinit();
-    const scaled = try wb.addSheet("Página 7 (teste)");
+    const scaled = try wb.addSheet("Café 7 (test)");
     try scaled.set(0, 0, .int(1));
     try scaled.setPageSetup(.{ .orientation = .landscape, .scale = 61 });
     try scaled.setPrintArea(.{ .first_row = 0, .first_col = 0, .last_row = 76, .last_col = 11 });
@@ -2362,7 +2363,7 @@ test "print scale, fit to page, print area, page breaks, header and footer" {
     try scaled.addPageBreakBeforeRow(90);
     try scaled.addPageBreakBeforeRow(45);
     try scaled.addPageBreakBeforeColumn(11);
-    try scaled.setHeaderFooter(.{ .header = "&CRelatório & <resumo>", .footer = "&LPágina &P de &N&R&D" });
+    try scaled.setHeaderFooter(.{ .header = "&CRésumé & <summary>", .footer = "&LCafé &P of &N&R&D" });
 
     const fitted = try wb.addSheet("Fit");
     try fitted.setPageSetup(.{ .fit_to_width = 1, .fit_to_height = 0 });
@@ -2384,7 +2385,7 @@ test "print scale, fit to page, print area, page breaks, header and footer" {
     const first = recorder.part("xl/worksheets/sheet1.xml").?;
     try testing.expect(std.mem.endsWith(u8, first, default_margins ++
         "<pageSetup paperSize=\"9\" scale=\"61\" orientation=\"landscape\"/>" ++
-        "<headerFooter><oddHeader>&amp;CRelatório &amp; &lt;resumo&gt;</oddHeader><oddFooter>&amp;LPágina &amp;P de &amp;N&amp;R&amp;D</oddFooter></headerFooter>" ++
+        "<headerFooter><oddHeader>&amp;CRésumé &amp; &lt;summary&gt;</oddHeader><oddFooter>&amp;LCafé &amp;P of &amp;N&amp;R&amp;D</oddFooter></headerFooter>" ++
         "<rowBreaks count=\"2\" manualBreakCount=\"2\"><brk id=\"45\" max=\"16383\" man=\"1\"/><brk id=\"90\" max=\"16383\" man=\"1\"/></rowBreaks>" ++
         "<colBreaks count=\"1\" manualBreakCount=\"1\"><brk id=\"11\" max=\"1048575\" man=\"1\"/></colBreaks>" ++
         "</worksheet>"));
@@ -2397,9 +2398,9 @@ test "print scale, fit to page, print area, page breaks, header and footer" {
         "<headerFooter><oddFooter>&amp;C&amp;P</oddFooter></headerFooter></worksheet>"));
 
     try testing.expect(std.mem.indexOf(u8, recorder.part("xl/workbook.xml").?, "<definedNames>" ++
-        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Página 7 (teste)'!$A$2:$D$10</definedName>" ++
-        "<definedName name=\"_xlnm.Print_Area\" localSheetId=\"0\">'Página 7 (teste)'!$A$1:$L$77</definedName>" ++
-        "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'Página 7 (teste)'!$1:$2</definedName>" ++
+        "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Café 7 (test)'!$A$2:$D$10</definedName>" ++
+        "<definedName name=\"_xlnm.Print_Area\" localSheetId=\"0\">'Café 7 (test)'!$A$1:$L$77</definedName>" ++
+        "<definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'Café 7 (test)'!$1:$2</definedName>" ++
         "</definedNames>") != null);
 }
 
@@ -2423,7 +2424,7 @@ test "protection: workbook structure, sheets, unlocked cells and the legacy pass
     try locked.protect(.{ .password = "password" });
 
     try testing.expectError(error.InvalidPassword, locked.protect(.{ .password = "" }));
-    try testing.expectError(error.InvalidPassword, locked.protect(.{ .password = "senha com ç" }));
+    try testing.expectError(error.InvalidPassword, locked.protect(.{ .password = "password with é" }));
     const long: [256]u8 = @splat('a');
     try testing.expectError(error.InvalidPassword, wb.protect(.{ .password = &long }));
 

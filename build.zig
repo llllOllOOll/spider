@@ -533,4 +533,16 @@ pub fn build(b: *std.Build) void {
     });
     const test_xlsx_step = b.step("test-xlsx", "Run xlsx module tests");
     test_xlsx_step.dependOn(&b.addRunArtifact(xlsx_test).step);
+
+    // test-qrcode — the QR code module's own unit tests (std only), not
+    // part of `test` for the same reason.
+    const qrcode_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("modules/qrcode/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const test_qrcode_step = b.step("test-qrcode", "Run QR code module tests");
+    test_qrcode_step.dependOn(&b.addRunArtifact(qrcode_test).step);
 }

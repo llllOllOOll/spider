@@ -43,8 +43,9 @@ const Payload = struct {
     TextBody: ?[]const u8,
 };
 
-/// The request body for a validated mail. Postmark takes each recipient
-/// list as one comma-separated string.
+// internal: the transport builds its request body with it; public for the tests.
+// The request body for a validated mail. Postmark takes each recipient
+// list as one comma-separated string.
 pub fn payload(arena: std.mem.Allocator, mail: Mail) ![]const u8 {
     return http.stringify(arena, Payload{
         .From = try mail.from.?.toHeader(arena),

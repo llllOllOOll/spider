@@ -151,13 +151,17 @@ pub const Style = struct {
     unlocked: bool = false,
 };
 
-/// Excel's limit on distinct cell formats.
+// internal: used inside the xlsx module; apps do not call it.
+// Excel's limit on distinct cell formats.
 pub const max_styles = 65_490;
-/// Longest custom format code accepted, in bytes.
+// internal: used inside the xlsx module; apps do not call it.
+// Longest custom format code accepted, in bytes.
 pub const max_number_format_len = 255;
-/// Longest font name accepted, in bytes (Excel's limit is 31 characters).
+// internal: used inside the xlsx module; apps do not call it.
+// Longest font name accepted, in bytes (Excel's limit is 31 characters).
 pub const max_font_name_len = 31;
-/// Largest font size accepted, in points.
+// internal: used inside the xlsx module; apps do not call it.
+// Largest font size accepted, in points.
 pub const max_font_size = 409;
 const builtin_font_name = "Calibri";
 /// Font sizes are kept in tenths of a point.
@@ -267,7 +271,8 @@ pub const Registry = struct {
         self.default_font_size_tenths = size_tenths;
     }
 
-    /// The default font's size in points.
+    // internal: used inside the xlsx module; apps do not call it.
+    // The default font's size in points.
     pub fn defaultFontSize(self: *const Registry) f64 {
         return @as(f64, @floatFromInt(self.default_font_size_tenths)) / 10.0;
     }
@@ -278,8 +283,9 @@ pub const Registry = struct {
             std.ascii.eqlIgnoreCase(self.default_font_name, builtin_font_name);
     }
 
-    /// Returns the id of `style`, registering it if it is new. Memory
-    /// comes from `arena` and is never freed individually.
+    // internal: used inside the xlsx module; apps do not call it.
+    // Returns the id of `style`, registering it if it is new. Memory
+    // comes from `arena` and is never freed individually.
     pub fn intern(self: *Registry, arena: std.mem.Allocator, style: Style) Error!u16 {
         if (self.keys.items.len == 0) try self.keys.append(arena, .default);
 

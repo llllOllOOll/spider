@@ -29,6 +29,7 @@ All from the repo root.
 | SQLite tests | `zig build test-sqlite` | — (the tests get an env stub as their `spider` module) |
 | R2 module tests | `zig build test-r2` | — (signing, addresses, config; no network) |
 | xlsx module tests | `zig build test-xlsx` | — (`cd modules/xlsx && zig build test-libreoffice` needs LibreOffice) |
+| QR code module tests | `zig build test-qrcode` | — |
 | Format | `zig fmt <the files you touched>` | never `zig fmt src` (reformats unrelated files) |
 
 Disposable Postgres for `test-pg`: `docker compose -f docker-compose.test.yml up -d`
