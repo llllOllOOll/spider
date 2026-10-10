@@ -64,6 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handler's own `send` wrote to the socket without the lock that
   `broadcast` from other connections takes, so two frames written at the
   same moment corrupted the stream. `send` now takes the same lock.
+- **SSE: an error returned by a stream's handler left no trace.** It was
+  dropped silently. The server now logs it, with the request id and the
+  path; a client that simply went away is still not logged.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

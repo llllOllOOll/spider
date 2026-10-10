@@ -210,6 +210,22 @@ pub const Sse = struct {
     }
 };
 
+/// True for the errors a handler returns only because its client went
+/// away: every stream ends that way, and it is not worth a log line.
+fn isDisconnect(err: anyerror) bool {
+    return switch (err) {
+        error.WriteFailed,
+        error.BrokenPipe,
+        error.ConnectionResetByPeer,
+        error.EndOfStream,
+        error.AlreadyClosed,
+        error.UnknownConnection,
+        error.Canceled,
+        => true,
+        else => false,
+    };
+}
+
 // Shared by Server.sse() and Group.sse() — kept here (not in core/app.zig)
 // so routing/group.zig can use it without importing app.zig, which would
 // create a circular import (app.zig already imports group.zig for
@@ -261,7 +277,11 @@ pub fn buildHandler(comptime handler: fn (*Sse) anyerror!void) Handler {
             // via sse.setRetry(ms) before/after this from within `handler`.
             sse.setRetry(Hub.default_retry_ms) catch {};
 
-            handler(&sse) catch {};
+            handler(&sse) catch |err| {
+                // The response is already a stream: nothing can be answered
+                // any more, so the log is the only place the error shows.
+                if (!isDisconnect(err)) std.log.warn("rid={s} GET {s}: the SSE handler ended with error.{s}", .{ ctx.requestId(), ctx.getPath(), @errorName(err) });
+            };
             return Response{ .raw = true };
         }
     };
@@ -762,4 +782,13 @@ test "Sse: setRetry and send go through the hub lock when registered" {
     var reader = net.Stream.Reader.init(.{ .socket = sockets[1] }, io, &read_buf);
     try reader.interface.readSliceAll(&buf);
     try testing.expectEqualStrings(expected, &buf);
+}
+
+test "isDisconnect: a client that went away is not news, a failing handler is" {
+    try std.testing.expect(isDisconnect(error.WriteFailed));
+    try std.testing.expect(isDisconnect(error.BrokenPipe));
+    try std.testing.expect(isDisconnect(error.AlreadyClosed));
+    try std.testing.expect(!isDisconnect(error.OutOfMemory));
+    try std.testing.expect(!isDisconnect(error.UniqueViolation));
+    try std.testing.expect(!isDisconnect(error.Unexpected));
 }

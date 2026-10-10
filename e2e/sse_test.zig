@@ -24,6 +24,12 @@ fn multi(sse: *spider.Sse) !void {
     sse.wait();
 }
 
+/// Sends one event, then fails: what a handler does when its query breaks.
+fn failing(sse: *spider.Sse) !void {
+    try sse.send("hello", .{ .n = 1 });
+    return error.Boom;
+}
+
 fn emit(c: *spider.Ctx) !spider.Response {
     const room = c.params.get("room") orelse "lobby";
     const channel = try std.fmt.allocPrint(c.arena, "room:{s}", .{room});
@@ -53,6 +59,7 @@ fn runApp(p: u16) void {
         .sseSweep(null)
         .sse("/events/:room", events)
         .sse("/multi", multi)
+        .sse("/failing", failing)
         .post("/emit/:room", emit, .{})
         .get("/sse-count", count, .{})
         .get("/hello", hello, .{})
@@ -268,4 +275,22 @@ test "default errors (no onError): status mapping, JSON for fetch callers" {
     const missing = try h.request(io, arena.allocator(), port, "/nope", .{ .headers = &.{"Accept: application/json"} });
     try std.testing.expectEqual(@as(u16, 404), missing.status);
     try std.testing.expectEqualStrings("{\"error\":\"NotFound\",\"message\":\"Not Found\"}", missing.body);
+}
+
+test "sse: a handler that returns an error does not disturb the server" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try ensureStarted(io);
+
+    var client: SseClient = .{ .stream = undefined, .reader = undefined, .rbuf = undefined };
+    try client.openPath(io, "/failing");
+    defer client.close(io);
+    try client.expectContains("event: hello");
+
+    // The error itself goes to the log: the response had already started.
+    const res = try h.request(io, arena.allocator(), port, "/hello", .{});
+    try std.testing.expectEqualStrings("hello", res.body);
 }
