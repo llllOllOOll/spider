@@ -17,9 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bigger file answered 404 with a log line that only said
   `StreamTooLong`. The default is the same; the log now names the file,
   the limit and the setting.
-- **`spider.google.authUrlWith(arena, config, .{ .state = ... })`**: the
-  sign-in address with a `state` value, which the callback compares with
-  what it kept for this visitor. `authUrl` sends none.
+- **Google sign-in, complete: `spider.google.login` and
+  `spider.google.callback`.** `login(c, config)` sends the visitor to
+  Google with a random `state` that it also keeps in a cookie;
+  `callback(c, config)` refuses a callback whose state is not this
+  browser's (someone else finishing a login in the visitor's browser),
+  then trades the code and returns the profile. `authUrlWith(arena,
+  config, .{ .state })` is there for an app that keeps the state its own
+  way.
 - **`current_user` in every view.** When the request has a user (a session,
   a token, `c.setUser`), templates can read `current_user.id`,
   `current_user.email` and `current_user.name` without the handler passing
@@ -91,6 +96,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public.** `public_paths` was compared with the path and its query
   string, so `/login?next=/home` was sent back to the login page. Only the
   path counts now.
+- **Google sign-in: a refused code looked like a parse error.**
+  `fetchProfile` did not look at the status of Google's answers. A code
+  Google refuses is `error.OAuthCodeRejected` (401), a profile it does not
+  return is `error.OAuthProfileFailed` (502), and the reason goes to the
+  log.
 - **Google sign-in: the redirect address was not URL-encoded.** A
   `redirect_uri` with a query string of its own leaked its parameters into
   Google's URL. `client_id` and `redirect_uri` are encoded now.

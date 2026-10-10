@@ -1113,6 +1113,13 @@ pub fn statusForError(err: anyerror) std.http.Status {
         error.InvalidNumber,
         error.InvalidEnumTag,
         => .bad_request,
+        // A sign-in through a provider (spider.google): a callback that
+        // is not this browser's or has no code is the client's; a code the
+        // provider refuses leaves the visitor signed out; a provider that
+        // then fails is a bad gateway.
+        error.OAuthStateMismatch, error.OAuthCodeMissing => .bad_request,
+        error.OAuthCodeRejected => .unauthorized,
+        error.OAuthProfileFailed => .bad_gateway,
         error.PayloadTooLarge => .payload_too_large,
         // Postgres (spider.pg typed errors). Input-shaped failures are the
         // client's; conflicts are 409; transient contention is 503 (retrying

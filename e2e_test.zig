@@ -633,6 +633,7 @@ test {
     _ = @import("e2e/websocket_test.zig");
     _ = @import("e2e/clerk_test.zig");
     _ = @import("e2e/http_client_test.zig");
+    _ = @import("e2e/google_test.zig");
 }
 
 // ── middleware chain isolation ──────────────────────────────────────────

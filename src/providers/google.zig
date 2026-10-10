@@ -1,11 +1,27 @@
-//! Google sign-in (`spider.google`): the two calls of the OAuth
-//! authorization-code flow. No middleware and no session: the app decides what
-//! to do with the profile (usually `spider.session.start`).
+//! Google sign-in (`spider.google`): the OAuth authorization-code flow.
+//! `login` sends the visitor to Google, `callback` receives them back,
+//! checks that the login was started by this browser, and returns their
+//! profile. No middleware and no session: the app decides what to do with
+//! the profile (usually `spider.session.start`).
+//!
+//! ```zig
+//! fn googleLogin(c: *spider.Ctx) !spider.Response {
+//!     return spider.google.login(c, google_config);
+//! }
+//!
+//! fn googleCallback(c: *spider.Ctx) !spider.Response {
+//!     const profile = try spider.google.callback(c, google_config);
+//!     return c.redirectWith("/", try spider.session.start(c, .{
+//!         .id = profile.id, .email = profile.email, .name = profile.name,
+//!     }));
+//! }
+//! ```
 
 const std = @import("std");
 const pacman = @import("pacman");
 const url_util = @import("../internal/url.zig");
 const Ctx = @import("../core/context.zig").Ctx;
+const Response = @import("../core/context.zig").Response;
 
 /// The OAuth client created in the Google Cloud console. No field has a
 /// default and nothing is read from the environment: the app fills it.
@@ -17,7 +33,64 @@ pub const GoogleConfig = struct {
     /// The full URL of the app's callback route, as registered for the client.
     /// The same value must be given to `authUrl` and `fetchProfile`.
     redirect_uri: []const u8,
+    /// Google's consent page. Like the two below, it is here so that a test
+    /// can point the flow at a server of its own; an app leaves them alone.
+    auth_endpoint: []const u8 = "https://accounts.google.com/o/oauth2/v2/auth",
+    /// Where the code is exchanged for a token.
+    token_endpoint: []const u8 = "https://oauth2.googleapis.com/token",
+    /// Where the profile is read with the token.
+    userinfo_endpoint: []const u8 = "https://www.googleapis.com/oauth2/v2/userinfo",
 };
+
+/// The cookie `login` sets and `callback` checks.
+pub const state_cookie = "google_oauth_state";
+
+/// What `callback` and `fetchProfile` fail with. The server answers 400 for
+/// the first two, 401 for a refused code and 502 when Google does not give
+/// the profile; an app's `onError` may show a page instead.
+pub const Error = error{
+    /// The `state` of the callback is not the one this browser was given
+    /// by `login` (or there is none): the login was not started here.
+    OAuthStateMismatch,
+    /// The callback came without a `code` (the visitor refused, usually).
+    OAuthCodeMissing,
+    /// Google did not accept the code: used before, expired, or made for
+    /// another client or redirect address.
+    OAuthCodeRejected,
+    /// Google accepted the code and then did not return the profile.
+    OAuthProfileFailed,
+};
+
+/// For the route that starts the sign-in: redirects the visitor to Google's
+/// consent page with a random `state`, also kept in a cookie of this
+/// browser (HttpOnly, SameSite=Lax, 10 minutes; Secure unless
+/// `redirect_uri` is plain http, as on a developer's machine). `callback`
+/// compares the two.
+pub fn login(c: *Ctx, config: GoogleConfig) !Response {
+    var random: [16]u8 = undefined;
+    std.Io.random(c.io(), &random);
+    const state = try c.arena.dupe(u8, &std.fmt.bytesToHex(random, .lower));
+
+    var opts = try c.withCookie(state_cookie, state, .{
+        .max_age = 600,
+        .secure = !std.mem.startsWith(u8, config.redirect_uri, "http://"),
+    });
+    opts.status = .found;
+    return c.redirectWith(try authUrlWith(c.arena, config, .{ .state = state }), opts);
+}
+
+/// For the callback route: checks the `state` against the cookie `login`
+/// set, then exchanges the `code` and returns the profile (`fetchProfile`).
+/// Nothing is asked of Google before the state matches. Fails with one of
+/// `Error`, or with the HTTP client's error when Google cannot be reached.
+pub fn callback(c: *Ctx, config: GoogleConfig) !GoogleProfile {
+    const expected = c.cookie(state_cookie) orelse return error.OAuthStateMismatch;
+    const given = c.queryDecoded("state") orelse return error.OAuthStateMismatch;
+    if (expected.len == 0 or !std.mem.eql(u8, expected, given)) return error.OAuthStateMismatch;
+    const code = c.queryDecoded("code") orelse return error.OAuthCodeMissing;
+    if (code.len == 0) return error.OAuthCodeMissing;
+    return fetchProfile(c, code, config);
+}
 
 /// The user as Google's userinfo endpoint describes them. The strings live in
 /// the request arena.
@@ -55,10 +128,10 @@ pub fn authUrlWith(arena: std.mem.Allocator, config: GoogleConfig, opts: AuthUrl
     var url: std.ArrayList(u8) = .empty;
     try url.print(
         arena,
-        "https://accounts.google.com/o/oauth2/v2/auth" ++
-            "?client_id={s}&redirect_uri={s}&response_type=code" ++
+        "{s}?client_id={s}&redirect_uri={s}&response_type=code" ++
             "&scope=openid%20email%20profile&access_type=offline",
         .{
+            config.auth_endpoint,
             try url_util.encodeQueryValue(arena, config.client_id),
             try url_util.encodeQueryValue(arena, config.redirect_uri),
         },
@@ -68,13 +141,16 @@ pub fn authUrlWith(arena: std.mem.Allocator, config: GoogleConfig, opts: AuthUrl
 }
 
 // Profile is allocated in c.arena — freed automatically at end of request.
-/// For the callback route: exchanges `code` (the callback's `?code=`) for an
-/// access token and fetches the user's profile with it. Two HTTP requests to
-/// Google. The profile is allocated in `c.arena`. Fails with the HTTP
-/// client's error, or with the JSON parser's error when Google answers with
-/// something else than a token or a profile (a refused code, for one).
+/// Exchanges `code` (the callback's `?code=`) for an access token and
+/// fetches the user's profile with it: two HTTP requests to Google. The
+/// profile is allocated in `c.arena`. It does not look at the `state`:
+/// `callback` does, and is the one a callback route should call.
+///
+/// Fails with error.OAuthCodeRejected when Google does not accept the code,
+/// error.OAuthProfileFailed when it then does not return the profile, or
+/// the HTTP client's error when it cannot be reached.
 pub fn fetchProfile(c: *Ctx, code: []const u8, config: GoogleConfig) !GoogleProfile {
-    var token_res = try pacman.post(c._io, c.arena, "https://oauth2.googleapis.com/token", .{
+    var token_res = try pacman.post(c.io(), c.arena, config.token_endpoint, .{
         .body = .{ .form = &.{
             .{ "code", code },
             .{ "client_id", config.client_id },
@@ -84,10 +160,15 @@ pub fn fetchProfile(c: *Ctx, code: []const u8, config: GoogleConfig) !GoogleProf
         } },
     });
     defer token_res.deinit();
+    if (token_res.status != .ok) {
+        std.log.warn("[google] the code was refused: {d} {s}", .{ @backingInt(token_res.status), token_res.body_text });
+        return error.OAuthCodeRejected;
+    }
 
-    const TokenResponse = struct { access_token: []const u8 };
-    const parsed_token = try token_res.json(TokenResponse);
+    const TokenResponse = struct { access_token: []const u8 = "" };
+    const parsed_token = token_res.json(TokenResponse) catch return error.OAuthCodeRejected;
     defer parsed_token.deinit();
+    if (parsed_token.value.access_token.len == 0) return error.OAuthCodeRejected;
 
     const auth_header = try std.fmt.allocPrint(
         c.arena,
@@ -95,20 +176,24 @@ pub fn fetchProfile(c: *Ctx, code: []const u8, config: GoogleConfig) !GoogleProf
         .{parsed_token.value.access_token},
     );
 
-    var profile_res = try pacman.get(c._io, c.arena, "https://www.googleapis.com/oauth2/v2/userinfo", .{
+    var profile_res = try pacman.get(c.io(), c.arena, config.userinfo_endpoint, .{
         .headers = &.{
             .{ .name = "Authorization", .value = auth_header },
         },
     });
     defer profile_res.deinit();
+    if (profile_res.status != .ok) {
+        std.log.warn("[google] no profile for the token: {d}", .{@backingInt(profile_res.status)});
+        return error.OAuthProfileFailed;
+    }
 
     const RawProfile = struct {
         id: []const u8,
-        email: []const u8,
-        name: []const u8,
-        picture: []const u8,
+        email: []const u8 = "",
+        name: []const u8 = "",
+        picture: []const u8 = "",
     };
-    const parsed_profile = try profile_res.json(RawProfile);
+    const parsed_profile = profile_res.json(RawProfile) catch return error.OAuthProfileFailed;
     defer parsed_profile.deinit();
 
     return GoogleProfile{
