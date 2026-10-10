@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spider.pg`: an array column maps to a slice field.** A struct with
+  `features: []const []const u8` takes a `TEXT[]` column, `ids: []const
+  i64` a `BIGINT[]`, and so on for every element type a field can have.
+  It did not compile before, and the way around was to turn the array
+  into text in the query. One dimension; a NULL element needs an
+  optional element type (`[]const ?i32`), otherwise it is
+  `error.UnexpectedNull`; an array of arrays is `error.TypeMismatch`.
 - **`QR.encodeAuto(allocator, text, ecc)`** (`spider.qrcode`): the
   smallest version the text fits in. `encode` takes a fixed version, so
   every app wrote its own loop over the versions.

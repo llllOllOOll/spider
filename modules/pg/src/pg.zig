@@ -500,6 +500,7 @@ fn decodeField(comptime T: type, data: []const u8, oid: i32, arena: std.mem.Allo
         // enum columns arrive as their label; also accept a text cast
         return std.meta.stringToEnum(T, data) orelse error.InvalidEnumValue;
     }
+    if (comptime isArrayField(T)) return decodeArray(info.pointer.child, data, arena);
     return switch (T) {
         []const u8 => try textOf(arena, data, oid),
         bool => switch (oid) {
@@ -518,9 +519,49 @@ fn decodeField(comptime T: type, data: []const u8, oid: i32, arena: std.mem.Allo
     };
 }
 
+/// A slice field other than text: it takes an array column.
+fn isArrayField(comptime T: type) bool {
+    const info = @typeInfo(T);
+    return T != []const u8 and info == .pointer and info.pointer.size == .slice;
+}
+
+/// An array column (TEXT[], INT4[], ...) as a slice of `Elem`, allocated in
+/// `arena`. Postgres sends: how many dimensions, a flag, the element type,
+/// then for each dimension its length and lower bound, then each element
+/// as a length (-1 for NULL) and its bytes. One dimension only: an array of
+/// arrays is error.TypeMismatch, and so is a column that is not an array.
+fn decodeArray(comptime Elem: type, data: []const u8, arena: std.mem.Allocator) ![]const Elem {
+    if (data.len < 12) return error.TypeMismatch;
+    const dimensions = std.mem.readInt(i32, data[0..4], .big);
+    const element_oid = std.mem.readInt(i32, data[8..12], .big);
+    if (dimensions == 0) return &.{};
+    if (dimensions != 1 or data.len < 20) return error.TypeMismatch;
+    const count = std.mem.readInt(i32, data[12..16], .big);
+    if (count < 0) return error.TypeMismatch;
+
+    const out = try arena.alloc(Elem, @intCast(count));
+    var at: usize = 20;
+    for (out) |*item| {
+        if (data.len < at + 4) return error.TypeMismatch;
+        const len = std.mem.readInt(i32, data[at..][0..4], .big);
+        at += 4;
+        if (len < 0) {
+            if (@typeInfo(Elem) != .optional) return error.UnexpectedNull;
+            item.* = null;
+            continue;
+        }
+        const size: usize = @intCast(len);
+        if (data.len < at + size) return error.TypeMismatch;
+        item.* = try decodeField(Elem, data[at..][0..size], element_oid, arena);
+        at += size;
+    }
+    return out;
+}
+
 fn zeroValue(comptime T: type) T {
     const info = @typeInfo(T);
     if (info == .optional) return null;
+    if (comptime isArrayField(T)) return &.{};
     if (info == .@"enum") return @fromBackingInt(@intCast(0));
     return switch (T) {
         []const u8 => "",
@@ -665,7 +706,10 @@ fn execTypedOne(
 /// - a struct: every row as a `[]T` allocated in `arena`. A field takes the
 ///   column of the same name. Fields may be `[]const u8`, `bool`, integers
 ///   (`i8` to `i64`, `u8` to `u64`), `f32`, `f64`, enums (the label of a
-///   Postgres enum or a text) and optionals of those. A `[]const u8` field
+///   Postgres enum or a text), optionals of those, and slices of those for
+///   an array column: `tags: []const []const u8` takes a `TEXT[]`,
+///   `ids: []const i64` a `BIGINT[]` (one dimension; a NULL element needs
+///   an optional element type). A `[]const u8` field
 ///   accepts any column: bool, integers, floats, numeric, uuid, date, time
 ///   ("07:05:09", fractions dropped), timestamp and jsonb come as text
 ///   ("2026-09-26T18:40:33.183Z" for a timestamptz, in UTC); any other
@@ -2147,3 +2191,50 @@ test "queryWith (deprecated) - a failure is a typed error with lastError(), like
     try std.testing.expectError(error.DivisionByZero, queryWith("SELECT 1 / (2 - g) AS v FROM generate_series(1, 3) AS g", .{}));
     try std.testing.expectEqualStrings("22012", lastError().?.code);
 }
+
+test "mapping: an array column becomes a slice field" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Room = struct { name: []const u8, features: []const []const u8, floors: []const i32 };
+    const room = (try queryOne(Room, a, "SELECT 'Atlas'::text AS name, ARRAY['projector', 'video call']::text[] AS features, ARRAY[1, 2, 3]::int4[] AS floors", .{})).?;
+    try std.testing.expectEqual(@as(usize, 2), room.features.len);
+    try std.testing.expectEqualStrings("projector", room.features[0]);
+    try std.testing.expectEqualStrings("video call", room.features[1]);
+    try std.testing.expectEqualSlices(i32, &.{ 1, 2, 3 }, room.floors);
+
+    // An empty array is an empty slice; other element types work the same.
+    const Mixed = struct { none: []const []const u8, big: []const i64, flags: []const bool, ratios: []const f64 };
+    const mixed = (try queryOne(Mixed, a, "SELECT '{}'::text[] AS none, ARRAY[9000000000]::int8[] AS big, ARRAY[true, false] AS flags, ARRAY[0.5, 1.5]::float8[] AS ratios", .{})).?;
+    try std.testing.expectEqual(@as(usize, 0), mixed.none.len);
+    try std.testing.expectEqual(@as(i64, 9_000_000_000), mixed.big[0]);
+    try std.testing.expectEqualSlices(bool, &.{ true, false }, mixed.flags);
+    try std.testing.expectEqual(@as(f64, 1.5), mixed.ratios[1]);
+
+    // NULL: the whole array into an optional field, one element into an optional element.
+    const Maybe = struct { tags: ?[]const []const u8, marks: []const ?i32 };
+    const maybe = (try queryOne(Maybe, a, "SELECT NULL::text[] AS tags, ARRAY[1, NULL, 3]::int4[] AS marks", .{})).?;
+    try std.testing.expect(maybe.tags == null);
+    try std.testing.expectEqual(@as(?i32, 1), maybe.marks[0]);
+    try std.testing.expectEqual(@as(?i32, null), maybe.marks[1]);
+
+    // What does not fit is an error, as for any other field.
+    const Tags = struct { tags: []const []const u8 };
+    try std.testing.expectError(error.UnexpectedNull, queryOne(struct { marks: []const i32 }, a, "SELECT ARRAY[1, NULL]::int4[] AS marks", .{}));
+    try std.testing.expectError(error.TypeMismatch, queryOne(Tags, a, "SELECT ARRAY[ARRAY['a'], ARRAY['b']]::text[] AS tags", .{}));
+    try std.testing.expectError(error.TypeMismatch, queryOne(Tags, a, "SELECT 'not an array'::text AS tags", .{}));
+
+    // Many rows, and a real table with a filter on the array.
+    try execRaw("CREATE TEMP TABLE spider_array_test (name text, features text[] NOT NULL DEFAULT '{}'); INSERT INTO spider_array_test VALUES ('Atlas', '{projector,whiteboard}'), ('Echo', '{}'), ('Birch', '{screen,whiteboard}')");
+    defer execRaw("DROP TABLE IF EXISTS spider_array_test") catch {};
+    const wanted = [_][]const u8{"whiteboard"};
+    const rows = try query(Room2, a, "SELECT name, features FROM spider_array_test WHERE features @> $1 ORDER BY name", .{array([]const u8, &wanted)});
+    try std.testing.expectEqual(@as(usize, 2), rows.len);
+    try std.testing.expectEqualStrings("Atlas", rows[0].name);
+    try std.testing.expectEqualStrings("whiteboard", rows[1].features[1]);
+}
+
+const Room2 = struct { name: []const u8, features: []const []const u8 };

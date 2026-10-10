@@ -102,6 +102,7 @@ Needs `.pg = true` on the dependency. `init(allocator, io, .{ .host, .port, .dat
 - `query(comptime T, arena, sql, params_tuple) ![]T` (`T = void` for statements), `queryOne(T, arena, sql, params) !?T`, `queryExecute(T, arena, sql)` (no params; `void` allows several `;`-separated statements), `queryOneExecute(T, arena, sql) !?T`. Params are `$1..$n`, bound, never interpolated. Struct fields map to column names; `?T` for nullable columns.
 - Transactions: `var tx = try pg.begin(); defer tx.rollback(); try tx.query(void, arena, sql, params); try tx.commit();` or `pg.transaction(...)`. `pg.exec("BEGIN")` is refused (`error.UseBeginForTransactions`).
 - Errors: typed `pg.DbError` (`UniqueViolation`, `ForeignKeyViolation`, `NotNullViolation`, `CheckViolation`, ...), details via `pg.lastError() ?pg.ErrorInfo`.
+- Array columns: a slice field takes one (`tags: []const []const u8` for `TEXT[]`, `ids: []const i64` for `BIGINT[]`; one dimension; a NULL element needs an optional element type, an empty array is an empty slice). As a parameter: `spider.pg.array([]const u8, wanted)` with `= ANY($1)` or `features @> $1`.
 - Deprecated: `exec`, `execRaw`, `queryWith`, `queryRaw`, `queryRow`, `queryAs`, `queryOneAs`. (`queryOneWith` and `pg.Config` are gone: use `queryOne` and `DbConfig`.)
 
 ## SQLite — `spider.sqlite`
