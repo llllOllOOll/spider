@@ -1782,7 +1782,7 @@ pub fn server() Server(EmptyDeco) {
 pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
     if (@hasDecl(@import("spider_config"), "is_default")) {
         std.log.warn(
-            "No spider.config.zig found. Running with defaults: views_dir=\"./views\", port=3000, env=development. " ++
+            "No spider.config.zig found. Running with defaults: views_dir=\"./views\", port=3000. " ++
                 "Runtime template loading may not work without it. " ++
                 "Create spider.config.zig in your project root to customize.",
             .{},

@@ -1158,7 +1158,6 @@ pub const config = spider.Config{
     .port = 3000,
     .host = "0.0.0.0",
     .views_dir = "./src",          // runtime template mode
-    .env = .development,           // not read by Spider today
     .keepalive_timeout_ms = 120_000,
     .header_timeout_ms = 30_000,
     .body_timeout_ms = 60_000,

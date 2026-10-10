@@ -272,4 +272,6 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 - `.env.local` is yours and not in git. `spider.env` loads it, so a `PORT`
   line in it moves any app in this tree that calls `listen()` without a
   port.
-- `Config.env` is not read by anything today.
+- `Config.layout` and `Config.env` are deprecated: nothing reads them. They
+  stay so that existing `spider.config.zig` files compile; do not give them
+  a meaning, and do not write them in new code or generated files.

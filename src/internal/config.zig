@@ -21,8 +21,6 @@ pub const Env = enum {
 ///
 /// pub const config = spider.Config{
 ///     .views_dir = "./src",
-///     .layout = "layout",
-///     .env = .development,
 ///     .port = 3000,
 ///     .host = "0.0.0.0",
 /// };
@@ -44,8 +42,9 @@ pub const Config = struct {
     /// generated app sets "./src"). null: `c.view()` fails with
     /// error.ViewsNotConfigured, embedded templates or not.
     views_dir: ?[]const u8 = "./views",
-    /// Nothing uses it today: a template names its layout itself, with
-    /// `extends "layout"`. Default "layout".
+    /// Deprecated: nothing reads it, and it will be removed in a future
+    /// release. A template names its layout itself, with `extends
+    /// "layout"`. Remove the line from `spider.config.zig`.
     layout: ?[]const u8 = "layout",
     /// Directory served as static files at "/" (before routing and before
     /// any middleware: always public). null: no static files.
@@ -55,8 +54,10 @@ pub const Config = struct {
     /// memory for each request, so raise it with care; bigger files belong
     /// in object storage or behind the proxy. Default: 10 MiB.
     static_max_file_bytes: usize = 10 * 1024 * 1024,
-    /// The environment the app declares. Nothing in Spider reads it today:
-    /// it does not change any behaviour. Default `.development`.
+    /// Deprecated: nothing reads it (it changes no behaviour), and it will
+    /// be removed in a future release. Remove the line from
+    /// `spider.config.zig`; what differs between environments goes in the
+    /// `.env` files (`SPIDER_ENV` picks `.env.<name>`).
     env: Env = .development,
     /// Accept threads of the threaded I/O backend (null: one per CPU).
     /// Ignored by the zio backend.

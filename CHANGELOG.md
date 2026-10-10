@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Config.layout` and `Config.env` are deprecated.** Nothing reads
+  either (a template names its layout with `extends`; the environment
+  changes no behaviour). They still compile, and will be removed in a
+  future release: take the two lines out of `spider.config.zig`. New
+  projects are generated without them.
 - **Breaking: `QR.encode` with a version outside 1-40 is
   `error.InvalidVersion`.** It was an assertion: a stop in a Debug
   build and undefined behaviour in a release one.
