@@ -626,7 +626,9 @@ pub const Hub = struct {
         try writer.flush();
     }
 
-    fn sendText(self: *Hub, stream: net.Stream, text: []const u8) !void {
+    // internal: one WebSocket text frame to `stream`; `Ws.send` calls it
+    // through writeToConn, under the connection's lock.
+    pub fn sendText(self: *Hub, stream: net.Stream, text: []const u8) !void {
         var write_buf: [4096]u8 = undefined;
         var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
         const writer = &sw.interface;

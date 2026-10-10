@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PostgreSQL: `pg.array(T, values)` never worked.** Every query that
   used it failed with `error.CannotBindStruct`. It now sends the list, as
   a plain slice parameter already did.
+- **WebSocket: `Ws.send` could mix its bytes with a broadcast.** A
+  handler's own `send` wrote to the socket without the lock that
+  `broadcast` from other connections takes, so two frames written at the
+  same moment corrupted the stream. `send` now takes the same lock.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

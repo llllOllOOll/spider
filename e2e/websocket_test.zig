@@ -5,7 +5,9 @@ const std = @import("std");
 const spider = @import("spider");
 
 /// Echoes every message. "join:7" puts the connection on user 7's channel;
-/// "tell:7:hello" sends "hello" to that channel.
+/// "tell:7:hello" sends "hello" to that channel. "flood" sends this
+/// connection many messages of 'a'; "shout" broadcasts as many of 'b' to
+/// everyone.
 fn chat(ws: *spider.Ws) !void {
     while (try ws.next()) |message| {
         const text = message.data;
@@ -18,11 +20,20 @@ fn chat(ws: *spider.Ws) !void {
             var buf: [32]u8 = undefined;
             const channel = try std.fmt.bufPrint(&buf, "user:{s}", .{rest[0..colon]});
             ws.broadcastTo(channel, rest[colon + 1 ..]);
+        } else if (std.mem.eql(u8, text, "flood")) {
+            const mine: [flood_size]u8 = @splat('a');
+            for (0..flood_count) |_| try ws.send(&mine);
+        } else if (std.mem.eql(u8, text, "shout")) {
+            const everyone: [flood_size]u8 = @splat('b');
+            for (0..flood_count) |_| ws.broadcast(&everyone);
         } else {
             try ws.send(text);
         }
     }
 }
+
+const flood_count = 3000;
+const flood_size = 100;
 
 fn alive(c: *spider.Ctx) !spider.Response {
     return c.text("alive", .{});
@@ -95,10 +106,20 @@ const Client = struct {
     }
 
     fn more(self: *Client) !void {
-        if (self.len == self.seen.len) return error.TestUnexpectedResult;
-        var vecs: [1][]u8 = .{self.seen[self.len..]};
-        const n = try self.reader.interface.readVec(&vecs);
-        if (n == 0) return error.EndOfStream;
+        if (self.len == self.seen.len) {
+            // Full: drop what was already read. (Payloads handed out
+            // before this point are gone; look at each one right away.)
+            if (self.at == 0) return error.TestUnexpectedResult;
+            std.mem.copyForwards(u8, self.seen[0 .. self.len - self.at], self.seen[self.at..self.len]);
+            self.len -= self.at;
+            self.at = 0;
+        }
+        // Whatever the reader has, at least one byte: it waits on the
+        // socket only when it holds nothing.
+        const got = try self.reader.interface.peekGreedy(1);
+        const n = @min(got.len, self.seen.len - self.len);
+        @memcpy(self.seen[self.len..][0..n], got[0..n]);
+        self.reader.interface.toss(n);
         self.len += n;
     }
 
@@ -188,4 +209,44 @@ test "websocket: joinUser puts the connection on the user's channel, and it stay
     try other.expectText("ping me");
     try ana.sendText("three");
     try ana.expectText("three");
+}
+
+/// Reads `count` frames and throws them away.
+fn drain(client: *Client, count: usize) void {
+    for (0..count) |_| _ = client.next() catch return;
+}
+
+test "websocket: a handler's own send and a broadcast from another connection never mix their bytes" {
+    const app = try spider.testing.start(run);
+    var ana: Client = undefined;
+    try ana.open(std.testing.io, app.port);
+    defer ana.close();
+    var other: Client = undefined;
+    try other.open(std.testing.io, app.port);
+    defer other.close();
+
+    // Both start writing to ana's socket at once: her handler with send(),
+    // the other connection's handler with broadcast().
+    try ana.sendText("flood");
+    try other.sendText("shout");
+
+    // The broadcast goes to the other connection too. Someone has to read
+    // it there, or its socket fills up and the server waits on it.
+    const reader = try std.Thread.spawn(.{}, drain, .{ &other, flood_count });
+    defer reader.join();
+
+    var from_send: usize = 0;
+    var from_broadcast: usize = 0;
+    while (from_send < flood_count or from_broadcast < flood_count) {
+        const frame = try ana.next();
+        // Every frame is whole: a text frame of one letter, start to end.
+        try std.testing.expectEqual(@as(u8, 0x1), frame.opcode);
+        try std.testing.expectEqual(@as(usize, flood_size), frame.payload.len);
+        const letter = frame.payload[0];
+        try std.testing.expect(letter == 'a' or letter == 'b');
+        for (frame.payload) |byte| try std.testing.expectEqual(letter, byte);
+        if (letter == 'a') from_send += 1 else from_broadcast += 1;
+    }
+    try std.testing.expectEqual(@as(usize, flood_count), from_send);
+    try std.testing.expectEqual(@as(usize, flood_count), from_broadcast);
 }

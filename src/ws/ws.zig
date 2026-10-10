@@ -82,7 +82,13 @@ pub const Ws = struct {
 
     /// Sends a text message to this connection only.
     pub fn send(self: *Ws, text: []const u8) !void {
-        try self._server.sendText(text);
+        // Under the hub's lock for this connection: a broadcast from
+        // another connection writes to the same socket, and two writers
+        // at once mix the bytes of their frames.
+        self._hub.writeToConn(self._conn_id, Hub.sendText, .{text}) catch |err| switch (err) {
+            error.UnknownConnection => return self._server.sendText(text),
+            else => return err,
+        };
     }
 
     /// Sends a text message to every connection of this route, this one
