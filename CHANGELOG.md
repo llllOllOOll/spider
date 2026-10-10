@@ -223,6 +223,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged like the other operations, and the unused address `init`
   allocated and never freed is gone. The module's tests were never run by
   any build step: `zig build test-r2` runs them now.
+- **Web Push: a payload too big was encrypted and sent anyway.** The
+  push service then refused it. It is `error.PayloadTooLarge` before
+  anything is sent, and `spider.push.max_payload_len` (3993 bytes) says
+  how much fits. Also: the VAPID token is written as JSON properly (a
+  quote in the configured subject broke it), and the clock is read
+  through `std.Io` instead of a Linux system call.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

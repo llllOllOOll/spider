@@ -107,6 +107,8 @@ pub const WebPush = struct {
     /// A key that is not base64url, a `p256dh` that is not a point of the
     /// curve and an endpoint that is not a URL fail too, with the error of
     /// the decoder, of the curve or of the URL parser.
+    /// `error.PayloadTooLarge` when `payload` is longer than
+    /// `max_payload_len` (3993 bytes): what one push message holds.
     pub fn sendRaw(
         self: *const WebPush,
         arena: std.mem.Allocator,
@@ -182,12 +184,21 @@ pub const WebPush = struct {
 
 const RS: u32 = 4096;
 
+/// The largest payload one push message carries, in bytes. Push services
+/// take a body of 4096 bytes at most; 86 of them are the header of the
+/// encrypted content and 17 the padding mark and the authentication tag.
+pub const max_payload_len = 4096 - 86 - 17;
+
 fn encryptPayload(
     allocator: std.mem.Allocator,
     io: std.Io,
     subscription: PushSubscription,
     payload: []const u8,
 ) ![]u8 {
+    // More than one message holds is refused here: the service would
+    // refuse it anyway, after the work of encrypting and sending it.
+    if (payload.len > max_payload_len) return error.PayloadTooLarge;
+
     // 1. Decode subscription keys
     var ua_public: [65]u8 = undefined;
     try base64urlDecode(&ua_public, subscription.p256dh);
@@ -258,7 +269,7 @@ fn encryptPayload(
 
 fn buildVapidJwt(
     allocator: std.mem.Allocator,
-    _: std.Io,
+    io: std.Io,
     config: PushConfig,
     audience: []const u8,
 ) ![]const u8 {
@@ -268,10 +279,14 @@ fn buildVapidJwt(
     const header_b64 = try base64urlEncode(allocator, "{\"typ\":\"JWT\",\"alg\":\"ES256\"}");
     defer allocator.free(header_b64);
 
-    const exp = timestampSec() + 43200;
-    const payload_str = try std.fmt.allocPrint(allocator, "{{\"aud\":\"{s}\",\"exp\":{d},\"sub\":\"{s}\"}}", .{
-        audience, exp, config.subject,
-    });
+    const exp = timestampSec(io) + 43200;
+    // Through the JSON writer: a quote or a backslash in the subject (it
+    // comes from the app's configuration) must not break the token.
+    const payload_str = try std.json.Stringify.valueAlloc(allocator, .{
+        .aud = audience,
+        .exp = exp,
+        .sub = config.subject,
+    }, .{});
     defer allocator.free(payload_str);
     const payload_b64 = try base64urlEncode(allocator, payload_str);
     defer allocator.free(payload_b64);
@@ -325,10 +340,10 @@ fn extractOrigin(allocator: std.mem.Allocator, url: []const u8) ![]const u8 {
     });
 }
 
-fn timestampSec() i64 {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
-    return @as(i64, @intCast(ts.sec));
+/// Seconds since 1970, by the clock of `io` (not one operating system's
+/// clock call).
+fn timestampSec(io: std.Io) i64 {
+    return @intCast(@divFloor(std.Io.Clock.now(.real, io).nanoseconds, std.time.ns_per_s));
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────
@@ -465,4 +480,53 @@ test "a subscription key of the wrong length is an error, not a write outside th
         .auth = too_long,
     };
     try std.testing.expectError(error.InvalidKeyLength, encryptPayload(arena.allocator(), std.testing.io, forged, "hello"));
+}
+
+test "a payload too big for one push message is an error, before anything is encrypted" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    const keys = WebPush.generateKeys(io);
+    const subscription: PushSubscription = .{
+        .endpoint = "https://push.example.com/send/abc",
+        .p256dh = try base64urlEncode(a, &keys.public_key),
+        .auth = try base64urlEncode(a, &@as([16]u8, @splat(1))),
+    };
+
+    // The largest that fits, and one byte more.
+    const fits: [max_payload_len]u8 = @splat('x');
+    const body = try encryptPayload(a, io, subscription, &fits);
+    try std.testing.expect(body.len <= 4096);
+    const over: [max_payload_len + 1]u8 = @splat('x');
+    try std.testing.expectError(error.PayloadTooLarge, encryptPayload(a, io, subscription, &over));
+}
+
+test "the VAPID token is valid JSON whatever the subject holds" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+
+    const keys = WebPush.generateKeys(io);
+    const token = try buildVapidJwt(a, io, .{
+        .public_key = try base64urlEncode(a, &keys.public_key),
+        .private_key = try base64urlEncode(a, &keys.private_key),
+        .subject = "mailto:\"ops\" <ops@example.com>",
+    }, "https://push.example.com");
+
+    var parts = std.mem.splitScalar(u8, token, '.');
+    _ = parts.next();
+    const payload_b64 = parts.next().?;
+    const payload = try a.alloc(u8, try std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(payload_b64));
+    try std.base64.url_safe_no_pad.Decoder.decode(payload, payload_b64);
+
+    const Claims = struct { aud: []const u8, exp: i64, sub: []const u8 };
+    const claims = try std.json.parseFromSliceLeaky(Claims, a, payload, .{});
+    try std.testing.expectEqualStrings("mailto:\"ops\" <ops@example.com>", claims.sub);
+    try std.testing.expectEqualStrings("https://push.example.com", claims.aud);
+    // Twelve hours from now, by the clock of the Io it was given.
+    const now: i64 = @intCast(@divFloor(std.Io.Clock.now(.real, io).nanoseconds, std.time.ns_per_s));
+    try std.testing.expect(claims.exp > now + 43000 and claims.exp < now + 43400);
 }
