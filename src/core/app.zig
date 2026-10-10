@@ -772,7 +772,16 @@ fn buildWsWrapper(comptime handler: fn (*Ws) anyerror!void) Handler {
                 .io = ctx._io,
             };
 
-            try handler(&ws);
+            handler(&ws) catch |err| {
+                // The protocol was switched: an HTTP error can no longer be
+                // answered (it would be read as a broken frame). The error
+                // goes to the log, and the client is told why the socket
+                // closes: 1011, the server met something unexpected.
+                if (!sse_mod.isDisconnect(err)) {
+                    std.log.warn("rid={s} GET {s}: the WebSocket handler ended with error.{s}", .{ ctx.requestId(), ctx.getPath(), @errorName(err) });
+                    ws._server.sendClose(1011) catch {};
+                }
+            };
             return Response{ .raw = true, .status = .switching_protocols };
         }
     };
@@ -1138,11 +1147,16 @@ pub fn Server(comptime T: type) type {
         /// }
         /// ```
         ///
+        /// An error the handler returns is logged (with the request id) and
+        /// the client gets a close frame with code 1011 before the
+        /// connection closes; `onError` is not called, since no HTTP answer
+        /// can be sent any more.
+        ///
         /// Each WebSocket route has a hub of its own (`c.wsHub()`). The route
-        /// takes no config, so it declares no access: guard it with `useAt`.
-        /// With `require_route_access` on, `listen()` refuses to start while
-        /// such a route exists. A request that is not a WebSocket upgrade gets
-        /// an empty 200.
+        /// takes no config, so it declares no access: use `wsWith` to say
+        /// who may open it. With `require_route_access` on, `listen()`
+        /// refuses to start while a route registered with `ws` exists. A
+        /// request that is not a WebSocket upgrade gets an empty 200.
         pub fn ws(self: *Self, path: []const u8, comptime handler: fn (*Ws) anyerror!void) *Self {
             return self.wsRoute(path, handler, &.{}, .{});
         }

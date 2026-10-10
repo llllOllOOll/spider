@@ -241,9 +241,10 @@ fn corsOrigin(allowed: []const []const u8, origin: ?[]const u8) ?[]const u8 {
     return null;
 }
 
-/// True for the errors a handler returns only because its client went
-/// away: every stream ends that way, and it is not worth a log line.
-fn isDisconnect(err: anyerror) bool {
+// internal: true for the errors a handler returns only because its client
+// went away: every stream ends that way, and it is not worth a log line.
+// The WebSocket wrapper in core/app.zig uses it too.
+pub fn isDisconnect(err: anyerror) bool {
     return switch (err) {
         error.WriteFailed,
         error.BrokenPipe,

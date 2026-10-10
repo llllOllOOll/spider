@@ -20,6 +20,9 @@ fn chat(ws: *spider.Ws) !void {
             var buf: [32]u8 = undefined;
             const channel = try std.fmt.bufPrint(&buf, "user:{s}", .{rest[0..colon]});
             ws.broadcastTo(channel, rest[colon + 1 ..]);
+        } else if (std.mem.eql(u8, text, "fail")) {
+            // What a handler does when its own work breaks mid-conversation.
+            return error.Boom;
         } else if (std.mem.eql(u8, text, "flood")) {
             const mine: [flood_size]u8 = @splat('a');
             for (0..flood_count) |_| try ws.send(&mine);
@@ -275,4 +278,27 @@ test "websocket: wsWith says who may open the socket" {
     try std.testing.expect(std.mem.startsWith(u8, visitor.seen[0..visitor.len], "HTTP/1.1 101"));
     try visitor.sendText("hello");
     try visitor.expectText("hello");
+}
+
+test "websocket: a handler that returns an error closes the socket; no HTTP answer is written into it" {
+    const app = try spider.testing.start(run);
+    var client: Client = undefined;
+    try client.open(std.testing.io, app.port);
+    defer client.close();
+
+    try client.sendText("fail");
+
+    // The server says the socket is closing and why (1011: it met
+    // something unexpected), in the protocol's own terms: never the text
+    // of an HTTP response, which a browser would read as a broken frame.
+    const frame = try client.next();
+    try std.testing.expectEqual(@as(u8, 0x8), frame.opcode);
+    try std.testing.expectEqual(@as(u16, 1011), std.mem.readInt(u16, frame.payload[0..2], .big));
+    // And then it does close.
+    try std.testing.expectError(error.EndOfStream, client.more());
+
+    // The server goes on.
+    var res = try app.get("/alive");
+    defer res.deinit();
+    try res.expectStatus(200);
 }

@@ -171,6 +171,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP layer asserts that those methods carry none; `spider.http_client`
   passed the body along. It is `error.BodyNotAllowed` now, before anything
   is sent.
+- **WebSocket: a handler's error was answered with HTTP inside the open
+  socket.** After the protocol had been switched, an error returned by
+  the handler went through the normal error path: the text of an HTTP
+  500 was written into the WebSocket stream and the connection stayed
+  open. The error is logged now, the client gets a close frame (1011)
+  and the connection closes.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.
