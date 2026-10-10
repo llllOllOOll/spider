@@ -6,8 +6,8 @@ const http = std.http;
 /// The headers a server answered with. Names and values live in the
 /// response: they are gone after `Response.deinit()`.
 pub const Headers = struct {
-    /// Every header, in the order received. A header with an empty value is
-    /// left out.
+    /// Every header, in the order received; a name sent twice is here
+    /// twice. A header with an empty value is left out.
     items: []http.Header,
 
     /// The value of the first header called `name` (case does not matter), or

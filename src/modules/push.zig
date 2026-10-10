@@ -100,9 +100,13 @@ pub const WebPush = struct {
     /// are not the ones the subscription was made with), `error.PushSendFailed`
     /// for any other status that is not 200, 201 or 204, and with the HTTP
     /// client's error when the service cannot be reached.
-    /// `error.InvalidKeyLength` when a key of the subscription or of the
-    /// config does not have the size its kind has (a forged or damaged
-    /// subscription): nothing is sent.
+    /// `error.InvalidKeyLength` when `p256dh` or `auth` of the subscription,
+    /// or the private key of the config, does not decode to the size its kind
+    /// has (65, 16 and 32 bytes; a forged or damaged subscription): nothing is
+    /// sent. The public key of the config is not checked: it is sent as it is.
+    /// A key that is not base64url, a `p256dh` that is not a point of the
+    /// curve and an endpoint that is not a URL fail too, with the error of
+    /// the decoder, of the curve or of the URL parser.
     pub fn sendRaw(
         self: *const WebPush,
         arena: std.mem.Allocator,

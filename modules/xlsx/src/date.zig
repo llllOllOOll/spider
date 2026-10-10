@@ -96,7 +96,8 @@ pub const TimeOfDay = struct {
     second: u8,
     millisecond: u16,
 
-    /// From the fraction of a day, rounded to the millisecond.
+    /// From the fraction of a day (0 up to 1, never negative), rounded to
+    /// the millisecond; anything from 1 on gives 23:59:59.999.
     pub fn fromFraction(fraction: f64) TimeOfDay {
         const ms: u32 = @min(86_399_999, @as(u32, @intFromFloat(@round(fraction * 86_400_000.0))));
         return .{
@@ -109,8 +110,9 @@ pub const TimeOfDay = struct {
 };
 
 /// The date and time a serial number stands for, or null when it is
-/// not a date a spreadsheet can show: negative, past 9999-12-31, or
-/// the phantom day 60 of the 1900 system.
+/// not a date a spreadsheet can show: not finite, negative, past
+/// 9999-12-31, or, in the 1900 system, below 1 (day 0, a time of day
+/// alone) or the phantom day 60. The time is rounded to the millisecond.
 pub fn fromSerial(serial: f64, system: DateSystem) ?DateTime {
     if (!std.math.isFinite(serial) or serial < 0 or serial >= 2_958_466) return null;
     var day: u32 = @intFromFloat(@floor(serial));

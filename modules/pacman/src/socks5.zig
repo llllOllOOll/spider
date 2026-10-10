@@ -46,7 +46,7 @@ pub fn parseMethodSelection(reply: *const [2]u8) Socks5Error!u8 {
 }
 
 /// Builds the username/password sub-negotiation request (RFC 1929).
-/// `buf` must be at least 515 bytes (1 + 1 + 255 + 1 + 255).
+/// `buf` must be at least 513 bytes (1 + 1 + 255 + 1 + 255).
 pub fn encodeAuthRequest(buf: []u8, auth: Auth) Socks5Error![]const u8 {
     if (auth.username.len > 255 or auth.password.len > 255) return error.Socks5AddressTooLong;
     var i: usize = 0;

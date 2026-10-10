@@ -2,9 +2,9 @@
 //! an app has auth (the route listing reports it; `spider routes --check`
 //! only flags routes with no declared access when there is auth).
 //!
-//! Spider's providers mark their middleware when it's created (jwks /
-//! keycloak, clerk, HS256 `auth`). An app with its own session middleware
-//! marks it with `spider.markAuthMiddleware(mw)`.
+//! Spider's own auth middlewares are marked when they are created (jwks /
+//! keycloak, clerk, HS256 `auth`, `spider.session`). An app with a session
+//! middleware of its own marks it with `spider.markAuthMiddleware(mw)`.
 //!
 //! Filled while the app is set up (single thread, before listen()); read
 //! afterwards.

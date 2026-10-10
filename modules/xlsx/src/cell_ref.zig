@@ -11,7 +11,7 @@ pub const max_rows: u32 = 1_048_576;
 pub const max_cols: u32 = 16_384;
 
 /// Writes the letters of a zero-based column: 0 is `A`, 25 `Z`, 26
-/// `AA`, 16,383 `XFD`.
+/// `AA`, 16,383 `XFD`. `col` must be below `max_cols` (asserted).
 pub fn writeColumnName(w: *Writer, col: u32) Writer.Error!void {
     std.debug.assert(col < max_cols);
     var buffer: [3]u8 = undefined;

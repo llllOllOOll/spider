@@ -26,7 +26,15 @@ const Handler = @import("../routing/router.zig").Handler;
 ///
 /// Events for the channel come from anywhere in the app:
 /// `c.sseHub().emitTo("room:lobby", "message", .{ .text = "hi" })`.
-/// An error returned by the handler ends the stream and is not reported.
+///
+/// An error returned by the handler ends the stream. Nothing can be answered
+/// any more, so the server logs it at `warn` with the request id and the
+/// path; an error that only says the client went away (a failed write, a
+/// closed connection) is not logged.
+///
+/// A page of another site can read the stream only when the app lists its
+/// origin in `Config.sse_allowed_origins`: the response then carries
+/// `Access-Control-Allow-Origin` for that origin (`*` when the list has `*`).
 pub const Sse = struct {
     _stream: net.Stream,
     _hub: *Hub,
@@ -69,10 +77,10 @@ pub const Sse = struct {
     }
 
     /// Sends "retry: {ms}\n\n" — tells the client's EventSource how long to
-    /// wait before reconnecting after a drop, overriding the browser default
-    /// (~3s, unspecified by the SSE spec, so it varies). Safe to call more
-    /// than once (e.g. to change it mid-connection); the client applies
-    /// whatever the most recently received retry: field said.
+    /// wait before reconnecting after a drop. Every stream already announces
+    /// `Hub.default_retry_ms` (3 seconds) when it opens; this replaces it.
+    /// Safe to call more than once (e.g. to change it mid-connection); the
+    /// client applies whatever the most recently received retry: field said.
     pub fn setRetry(self: *Sse, ms: u64) !void {
         try self.writeFrame(writeRetry, .{ms});
     }
@@ -96,10 +104,11 @@ pub const Sse = struct {
 
     /// join() plus replay: if the client reconnected with a Last-Event-ID
     /// header, immediately re-sends every event this channel recorded after
-    /// that id (bounded history — see Hub.history_max_entries/_age_ms), so a
-    /// dropped connection doesn't silently miss events between reconnects.
-    /// No-op replay (just a plain join) if there's no Last-Event-ID header
-    /// or nothing newer is in history.
+    /// that id (bounded history: the last 50 events of the channel, at most
+    /// 5 minutes old), so a dropped connection doesn't silently miss events
+    /// between reconnects. No-op replay (just a plain join) if there's no
+    /// Last-Event-ID header or nothing newer is in history. As with `join`,
+    /// `channel` is not copied.
     pub fn joinWithReplay(self: *Sse, channel: []const u8) !void {
         try self.join(channel);
         const last_id = self.lastEventId() orelse return;
@@ -113,6 +122,9 @@ pub const Sse = struct {
     /// already has (unlike join(), which replaces them). Lets one EventSource
     /// carry several channels — browsers cap HTTP/1.1 connections per origin
     /// at 6, so one EventSource per channel per tab runs out after a few tabs.
+    /// The hub keeps its own copy of the name; the `channel` field keeps the
+    /// slice given by the first call, which must then stay valid while the
+    /// field is read.
     pub fn subscribe(self: *Sse, channel: []const u8) !void {
         try self._hub.addChannel(self._conn_id, channel);
         if (self.channel.len == 0) self.channel = channel;
@@ -156,8 +168,8 @@ pub const Sse = struct {
         return self.params.get(key);
     }
 
-    /// Case-insensitive lookup, mirroring Ctx.header() — headers are copied
-    /// into Sse at handshake time (buildHandler), same as .params already is.
+    /// A request header by name, ignoring case, as `Ctx.header` does. Null
+    /// when the request did not send it.
     pub fn header(self: *Sse, name: []const u8) ?[]const u8 {
         var iter = self.headers.iterator();
         while (iter.next()) |entry| {
@@ -168,7 +180,9 @@ pub const Sse = struct {
         return null;
     }
 
-    /// Mirrors Ctx.cookie()'s exact parsing — same Cookie header format.
+    /// A cookie of the request by name, read from its `Cookie` header as
+    /// `Ctx.cookie` does. The value comes as it was sent, not decoded. Null
+    /// when there is no such cookie.
     pub fn cookie(self: *Sse, name: []const u8) ?[]const u8 {
         const cookie_header = self.header("Cookie") orelse return null;
         var it = std.mem.splitScalar(u8, cookie_header, ';');

@@ -10,9 +10,10 @@ const Response = spider.Response;
 const NextFn = spider.NextFn;
 const MiddlewareFn = spider.MiddlewareFn;
 
-/// RBAC middlewares for a route config (`.{ .roles = ..., .org_roles = ...,
-/// .policy = ... }`), resolved at comptime. Every field present must pass
-/// (each becomes its own middleware in the chain, the policy last).
+/// RBAC middlewares for a route config (`.{ .authenticated = ..., .roles =
+/// ..., .org_roles = ..., .policy = ... }`), resolved at comptime. Every
+/// field present must pass: each becomes its own middleware, in that order
+/// (the policy last). An empty `.roles` or `.org_roles` list adds none.
 pub fn routeMiddlewares(comptime config: anytype) []const MiddlewareFn {
     const C = @TypeOf(config);
     const S = struct {
@@ -32,16 +33,19 @@ pub fn routeMiddlewares(comptime config: anytype) []const MiddlewareFn {
     return S.list;
 }
 
-/// `.authenticated = true`: any logged-in user; 401 when the request carries
-/// no identity (`_auth_sub` from jwks/keycloak/clerk, `_user_id` from the
-/// HS256 `auth` middleware) — also when the app has no auth middleware.
+/// `.authenticated = true`: any logged-in user; `error.Unauthorized` (401)
+/// when the request carries no identity (`c.userId()` is null: no
+/// `_auth_sub` from spider.session, jwks, keycloak, clerk or `c.setUser`,
+/// and no `_user_id` from the HS256 `auth` middleware) — also when the app
+/// has no auth middleware.
 pub fn requireAuthenticated(c: *Ctx, next: NextFn) anyerror!Response {
     if (c.userId() == null) return error.Unauthorized;
     return next(c);
 }
 
 /// Returns a middleware that requires the user to hold at least one of `roles`
-/// (realm roles). Must run AFTER the auth middleware (jwks/keycloak).
+/// (roles of the account: `c.hasRole`); otherwise `error.Forbidden` (403),
+/// also for a request with no user. Must run AFTER the auth middleware.
 pub fn requireRoles(comptime roles: []const []const u8) MiddlewareFn {
     const S = struct {
         fn mw(c: *Ctx, next: NextFn) anyerror!Response {
@@ -55,7 +59,8 @@ pub fn requireRoles(comptime roles: []const []const u8) MiddlewareFn {
 }
 
 /// Returns a middleware that requires the user to hold at least one of `roles`
-/// in the organizations claim (Phase Two Keycloak).
+/// in an organization (the org roles the auth provider read from the token,
+/// or `c.addOrgRole`); otherwise `error.Forbidden` (403).
 ///
 /// When an active org is set (`c.activeOrgId()`, from the provider's
 /// `active_org_cookie` or an app middleware calling `c.setActiveOrg`), only
@@ -140,7 +145,8 @@ pub const Deny = enum {
 ///
 /// In order: an anonymous request on a non-public route is refused (401)
 /// before anything is loaded; a missing resource is error.NotFound (404);
-/// then `check` decides (403, or 404 with .deny = .not_found). An allowed
+/// then `check` decides (403, or 404 with .deny = .not_found; a refused
+/// anonymous request on a public route gets 401, not 403). An allowed
 /// resource reaches the handler, loaded once, as `spider.Loaded(Post)` or
 /// `c.loaded(Post)`. SSE handlers (`*Sse`) don't see it.
 pub fn resourcePolicy(comptime name: []const u8, comptime T: type, comptime opts: anytype) Policy {
@@ -262,8 +268,9 @@ pub fn policySet(comptime T: type, comptime opts: anytype) type {
             return allowed;
         }
 
-        /// The set's loader (e.g. for a route that lists or creates, where
-        /// no single resource is checked).
+        /// Runs the set's `.load` for this request and returns what it
+        /// found (null when there is none), with no rule checked and
+        /// nothing handed to `c.loaded`. Its error is the loader's.
         pub fn find(c: *Ctx) !?T {
             const r = opts.load(c);
             if (@typeInfo(@TypeOf(r)) == .error_union) {

@@ -28,11 +28,13 @@ pub const Route = struct {
 };
 
 /// What a route declares about itself, from its config
-/// (`.{ .roles, .org_roles, .public, .policy, .quiet_log, .allow_http }`, see
-/// routing/route_config.zig). Available to middlewares as `c.route()`.
+/// (`.{ .roles, .org_roles, .public, .authenticated, .policy, .quiet_log,
+/// .allow_http }`, see routing/route_config.zig). Available to middlewares
+/// and handlers as `c.route()`; every field is at its default for a request
+/// no route matched.
 pub const RouteMeta = struct {
-    /// No login needed: auth middlewares (jwks/keycloak/clerk, auth) let
-    /// the request through.
+    /// No login needed: auth middlewares (jwks/keycloak/clerk, auth,
+    /// spider.session) let the request through.
     public: bool = false,
     /// A successful request isn't logged (heartbeats, polling); 4xx/5xx
     /// still are.
@@ -45,8 +47,10 @@ pub const RouteMeta = struct {
     /// Informational copy of the RBAC config (the checks themselves are the
     /// route's middlewares): shown by the route listing.
     roles: []const []const u8 = &.{},
+    /// The route's `.org_roles`, informational like `roles`.
     org_roles: []const []const u8 = &.{},
-    /// The name of the route's `.policy` (spider.policy), if any.
+    /// The name of the route's `.policy` (spider.policy,
+    /// spider.resourcePolicy, a policySet's route), if any.
     policy: ?[]const u8 = null,
 
     /// The route says who may call it: `.public`, `.authenticated`,
@@ -55,10 +59,11 @@ pub const RouteMeta = struct {
         return m.public or m.authenticated or m.roles.len > 0 or m.org_roles.len > 0 or m.policy != null;
     }
 
-    /// The access column of the route listing: "public", "roles:a,b",
+    /// Writes the access column of the route listing: "public", "roles:a,b",
     /// "org:a,b", "org:a roles:b", "authenticated", or "-" (nothing
     /// declared), followed by " policy:name" when the route has one
-    /// ("policy:name" alone for a route with only a policy).
+    /// ("policy:name" alone for a route with only a policy). A route with
+    /// roles shows them and not "authenticated".
     pub fn writeAccess(m: RouteMeta, w: *std.Io.Writer) !void {
         if (!m.declaresAccess()) return w.writeAll("-");
         const has_roles = m.roles.len > 0 or m.org_roles.len > 0;

@@ -15,8 +15,8 @@ const JwksAuth = jwks.JwksAuth;
 /// fills it.
 pub const ClerkConfig = struct {
     /// The instance's publishable key (`pk_test_...` or `pk_live_...`). The
-    /// issuer and the JWKS URL are derived from it; it is also sent as the
-    /// OAuth `client_id`. No default.
+    /// issuer and the JWKS URL are derived from it (see `Clerk.init`); it is
+    /// also sent as the OAuth `client_id`. No default.
     publishable_key: []const u8,
     /// Sent as the OAuth `client_secret` when the callback exchanges the code.
     /// No default.
@@ -40,6 +40,17 @@ pub const ClerkConfig = struct {
 /// One Clerk instance for the app. The middleware and the callback handler
 /// keep a pointer to this value: it must not move or be freed while the
 /// server runs, and a process can use one.
+///
+/// ```zig
+/// var clerk = try spider.clerk.Clerk.init(allocator, io, .{
+///     .publishable_key = publishable_key,
+///     .secret_key = secret_key,
+/// });
+/// defer clerk.deinit();
+/// server
+///     .use(clerk.middleware())
+///     .get("/auth/callback", clerk.callbackHandler(), .{ .public = true });
+/// ```
 pub const Clerk = struct {
     /// The token verifier (`spider.jwks.JwksAuth`), with `.org_claims = .clerk`.
     jwks: JwksAuth,
@@ -49,10 +60,18 @@ pub const Clerk = struct {
     /// OAuth URLs.
     domain: []const u8,
 
-    /// Decodes the issuer from the publishable key (error.InvalidClerkKey when
-    /// it has no `pk_live_` / `pk_test_` prefix or decodes to nothing) and
-    /// downloads the signing keys from `{issuer}/.well-known/jwks.json`:
-    /// error.JwksFetchFailed when that does not answer with a key set.
+    /// Decodes the issuer from the publishable key and downloads the signing
+    /// keys from `{issuer}/.well-known/jwks.json`. What follows the key's
+    /// `pk_live_` / `pk_test_` prefix is decoded as base64url without
+    /// padding; the result is the issuer, taken as it is (when it starts with
+    /// `{` it is read as JSON and its `issuer` field is used). Nothing is
+    /// added to it: it has to be a full address, scheme included
+    /// (`https://...`).
+    ///
+    /// Errors: error.InvalidClerkKey (no such prefix, or it decodes to
+    /// nothing), the base64 or JSON decoder's error for a key that is
+    /// neither, error.JwksFetchFailed when the address does not answer with
+    /// a key set, or the HTTP client's error when it cannot be reached.
     pub fn init(allocator: std.mem.Allocator, io: std.Io, config: ClerkConfig) !Clerk {
         const domain = try parseIssuerUrl(allocator, config.publishable_key);
         errdefer allocator.free(domain);
@@ -97,7 +116,10 @@ pub const Clerk = struct {
     }
 
     /// The middleware that checks the `__session` token of every request (see
-    /// `JwksAuth.middleware`): `server.use(clerk.middleware())`.
+    /// `JwksAuth.middleware`): `server.use(clerk.middleware())`. Only routes
+    /// marked `.public` pass without a token (there is no list of skipped
+    /// paths), an expired token is a 401 (there is no refresh route), and the
+    /// token's audience is not checked.
     pub fn middleware(self: *Clerk) MiddlewareFn {
         return self.jwks.middleware();
     }
@@ -106,7 +128,8 @@ pub const Clerk = struct {
     /// for tokens, sets the `__session` cookie (the ID token, or the access
     /// token when there is none; 7 days) and redirects to
     /// `after_callback_path`. 400 without `code`; 502 when Clerk returns no
-    /// token. The OAuth `state` is not checked.
+    /// token. The OAuth `state` is not checked. Mark the route `.public`, or
+    /// the middleware stops the callback before it gets here.
     pub fn callbackHandler(self: *Clerk) Handler {
         const S = struct {
             var instance: ?*Clerk = null;

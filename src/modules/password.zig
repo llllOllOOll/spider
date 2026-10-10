@@ -13,8 +13,9 @@ const std = @import("std");
 const Ctx = @import("../core/context.zig").Ctx;
 const argon2 = std.crypto.pwhash.argon2;
 
-/// Passwords longer than this are refused before any hashing: hashing takes
-/// time in proportion to nothing a real password needs.
+/// The longest password accepted, in bytes. A longer one is refused before
+/// any hashing (`hash`: `error.PasswordTooLong`; `verify`: false), so a
+/// huge input costs the server nothing.
 pub const max_len = 256;
 
 /// What `hash` fails with: `error.PasswordTooLong` (over `max_len` bytes), out
@@ -27,7 +28,8 @@ pub fn hash(c: *Ctx, password: []const u8) Error![]const u8 {
 }
 
 /// True when `password` is the one `stored` was made from. False for a
-/// wrong password, and for a `stored` value that is not a hash at all.
+/// wrong password, for a `stored` value that is not a hash at all, and for
+/// a password over `max_len` bytes.
 pub fn verify(c: *Ctx, stored: []const u8, password: []const u8) bool {
     return verifyWith(c.arena, c._io, stored, password);
 }

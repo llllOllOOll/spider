@@ -169,8 +169,11 @@ fn mapRow(comptime T: type, row: zqlite.Row, arena: std.mem.Allocator) !T {
 /// Runs one statement with `?` parameters and gives back what `T` asks for:
 /// - a struct: every row as a `[]T` allocated in `arena`. A field takes the
 ///   column of the same name. Fields may be `[]const u8` (copied into
-///   `arena`), `bool`, integers, floats, enums (stored as their name;
+///   `arena`), `bool` (true for the integer 1), integers (`i8` to `i64`,
+///   `u8` to `u64`), `f32`, `f64`, enums (stored as their name;
 ///   error.InvalidEnumValue for another text) and optionals of those.
+///   A stored integer that does not fit the field's type is not an error:
+///   it is a panic in a build with safety checks.
 /// - `i64`: the first column of the first row, 0 when there is no row.
 /// - `void`: nothing; for INSERT, UPDATE and DELETE.
 ///

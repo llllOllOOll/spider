@@ -47,17 +47,23 @@ pub const R2Config = struct {
 /// `put`, `get`, `delete`, `head` and `copyObject` call R2 and take the
 /// request's `Ctx`: they use its `Io` and allocate in `c.arena`. The
 /// presigned URL functions and `publicUrl` make no network call. A key may
-/// contain `/`; it is percent-encoded for the request.
+/// contain `/`; it is percent-encoded for the request. Every signed call
+/// fails with `error.NoSpaceLeft` when the secret key is longer than 252
+/// bytes.
 pub const R2 = struct {
     /// The configuration given to `init`.
     config: R2Config,
-    /// Persistent — created once in init()/initFromEnv(), reused (with its
-    /// connection pool) across every put/get/delete/head/copyObject call
-    /// instead of dialing a fresh TCP+TLS connection every time.
+    /// Persistent: created once in init()/initFromEnv() and used by every
+    /// put/get/delete/head/copyObject call. `get`, `head` and `copyObject`
+    /// reuse its pooled connections; `put` and `delete` send
+    /// `Connection: close`, so each of them opens a connection of its own.
     client: pacman.Client,
 
     /// Creates the client for `config`. Makes no network call, so wrong
     /// credentials show up on the first operation. Free it with `deinit`.
+    /// The HTTP client and the endpoint address are allocated with
+    /// `std.heap.smp_allocator`; `deinit` does not free the address, so
+    /// create one `R2` per process rather than one per request.
     pub fn init(io: std.Io, config: R2Config) !R2 {
         const base_url = try std.fmt.allocPrint(
             std.heap.smp_allocator,
@@ -214,8 +220,8 @@ pub const R2 = struct {
     }
 
     /// Deletes the object `key`. Fails with `error.NotFound` when R2 answers
-    /// 404, `error.R2DeleteFailed` on any other status than 200 or 204, or the
-    /// HTTP client's error.
+    /// 404, `error.R2DeleteFailed` on any other status than 200 or 204
+    /// (nothing is logged, unlike `put` and `get`), or the HTTP client's error.
     pub fn delete(self: *R2, c: *Ctx, key: []const u8) !void {
         const host = try self.endpointHost(c.arena);
         const path = try self.requestPath(c.arena, key);
@@ -245,7 +251,8 @@ pub const R2 = struct {
     }
 
     /// Whether the object `key` exists: true on 200, false on 404. The content
-    /// is not downloaded. Any other status fails with `error.R2HeadFailed`.
+    /// is not downloaded. Any other status fails with `error.R2HeadFailed`,
+    /// and a failure to reach R2 with the HTTP client's error.
     pub fn head(self: *R2, c: *Ctx, key: []const u8) !bool {
         const host = try self.endpointHost(c.arena);
         const path = try self.requestPath(c.arena, key);

@@ -14,6 +14,12 @@ const proxy = @import("proxy.zig");
 /// A client bound to one base URL, with a pool of kept-alive connections.
 /// Create it once and share it; requests may run through it concurrently.
 ///
+/// A GET, HEAD, PUT or DELETE that fails on a connection taken from the
+/// pool, before any response arrived, is sent again on a new connection (up
+/// to twice): servers close idle connections without notice. A POST or a
+/// PATCH is never sent again: the call returns the error. There is no
+/// `head` method: use the standalone `head`.
+///
 /// ```zig
 /// var client = try spider.http_client.Client.init(io, allocator, .{
 ///     .base_url = "https://api.example.com",
@@ -40,13 +46,14 @@ pub const Client = struct {
     /// Client.deinit(), not by individual Response.deinit() calls (see
     /// Response.owns_http_client).
     http_client: HttpClient,
-    /// Owns the proxy settings `http_client` points at.
+    // internal: owns the proxy settings `http_client` points at
     proxy_arena: std.heap.ArenaAllocator,
 
-    /// A client for `opts.base_url`. No connection is opened yet. Fails when
-    /// `proxy_url` is not a valid URL, or out of memory. The strings and the
-    /// header list of `opts` are not copied: they must stay valid as long as
-    /// the Client.
+    /// A client for `opts.base_url`. No connection is opened yet, and
+    /// `base_url` is not checked: a bad one fails the first request. Fails
+    /// when `proxy_url` is not a valid URL, or out of memory. The strings and
+    /// the header list of `opts` are not copied: they must stay valid as long
+    /// as the Client.
     pub fn init(io: Io, allocator: std.mem.Allocator, opts: struct {
         /// Scheme and host, and a path prefix if any. Each request's `path`
         /// is appended to it as it is, so write one slash between them.
@@ -94,18 +101,21 @@ pub const Client = struct {
         };
     }
 
-    /// Closes the connection pool. Call once, when done with this Client.
+    /// Closes the connection pool. Call once, when done with this Client and
+    /// no request is running through it. Responses already returned stay
+    /// valid: each is freed by its own `deinit()`.
     pub fn deinit(self: *Client) void {
         self.http_client.deinit();
         self.proxy_arena.deinit();
     }
 
-    /// A GET to `base_url ++ path`. Like the standalone `get`, but the
-    /// connection is reused, and the request carries the headers given to
-    /// `init` followed by `opts.headers` (one of those with the name of a
-    /// client header replaces it, for this request). `error.ProxyMismatch`
-    /// when `opts.proxy_url` is set to something other than the client's
-    /// proxy.
+    /// A GET to `base_url ++ path`. Like the standalone `get` (same options,
+    /// same errors), but the connection is reused, and the request carries
+    /// the headers given to `init` followed by `opts.headers` (one of those
+    /// with the name of a client header replaces it, for this request).
+    /// `opts.method` is ignored. `error.ProxyMismatch` when `opts.proxy_url`
+    /// is set to something other than the client's proxy. The response is
+    /// allocated with the client's allocator: call its `deinit()`.
     pub fn get(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.GET, path, opts);
     }
@@ -115,12 +125,12 @@ pub const Client = struct {
         return self.call(.POST, path, opts);
     }
 
-    /// A PUT to `base_url ++ path`. See `get`.
+    /// A PUT to `base_url ++ path` with `opts.body`. See `get`.
     pub fn put(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.PUT, path, opts);
     }
 
-    /// A PATCH to `base_url ++ path`. See `get`.
+    /// A PATCH to `base_url ++ path` with `opts.body`. See `get`.
     pub fn patch(self: *Client, path: []const u8, opts: FetchOptions) !Response {
         return self.call(.PATCH, path, opts);
     }

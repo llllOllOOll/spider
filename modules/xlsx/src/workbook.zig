@@ -15,8 +15,9 @@
 //!
 //! No theme and no document properties are written.
 //!
-//! Reading and streamed writing are not implemented. See the README
-//! ("Design notes") for how they fit this layout.
+//! This file only writes: reading is in reader.zig. Streamed writing is
+//! not implemented; see the README ("Design notes") for how it would fit
+//! this layout.
 
 const std = @import("std");
 const Writer = std.Io.Writer;
@@ -43,11 +44,12 @@ pub const Error = error{
     RowOutOfRange,
     /// Column index past the last column of a sheet (16,384 columns).
     ColumnOutOfRange,
-    /// A range whose last row or column comes before its first.
+    /// A range whose last row or column comes before its first, a merge
+    /// of a single cell, or a page break before the first row or column.
     InvalidRange,
     /// Cell text longer than 32,767 characters.
     TextTooLong,
-    /// Text, a sheet name or a formula that is not valid UTF-8.
+    /// Text, a sheet name, a formula or a link that is not valid UTF-8.
     InvalidUtf8,
     /// NaN or infinity: a cell cannot hold them.
     InvalidNumber,
@@ -106,7 +108,8 @@ pub const Error = error{
     WriteFailed,
 };
 
-/// Excel's limits, enforced when a value is set.
+/// Rows per sheet. Like the limits below it is Excel's, enforced when a
+/// value is set.
 pub const max_rows = cell_ref.max_rows;
 /// Columns per sheet (A to XFD).
 pub const max_cols = cell_ref.max_cols;
@@ -171,7 +174,9 @@ pub const PageSetup = struct {
     /// Prints at this percentage of the real size, 10 to 400.
     scale: ?u16 = null,
     /// Shrinks the sheet to this many pages across; 0 means as many as
-    /// it takes. Cannot be combined with `scale`.
+    /// it takes. Cannot be combined with `scale`. When only one of
+    /// `fit_to_width` and `fit_to_height` is set, the other counts as 1
+    /// page: set it to 0 to leave that direction free.
     fit_to_width: ?u16 = null,
     /// Likewise, for pages down.
     fit_to_height: ?u16 = null,
@@ -987,7 +992,6 @@ fn writeSheetRelationships(w: *Writer, sheet: *const Sheet) Writer.Error!void {
 }
 
 /// Writes a worksheet part. Element order is fixed by the format:
-/// dimension, sheetViews, sheetFormatPr, cols, sheetData, autoFilter,
 /// sheetPr, dimension, sheetViews, sheetFormatPr, cols, sheetData,
 /// sheetProtection, autoFilter, mergeCells, hyperlinks, pageMargins, pageSetup,
 /// headerFooter, rowBreaks, colBreaks.

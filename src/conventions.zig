@@ -12,8 +12,9 @@
 //!   icon-set               an icon class from a set src/styles.css doesn't load
 //!   bool-attr              disabled/checked/selected/... given "{ expr }" (on even when false)
 //!   feature-not-registered a feature folder missing from src/features/mod.zig
-//!   route-access           with auth, a route that declares no access (roles / org_roles /
-//!                          public / authenticated / policy, itself or through its group's defaults())
+//!   route-access           with auth, a route that declares no access (roles /
+//!                          org_roles / public / authenticated / policy, itself or
+//!                          through its group's defaults())
 //! Warnings:
 //!   inline-style           style="..." in a template (display:none for Alpine is fine)
 //!   inline-svg             <svg> pasted in a template instead of an icon class
@@ -76,7 +77,8 @@ pub const Report = struct {
         return n;
     }
 
-    /// "src/x.html:12: error [kit-class]: ...\n    fix: ...", errors first.
+    /// Writes each issue as "src/x.html:12: error [kit-class]: ...\n    fix: ...",
+    /// errors first, then a line with the two counts.
     pub fn write(r: Report, w: *std.Io.Writer) !void {
         for ([_]Severity{ .err, .warn }) |sev| {
             for (r.issues.items) |i| {
@@ -172,8 +174,10 @@ fn isComment(text: []const u8, index: usize) bool {
     return std.mem.startsWith(u8, std.mem.trimStart(u8, text[start..index], " \t"), "//");
 }
 
-/// `.get("/path", ...)` & co. outside routes.zig. c.params.get("id") and
-/// friends don't start their string with '/', so they don't match.
+/// Reports each `.get("/path", ...)` & co. in `text` (rule
+/// `route-outside-routes`): for the `.zig` files that are not a routes.zig.
+/// c.params.get("id") and friends don't start their string with '/', so
+/// they don't match; neither do commented-out lines.
 pub fn checkRoutesOutside(report: *Report, path: []const u8, text: []const u8) !void {
     for (route_methods) |m| {
         var from: usize = 0;
@@ -244,7 +248,11 @@ fn callText(text: []const u8, open: usize) []const u8 {
     return text[open..];
 }
 
-/// With auth, every route in a routes.zig must say who may call it.
+/// With auth, every route in a routes.zig must say who may call it: in its
+/// own config, or through the `defaults()` of its group. `text` is the
+/// file, `path` the name reported. A plain `.sse(` or `.ws(` route is
+/// always reported: it takes no config. The check reads the source as
+/// text; `spider routes --check` checks the running app exactly.
 pub fn checkRouteAccess(report: *Report, path: []const u8, text: []const u8) !void {
     // Each Group.init(...) starts a group; its defaults() applies to the
     // routes after it, up to the next group.

@@ -115,12 +115,18 @@ pub const Mailer = struct {
     /// `MailInvalidAddress`, `MailInvalidHeader` (nothing was sent);
     /// `MailUnauthorized` (the provider refused the API key), `MailRejected`
     /// (it refused this message), `MailDeliveryFailed` (network, rate limit or
-    /// provider failure: worth retrying).
+    /// provider failure: worth retrying). A `.custom` transport returns its
+    /// own errors. The request to the provider has no deadline and is not
+    /// retried: a provider that never answers keeps the handler waiting.
+    /// The receipt's id is allocated in the request arena.
     pub fn send(self: Mailer, c: *Ctx, mail: Mail) anyerror!Receipt {
         return self.sendWith(c.arena, c._io, mail);
     }
 
     /// Sends outside a request (jobs, boot): `mailer.sendWith(arena, hub.io, mail)`.
+    /// Same checks and errors as `send`. `arena` holds the request sent to
+    /// the provider, its answer and the receipt's id: use an arena, nothing
+    /// is freed one by one.
     pub fn sendWith(self: Mailer, arena: std.mem.Allocator, io: std.Io, mail: Mail) anyerror!Receipt {
         var resolved = mail;
         if (resolved.from == null) resolved.from = self.from;

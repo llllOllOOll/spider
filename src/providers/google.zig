@@ -23,15 +23,17 @@ const url_util = @import("../internal/url.zig");
 const Ctx = @import("../core/context.zig").Ctx;
 const Response = @import("../core/context.zig").Response;
 
-/// The OAuth client created in the Google Cloud console. No field has a
-/// default and nothing is read from the environment: the app fills it.
+/// The OAuth client created in the Google Cloud console. Its id, secret and
+/// redirect address have no default and nothing is read from the
+/// environment: the app fills them. None of the strings is copied.
 pub const GoogleConfig = struct {
     /// The OAuth client's id.
     client_id: []const u8,
     /// The OAuth client's secret, sent when the code is exchanged.
     client_secret: []const u8,
     /// The full URL of the app's callback route, as registered for the client.
-    /// The same value must be given to `authUrl` and `fetchProfile`.
+    /// The login and the callback must be given the same value. When it
+    /// starts with `http://`, `login` leaves `Secure` off its state cookie.
     redirect_uri: []const u8,
     /// Google's consent page. Like the two below, it is here so that a test
     /// can point the flow at a server of its own; an app leaves them alone.
@@ -45,9 +47,10 @@ pub const GoogleConfig = struct {
 /// The cookie `login` sets and `callback` checks.
 pub const state_cookie = "google_oauth_state";
 
-/// What `callback` and `fetchProfile` fail with. The server answers 400 for
-/// the first two, 401 for a refused code and 502 when Google does not give
-/// the profile; an app's `onError` may show a page instead.
+/// What `callback` and `fetchProfile` fail with. When the handler returns
+/// one, the server answers 400 for the first two, 401 for a refused code and
+/// 502 when Google does not give the profile; an app's `onError` may show a
+/// page instead.
 pub const Error = error{
     /// The `state` of the callback is not the one this browser was given
     /// by `login` (or there is none): the login was not started here.
@@ -55,14 +58,17 @@ pub const Error = error{
     /// The callback came without a `code` (the visitor refused, usually).
     OAuthCodeMissing,
     /// Google did not accept the code: used before, expired, or made for
-    /// another client or redirect address.
+    /// another client or redirect address. In the code: the token endpoint
+    /// did not answer 200 with a JSON body that has an `access_token`.
     OAuthCodeRejected,
-    /// Google accepted the code and then did not return the profile.
+    /// Google accepted the code and then did not return the profile: the
+    /// userinfo endpoint did not answer 200 with a JSON body that has an
+    /// `id`.
     OAuthProfileFailed,
 };
 
-/// For the route that starts the sign-in: redirects the visitor to Google's
-/// consent page with a random `state`, also kept in a cookie of this
+/// For the route that starts the sign-in: redirects (302) the visitor to
+/// Google's consent page with a random `state`, also kept in a cookie of this
 /// browser (HttpOnly, SameSite=Lax, 10 minutes; Secure unless
 /// `redirect_uri` is plain http, as on a developer's machine). `callback`
 /// compares the two.
@@ -83,6 +89,9 @@ pub fn login(c: *Ctx, config: GoogleConfig) !Response {
 /// set, then exchanges the `code` and returns the profile (`fetchProfile`).
 /// Nothing is asked of Google before the state matches. Fails with one of
 /// `Error`, or with the HTTP client's error when Google cannot be reached.
+/// The state is checked before the code, so a visitor who refused consent
+/// gets error.OAuthCodeMissing. The cookie is not removed: it expires by
+/// itself, 10 minutes after `login` set it.
 pub fn callback(c: *Ctx, config: GoogleConfig) !GoogleProfile {
     const expected = c.cookie(state_cookie) orelse return error.OAuthStateMismatch;
     const given = c.queryDecoded("state") orelse return error.OAuthStateMismatch;
@@ -93,7 +102,8 @@ pub fn callback(c: *Ctx, config: GoogleConfig) !GoogleProfile {
 }
 
 /// The user as Google's userinfo endpoint describes them. The strings live in
-/// the request arena.
+/// the request arena. Only `id` is always there: the other three are empty
+/// when Google's answer does not have them.
 pub const GoogleProfile = struct {
     /// Google's stable id for the account.
     id: []const u8,
@@ -104,8 +114,10 @@ pub const GoogleProfile = struct {
 };
 
 /// The Google consent page to redirect the user to, asking for the `openid
-/// email profile` scopes. Allocated in `arena`; the config values are
-/// URL-encoded. It adds no `state`: use `authUrlWith` to send one.
+/// email profile` scopes with `access_type=offline`. Allocated in `arena`;
+/// the config values are URL-encoded. It adds no `state`: `login` does, and
+/// is the one a login route should call (or `authUrlWith`, to send a state
+/// of your own).
 pub fn authUrl(arena: std.mem.Allocator, config: GoogleConfig) ![]u8 {
     return authUrlWith(arena, config, .{});
 }
@@ -119,7 +131,7 @@ pub const AuthUrlOptions = struct {
     state: ?[]const u8 = null,
 };
 
-/// `authUrl` with a `state`:
+/// `authUrl` with a `state`, URL-encoded like the rest:
 ///
 /// ```zig
 /// const url = try spider.google.authUrlWith(c.arena, config, .{ .state = nonce });

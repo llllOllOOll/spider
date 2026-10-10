@@ -64,13 +64,14 @@ pub const QR = struct {
 
     /// Encodes `text` as a QR Code of the given `version` (1-40) and
     /// error correction level. Picks the tightest applicable mode
-    /// (numeric/alphanumeric/byte) automatically.
+    /// (numeric/alphanumeric/byte) automatically, one mode for the whole
+    /// text; in byte mode the bytes are stored as given.
     ///
-    /// Returns error.DataTooLarge if `text` does not fit the chosen
-    /// version/ECC's data capacity — a check the reference C this
-    /// project studied as an algorithm guide does not perform (it has
-    /// a standing `@TODO: Return error if data is too big` and will
-    /// silently overflow instead).
+    /// The result owns its modules, allocated with `allocator`: free it
+    /// with `deinit`. Returns `error.DataTooLarge` if `text` does not fit
+    /// the data capacity of that version and level, or `error.OutOfMemory`.
+    /// A `version` outside 1-40 is not an error but an assertion: it stops
+    /// a Debug or ReleaseSafe build and is undefined in the other modes.
     pub fn encode(allocator: std.mem.Allocator, text: []const u8, version: u8, ecc: Ecc) !QR {
         std.debug.assert(version >= 1 and version <= 40);
 

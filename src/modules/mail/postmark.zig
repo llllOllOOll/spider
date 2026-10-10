@@ -10,7 +10,8 @@ const Receipt = message.Receipt;
 
 /// Delivery through Postmark: the value of `Backend.postmark`.
 pub const Postmark = struct {
-    /// The server token (`X-Postmark-Server-Token`).
+    /// The server token, sent as `X-Postmark-Server-Token` (`Mailer.fromEnv`:
+    /// POSTMARK_SERVER_TOKEN). Not copied.
     api_key: []const u8,
     /// The API's address, without a trailing slash. Change it for a mock
     /// server or a regional endpoint (`Mailer.fromEnv`: MAIL_BASE_URL).

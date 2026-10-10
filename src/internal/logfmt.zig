@@ -4,14 +4,17 @@
 const std = @import("std");
 
 /// Wall clock in nanoseconds since the Unix epoch (libc clock_gettime —
-/// usable from std.log, which has no Io at hand).
+/// usable from std.log, which has no Io at hand). 0 when the clock cannot
+/// be read.
 pub fn nowNs() i128 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 
-/// "2026-09-26T17:36:33.178Z"
+/// Formats `ns` (nanoseconds since the Unix epoch) as UTC with
+/// milliseconds, into `buf`: "2026-09-26T17:36:33.178Z". The result is a
+/// slice of `buf`. An instant before 1970 is shown as the start of 1970.
 pub fn utc(buf: *[24]u8, ns: i128) []const u8 {
     const total_ms: i128 = @divFloor(ns, std.time.ns_per_ms);
     const secs: u64 = @intCast(@max(0, @divFloor(total_ms, 1000)));
@@ -48,6 +51,9 @@ pub fn colorEnabled() bool {
 /// ```zig
 /// pub const std_options: std.Options = .{ .logFn = spider.logFn };
 /// ```
+///
+/// A line is `2026-09-26T17:36:33.178Z error (scope): message`, written to
+/// stderr; the scope is left out for the default one.
 pub fn logFn(
     comptime level: std.log.Level,
     comptime scope: @EnumLiteral(),

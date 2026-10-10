@@ -293,8 +293,10 @@ pub const Template = struct {
     }
 
     /// Renders only a single named component (inline or file) from this
-    /// template, skipping layout and root-level nodes entirely. Returns
-    /// `error.ComponentNotFound` if the component name is not registered.
+    /// template, skipping layout and root-level nodes entirely. `context` is
+    /// the data, as in `render`. The HTML is allocated with `alc` and owned by
+    /// the caller. Returns `error.ComponentNotFound` if the component name is
+    /// not registered; otherwise fails like `render`.
     pub fn renderFragment(self: *Template, component_name: []const u8, context: anytype, alc: std.mem.Allocator) ![]const u8 {
         try self.collectInline(alc);
 

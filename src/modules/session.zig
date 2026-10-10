@@ -7,7 +7,7 @@
 //! }));
 //!
 //! // main.zig
-//! server.use(spider.session.middleware())
+//! server.use(spider.session.middleware());
 //!
 //! // logging out
 //! return c.redirectWith("/", try spider.session.end(c));
@@ -42,9 +42,12 @@ const auth_marker = @import("auth_marker.zig");
 
 /// Who is logged in.
 pub const User = struct {
+    /// What `c.userId()` returns on later requests. Must not be empty: a
+    /// token with an empty id is refused when it comes back.
     id: []const u8,
     email: []const u8 = "",
     name: []const u8 = "",
+    /// What `.roles` on a route and `c.hasRole` check.
     roles: []const []const u8 = &.{},
 };
 
@@ -52,7 +55,10 @@ pub const User = struct {
 /// `spider.session.options` before the server starts.
 pub const Options = struct {
     /// What tokens are signed with. Null: JWT_SECRET from the environment
-    /// or .env.
+    /// or .env, read once. When that is not set, is empty or is still
+    /// "change_me_in_production", a release build fails with
+    /// `error.SessionSecretMissing`, and a Debug build signs with a random
+    /// secret made up for this run: logins end when the app restarts.
     secret: ?[]const u8 = null,
     /// Name of the cookie that carries the token.
     cookie: []const u8 = "session",
@@ -76,7 +82,10 @@ pub const Error = error{
     SessionSecretMissing,
 };
 
-/// Response options that log `user` in: a Set-Cookie with the signed token.
+/// Response options that log `user` in: a Set-Cookie with the signed token
+/// (HttpOnly, SameSite=Lax, Path=/, kept for `options.max_age` seconds).
+/// Allocated in the request arena. Fails with `Error` when there is no
+/// secret.
 pub fn start(c: *Ctx, user: User) !ResponseOptions {
     return c.withCookie(options.cookie, try token(c, user), .{
         .max_age = options.max_age,
@@ -85,12 +94,15 @@ pub fn start(c: *Ctx, user: User) !ResponseOptions {
 }
 
 /// The signed token alone, for an API whose clients send it back in
-/// `Authorization: Bearer <token>`.
+/// `Authorization: Bearer <token>`. It expires `options.max_age` seconds
+/// from now. Allocated in the request arena.
 pub fn token(c: *Ctx, user: User) ![]const u8 {
     return sign(c.arena, try secret(c._io), user, nowSeconds(c._io) + options.max_age);
 }
 
 /// Response options that log the user out: the cookie, emptied and expired.
+/// The token itself stays valid until it expires (see the top of this
+/// file): a client that kept a copy can still send it.
 pub fn end(c: *Ctx) !ResponseOptions {
     const cleared = try c.deleteCookie(options.cookie, .{ .secure = options.secure });
     const headers = try c.arena.alloc([2][]const u8, 1);
@@ -98,7 +110,13 @@ pub fn end(c: *Ctx) !ResponseOptions {
     return .{ .headers = headers };
 }
 
-/// The middleware: `server.use(spider.session.middleware())`.
+/// The middleware: `server.use(spider.session.middleware())`. It takes the
+/// token from `Authorization: Bearer <token>` or, when the request has no
+/// such header, from the cookie, and sets the request's user and roles
+/// when the token is valid. A forged, expired or malformed token counts as
+/// no token. A request left without a user fails with `error.Unauthorized`
+/// (401), unless its route is `.public` or no route matched it (that one
+/// goes on to its 404).
 pub fn middleware() MiddlewareFn {
     auth_marker.mark(run);
     return run;

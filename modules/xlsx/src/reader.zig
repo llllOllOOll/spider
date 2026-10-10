@@ -43,8 +43,8 @@ pub const Error = error{
     /// or cells are out of order, a number is not a number.
     InvalidFile,
     /// Not an .xlsx: an old .xls, an .xlsb, a zip64 archive, a
-    /// compression method other than deflate, or a sheet that is not a
-    /// worksheet.
+    /// compression method other than store and deflate, or a sheet that
+    /// is not a worksheet (a chart sheet, a macro sheet).
     Unsupported,
     /// The file is protected by a password to open.
     Encrypted,
@@ -72,13 +72,14 @@ pub const Limits = struct {
     /// Memory the shared strings table may take. It is the one thing
     /// that has to be loaded whole before a sheet is read.
     max_shared_strings_bytes: u64 = 32 << 20,
-    /// Rows read from one sheet.
+    /// Rows read from one sheet: the row after the last allowed one is
+    /// `error.LimitExceeded`, the sheet is not cut short.
     max_rows: u32 = 100_000,
     /// Columns: a cell beyond this is an error. Excel's limit.
     max_columns: u32 = 16_384,
     /// Characters in one cell's text, counted as Excel does. Excel's limit.
     max_cell_text: u32 = 32_767,
-    /// Merged ranges kept per sheet.
+    /// Merged ranges per sheet; one more is `error.LimitExceeded`.
     max_merged_ranges: u32 = 10_000,
     /// Depth, attributes and sizes of the XML itself.
     xml: xml_reader.Limits = .{},
@@ -151,7 +152,9 @@ pub const Value = union(enum) {
     number: f64,
     boolean: bool,
     /// A number shown as a date (see `Cell.format`), converted. The
-    /// time of day is in it too.
+    /// time of day is in it too. A number that is no date a spreadsheet
+    /// can show (negative, day 0 or day 60 of the 1900 system) stays a
+    /// `number`.
     date: DateTime,
     /// A number between 0 and 1 shown as a time.
     time: TimeOfDay,
@@ -209,8 +212,8 @@ const general: Format = .{ .code = "General", .kind = .number };
 /// defer rows.deinit();
 /// while (try rows.next()) |row| {
 ///     for (row.cells) |cell| switch (cell.value) {
-///         .text => |text| std.debug.print("{d}:{d} text {s}\n", .{ row.number, cell.column, text }),
-///         .number => |n| std.debug.print("{d}:{d} number {d}\n", .{ row.number, cell.column, n }),
+///         .text => |text| std.debug.print("{d}:{d} {s}\n", .{ row.number, cell.column, text }),
+///         .number => |n| std.debug.print("{d}:{d} {d}\n", .{ row.number, cell.column, n }),
 ///         else => {},
 ///     };
 /// }
@@ -241,7 +244,8 @@ pub const Reader = struct {
 
     /// Opens a workbook from the bytes of an .xlsx file. `bytes` must
     /// stay valid until `deinit`. Reads the sheet list and the number
-    /// formats; sheets are read by `rows`.
+    /// formats; sheets are read by `rows`. The reader is allocated with
+    /// `gpa`: free it with `deinit`.
     pub fn open(gpa: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!*Reader {
         var diagnostic: Diagnostic = .{};
         return openDiagnosed(gpa, bytes, limits, &diagnostic);
@@ -312,8 +316,11 @@ pub const Reader = struct {
         return null;
     }
 
-    /// Starts reading the rows of a sheet. Free the iterator with
-    /// `Rows.deinit`; several can be open at once.
+    /// Starts reading the rows of the sheet at index `sheet` (see `sheets`
+    /// and `sheetIndex`). Free the iterator with `Rows.deinit`; several can
+    /// be open at once. The first call also loads the shared strings table.
+    /// Fails with `error.SheetNotFound` for an index past the last sheet and
+    /// `error.Unsupported` for a sheet that is not a worksheet.
     pub fn rows(self: *Reader, sheet: usize, options: Options) Error!*Rows {
         if (sheet >= self.sheet_list.len) return error.SheetNotFound;
         self.diagnostic = .{ .part = .sheet, .sheet = sheet };

@@ -64,7 +64,8 @@ pub const KeycloakConfig = struct {
     /// pass — a hand-built authorize URL has no matching cookie and its
     /// callback is rejected (redirected back to `login_path`).
     verify_state: bool = true,
-    /// Cookie that keeps the nonce of `verify_state` (HttpOnly, 10 minutes).
+    /// Cookie that keeps the nonce of `verify_state` (HttpOnly, Secure,
+    /// SameSite=Lax, 10 minutes).
     state_cookie_name: []const u8 = "__oauth_state",
     /// Client whose tokens are accepted (see JwksConfig.audience); defaults
     /// to `client_id`, so a token another client of the realm obtained for
@@ -81,7 +82,9 @@ pub const KeycloakConfig = struct {
     /// The connection settings from the environment — KEYCLOAK_BASE_URL,
     /// KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET and
     /// KEYCLOAK_REDIRECT_URI (default http://localhost:3000/auth/callback);
-    /// every other field keeps its default. Adjust the result as needed:
+    /// every other field keeps its default. One of the first four that is
+    /// not set becomes an empty string, with no error here: `Keycloak.init`
+    /// is what fails then. Adjust the result as needed:
     ///
     /// ```zig
     /// var cfg = spider.keycloak.KeycloakConfig.fromEnv();
@@ -227,7 +230,9 @@ pub const Keycloak = struct {
     /// sets the `__session` cookie (the ID token, or the access token when
     /// there is none; 7 days) and the refresh cookie, then redirects to
     /// `after_callback_path` (with `?invite=<token>` for an "invite:<token>"
-    /// payload). 400 without `code`; 502 when Keycloak returns no token.
+    /// payload). 400 without `code`; 502 when Keycloak returns no token. When
+    /// Keycloak cannot be reached or its answer is not JSON, the handler
+    /// returns that error (a 500 unless the app's `onError` says otherwise).
     pub fn callbackHandler(self: *Keycloak) Handler {
         const S = struct {
             var instance: ?*Keycloak = null;
@@ -243,7 +248,8 @@ pub const Keycloak = struct {
     /// tokens, sets the cookies again and redirects to `?next=` when that is a
     /// local path, else to `after_callback_path`. Without a refresh cookie, or
     /// when Keycloak gives no token, it clears both cookies and redirects to
-    /// `login_path`.
+    /// `login_path`. When Keycloak cannot be reached, the handler returns the
+    /// HTTP client's error.
     pub fn refreshHandler(self: *Keycloak) Handler {
         const S = struct {
             var instance: ?*Keycloak = null;
@@ -262,7 +268,9 @@ pub const Keycloak = struct {
     /// Redirects the user to Keycloak with a fresh `state` whose nonce is also
     /// stored in a short-lived HttpOnly cookie, so `callbackHandler()` can tell
     /// its own round-trips from forged ones. Use this for every login,
-    /// registration or IdP-hinted flow instead of hand-building the URL.
+    /// registration or IdP-hinted flow instead of hand-building the URL. The
+    /// answer is a 302; the cookie is Secure, so the browser keeps it only
+    /// over https or on localhost.
     pub fn authorize(self: *Keycloak, c: *Ctx, opts: AuthorizeOptions) !Response {
         var rand_buf: [nonce_len / 2]u8 = undefined;
         std.Io.random(c._io, &rand_buf);

@@ -16,12 +16,15 @@ const env = @import("../internal/env.zig");
 
 /// Options of `spider.forceHttps`. Only `default_base_url` is required.
 pub const Options = struct {
-    /// Env var with the public origin ("https://example.com"), read per request.
+    /// Env var with the public origin ("https://example.com", no final
+    /// slash), read for each request that is redirected.
     base_url_env: []const u8 = "BASE_URL",
     /// Used when the env var is unset.
     default_base_url: []const u8,
     /// Header carrying the original scheme. Without it (dev, no proxy) the
-    /// request is taken as HTTPS and never redirected.
+    /// request is taken as HTTPS and never redirected. When it lists
+    /// several values (a chain of proxies: "https, http"), the first one
+    /// counts: the one the client used.
     proto_header: []const u8 = "X-Forwarded-Proto",
     /// Request targets that are never redirected: an exact match (the query
     /// string counts), or a prefix when the entry ends in `*`. Unlike a
@@ -36,7 +39,10 @@ pub const Options = struct {
 /// `.allow_http = true` and the `allow_http_paths` are not redirected.
 ///
 /// ```zig
-/// server.use(spider.forceHttps(.{ .default_base_url = "https://example.test", .allow_http_paths = &.{ "/legacy*", "/exact" } }))
+/// server.use(spider.forceHttps(.{
+///     .default_base_url = "https://example.test",
+///     .allow_http_paths = &.{ "/legacy*", "/exact" },
+/// }))
 /// ```
 pub fn forceHttps(comptime opts: Options) MiddlewareFn {
     return struct {

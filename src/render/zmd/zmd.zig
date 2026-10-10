@@ -19,7 +19,9 @@ pub const tokens = @import("zmd/tokens.zig");
 /// default set; name a field to replace one:
 ///
 /// ```zig
-/// fn heading(allocator: std.mem.Allocator, node: spider.zmd.Node) std.mem.Allocator.Error![]const u8 {
+/// const Allocator = std.mem.Allocator;
+///
+/// fn heading(allocator: Allocator, node: spider.zmd.Node) Allocator.Error![]const u8 {
 ///     return std.fmt.allocPrint(allocator, "<h1 class=\"title\">{s}</h1>\n", .{node.content});
 /// }
 ///
@@ -42,10 +44,13 @@ pub const default_formatters = Formatters.default;
 /// The result is allocated with `allocator` and owned by the caller; `input`
 /// is not kept. Text, link addresses and code are escaped, so the result is
 /// safe to wrap in `spider.RawHtml`. `\r\n` line ends are read as `\n`.
-/// The only failure is running out of memory.
+/// The only failure is running out of memory (`error.OutOfMemory`, or
+/// `error.WriteFailed` from the buffer the HTML is written to).
 ///
-/// A `formatters.root` equal to `Formatters.Default.root` (the whole
-/// document) is replaced by the fragment one; use `parseFull` for a document.
+/// `formatters` must be known at compile time. Passing `Formatters.Default.root`
+/// (the whole document) as `formatters.root` discards the WHOLE value: the
+/// result is the default fragment and the other fields given are ignored too.
+/// Use `parseFull` for a document.
 pub fn parse(
     allocator: Allocator,
     input: []const u8,
@@ -85,7 +90,11 @@ pub fn parse(
 
 /// Like `parse`, but the result is a whole HTML document: the default root
 /// formatter wraps the content in `<!DOCTYPE html>`, `<head>` (charset only)
-/// and `<body><main>`. A custom `formatters.root` is used as given.
+/// and `<body><main>`.
+///
+/// The other fields of `formatters` only count together with a `root` of your
+/// own: while `root` is left at its default, the whole value is replaced by
+/// the default set and a field such as `.h1` is ignored.
 pub fn parseFull(
     allocator: Allocator,
     input: []const u8,

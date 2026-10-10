@@ -15,10 +15,10 @@ const xml = @import("xml.zig");
 pub const Error = error{
     /// More distinct styles than a workbook can hold.
     TooManyStyles,
-    /// A custom number format that is empty, too long, not UTF-8 or
+    /// A custom number format that is empty, longer than 255 bytes, not UTF-8 or
     /// holds characters XML cannot carry.
     InvalidNumberFormat,
-    /// A font name that is empty, longer than 31 characters, not UTF-8
+    /// A font name that is empty, longer than 31 bytes, not UTF-8
     /// or holds characters XML cannot carry; or a size outside 1..409.
     InvalidFont,
     /// The default font can only be changed before any style is used.

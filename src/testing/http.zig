@@ -1,18 +1,20 @@
 //! Requests against the app itself, in a test.
 //!
-//!     fn run() !void {
-//!         var server = spider.app(.{});
-//!         defer server.deinit();
-//!         try server.mountFeatures(features).listen(.{});
-//!     }
+//! ```zig
+//! fn run() !void {
+//!     var server = spider.app(.{});
+//!     defer server.deinit();
+//!     try server.mountFeatures(features).listen(.{});
+//! }
 //!
-//!     test "the feed lists the posts" {
-//!         const app = try spider.testing.start(run);
-//!         var res = try app.get("/posts");
-//!         defer res.deinit();
-//!         try res.expectStatus(200);
-//!         try res.expectContains("Latest posts");
-//!     }
+//! test "the feed lists the posts" {
+//!     const app = try spider.testing.start(run);
+//!     var res = try app.get("/posts");
+//!     defer res.deinit();
+//!     try res.expectStatus(200);
+//!     try res.expectContains("Latest posts");
+//! }
+//! ```
 //!
 //! `start` runs the function on a thread of its own, once per test binary,
 //! and makes its `listen()` take a free port on 127.0.0.1. It is the real
@@ -39,7 +41,9 @@ pub const App = struct {
         return self.request(.{ .target = target });
     }
 
-    /// POSTs `fields` (a struct of text fields) as an HTML form does.
+    /// POSTs `fields` as an HTML form does (urlencoded). `fields` is a
+    /// struct of texts, numbers and booleans; an optional field that is
+    /// null is left out.
     pub fn postForm(self: App, target: []const u8, fields: anytype) !Response {
         var arena: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
         defer arena.deinit();
@@ -62,7 +66,11 @@ pub const App = struct {
     }
 
     /// Any request: the method, extra header lines ("Cookie: a=b"), a body.
-    /// Redirects are not followed: the answer is the 3xx itself.
+    /// Redirects are not followed: the answer is the 3xx itself. Each
+    /// request opens a connection of its own and sends `Connection: close`.
+    /// Fails with the connection's error, `error.MalformedResponse` for an
+    /// answer that is not HTTP, or `error.StreamTooLong` for one over
+    /// 16 MiB.
     pub fn request(self: App, options: Request) !Response {
         var threaded: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
         defer threaded.deinit();
@@ -196,7 +204,9 @@ pub const Response = struct {
         return error.TestExpectedHeader;
     }
 
-    /// A 3xx answer whose Location is `to`.
+    /// Expects a 3xx answer whose Location is exactly `to`. Fails with
+    /// `error.TestExpectedRedirect` for another status, or
+    /// `error.TestExpectedHeader` for another Location.
     pub fn expectRedirect(self: Response, to: []const u8) !void {
         if (self.status < 300 or self.status > 399) {
             self.report("expected a redirect to {s}, got status {d}", .{ to, self.status });
@@ -219,7 +229,12 @@ pub const Response = struct {
 /// Starts the app once and gives back where to send requests. `run` is what
 /// main() does to serve: it builds the server and calls `listen()`, which
 /// here takes a free port on 127.0.0.1 whatever port the app asks for.
-/// Every test of the binary shares the one server; later calls return it.
+/// Every test of the binary shares the one server; later calls with the
+/// same `run` return it. The server runs on a thread of its own until the
+/// test binary exits.
+///
+/// Fails with the error `run` returned, or `error.ServerDidNotStart` when
+/// nothing accepts connections after about 10 seconds.
 pub fn start(comptime run: fn () anyerror!void) !App {
     const Once = struct {
         var mutex: std.atomic.Mutex = .unlocked;

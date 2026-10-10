@@ -8,11 +8,23 @@ const Response = @import("../core/context.zig").Response;
 /// Where static files are read from and under which URL path they are
 /// served. Apps set it through `Config.static_dir`, `Server.staticDir(dir)`
 /// or `Server.staticAt(dir, prefix)`.
+///
+/// Files are answered before routing and before any middleware, to any
+/// method: they are always public. The prefix itself serves `index.html`.
+/// A path with `..` in it, or one that names no file, goes on to the
+/// routes. The content type comes from the extension
+/// (`application/octet-stream` when unknown). Every answer has an `ETag`
+/// (a matching `If-None-Match` gets 304) and `Cache-Control: no-cache`, or
+/// `public, max-age=31536000, immutable` when the URL has a `v` query
+/// parameter (`/app.css?v=3`).
 pub const StaticConfig = struct {
-    /// The directory of the files, relative to the working directory. Empty: no static files.
+    /// The directory of the files, relative to the working directory.
+    /// Empty: no static files.
     dir: []const u8 = "./public",
     /// The start of the URL paths answered from `dir`: with `/assets`,
-    /// `/assets/app.css` is the file `app.css` of `dir`.
+    /// `/assets/app.css` is the file `app.css` of `dir`. It is compared as
+    /// text: `/assets` also takes `/assets-old/x.css`, as the file
+    /// `-old/x.css`.
     prefix: []const u8 = "/",
     /// The largest file served. A file is read whole into memory for each
     /// request that gets it, so this bounds what one request can take. A

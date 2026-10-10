@@ -65,17 +65,20 @@ pub const MtlsResponse = struct {
     }
 };
 
-/// Makes one HTTP request over an mTLS connection.
+// Why `request` takes no `io: std.Io`: every step here (writing temp
+// files, spawning curl) is a blocking-style OS operation, and this category
+// of operation hit `error.WouldBlock` when it ran on a request handler's
+// `io` (zio backend). The whole HTTP exchange happens inside the `curl`
+// subprocess, so the function owns a dedicated `Io.Threaded`.
+
+/// Makes one HTTP request over an mTLS connection by running `curl`, and
+/// waits for it: the calling thread is blocked until curl ends. It takes no
+/// `io`: it uses a blocking Io of its own, whatever the server's backend.
+/// Redirects are not followed.
 ///
-/// Deliberately does not take an `io: std.Io` parameter — every step here
-/// (writing temp files, spawning curl) is a blocking-style OS operation, and
-/// `fcm.zig`'s `signJwt` (orbitx) already hit `error.WouldBlock` in
-/// production when this category of op ran on a request handler's `io`
-/// (zio backend). Since the entire HTTP exchange here happens inside the
-/// `curl` subprocess — there's no separate "do the HTTP call on the
-/// caller's io" step like fcm.zig has — the whole function just owns a
-/// dedicated `Io.Threaded` internally, the same fix fcm.zig applies to only
-/// its subprocess portion.
+/// The certificate, the key and the request body are written to files in
+/// `/tmp` (mode 0600) for the time of the call and deleted before it
+/// returns.
 ///
 /// The body of the response is allocated with `gpa`: free it with
 /// `res.deinit(gpa)`. Needs `curl` on the PATH (error.FileNotFound without

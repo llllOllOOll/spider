@@ -157,7 +157,7 @@ pub const Hub = struct {
     }
 
     /// Stops the heartbeat and sweep threads, closes the stream of every
-    /// connection still registered and frees the hub.
+    /// connection still registered and frees what the hub allocated.
     pub fn deinit(self: *Hub) void {
         self.stopHeartbeat();
         self.stopSweep();

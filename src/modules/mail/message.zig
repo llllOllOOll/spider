@@ -9,7 +9,8 @@ pub const Mailbox = struct {
     address: []const u8,
 
     /// Parses `Ada <ada@example.com>`, `"Lovelace, Ada" <ada@example.com>` or
-    /// a bare `ada@example.com`. The result borrows from `s`.
+    /// a bare `ada@example.com`. The result borrows from `s`. Fails like
+    /// `validate`: `error.MailInvalidAddress`, `error.MailInvalidHeader`.
     pub fn parse(s: []const u8) !Mailbox {
         const trimmed = std.mem.trim(u8, s, " \t");
         var mailbox: Mailbox = .{ .address = trimmed };
@@ -24,8 +25,9 @@ pub const Mailbox = struct {
         return mailbox;
     }
 
-    /// `Name <address>` (the name quoted when it needs to be), or the bare
-    /// address when there is no name.
+    /// `Name <address>` (the name quoted when it needs to be), allocated in
+    /// `arena`, or the bare address itself (not a copy) when there is no
+    /// name.
     pub fn toHeader(self: Mailbox, arena: std.mem.Allocator) ![]const u8 {
         const name = self.name orelse return self.address;
         if (std.mem.indexOfAny(u8, name, "()<>[]:;@\\,.\"") == null) {
@@ -52,6 +54,8 @@ pub const Mailbox = struct {
 };
 
 /// A message to send. `from` may be left out when the Mailer has a default.
+/// It needs at least one recipient among `to`, `cc` and `bcc`, and a
+/// non-empty `html` or `text`; `subject` may be empty.
 pub const Mail = struct {
     from: ?Mailbox = null,
     to: []const Mailbox = &.{},

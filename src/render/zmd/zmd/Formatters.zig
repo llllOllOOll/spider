@@ -44,7 +44,8 @@ list_item: Handler = Default.list_item,
 code: Handler = Default.code,
 /// A top-level paragraph.
 paragraph: Handler = Default.paragraph,
-/// Text between `{% raw %}` and `{% endraw %}`, kept as typed (escaped).
+/// A `{% raw %}` ... `{% endraw %}` block: `node.content` is the block as
+/// typed, the two markers included, escaped.
 raw_block: Handler = Default.raw_block,
 /// Every element without a field of its own (plain text, nested paragraphs).
 default_handler: Handler = Default.default,

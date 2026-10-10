@@ -20,12 +20,13 @@ pub const Response = struct {
     body_text: []const u8,
     // internal: the connection pool the request went through
     http_client: *HttpClient,
-    /// True when `http_client` was created just for this one request (the
-    /// standalone get/post/etc path) — this Response then owns its lifetime.
-    /// False when `http_client` belongs to a persistent `pacman.Client`
-    /// (reused across many requests): in that case `Client.deinit()` closes
-    /// it, not this Response — destroying it here would leave every
-    /// subsequent request through that Client using a freed HttpClient.
+    // internal: true when `http_client` was created just for this one
+    // request (the standalone get/post/etc path) — this Response then owns
+    // its lifetime. False when `http_client` belongs to a persistent
+    // `pacman.Client` (reused across many requests): in that case
+    // `Client.deinit()` closes it, not this Response — destroying it here
+    // would leave every subsequent request through that Client using a
+    // freed HttpClient.
     owns_http_client: bool,
 
     /// Frees the response. After a single request (`get`, `post`, ...) this

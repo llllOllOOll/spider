@@ -19,15 +19,24 @@ const PathMiddlewareEntry = struct {
 /// A set of routes under one prefix, built by a feature and mounted on the
 /// server (`server.mount(g)` or `server.mountFeatures(features)`).
 ///
+/// ```zig
+/// pub fn build() spider.Group {
 ///     var g = spider.Group.init("/tickets");
 ///     _ = g
-///         .defaults(.{ .org_roles = ticket_roles })   // before the routes
-///         .get("", controller.index, .{})              // inherits the defaults
-///         .post("/:id/approve", controller.approve, .{ .org_roles = admin_roles }) // replaces them
-///         .get("/public-feed", controller.feed, .{ .public = true });              // opts out
+///         .defaults(.{ .org_roles = ticket_roles }) // before the routes
+///         .get("", controller.index, .{}) // inherits the defaults
+///         // replaces them:
+///         .post("/:id/approve", controller.approve, .{ .org_roles = admin_roles })
+///         // opts out:
+///         .get("/public-feed", controller.feed, .{ .public = true });
+///     return g;
+/// }
+/// ```
 ///
 /// Routes take the same config as server routes (routing/route_config.zig)
-/// and plain or extractor handlers (spider.Path / spider.Form).
+/// and plain or extractor handlers (spider.Path / spider.Form /
+/// spider.Loaded). A handler that takes the server's decorations is a
+/// compile error here.
 pub const Group = struct {
     router: *Router,
     prefix: []const u8,
@@ -44,7 +53,8 @@ pub const Group = struct {
     route_count: usize = 0,
 
     /// A new, empty group. `prefix` goes in front of every path added to it;
-    /// `""` is a group at the root of the site.
+    /// `""` is a group at the root of the site. `prefix` is not copied. The
+    /// group's memory is never freed: build groups once, at startup.
     pub fn init(prefix: []const u8) Group {
         const r = std.heap.page_allocator.create(Router) catch @panic("OOM");
         r.* = Router.init(std.heap.page_allocator) catch @panic("OOM");
@@ -57,9 +67,11 @@ pub const Group = struct {
 
     /// Access rules and flags every route of the group inherits unless the
     /// route declares its own `.roles` / `.org_roles` / `.public` /
-    /// `.authenticated` / `.policy`
-    /// (`.quiet_log` / `.allow_http` are overridden one by one). Must come
-    /// before the group's routes.
+    /// `.authenticated` / `.policy`: any one of them replaces all the access
+    /// rules of the defaults (`.quiet_log` / `.allow_http` are overridden one
+    /// by one). Must come before the group's routes: after one, it panics.
+    /// A second call replaces the first. Plain `sse()` routes do not get
+    /// the defaults.
     pub fn defaults(self: *Group, comptime config: anytype) *Group {
         comptime route_config.validate(config);
         if (self.route_count > 0) std.debug.panic("Group \"{s}\": defaults() must come before the group's routes", .{self.prefix});
@@ -71,7 +83,7 @@ pub const Group = struct {
     /// Middleware for every route of this group (applied when the group is
     /// mounted, so the order relative to the routes doesn't matter). Runs
     /// after the route's RBAC checks. Unlike useAt(), it's tied to the
-    /// routes, not to a path prefix.
+    /// routes, not to a path prefix. At most 16: one more panics.
     pub fn use(self: *Group, m: MiddlewareFn) *Group {
         if (self.use_count >= self.use_middlewares.len) std.debug.panic("Group \"{s}\": more than {d} use() middlewares", .{ self.prefix, self.use_middlewares.len });
         self.use_middlewares[self.use_count] = m;
@@ -80,9 +92,11 @@ pub const Group = struct {
     }
 
     /// Adds a GET route under the group's prefix: in a group at `/posts`,
-    /// `""` answers `/posts` and `"/:id"` answers `/posts/4`. Handler and
+    /// `""` answers `/posts` and `"/:id"` answers `/posts/4`. Path and
     /// config are the ones of `Server.get`; an empty config (`.{}`) takes the
-    /// group's `defaults`.
+    /// group's `defaults`. The handler is `fn (*spider.Ctx) !spider.Response`,
+    /// with `spider.Path`, `spider.Form` and `spider.Loaded` parameters if it
+    /// wants them.
     pub fn get(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
         return self.route(.GET, path, toHandler(handler), config);
     }
@@ -166,8 +180,10 @@ pub const Group = struct {
     }
 
     /// Adds a middleware for the requests whose path starts with the group's
-    /// prefix followed by `path_suffix`. It is tied to the path, not to the
-    /// routes: `use` is the one for "every route of this group". At most 32.
+    /// prefix followed by `path_suffix` (compared as text, like
+    /// `Server.useAt`). It is tied to the path, not to the routes: `use` is
+    /// the one for "every route of this group". At most 32 per group, and 32
+    /// in the server the group is mounted on: one more panics.
     pub fn useAt(self: *Group, path_suffix: []const u8, m: MiddlewareFn) *Group {
         const full = self.join(path_suffix) catch return self;
         if (self.path_middleware_count >= self.path_middlewares.len) {

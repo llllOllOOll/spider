@@ -36,17 +36,20 @@ pub const Config = struct {
     /// it. The default, "127.0.0.1", accepts local connections only: use
     /// "0.0.0.0" to accept connections from other machines (a container).
     host: []const u8 = "127.0.0.1",
-    /// Directory of the templates that `c.view()` renders when they are
-    /// read from disk: a view named "posts/index" is
-    /// `<views_dir>/posts/index.html`. Default "./views" (a generated app
-    /// sets "./src"). null: `c.view()` fails with error.ViewsNotConfigured.
+    /// Directory searched, with its subdirectories, for the templates
+    /// (`.html`, `.md`) that `c.view()` renders when they are read from
+    /// disk: a view named "posts/index" is `<views_dir>/posts/index.html`
+    /// or, in the layout of a generated app,
+    /// `<views_dir>/features/posts/views/index.html`. Default "./views" (a
+    /// generated app sets "./src"). null: `c.view()` fails with
+    /// error.ViewsNotConfigured, embedded templates or not.
     views_dir: ?[]const u8 = "./views",
-    /// Not read by the server today: a template names its layout itself,
-    /// with `extends "layout"`. Default "layout".
+    /// Nothing uses it today: a template names its layout itself, with
+    /// `extends "layout"`. Default "layout".
     layout: ?[]const u8 = "layout",
-    /// Directory served as static files at "/" (before routing, always
-    /// public). null: no static files. `server.staticDir()` / `staticAt()`
-    /// override it.
+    /// Directory served as static files at "/" (before routing and before
+    /// any middleware: always public). null: no static files.
+    /// `server.staticDir()` / `staticAt()` override it. Default "./public".
     static_dir: ?[]const u8 = "./public",
     /// The largest static file served, in bytes. A file is read whole into
     /// memory for each request, so raise it with care; bigger files belong
@@ -66,16 +69,21 @@ pub const Config = struct {
     /// Waiting for the next request on a connection (the first one too).
     /// Keep it above the idle timeout of a reverse proxy in front (Go's
     /// default is 90 s), so the proxy, not the app, closes idle upstreams.
+    /// Default: 120 s.
     keepalive_timeout_ms: u32 = 120_000,
     /// From the first byte of a request to its complete head (slowloris).
+    /// Milliseconds, 0 = off. Default: 30 s.
     header_timeout_ms: u32 = 30_000,
     /// Longest silence while receiving a request body; restarts on every
-    /// chunk, so a slow but steady upload is never cut.
+    /// chunk, so a slow but steady upload is never cut. When it passes, the
+    /// request is answered 400 and the connection closed. Milliseconds,
+    /// 0 = off. Default: 60 s.
     body_timeout_ms: u32 = 60_000,
-    /// Largest request body accepted, from its Content-Length: a bigger one
-    /// is answered 413 before anything is read or allocated (the connection
-    /// is then closed). Uploads that go straight to object storage (presigned
-    /// URLs) never reach it; raise it for apps that take files through the app.
+    /// Largest request body accepted, in bytes, from its Content-Length: a
+    /// bigger one is answered 413 before anything is read or allocated (the
+    /// connection is then closed). Uploads that go straight to object storage
+    /// (presigned URLs) never reach it; raise it for apps that take files
+    /// through the app. Default: 10 MiB.
     max_body_bytes: u64 = 10 * 1024 * 1024,
     /// Cross-site request check, on by default: a state-changing request a
     /// browser sends from another site (CSRF) or a cross-site WebSocket
@@ -99,16 +107,20 @@ pub const Config = struct {
     /// (its socket buffer full: the client stopped reading). The connection
     /// is then closed, so the client reconnects instead of silently missing
     /// events, and a stuck client can't hold up delivery to everyone else.
+    /// Milliseconds, 0 = off. Default: 10 s.
     stream_write_timeout_ms: u32 = 10_000,
     /// Browser reload for `spider dev` (modules/dev_reload.zig): a script
     /// added to HTML pages plus `/_spider/dev.js` and `/_spider/dev`. null
     /// (the default): on when SPIDER_DEV is set, which `spider dev` does for
     /// the app it runs. Never on in a release build.
     dev_reload: ?bool = null,
-    /// Every route must declare who may call it (`.public`, `.roles` or
-    /// `.org_roles`, directly or through its group's defaults()); listen()
-    /// refuses to start otherwise and names the routes that don't. Turns
-    /// "forgot the RBAC" into a boot error. Also `server.requireRouteAccess()`.
+    /// Every route must declare who may call it (`.public`,
+    /// `.authenticated`, `.roles`, `.org_roles` or `.policy`, directly or
+    /// through its group's defaults()); listen() refuses to start otherwise
+    /// (error.RouteAccessUndeclared) and names the routes that don't. Turns
+    /// "forgot the RBAC" into a boot error. Routes that take no config
+    /// (`ws()`, `wsInterval()`, plain `sse()`) count as not declaring.
+    /// Default false. Also `server.requireRouteAccess()`.
     require_route_access: bool = false,
 };
 

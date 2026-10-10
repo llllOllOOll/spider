@@ -63,8 +63,9 @@ pub const NextFn = *const fn (*Ctx) anyerror!Response;
 pub const MiddlewareFn = *const fn (*Ctx, NextFn) anyerror!Response;
 
 /// The function given to `Server.onError`: every error a handler, a
-/// middleware or an extractor returns ends up there.
-/// `spider.errorHandler(.{})` makes a ready one.
+/// middleware or an extractor returns ends up there, and `error.NotFound`
+/// for a request no route matches. `spider.errorHandler(.{})` makes a ready
+/// one.
 pub const ErrorHandler = *const fn (*Ctx, anyerror) anyerror!Response;
 
 /// The attributes of a cookie, for `Ctx.withCookie`, `Ctx.setCookie` and
@@ -121,10 +122,13 @@ pub const HtmxHeaders = struct {
 pub const ResponseOptions = struct {
     status: std.http.Status = .ok,
     /// Extra response headers, as `.{ name, value }` pairs. They must stay
-    /// valid until the response is sent: allocate them in `c.arena`.
+    /// valid until the response is sent: allocate them in `c.arena`. The
+    /// server sends at most 30 headers and cookies of one response (see
+    /// `Response.headers`).
     headers: []const [2][]const u8 = &.{},
-    /// `.{ name, full Set-Cookie value }` pairs. `Ctx.withCookie` is the
-    /// short way to set one cookie.
+    /// `.{ name, full Set-Cookie value }` pairs: each is sent as one
+    /// `Set-Cookie` header with the second item as its value (the name is
+    /// not sent). `Ctx.withCookie` is the short way to set one cookie.
     cookies: []const [2][]const u8 = &.{},
 };
 
@@ -154,12 +158,19 @@ pub const DownloadOptions = struct {
 /// `next(c)`.
 pub const Response = struct {
     status: std.http.Status = .ok,
+    /// Null is sent as an empty body.
     body: ?[]const u8 = null,
     content_type: []const u8 = "text/plain",
+    /// Extra headers, as `.{ name, value }` pairs. The server adds
+    /// `content-type`, `X-Request-Id` and the length itself, and has room
+    /// for 30 more: the headers first, then the cookies. Any after the 30th
+    /// is dropped without notice.
     headers: []const [2][]const u8 = &.{},
+    /// `.{ name, full Set-Cookie value }` pairs, each sent as one
+    /// `Set-Cookie` header.
     cookies: []const [2][]const u8 = &.{},
     /// The handler already wrote to the connection itself (SSE, WebSocket):
-    /// the server sends nothing more.
+    /// the server sends nothing more and closes the connection.
     raw: bool = false,
 };
 
@@ -184,12 +195,15 @@ pub const Ctx = struct {
     /// handler allocates for its answer goes here; nothing is freed by hand.
     arena: std.mem.Allocator,
     /// The `:name` segments of the matched route: `c.params.get("id")`.
+    /// A value is the segment as it came in the URL: not percent-decoded.
     /// Spider also keeps who the request is from here, under names that
     /// start with `_auth_`; read those with `userId`, `hasRole` and the
     /// like.
     params: std.StringHashMapUnmanaged([]const u8),
-    /// The request body as it arrived, or null when there is none. See
-    /// `bodyJson` and `parseForm`.
+    /// The request body as it arrived, or null when there is none. Only a
+    /// body announced by `Content-Length` is read: one sent with chunked
+    /// transfer encoding is not, and the handler sees null. See `bodyJson`
+    /// and `parseForm`.
     body: ?[]const u8 = null,
     _db: ?*const Database = null,
     _views: ?ViewsConfig = null,
@@ -230,14 +244,16 @@ pub const Ctx = struct {
     _loaded_type: ?*const anyopaque = null,
 
     /// Id correlating every log line and the response of this request: the
-    /// incoming `X-Request-Id` when it looks sane (e.g. set by a proxy),
-    /// otherwise generated. Also sent back as the `X-Request-Id` header.
+    /// incoming `X-Request-Id` when it looks sane (e.g. set by a proxy: 1 to
+    /// 64 letters, digits, `-`, `_` or `.`), otherwise 16 random hex digits.
+    /// Also sent back as the `X-Request-Id` header.
     pub fn requestId(self: *Ctx) []const u8 {
         return self._request_id;
     }
 
     /// Attach a human-readable reason to the error about to be returned
     /// (e.g. "invalid path param: id"); onError/default handling can show it.
+    /// `detail` is not copied: a literal, or memory from `c.arena`.
     pub fn setErrorDetail(self: *Ctx, detail: []const u8) void {
         self._error_detail = detail;
     }
@@ -380,7 +396,7 @@ pub const Ctx = struct {
     /// ```
     ///
     /// `error.TemplateNotFound` when there is no such template,
-    /// `error.ViewsNotConfigured` when the app has none.
+    /// `error.ViewsNotConfigured` when `Config.views_dir` is null.
     pub fn view(self: *Ctx, name: []const u8, data: anytype, opts: ResponseOptions) !Response {
         switch (try self.prepareView(name, opts)) {
             .done => |resp| return resp,
@@ -427,8 +443,9 @@ pub const Ctx = struct {
         return self.prepareRuntime(vc, name, opts);
     }
 
-    /// Embedded mode: template and components come from `map` (static
-    /// memory, not copied per request).
+    // internal: embedded mode of view(): template and components come from
+    // `map` (static memory, not copied per request). Public for the tests
+    // in render/embedded_test.zig.
     pub fn prepareEmbedded(self: *Ctx, map: *const embedded.Map, name: []const u8, opts: ResponseOptions) !PreparedView {
         self._last_template = name;
         var buf: [embedded.max_name_len]u8 = undefined;
@@ -532,10 +549,15 @@ pub const Ctx = struct {
         return self.body;
     }
 
-    /// The JSON body parsed into `T`. Fields of the JSON that `T` does not
-    /// have are ignored; a field `T` needs and the JSON lacks is an error, as
-    /// is JSON that does not parse. `error.BodyEmpty` when there is no body.
-    /// All of them answer 400 by default.
+    /// The JSON body parsed into `T`, allocated in `c.arena`. Fields of the
+    /// JSON that `T` does not have are ignored; a field `T` needs and the
+    /// JSON lacks is an error (`error.MissingField`), as is JSON that does
+    /// not parse (`error.SyntaxError`, `error.UnexpectedToken`, ...).
+    /// `error.BodyEmpty` when there is no body. These answer 400 by default.
+    /// Three errors of `std.json` are not in `statusForError` and answer
+    /// 500: `error.Overflow` (a number too big for its field),
+    /// `error.InvalidCharacter` and `error.LengthMismatch` (an array of the
+    /// wrong length).
     ///
     /// ```zig
     /// const Input = struct { title: []const u8, body: []const u8 = "" };
@@ -550,8 +572,11 @@ pub const Ctx = struct {
     }
 
     /// The parts of a `multipart/form-data` body: the fields and the uploaded
-    /// files. `error.BodyEmpty`, `error.MissingContentType` or
-    /// `error.InvalidBoundary` when the request is not one.
+    /// files, allocated in `c.arena`. `error.BodyEmpty`,
+    /// `error.MissingContentType` or `error.InvalidBoundary` when the request
+    /// is not one; `error.InvalidMultipartEncoding`, `error.MissingFieldName`
+    /// or `error.BoundaryTooLong` when its body is malformed. All answer 400
+    /// by default.
     pub fn parseMultipart(self: *Ctx) !@import("../binding/multipart.zig").MultipartData {
         const body = self.body orelse return error.BodyEmpty;
         const ct = self.header("content-type") orelse return error.MissingContentType;
@@ -560,13 +585,25 @@ pub const Ctx = struct {
     }
 
     /// The fields of a submitted form as a `T`, whether it came as
-    /// `application/x-www-form-urlencoded` or `multipart/form-data`. A field
-    /// of `T` with a default is optional in the form.
+    /// `application/x-www-form-urlencoded` or `multipart/form-data`.
     ///
     /// ```zig
     /// const Input = struct { title: []const u8 = "", body: []const u8 = "" };
     /// const input = try c.parseForm(Input);
     /// ```
+    ///
+    /// A field of `T` is `[]const u8`, `i32`, `i64`, `u32`, `f32`, `f64`,
+    /// `bool`, `spider.UploadedFile` (multipart forms), or an optional of
+    /// one of them; another type is a compile error. Text is copied into
+    /// `c.arena`.
+    ///
+    /// No field is required: one the form does not have is `""`, `0` or
+    /// `false`, or null when it is optional. The defaults declared in `T`
+    /// are not used. A number that does not parse is `0`. A `bool` is true
+    /// for "true", "1" and "on". Check what must be there after parsing.
+    ///
+    /// `error.BodyEmpty` when the request has no body; `error.MissingField`
+    /// when a multipart form lacks a non-optional `UploadedFile`.
     pub fn parseForm(self: *Ctx, comptime T: type) !T {
         const body = self.body orelse return error.BodyEmpty;
         const ct = self.header("content-type");
@@ -714,9 +751,17 @@ pub const Ctx = struct {
         return out.items;
     }
 
-    /// htmx response headers for `ResponseOptions.headers`:
-    ///     .headers = try c.htmx(.{ .retarget = "#form", .reswap = .outerHTML,
-    ///         .trigger = try c.hxEvent("spider:toast", .{ .message = "Saved", .type = "success" }) })
+    /// htmx response headers for `ResponseOptions.headers`, allocated in
+    /// `c.arena`:
+    ///
+    /// ```zig
+    /// return c.html(body, .{ .headers = try c.htmx(.{
+    ///     .retarget = "#form",
+    ///     .reswap = .outerHTML,
+    ///     .trigger = try c.hxEvent("spider:toast", .{ .message = "Saved", .type = "success" }),
+    /// }) });
+    /// ```
+    ///
     /// A value containing CR/LF is error.InvalidHeaderValue.
     pub fn htmx(self: *Ctx, h: HtmxHeaders) ![]const [2][]const u8 {
         var out: std.ArrayList([2][]const u8) = .empty;
@@ -763,7 +808,9 @@ pub const Ctx = struct {
 
     /// The query string value of `name` exactly as it came in the URL: NOT
     /// percent-decoded (`?q=Jo%C3%A3o+Silva` gives "Jo%C3%A3o+Silva"). For
-    /// text a user typed (a search box, a name) use `queryDecoded`.
+    /// text a user typed (a search box, a name) use `queryDecoded`. Null
+    /// when the name is not there or has no `=`; when it is repeated, the
+    /// first one.
     pub fn query(self: *Ctx, name: []const u8) ?[]const u8 {
         return queryValue(self.request.head.target, name);
     }
@@ -791,10 +838,12 @@ pub const Ctx = struct {
     }
 
     /// The immediate TCP peer's address (no port), allocated in `arena`.
+    /// Null only when that allocation fails.
     ///
     /// Behind a reverse proxy, this is the proxy's address, not the
     /// original client's — use `clientIp()` with `Config.trusted_proxies`
-    /// in that case (not the raw X-Forwarded-For, which clients can forge). This exists for the direct-connection case (no proxy
+    /// in that case (not the raw X-Forwarded-For, which clients can forge).
+    /// This exists for the direct-connection case (no proxy
     /// in front, e.g. local dev or a LAN device hitting the server
     /// directly), where no proxy ever adds that header, and callers would
     /// otherwise have no way to identify who connected.
@@ -823,9 +872,13 @@ pub const Ctx = struct {
     }
 
     /// A redirect that also sends headers or cookies:
-    ///     return c.redirectWith("/posts", try c.withCookie("author", name, .{ .encode = true }));
+    ///
+    /// ```zig
+    /// return c.redirectWith("/posts", try c.withCookie("author", name, .{ .encode = true }));
+    /// ```
+    ///
     /// Answers 303 See Other, the status for "saved, now GET this page";
-    /// `.status` set to another 3xx is kept.
+    /// `.status` set to another 3xx is kept. `url` is not copied.
     pub fn redirectWith(self: *Ctx, url: []const u8, opts: ResponseOptions) !Response {
         const hdrs = try self.arena.alloc([2][]const u8, opts.headers.len + 1);
         hdrs[0] = .{ "Location", url };
@@ -861,8 +914,10 @@ pub const Ctx = struct {
     }
 
     /// The hub of the app's SSE streams, to publish events from a handler:
-    /// `c.sseHub().emit("post_created", .{ .id = id })`. Panics when the app registered no SSE
-    /// route (`Server.sse`).
+    /// `c.sseHub().emit("post_created", .{ .id = id })`. Panics when the app
+    /// has no SSE hub: the server creates it for the first SSE route
+    /// (`Server.sse`, `Group.sse`), `sseInterval`, `sseHeartbeat`, `sseSweep`
+    /// or feature job.
     pub fn sseHub(self: *Ctx) *Hub {
         return self._sse_hub orelse @panic("sseHub: no SSE hub — use server.sse()");
     }
@@ -884,7 +939,8 @@ pub const Ctx = struct {
         return null;
     }
 
-    /// True when the user holds `role` in any of their organizations. `hasActiveOrgRole` looks at the selected one only.
+    /// True when the user holds `role` in any of their organizations.
+    /// `hasActiveOrgRole` looks at the selected one only.
     pub fn hasOrgRole(self: *Ctx, role: []const u8) bool {
         const count_str = self.params.get("_auth_orgs_count") orelse return false;
         const count = std.fmt.parseInt(usize, count_str, 10) catch return false;
@@ -911,7 +967,8 @@ pub const Ctx = struct {
         try self.params.put(self.arena, "_auth_active_org", try self.arena.dupe(u8, org_id));
     }
 
-    /// True when the token lists `org_id` among the user's organizations.
+    /// True when `org_id` is one of the user's organizations: the ones the
+    /// auth provider read from the token, or the app added with `addOrgRole`.
     pub fn isOrgMember(self: *Ctx, org_id: []const u8) bool {
         const count_str = self.params.get("_auth_orgs_count") orelse return false;
         const count = std.fmt.parseInt(usize, count_str, 10) catch return false;
@@ -991,8 +1048,9 @@ pub const Ctx = struct {
         if (user.name) |n| try self.params.put(self.arena, "_auth_name", try self.arena.dupe(u8, n));
     }
 
-    /// The logged-in user's id: the token's subject, or the HS256 `auth`
-    /// middleware's user id. Null for an anonymous request.
+    /// The logged-in user's id: what `setUser` stored (the token's subject
+    /// for jwks/keycloak/clerk, the session's user for `spider.session`), or
+    /// the HS256 `auth` middleware's user id. Null for an anonymous request.
     pub fn userId(self: *Ctx) ?[]const u8 {
         return self.params.get("_auth_sub") orelse self.params.get("_user_id");
     }
@@ -1086,6 +1144,34 @@ pub const Ctx = struct {
 /// Default HTTP status for an error returned by a handler, middleware or
 /// extractor. Used when the app has no `onError`, and exposed so an app's
 /// own handler can fall back to it for errors it doesn't special-case.
+///
+/// - 404: `error.NotFound`.
+/// - 403: `error.Forbidden`.
+/// - 401: `error.Unauthorized`; a token that fails verification
+///   (`error.Expired`, `error.InvalidSignature`, `error.InvalidFormat`);
+///   `error.OAuthCodeRejected`.
+/// - 400: `error.BadRequest`; input that cannot be bound
+///   (`error.MissingPathParam`, `error.InvalidPathParam`, `error.BodyEmpty`,
+///   `error.BodyUnreadable`, `error.MissingField`, `error.MissingFieldName`,
+///   `error.MissingContentType`, `error.InvalidBoundary`,
+///   `error.BoundaryTooLong`, `error.InvalidMultipartEncoding`, and the JSON
+///   errors `error.SyntaxError`, `error.UnexpectedEndOfInput`,
+///   `error.UnexpectedToken`, `error.UnknownField`, `error.DuplicateField`,
+///   `error.InvalidNumber`, `error.InvalidEnumTag`);
+///   `error.OAuthStateMismatch`, `error.OAuthCodeMissing`; and the Postgres
+///   errors about a value (`error.InvalidTextRepresentation`,
+///   `error.InvalidUUID`, `error.StringDataRightTruncation`,
+///   `error.NumericValueOutOfRange`, `error.InvalidDatetimeFormat`,
+///   `error.DatetimeFieldOverflow`, `error.NotNullViolation`,
+///   `error.CheckViolation`).
+/// - 409: `error.UniqueViolation`, `error.ForeignKeyViolation`,
+///   `error.ExclusionViolation`.
+/// - 413: `error.PayloadTooLarge`.
+/// - 422: `error.RaisedException` (a RAISE in a trigger or a function).
+/// - 502: `error.OAuthProfileFailed`.
+/// - 503: `error.SerializationFailure`, `error.DeadlockDetected`,
+///   `error.LockNotAvailable`, `error.QueryCanceled`.
+/// - 500: every other error.
 pub fn statusForError(err: anyerror) std.http.Status {
     return switch (err) {
         error.NotFound => .not_found,

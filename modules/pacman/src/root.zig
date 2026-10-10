@@ -18,16 +18,26 @@ pub const Response = @import("response.zig").Response;
 /// A client for one server: a base URL, headers sent with every request and
 /// a pool of open connections.
 pub const Client = @import("client.zig").Client;
-/// The options of every request: headers, body, query, timeout, response
-/// size limit, proxy.
+/// The options of every request: headers, body, query, path parameters,
+/// timeout, response size limit, proxy.
 pub const FetchOptions = @import("request.zig").FetchOptions;
 /// The default of `FetchOptions.max_response_bytes`: 64 MiB.
 pub const default_max_response_bytes = @import("request.zig").default_max_response_bytes;
-/// Low-level entry point, for callers that need full per-call control (own
-/// method/headers/uri) while still reusing a persistent http.Client's
-/// connection pool — e.g. a caller with its own request-signing scheme
-/// (fresh Authorization/date headers every call) that doesn't fit Client's
-/// fixed-headers-at-init model. See Client.get/post/etc for the common case.
+/// Low-level entry point: one request with the method in `opts.method`, for
+/// callers that need full per-call control (own method, headers, a `uri`
+/// they built). The last argument is null for a connection of its own, or
+/// `&client.http_client` to go through a `Client`'s connection pool without
+/// its base URL and headers. See `get`, `post` and `Client` for the common
+/// case.
+///
+/// ```zig
+/// var res = try spider.http_client.request(c.io(), c.arena, url, .{
+///     .method = .PUT,
+///     .body = .{ .raw = bytes },
+///     .headers = &.{.{ .name = "Authorization", .value = signature }},
+/// }, null);
+/// defer res.deinit();
+/// ```
 pub const request = @import("request.zig").request;
 /// `client.get(path, opts)` as a plain function, to hand to `io.async`:
 /// `io.async(asyncGet, .{ &client, "/users", .{} })`. Nothing in it is
@@ -41,9 +51,11 @@ pub const asyncPut = @import("client.zig").asyncPut;
 pub const asyncPatch = @import("client.zig").asyncPatch;
 /// `client.delete(path, opts)` as a plain function for `io.async`. See `asyncGet`.
 pub const asyncDelete = @import("client.zig").asyncDelete;
-/// A GET request to `url`. Any HTTP answer is a Response, whatever its
-/// status; an error means no complete answer arrived. The response owns its
-/// memory (taken from `allocator`): call `deinit()`.
+/// A GET request to `url`. A 2xx, 4xx or 5xx answer is a Response; an error
+/// means no complete answer arrived, or the answer was a redirect (3xx other
+/// than 304: `error.HttpRedirectLocationOversize`; redirects are never
+/// followed). The response owns its memory (taken from `allocator`): call
+/// `deinit()`.
 ///
 /// ```zig
 /// var res = try spider.http_client.get(c.io(), c.arena, url, .{ .timeout_ms = 3000 });
@@ -52,7 +64,8 @@ pub const asyncDelete = @import("client.zig").asyncDelete;
 /// const body = res.text();
 /// ```
 pub const get = @import("request.zig").get;
-/// A POST request to `url`, with `opts.body` as its body.
+/// A POST request to `url`, with `opts.body` as its body. Answers and errors
+/// as for `get`.
 ///
 /// ```zig
 /// var res = try spider.http_client.post(c.io(), c.arena, token_url, .{
@@ -72,7 +85,8 @@ pub const patch = @import("request.zig").patch;
 /// A DELETE request to `url`. See `get`.
 pub const delete = @import("request.zig").delete;
 /// A HEAD request to `url`: the response has the status and the headers, and
-/// an empty body.
+/// an empty body. A redirect comes back as a Response here (3xx, with its
+/// `Location` header).
 pub const head = @import("request.zig").head;
 
 test "debug text content" {

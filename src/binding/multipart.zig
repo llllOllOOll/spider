@@ -110,7 +110,9 @@ fn extractFieldValue(input: []const u8, field: []const u8) ?[]const u8 {
 
 /// The boundary of a `Content-Type: multipart/form-data; boundary=...` header
 /// value, without its quotes. Null when the type is not `multipart/form-data`
-/// or has no usable boundary. A slice of `content_type`.
+/// (in lower case), when there is no `boundary=`, when nothing or more than
+/// 70 bytes follow it, or when an opening quote is never closed. A slice of
+/// `content_type`.
 pub fn extractBoundary(content_type: []const u8) ?[]const u8 {
     const mp_prefix = "multipart/form-data";
     const directive_start = std.mem.indexOf(u8, content_type, mp_prefix) orelse return null;

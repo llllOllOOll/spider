@@ -1,14 +1,18 @@
 //! spider.testing.expectRoutes: a feature's access contract as a test.
 //!
-//!     test "posts routes: method, path and access" {
-//!         try spider.testing.expectRoutes(routes.build(), &.{
-//!             .{ "GET", "/posts", "roles:editor" },
-//!             .{ "POST", "/posts/:id/delete", "roles:admin" },
-//!         });
-//!     }
+//! ```zig
+//! test "posts routes: method, path and access" {
+//!     try spider.testing.expectRoutes(routes.build(), &.{
+//!         .{ "GET", "/posts", "roles:editor" },
+//!         .{ "POST", "/posts/:id/delete", "roles:admin" },
+//!     });
+//! }
+//! ```
 //!
 //! The access column is what `spider routes` prints: "public",
-//! "roles:a,b", "org:a,b", "org:a roles:b", or "-" (nothing declared). The
+//! "roles:a,b", "org:a,b", "org:a roles:b", "authenticated", or "-"
+//! (nothing declared), followed by " policy:name" when the route has a
+//! policy (see `RouteMeta.writeAccess`). The
 //! group must register exactly these routes (order doesn't matter), so a
 //! route added, removed, moved or opened up fails `zig build test` until the
 //! table is updated too — and that diff is what a reviewer reads.
@@ -17,11 +21,14 @@ const std = @import("std");
 const Group = @import("group.zig").Group;
 const Router = @import("router.zig").Router;
 
-/// Method, full path (group prefix included), access.
+/// One expected route: the method in capitals ("GET"), the full path (group
+/// prefix included, `:name` segments as registered), and the access column.
 pub const Row = [3][]const u8;
 
 /// Checks that `group` registers exactly the routes of `expected`, each
-/// with that access; order does not matter.
+/// with that access; order does not matter. The access column is "public",
+/// "roles:a,b", "org:a,b", "org:a roles:b", "authenticated" or "-" (nothing
+/// declared), followed by " policy:name" when the route has a policy.
 ///
 /// ```zig
 /// test "posts routes: method, path and access" {

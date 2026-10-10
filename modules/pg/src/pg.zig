@@ -6,7 +6,7 @@ const std = @import("std");
 const pg_lib = @import("pg");
 const env = @import("spider").env;
 
-/// Marker type for PostgreSQL array parameters that should use ANY() pattern
+/// What `array` returns: a list of values to pass as one query parameter.
 pub fn ArrayParameter(comptime T: type) type {
     return struct {
         values: []const T,
@@ -22,8 +22,19 @@ pub fn ArrayParameter(comptime T: type) type {
     };
 }
 
-/// Convert an array to PostgreSQL array parameter for use with ANY() operator.
-/// Example: array(i32, &[_]i32{ 1, 2, 3 }) → ArrayParameter that will be handled as "$1::integer[]"
+/// A list of values as one parameter, for `= ANY($1)`. `values` is not
+/// copied: it must stay valid until the query call returns. A plain slice
+/// passed as the parameter does the same.
+///
+/// ```zig
+/// const ids = [_]i32{ 2, 4, 9 };
+/// const posts = try spider.pg.query(
+///     Post,
+///     c.arena,
+///     "SELECT id, title FROM posts WHERE id = ANY($1)",
+///     .{spider.pg.array(i32, &ids)},
+/// );
+/// ```
 pub fn array(comptime T: type, values: []const T) ArrayParameter(T) {
     // Determine PostgreSQL type name
     const type_name = switch (T) {
@@ -70,8 +81,11 @@ pub const DbConfig = struct {
     /// What typed mapping does with a column missing from the result or a
     /// NULL in a non-optional field (fields with a declared default use it
     /// either way). `.fail` returns error.ColumnMissing / error.UnexpectedNull;
-    /// `.warn` logs it and keeps the old zero value — a migration aid for
-    /// code written against the old silent behavior.
+    /// `.warn` logs it (once per field) and keeps the old zero value (0, "",
+    /// false) — a migration aid for code written against the old silent
+    /// behavior. Under `.warn` a value that cannot be decoded into its field
+    /// (error.TypeMismatch, error.IntegerOverflow, error.InvalidEnumValue) is
+    /// logged and becomes the zero value too.
     mapping: MappingMode = .fail,
 };
 
@@ -215,7 +229,14 @@ pub const DbError = error{
     PG,
 };
 
-/// Typed-mapping failures (see DbConfig.mapping).
+/// Typed-mapping failures: what a row can fail to give a struct.
+/// error.ColumnMissing: no column with the field's name. error.UnexpectedNull:
+/// a NULL where the field is neither optional nor has a default.
+/// error.TypeMismatch: the column's type cannot become the field's type (a
+/// timestamp into an integer, 1.5 into an integer, a date before year 1 into
+/// a string). error.IntegerOverflow: the number does not fit the field.
+/// See `DbConfig.mapping`. An unknown enum label is error.InvalidEnumValue,
+/// which is not part of this set.
 pub const MappingError = error{ ColumnMissing, UnexpectedNull, TypeMismatch, IntegerOverflow };
 
 // internal: the DbError for a SQLSTATE; pub for the tests.
@@ -247,7 +268,8 @@ pub fn errorForCode(code: []const u8) DbError {
     return error.PG;
 }
 
-/// True for any error this module returns for a Postgres-side failure.
+/// True when `err` is one of the errors of `DbError`: a failure reported by
+/// Postgres itself, as opposed to a mapping error or a lost connection.
 pub fn isDbError(err: anyerror) bool {
     inline for (@typeInfo(DbError).error_set.error_names.?) |name| {
         if (err == @field(anyerror, name)) return true;
@@ -255,7 +277,10 @@ pub fn isDbError(err: anyerror) bool {
     return false;
 }
 
-/// Details of the last Postgres error raised on this thread.
+/// Details of the last Postgres error raised on this thread, as `lastError`
+/// returns them. The strings live in a per-thread buffer of 2048 bytes
+/// (longer texts are cut) that the next Postgres error on the thread
+/// overwrites: copy what must be kept.
 pub const ErrorInfo = struct {
     /// The SQLSTATE, e.g. "23505".
     code: []const u8,
@@ -291,6 +316,10 @@ threadlocal var last_error: ErrorStore = .{};
 /// the `catch`, before any other I/O: it is per-thread and the next failing
 /// call on this thread replaces it. `detail` can contain row values (e.g. an
 /// email in a unique violation) — don't show it to end users.
+///
+/// null while no Postgres error happened on this thread. It is only set by
+/// a `DbError`, and a call that succeeds does not clear it: after a mapping
+/// error or a connection error it still holds the previous Postgres error.
 pub fn lastError() ?ErrorInfo {
     return if (last_error.set) last_error.info else null;
 }
@@ -646,10 +675,14 @@ fn execTypedOne(
 /// Runs one statement with `$1`, `$2`... parameters on a connection of the
 /// pool and gives back what `T` asks for:
 /// - a struct: every row as a `[]T` allocated in `arena`. A field takes the
-///   column of the same name. Fields may be `[]const u8`, `bool`, integers,
-///   floats, enums (the label of a Postgres enum or a text) and optionals of
-///   those. A `[]const u8` field accepts any column and gets it as text
-///   (uuid, numeric, date, "2026-09-26T18:40:33.183Z" for a timestamptz).
+///   column of the same name. Fields may be `[]const u8`, `bool`, integers
+///   (`i8` to `i64`, `u8` to `u64`), `f32`, `f64`, enums (the label of a
+///   Postgres enum or a text) and optionals of those. A `[]const u8` field
+///   accepts any column: bool, integers, floats, numeric, uuid, date, time
+///   ("07:05:09", fractions dropped), timestamp and jsonb come as text
+///   ("2026-09-26T18:40:33.183Z" for a timestamptz, in UTC); any other
+///   type comes as the bytes Postgres sent, which is the text itself for
+///   text, varchar, json and enums.
 /// - `i32` or `i64`: the first column of the first row; 0 when there is no
 ///   row or the value is NULL.
 /// - `void`: nothing; for INSERT, UPDATE and DELETE.
@@ -732,7 +765,8 @@ pub fn queryExecute(
     return execTyped(conn, T, arena, sql, .{});
 }
 
-/// Execute raw SQL without parameters and return a single row.
+/// The first row of one statement without parameters:
+/// `queryOne(T, arena, sql, .{})`.
 pub fn queryOneExecute(
     comptime T: type,
     arena: std.mem.Allocator,
@@ -767,11 +801,17 @@ pub fn begin() !Transaction {
 
 /// Runs `body(&tx, context)` inside one transaction on one pinned connection:
 /// commits when it returns normally, rolls back when it returns an error (the
-/// error is passed through).
+/// error is passed through). Returns what `body` returned; when the COMMIT
+/// itself fails, the transaction is rolled back and that error is returned.
 ///
 /// ```zig
-/// const id = try pg.transaction(i64, input, struct {
-///     fn run(tx: *pg.Transaction, in: Input) !i64 { ... }
+/// const NewPost = struct { arena: std.mem.Allocator, title: []const u8 };
+/// const input: NewPost = .{ .arena = c.arena, .title = title };
+/// const id = try spider.pg.transaction(i64, input, struct {
+///     fn run(tx: *spider.pg.Transaction, in: NewPost) !i64 {
+///         const sql = "INSERT INTO posts (title) VALUES ($1) RETURNING id";
+///         return tx.query(i64, in.arena, sql, .{in.title});
+///     }
 /// }.run);
 /// ```
 pub fn transaction(
@@ -995,7 +1035,7 @@ fn guardMulti(sql: []const u8) error{UseBeginForTransactions}!void {
 /// try tx.commit();
 /// ```
 ///
-/// After any statement fails, Postgres aborts the transaction: further
+/// After Postgres refuses a statement it aborts the transaction: further
 /// statements (and commit) return error.TransactionAborted until rollback().
 pub const Transaction = struct {
     /// The connection the transaction is pinned to. Set by `begin()`.
@@ -1139,6 +1179,8 @@ pub fn queryWith(sql: []const u8, params: anytype) !Result {
 }
 
 /// Deprecated: use queryOne(T, arena, sql, params) instead.
+/// The strings of the result are allocated with the allocator given to
+/// `init` and are never freed.
 pub fn queryOneWith(comptime T: type, sql: []const u8, params: anytype) !?T {
     var result = try queryWith(sql, params);
     defer result.deinit();
@@ -1226,46 +1268,46 @@ pub const Result = struct {
     _row_count: usize,
     _col_count: usize,
 
-    /// Deprecated (see `Result`). Frees the result.
+    /// Deprecated: use `query` (see `Result`). Frees the result.
     pub fn deinit(self: *Result) void {
         self._arena.deinit();
     }
 
-    /// Deprecated (see `Result`). Number of rows.
+    /// Deprecated: use `query` (see `Result`). Number of rows.
     pub fn rows(self: *const Result) usize {
         return self._row_count;
     }
 
-    /// Deprecated (see `Result`). Number of columns.
+    /// Deprecated: use `query` (see `Result`). Number of columns.
     pub fn columns(self: *const Result) usize {
         return self._col_count;
     }
 
-    /// Deprecated (see `Result`). Name of column `col`; "" when out of range.
+    /// Deprecated: use `query` (see `Result`). Name of column `col`; "" when out of range.
     pub fn columnName(self: *const Result, col: usize) []const u8 {
         if (col >= self._col_count) return "";
         return self._col_names[col];
     }
 
-    /// Deprecated (see `Result`). Always 0: the type is not kept.
+    /// Deprecated: use `query` (see `Result`). Always 0: the type is not kept.
     pub fn columnTypeOid(_: *const Result, _: usize) i32 {
         return 0;
     }
 
-    /// Deprecated (see `Result`). The number of rows returned, the same as
+    /// Deprecated: use `query` (see `Result`). The number of rows returned, the same as
     /// `rows()`; not the count of rows an UPDATE or DELETE changed.
     pub fn affectedRows(self: *const Result) usize {
         return self._row_count;
     }
 
-    /// Deprecated (see `Result`). The value at `row`, `col` as text; "" for
+    /// Deprecated: use `query` (see `Result`). The value at `row`, `col` as text; "" for
     /// NULL or out of range.
     pub fn getValue(self: *const Result, row: usize, col: usize) []const u8 {
         if (row >= self._row_count or col >= self._col_count) return "";
         return self._values[row * self._col_count + col];
     }
 
-    /// Deprecated (see `Result`). The value of column `name` in `row`; ""
+    /// Deprecated: use `query` (see `Result`). The value of column `name` in `row`; ""
     /// for NULL or an unknown column.
     pub fn get(self: *const Result, row: usize, comptime name: []const u8) []const u8 {
         for (self._col_names, 0..) |n, i| {
@@ -1274,12 +1316,12 @@ pub const Result = struct {
         return "";
     }
 
-    /// Deprecated (see `Result`). True for NULL and for an empty string.
+    /// Deprecated: use `query` (see `Result`). True for NULL and for an empty string.
     pub fn isNull(self: *const Result, row: usize, col: usize) bool {
         return self.getValue(row, col).len == 0;
     }
 
-    /// Deprecated (see `Result`). Every row as a `T`, allocated with
+    /// Deprecated: use `query` (see `Result`). Every row as a `T`, allocated with
     /// `alloc`. A number that does not parse becomes 0.
     pub fn mapAll(self: *Result, comptime T: type, alloc: std.mem.Allocator) ![]T {
         const items = try alloc.alloc(T, self._row_count);
@@ -1289,7 +1331,7 @@ pub const Result = struct {
         return items;
     }
 
-    /// Deprecated (see `Result`). The first row as a `T`, or null without rows.
+    /// Deprecated: use `query` (see `Result`). The first row as a `T`, or null without rows.
     pub fn mapOne(self: *Result, comptime T: type, alloc: std.mem.Allocator) !?T {
         if (self._row_count == 0) return null;
         return try mapResultRow(T, self, 0, alloc);

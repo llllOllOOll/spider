@@ -23,20 +23,37 @@ pub const Options = struct {
     /// a trailing "**" matches the rest ("/tickets/*/presence",
     /// "/api/access/intelbras/**"). Errors and 4xx/5xx are always logged.
     quiet_paths: []const []const u8 = &.{},
-    /// Also log SSE/WebSocket connection opens ("open" lines).
+    /// Also log SSE/WebSocket connections ("open" lines, written when the
+    /// stream's handler returns).
     log_stream_open: bool = true,
 };
 
-/// Request log line:
-///   2026-09-26T17:36:33.178Z [200] GET /tickets/42 3.1ms rid=… user=… org=…
+/// The request logger (`spider.logger`): one line per request on stderr,
+/// written when the response is ready:
+///
+/// ```text
+/// 2026-09-26T17:36:33.178Z [200] GET /tickets/42 3.1ms rid=… user=… org=…
+/// ```
+///
 /// `user` is the auth subject (an id, never email/name) and `org` the active
 /// org, both filled in by the auth middleware later in the chain ("-" when
 /// absent). The query string is left out: it can carry tokens.
+///
+/// A successful request (status under 400) of a route with `.quiet_log` is
+/// not logged. A request that fails with an error is logged with the
+/// status that error has by default (`spider.statusForError`), its name
+/// and its detail. An SSE or WebSocket stream gets its line, with `open`
+/// in place of the duration, when the stream ends.
 pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
     return run(.{}, c, next);
 }
 
-/// `spider.loggerWith(.{ .quiet_paths = &.{"/keepalive"} })`
+/// The request logger with options (`spider.loggerWith`): a middleware for
+/// `server.use`.
+///
+/// ```zig
+/// server.use(spider.loggerWith(.{ .quiet_paths = &.{"/keepalive"} }))
+/// ```
 pub fn with(comptime opts: Options) MiddlewareFn {
     return struct {
         fn mw(c: *Ctx, next: NextFn) anyerror!Response {

@@ -66,7 +66,10 @@ pub fn jwtSign(alloc: std.mem.Allocator, claims: anytype, secret: []const u8) ![
 
 /// The JSON payload of `token` once its HS256 signature is checked against
 /// `secret`; the caller owns it. Does not look at the claims (not at `exp`
-/// either): jwtVerify and spider.session do.
+/// either): jwtVerify and spider.session do. Errors:
+/// `JwtError.InvalidFormat` (not three parts, a header other than the one
+/// `jwtSign` writes, a payload that is not base64url) and
+/// `JwtError.InvalidSignature`.
 pub fn jwtPayload(alloc: std.mem.Allocator, token: []const u8, secret: []const u8) ![]u8 {
     var parts = std.mem.splitScalar(u8, token, '.');
     const header_b64 = parts.next() orelse return JwtError.InvalidFormat;
@@ -119,18 +122,22 @@ test "jwtPayload: the payload of a token signed with the secret, nothing else" {
 /// Checks the signature of `token` and its `exp`, and returns its payload
 /// parsed as `T` (a struct with at least `sub` and `exp`).
 ///
-/// Safe with `T = Claims` (or a `T` with no string or slice field). For any
-/// other `T` the string fields of the result point into memory that is
-/// freed before this function returns: only fields named `email`, `name`
-/// and `locale` are copied; a string `sub`, a list of roles or any other
-/// slice dangles. For your own claims use
-/// `jwtPayload` and parse the payload yourself, as `spider.session` does.
+/// Safe with `T = Claims`, or a `T` whose only strings are fields named
+/// `email`, `name` and `locale`: those three (which must be `[]const u8`)
+/// are copied with `alloc`. Every other string or slice of the result (a
+/// string `sub`, a list of roles, the strings of a nested struct) points
+/// into memory that is freed before this function returns. For your own
+/// claims use `jwtPayload` and parse the payload yourself, as
+/// `spider.session` does.
 ///
 /// With `Claims`, `email` and `name` are copies allocated with `alloc` (the
-/// caller owns them). Errors: `JwtError.InvalidFormat` (also when the payload
-/// has a field `T` does not, or lacks one it requires),
+/// caller owns them). The header must be, byte for byte, the one `jwtSign`
+/// writes: an HS256 token another library signed with the same secret can
+/// fail here. Errors: `JwtError.InvalidFormat` (also when the payload has a
+/// field `T` does not, or lacks one it requires),
 /// `JwtError.InvalidSignature`, `JwtError.Expired` (`exp` greater than 0 and
-/// in the past).
+/// earlier than the current second; a token is still accepted during the
+/// second its `exp` names).
 pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, io: std.Io, token: []const u8, secret: []const u8) !T {
     if (!@hasField(T, "sub")) @compileError("Claims must have 'sub' field");
     if (!@hasField(T, "exp")) @compileError("Claims must have 'exp' field");
@@ -263,10 +270,11 @@ pub fn cookieClear(alloc: std.mem.Allocator) ![]u8 {
 pub const AuthConfig = struct {
     /// What the tokens were signed with (`jwtSign`). No default.
     secret: []const u8,
-    /// Request targets let through without a token: an exact match, or a
-    /// prefix when the entry ends in `*` ("/assets/*"). Compared with the
-    /// target as sent, query string included. Routes marked `.public` pass
-    /// too. Default: none.
+    /// Paths let through without a token: an exact match, or a prefix
+    /// when the entry ends in `*` ("/assets/*" covers everything that
+    /// starts with "/assets/"). Compared with the path of the request; its
+    /// query string is ignored ("/login" also lets "/login?next=/x"
+    /// through). Routes marked `.public` pass too. Default: none.
     public_paths: []const []const u8 = &.{},
     /// Cookie the middleware reads the token from. The `cookie*` helpers
     /// always use "token", whatever is set here.
@@ -295,8 +303,9 @@ fn isPublicPath(public_paths: []const []const u8, target: []const u8) bool {
 /// The middleware of the cookie login: a request whose cookie holds a valid
 /// `Claims` token goes on, with the user in the params `_user_id`,
 /// `_user_email` and `_user_name` (`c.userId()` reads the first); any other
-/// request is redirected to `redirect_to`. The `Authorization` header is not
-/// read.
+/// request is redirected (302) to `redirect_to`, except on a route marked
+/// `.public` or a path in `public_paths`, which pass without a check. The
+/// `Authorization` header is not read.
 pub const Auth = struct {
     /// The config given to `init`. Its strings are not copied.
     config: AuthConfig,

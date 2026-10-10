@@ -28,8 +28,10 @@ const JwkEntry = struct {
 /// valid as long as the JwksAuth.
 pub const JwksConfig = struct {
     /// URL of the provider's key set (a JSON object with a `keys` list; each
-    /// key needs `kid`, `n` and `e`, so RSA keys only). Downloaded by `init`
-    /// and again when a token names an unknown key. No default.
+    /// key needs `kid`, `n` and `e`, so RSA keys only: a set that also lists
+    /// a key without them, such as an EC key, is refused whole with
+    /// error.JwksFetchFailed). Downloaded by `init` and again when a token
+    /// names an unknown key. No default.
     jwks_url: []const u8,
     /// The `iss` a token must carry: without the claim the token fails with
     /// error.MissingIssuer, with another value error.InvalidIssuer. null (the
@@ -60,7 +62,8 @@ pub const JwksConfig = struct {
     refresh_path: ?[]const u8 = null,
     /// true: a missing, invalid or expired token is answered with a 401 and a
     /// JSON body (`{"error":"unauthorized","message":...}`), never a
-    /// redirect.
+    /// redirect. (A token whose `nbf` is still in the future gets a 401 with
+    /// a plain-text body in both modes.)
     api_mode: bool = false,
     /// Cookie holding the org the user picked (e.g. "orbitx_condo"). When
     /// present and naming an org the user belongs to, its value becomes
@@ -76,10 +79,12 @@ pub const JwksConfig = struct {
     /// claim name, or a dotted path into nested objects; the claim is a
     /// list of strings or one string. A name containing dots is first
     /// looked up whole. Defaults to Keycloak's realm roles. Others:
-    ///   "roles"                           Entra ID app roles, custom tokens
-    ///   "cognito:groups"                  AWS Cognito groups
-    ///   "https://myapp.example/roles"     Auth0 (a namespaced custom claim)
-    ///   "resource_access.my-client.roles" Keycloak client roles
+    ///
+    /// - `"roles"`: Entra ID app roles, custom tokens
+    /// - `"cognito:groups"`: AWS Cognito groups
+    /// - `"https://myapp.example/roles"`: Auth0 (a namespaced custom claim)
+    /// - `"resource_access.my-client.roles"`: Keycloak client roles
+    ///
     /// null: the token grants no roles.
     roles_claim: ?[]const u8 = "realm_access.roles",
     /// How the token carries organization memberships (what `.org_roles`
@@ -150,14 +155,15 @@ pub const JwksAuth = struct {
     allocator: std.mem.Allocator,
     // internal: the Io given to `init`, used by `fetchJwks` and `verifyToken`
     io: std.Io,
-    /// Read under `keys_lock` (shared); replaced wholesale under it (exclusive).
+    // internal: the cached keys. Read under `keys_lock` (shared); replaced
+    // wholesale under it (exclusive).
     keys: KeyMap,
     // internal: guards `keys`
     keys_lock: std.Io.RwLock = .init,
-    /// Singleflight for re-fetches: only one fetch runs at a time, and callers
-    /// that waited re-check the cache before fetching again.
+    // internal: singleflight for re-fetches: only one fetch runs at a time,
+    // and callers that waited re-check the cache before fetching again.
     fetch_mutex: std.Io.Mutex = .init,
-    /// Guarded by `fetch_mutex`.
+    // internal: when the keys were last downloaded. Guarded by `fetch_mutex`.
     last_fetch: ?std.Io.Timestamp = null,
 
     /// Downloads the key set, so the provider must be reachable when the app
@@ -190,7 +196,9 @@ pub const JwksAuth = struct {
         map.deinit(allocator);
     }
 
-    /// Re-downloads the key set. Safe to call concurrently with verification.
+    /// Re-downloads the key set and replaces the cached one. Safe to call
+    /// concurrently with verification. Fails like `init`; the cached keys
+    /// are then kept.
     pub fn fetchJwks(self: *JwksAuth) !void {
         return self.fetchJwksWith(self.io);
     }
@@ -282,9 +290,14 @@ pub const JwksAuth = struct {
     /// SHA-256), issuer and audience are checked. It does NOT check `exp` or
     /// `nbf`: compare them yourself (the middleware does). `allocator` should
     /// be an arena. Errors: InvalidToken (not three parts), UnknownKey (no key
-    /// for the token's `kid`, even after a re-fetch), InvalidSignature,
-    /// UnsupportedKeySize (the signature is not 1024, 2048, 3072 or 4096
-    /// bits), MissingIssuer, InvalidIssuer, InvalidAudience.
+    /// for the token's `kid`, even after a re-fetch, or the re-fetch was
+    /// skipped because the last one was under `min_refetch_interval_ms`
+    /// ago), InvalidSignature, UnsupportedKeySize (the signature is not 1024,
+    /// 2048, 3072 or 4096 bits), MissingIssuer, InvalidIssuer,
+    /// InvalidAudience. A token malformed in another way fails with the error
+    /// of the base64, JSON or RSA code (error.MissingField when the payload
+    /// has no `sub` or no `exp`). The header's `alg` is not read: the
+    /// signature is always checked as RS256.
     pub fn verifyToken(self: *JwksAuth, allocator: std.mem.Allocator, token: []const u8) !Claims {
         return self.verifyTokenIo(self.io, allocator, token);
     }
@@ -363,9 +376,10 @@ pub const JwksAuth = struct {
     /// `.roles` and `.org_roles` on a route check. Routes marked `.public` and
     /// `auth_skip_paths` pass untouched.
     ///
-    /// Without a token: redirect to `login_path`. With one that does not
-    /// verify: 401 with the error's name as the body. Expired: see
-    /// `refresh_path`. In `api_mode` all three are a JSON 401.
+    /// Without a token: redirect (302) to `login_path`, also for a path no
+    /// route matches. With one that does not verify: 401 with the error's
+    /// name as the body. Expired: see `refresh_path`. In `api_mode` all three
+    /// are a JSON 401. Not valid yet (`nbf`): 401, plain text.
     ///
     /// The instance is kept in one static slot: a process can use the
     /// middleware of one JwksAuth; a second call replaces the first.

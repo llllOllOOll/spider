@@ -45,9 +45,13 @@ pub const Ws = struct {
 
     /// Waits for the next text or binary message. Null when the connection is
     /// over: the client closed it, a read failed, or a frame was not accepted (a
-    /// payload over 16 MiB, a continuation frame). Pings are answered and
-    /// skipped. The payload is allocated in `arena` and is not freed before the
-    /// connection ends.
+    /// payload over 16 MiB, an unknown opcode, a continuation frame). Pings are
+    /// answered and skipped. The payload is allocated in `arena` and is not
+    /// freed before the connection ends.
+    ///
+    /// A message the client split into several frames is not put back
+    /// together: its first frame comes as a message of its own and the
+    /// continuation frame that follows ends the connection.
     pub fn next(self: *Ws) !?Message {
         const frame = self._server.readFrame(self.arena) catch {
             return null;
@@ -64,7 +68,10 @@ pub const Ws = struct {
         };
     }
 
-    /// `join` on the channel `user:<user_id>`.
+    /// `join` on the channel `user:<user_id>`: `broadcastTo("user:7", ...)`
+    /// then reaches the connections of user 7 on this route. The name is
+    /// allocated in `arena`. `Hub.notifyUser` does not reach it: that one
+    /// sends to SSE connections only.
     pub fn joinUser(self: *Ws, user_id: u64) !void {
         // join() keeps the slice for as long as the connection lives (here
         // and in the hub): it has to outlive this call. Same as Sse.joinUser.
@@ -80,7 +87,9 @@ pub const Ws = struct {
         try self._hub.updateChannel(self._conn_id, channel);
     }
 
-    /// Sends a text message to this connection only.
+    /// Sends a text message to this connection only. It takes the same lock
+    /// as a broadcast from another connection, so the two frames never mix.
+    /// Fails with the write error when the client is gone.
     pub fn send(self: *Ws, text: []const u8) !void {
         // Under the hub's lock for this connection: a broadcast from
         // another connection writes to the same socket, and two writers

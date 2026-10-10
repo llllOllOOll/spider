@@ -25,26 +25,37 @@ pub const FetchOptions = struct {
     /// (GET by default).
     method: http.Method = .GET,
     /// Request headers: `&.{.{ .name = "Authorization", .value = token }}`.
-    /// A `Client` ignores this field and sends its own headers.
+    /// A `Client` sends the headers given to `Client.init` and then these;
+    /// one of these with the name of a client header (case does not matter)
+    /// replaces it for this request.
     headers: []const http.Header = &.{},
     /// The request body. null: none (POST, PUT and PATCH then send an empty
-    /// one).
+    /// one, `Content-Length: 0`). Only for POST, PUT and PATCH: with any
+    /// other method (GET, DELETE, HEAD) a body trips an assertion of the
+    /// HTTP layer, a panic in Debug and ReleaseSafe builds.
     body: ?Body = null,
-    /// Name/value pairs added to the URL as its query string, URL-encoded
-    /// (after a `?`, or a `&` when the URL already has a query).
+    /// Name/value pairs added to the URL as its query string, names and
+    /// values percent-encoded (after a `?`, or a `&` when the URL already
+    /// has a query). Added after `params` were filled in, so the two
+    /// combine: `/users/:id` with both gives `/users/42?page=2`.
     query: []const [2][]const u8 = &.{},
     /// Values for `:name` placeholders in the URL: `.{ "id", "42" }` turns
-    /// `/users/:id` into `/users/42`. The value is URL-encoded, so it stays
-    /// one path segment; a placeholder without a value stays as written.
+    /// `/users/:id` into `/users/42`. The value is percent-encoded (all but
+    /// letters, digits and `-_.~`), so it stays one path segment: "a/b"
+    /// becomes `a%2Fb`. A placeholder is a `:` followed by a letter, then
+    /// letters, digits and `_`; one without a value stays as written.
     params: []const [2][]const u8 = &.{}, // URL path parameters
-    /// A URI the caller already parsed, used instead of parsing the URL.
-    /// `query` and `params` are then ignored.
+    /// A URI the caller already parsed, used instead of the URL: the `url`
+    /// argument (for a `Client`, its `base_url` and the path), `query` and
+    /// `params` are then all ignored.
     uri: ?std.Uri = null, // pre-built URI (skips std.Uri.parse)
     /// Deadline for the WHOLE request, in milliseconds: connecting, the TLS
     /// handshake, sending, waiting for the response and reading its body.
     /// When it passes, the request is canceled, its connection is closed
     /// (never returned to a pool) and the call fails with `error.Timeout`.
     /// 0 = no deadline: the call waits for as long as the server takes.
+    /// The request runs as a concurrent task of `io`: when `io` cannot start
+    /// one, the call fails with `error.ConcurrencyUnavailable`.
     timeout_ms: u32 = 0,
     /// Largest response body accepted, in bytes, counted AFTER
     /// decompression (a small gzip body can inflate to a huge one). A
@@ -52,20 +63,29 @@ pub const FetchOptions = struct {
     /// past the limit is kept. Raise it for a known-large download; use
     /// `std.math.maxInt(usize)` for no limit.
     max_response_bytes: usize = default_max_response_bytes,
-    /// Explicit HTTP(S) proxy URL (e.g. "http://user:pass@host:8080").
-    /// If omitted, falls back to environment variables (http_proxy/https_proxy/
-    /// all_proxy, honoring no_proxy) — if none of those are set either, no
-    /// proxy is used (identical behavior to before this option existed).
+    /// The proxy for this request: an HTTP(S) proxy
+    /// ("http://user:pass@host:8080") or a SOCKS5 one ("socks5://host:1080",
+    /// "socks5h://..."; either way the proxy resolves the host name). It is
+    /// used whatever `no_proxy` says. null: the environment decides
+    /// (`http_proxy` / `https_proxy` / `all_proxy`, lower or upper case,
+    /// unless `no_proxy` lists the host); with none of them set, no proxy.
+    /// A URL with another scheme is ignored: the request goes direct. On a
+    /// `Client` the proxy is fixed at `init`: a value here that differs from
+    /// it fails with `error.ProxyMismatch`.
     proxy_url: ?[]const u8 = null,
 };
 
 /// A GET request to `url`, on a connection of its own (opened for this call,
-/// closed by `Response.deinit()`). Any HTTP answer comes back as a Response,
-/// 4xx and 5xx included. Errors: `error.Timeout` (`timeout_ms` passed),
-/// `error.ResponseTooLarge` (`max_response_bytes`), `error.HttpBodyCutShort`
-/// (the body stopped early), or the error of the connection or of parsing
-/// `url`. Redirects are not followed. The response is allocated from
-/// `allocator` and owns its memory: call `deinit()`.
+/// closed by `Response.deinit()`). A 2xx, 4xx or 5xx answer comes back as a
+/// Response. Redirects are not followed, and a redirect is not returned
+/// either: a 3xx other than 304 fails the call with
+/// `error.HttpRedirectLocationOversize` (`error.HttpRedirectLocationMissing`
+/// when it has no `Location`); only `head` gets it as a Response. Other
+/// errors: `error.Timeout` (`timeout_ms` passed), `error.ResponseTooLarge`
+/// (`max_response_bytes`), `error.HttpBodyCutShort` (the body stopped
+/// early), or the error of the connection or of parsing `url`. The response
+/// is allocated from `allocator` and owns its memory: call `deinit()`.
+/// `opts.method`, when set, replaces GET.
 pub fn get(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions) !Response {
     return request(io, allocator, url, opts, null);
 }
@@ -227,12 +247,14 @@ fn discard(outcome: Race) void {
 }
 
 /// Sends one request with the method in `opts.method`: what `get`, `post`
-/// and `Client` call.
+/// and `Client` call. Errors and the response are those of `get`.
 ///
-/// `existing_client`, when non-null, is a persistent HttpClient owned by a
-/// `pacman.Client` — reused across many requests instead of created fresh
-/// here. This function never destroys it; ownership stays with the caller
-/// (see Response.owns_http_client).
+/// `existing_client` null: the request gets a connection of its own, closed
+/// by `Response.deinit()`. Non-null: the `http_client` field of a `Client`
+/// (`&client.http_client`), whose pooled connections are used instead. This
+/// function never destroys it; it stays the Client's. The Client's
+/// `base_url` and headers are NOT applied here: `url` and `opts.headers` are
+/// sent as given.
 pub fn request(io: Io, allocator: std.mem.Allocator, url: []const u8, opts: FetchOptions, existing_client: ?*HttpClient) !Response {
     if (opts.timeout_ms == 0) return requestNoDeadline(io, allocator, url, opts, existing_client);
 

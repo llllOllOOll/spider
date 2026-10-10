@@ -3,15 +3,16 @@
 const std = @import("std");
 
 /// What a request sends. Each kind sets a `Content-Type` unless
-/// `FetchOptions.headers` already has one.
+/// `FetchOptions.headers` (or, for a `Client`, its own headers) already has
+/// one. Only POST, PUT and PATCH take a body (see `FetchOptions.body`).
 pub const Body = union(enum) {
     /// Bytes sent as they are. `Content-Type: application/octet-stream`.
     raw: []const u8,
     /// JSON text, already serialized (it is not checked). `Content-Type:
     /// application/json`.
     json: []const u8,
-    /// Name/value pairs, sent URL-encoded. `Content-Type:
-    /// application/x-www-form-urlencoded`.
+    /// Name/value pairs, sent URL-encoded (a space goes as `%20`, not `+`).
+    /// `Content-Type: application/x-www-form-urlencoded`.
     form: []const [2][]const u8,
 };
 

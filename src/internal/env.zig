@@ -3,6 +3,13 @@
 //! the container, a CI job) always wins: the files only fill in what is
 //! missing. Among the files, `.env.local` wins over `.env.<SPIDER_ENV>`
 //! (`development` when SPIDER_ENV is not set), which wins over `.env`.
+//!
+//! A file has one `NAME=value` per line. Blank lines and lines that start
+//! with `#` are skipped, spaces around the name and the value are dropped,
+//! and one pair of quotes around the value (`"..."` or `'...'`) is removed.
+//! There is no `export` prefix, no escape and no `$NAME` expansion, and a
+//! `#` after a value is part of the value. A file over 64 KiB is not
+//! loaded.
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -128,7 +135,8 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !void {
 // internal: the older name of `load`.
 pub const loadEnv = load;
 
-// internal: loads .env, .env.<SPIDER_ENV> and .env.local; listen() and pg.init() call it.
+// internal: loads .env, .env.<SPIDER_ENV> and .env.local; the server's
+// init() (spider.app) and pg.init() call it.
 pub fn autoLoad(allocator: std.mem.Allocator) void {
     loadFile(allocator, ".env", false) catch {};
 
@@ -188,7 +196,8 @@ fn stripQuotes(s: []const u8) []const u8 {
     return s;
 }
 
-// internal: listen() calls it to warn when .gitignore does not mention .env.
+// internal: the server's init() (spider.app) calls it to warn when
+// .gitignore does not mention .env.
 pub fn checkGitignore() void {
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
