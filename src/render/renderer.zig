@@ -143,7 +143,9 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             if (resolveValue(ctx, fnn.iterable)) |value| {
                 if (value == .list) {
                     for (value.list, 0..) |elem, idx| {
-                        var loop_ctx = try ctx.clone(alc);
+                        // What the body sees: the page, plus this item
+                        // and `loop`. Only those two are this iteration's.
+                        var loop_ctx = ctx.child();
                         defer loop_ctx.deinit(alc);
                         switch (elem) {
                             .string => try loop_ctx.set(alc, fnn.capture, Value{ .string = try alc.dupe(u8, elem.string) }),
@@ -177,7 +179,8 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             state.depth += 1;
             defer state.depth -= 1;
 
-            var comp_ctx = try ctx.clone(alc);
+            // The component sees what its caller sees, plus its props.
+            var comp_ctx = ctx.child();
             defer comp_ctx.deinit(alc);
 
             for (comp.props) |prop| {

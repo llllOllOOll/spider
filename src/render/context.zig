@@ -26,6 +26,10 @@ pub const Value = union(enum) {
 // internal: the names a template can read, built from the data of a view.
 pub const Context = struct {
     values: std.StringHashMapUnmanaged(Value),
+    /// The context this one was opened inside (a loop iteration inside a
+    /// page, a component inside a loop): `get` looks there for a name this
+    /// one does not have. Not owned.
+    parent: ?*const Context = null,
 
     // internal: an empty context.
     pub fn init() Context {
@@ -63,18 +67,44 @@ pub const Context = struct {
         gop.value_ptr.* = value;
     }
 
-    // internal: the value of `key`, not copied.
+    // internal: the value of `key`, not copied: this context's own, or
+    // the one of the context it was opened inside.
     pub fn get(self: *const Context, key: []const u8) ?Value {
-        return self.values.get(key);
+        var scope: ?*const Context = self;
+        while (scope) |context| : (scope = context.parent) {
+            if (context.values.get(key)) |value| return value;
+        }
+        return null;
+    }
+
+    // internal: a context for a loop iteration or a component: it sees
+    // everything `self` has and holds only what is set on it. `self` must
+    // outlive it. (Each iteration used to get a copy of the whole context,
+    // which made a list inside a list cost its size squared.)
+    pub fn child(self: *const Context) Context {
+        return .{ .values = .{}, .parent = self };
     }
 
     // internal: a deep copy.
     pub fn clone(self: *const Context, alc: std.mem.Allocator) !Context {
         var c = Context.init();
         errdefer c.deinit(alc);
-        var iter = self.values.iterator();
-        while (iter.next()) |entry| {
-            try putOwned(alc, &c.values, entry.key_ptr.*, try dupeValue(alc, entry.value_ptr.*));
+        // Everything in sight, the nearest value of a name winning: the
+        // outer contexts first, then this one over them.
+        var chain: [64]*const Context = undefined;
+        var depth: usize = 0;
+        var scope: ?*const Context = self;
+        while (scope) |context| : (scope = context.parent) {
+            if (depth == chain.len) return error.ContextTooDeep;
+            chain[depth] = context;
+            depth += 1;
+        }
+        while (depth > 0) {
+            depth -= 1;
+            var iter = chain[depth].values.iterator();
+            while (iter.next()) |entry| {
+                try c.set(alc, entry.key_ptr.*, try dupeValue(alc, entry.value_ptr.*));
+            }
         }
         return c;
     }

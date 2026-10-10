@@ -336,3 +336,36 @@ test "layout: a page that extends a layout nobody registered renders alone (and 
     defer comps.deinit();
     try expectRender(&comps, "extends \"nowhere\"\n<p>{ a }</p>", .{ .a = "1" }, "<p>1</p>");
 }
+
+// ── the cost of a loop ──────────────────────────────────────────────────
+
+const GridCell = struct { label: []const u8 };
+const GridRow = struct { name: []const u8, cells: []const GridCell };
+const Other = struct { text: []const u8 };
+
+test "loops: an iteration costs what it uses, not a copy of everything the page was given" {
+    // A grid of 20 rows by 20 cells, on a page that also carries a list of
+    // 200 other things. Each of the 400 cells used to copy all of it.
+    var cells: [20]GridCell = undefined;
+    for (&cells) |*cell| cell.* = .{ .label = "x" };
+    var rows: [20]GridRow = undefined;
+    for (&rows) |*row| row.* = .{ .name = "row", .cells = &cells };
+    var others: [200]Other = undefined;
+    for (&others) |*other| other.* = .{ .text = "something else on the page" };
+
+    var counting = std.testing.FailingAllocator.init(t.allocator, .{});
+    const alc = counting.allocator();
+    var tmpl = try Template.init(alc, "for (rows) |row| { <tr>for (row.cells) |cell| { <td>{ cell.label }{ title }</td> }</tr> }");
+    defer tmpl.deinit();
+    const before = counting.allocations;
+    const out = try tmpl.render(.{ .title = "T", .rows = @as([]const GridRow, &rows), .others = @as([]const Other, &others) }, alc);
+    defer alc.free(out);
+
+    try t.expectEqual(@as(usize, 400), std.mem.count(u8, out, "<td>xT</td>"));
+    // Generous: about 25 allocations per cell. It was over a thousand.
+    const used = counting.allocations - before;
+    if (used > 10_000) {
+        std.debug.print("\n  the render made {d} allocations\n", .{used});
+        return error.TooManyAllocations;
+    }
+}

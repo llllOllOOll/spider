@@ -236,6 +236,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `for` in a template copied the whole page's data on every
+  iteration**, and so did every component. A list inside a list cost
+  its size squared: a grid of 20 rows by 20 cells made 835,000
+  allocations, and a page with a 6 by 24 grid took 200 to 350 ms to
+  render where its neighbours took 5. An iteration and a component now
+  open a small context on top of the page's (they see everything, and
+  hold only their own item and props). The same grid: under 10,000
+  allocations.
 - **Two generators run in the same second gave their migrations the
   same number** (`spider g feature a && spider g feature b` in a
   script). A new migration is now numbered after every one the project
