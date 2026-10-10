@@ -88,13 +88,15 @@ pub const NewOptions = struct {
     /// for old scripts.
     daisyui_alias: bool = false,
     pwa: bool = false,
+    /// --htmx=<2|4>: the htmx the project loads.
+    htmx: @import("htmx.zig").Version = .two,
     skip_downloads: bool = false,
     api: bool = false,
     no_db: bool = false,
     pg: bool = false,
 };
 
-pub const NewError = error{ MissingAppName, UnknownOption, ExtraArgument, UnknownUiKit, PwaNeedsViews };
+pub const NewError = error{ MissingAppName, UnknownOption, ExtraArgument, UnknownUiKit, UnknownHtmxVersion, PwaNeedsViews };
 
 /// `args` are the ones after `new`. `bad` receives the offending argument.
 pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions {
@@ -109,6 +111,11 @@ pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions 
                 bad.* = a;
                 return error.UnknownUiKit;
             }
+        } else if (std.mem.startsWith(u8, a, "--htmx=")) {
+            o.htmx = @import("htmx.zig").Version.parse(a["--htmx=".len..]) orelse {
+                bad.* = a;
+                return error.UnknownHtmxVersion;
+            };
         } else if (std.mem.eql(u8, a, "--pwa")) {
             o.pwa = true;
         } else if (std.mem.eql(u8, a, "--skip-downloads")) {
@@ -178,6 +185,10 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\  --ui=<kit>        UI kit: daisyui (default) or tailwind (plain, no library).
         \\                    Switch later with `spider ui use <kit>`.
         \\  --daisyui         Same as --ui=daisyui (the default)
+        \\  --htmx=<version>  htmx 2 (default) or 4. htmx 4 changed attribute
+        \\                    inheritance, error swaps and event names: its
+        \\                    migration guide says what; the generators write
+        \\                    what the project's version understands.
         \\  --pwa             Installable PWA: manifest, service worker, icons
         \\                    (same as `spider add pwa` afterwards)
         \\  --skip-downloads  Don't download tailwindcss, alpine, htmx, icons now

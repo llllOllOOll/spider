@@ -9,7 +9,9 @@ const icons = @import("icons.zig");
 const TAILWIND_VERSION = "4.3.0";
 const DAISYUI_VERSION = "5.5.23";
 const ALPINE_VERSION = "3.14.8";
-const HTMX_VERSION = "2.0.4";
+const HTMX_VERSION = "2.0.11";
+const HTMX4_VERSION = "4.0.0";
+const htmx = @import("htmx.zig");
 const TABLER_VERSION = "3.31.0";
 
 fn getTailwindUrl() []const u8 {
@@ -124,8 +126,21 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !v
     try assets.appendSlice(allocator, &.{
         .{ .url = getTailwindUrl(), .dest = "bin/tailwindcss", .cache_name = "tailwindcss-" ++ TAILWIND_VERSION },
         .{ .url = "https://cdn.jsdelivr.net/npm/alpinejs@" ++ ALPINE_VERSION ++ "/dist/cdn.min.js", .dest = "public/js/alpine.min.js", .cache_name = "alpine-" ++ ALPINE_VERSION ++ ".min.js" },
-        .{ .url = "https://unpkg.com/htmx.org@" ++ HTMX_VERSION ++ "/dist/htmx.min.js", .dest = "public/js/htmx.min.js", .cache_name = "htmx-" ++ HTMX_VERSION ++ ".min.js" },
     });
+
+    // htmx: the one the layouts load (htmx.zig). htmx 4 goes to a file of
+    // its own name, and its SSE extension is fetched when a layout loads it.
+    const read_layouts: ?[][]const u8 = htmx.readLayouts(io, allocator, project_dir) catch null;
+    defer if (read_layouts) |list| htmx.freeLayouts(allocator, list);
+    const layouts: []const []const u8 = read_layouts orelse &.{};
+    if (htmx.ofLayouts(layouts) == .four) {
+        try assets.append(allocator, .{ .url = "https://unpkg.com/htmx.org@" ++ HTMX4_VERSION ++ "/dist/htmx.min.js", .dest = "public/js/" ++ htmx.file_four, .cache_name = "htmx-" ++ HTMX4_VERSION ++ ".min.js" });
+        if (htmx.wantsSse(layouts)) {
+            try assets.append(allocator, .{ .url = "https://unpkg.com/htmx.org@" ++ HTMX4_VERSION ++ "/dist/ext/hx-sse.min.js", .dest = "public/js/" ++ htmx.file_four_sse, .cache_name = "htmx-sse-" ++ HTMX4_VERSION ++ ".min.js" });
+        }
+    } else {
+        try assets.append(allocator, .{ .url = "https://unpkg.com/htmx.org@" ++ HTMX_VERSION ++ "/dist/htmx.min.js", .dest = "public/js/" ++ htmx.file_two, .cache_name = "htmx-" ++ HTMX_VERSION ++ ".min.js" });
+    }
 
     const styles = project_dir.readFileAlloc(io, "src/styles.css", allocator, .limited(1024 * 1024)) catch "";
     defer if (styles.len > 0) allocator.free(styles);

@@ -96,7 +96,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, api: bool) !void {
     std.debug.print("  update  src/features/mod.zig\n", .{});
 
     // The users table.
-    const timestamp = migration_updater.generateTimestamp(io);
+    const timestamp = migration_updater.generateTimestamp(io, root_dir);
     const migration_path = try std.fmt.allocPrint(allocator, "src/core/db/migrations/{d}_create_users.sql", .{timestamp});
     defer allocator.free(migration_path);
     try fs_utils.writeFile(io, root_dir, migration_path, if (db == .pg) migration_pg_tmpl else migration_sqlite_tmpl);

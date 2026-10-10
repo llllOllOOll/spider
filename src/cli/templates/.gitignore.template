@@ -20,3 +20,5 @@ bin/
 public/css/app.css
 public/js/alpine.min.js
 public/js/htmx.min.js
+public/js/htmx4.min.js
+public/js/htmx4-sse.min.js

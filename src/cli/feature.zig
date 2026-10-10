@@ -94,7 +94,10 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     const card_html_content = try template_engine.renderTemplate(allocator, card_html_tmpl, feature, plural);
     defer allocator.free(card_html_content);
 
-    const form_html_content = try template_engine.renderTemplate(allocator, form_html_tmpl, feature, plural);
+    // What the views say to htmx is written for the version the project loads.
+    const form_html_rendered = try template_engine.renderTemplate(allocator, form_html_tmpl, feature, plural);
+    defer allocator.free(form_html_rendered);
+    const form_html_content = try @import("htmx.zig").view(allocator, form_html_rendered, @import("htmx.zig").ofProject(io, allocator, root_dir));
     defer allocator.free(form_html_content);
 
     const edit_form_html_content = try template_engine.renderTemplate(allocator, edit_form_html_tmpl, feature, plural);
@@ -103,7 +106,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     const page_html_content = try template_engine.renderTemplate(allocator, page_html_tmpl, feature, plural);
     defer allocator.free(page_html_content);
 
-    const timestamp = migration_updater.generateTimestamp(io);
+    const timestamp = migration_updater.generateTimestamp(io, root_dir);
     const migration_name = try std.fmt.allocPrint(allocator, "{d}_create_{s}.sql", .{ timestamp, plural });
     defer allocator.free(migration_name);
 

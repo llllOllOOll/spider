@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spider new --htmx=4`**: a project on htmx 4. Its layouts load
+  `/js/htmx4.min.js`, `spider install` fetches htmx 4.0.0 (and its SSE
+  extension when a layout loads `/js/htmx4-sse.min.js`), and `spider g
+  feature` writes its views in the words of the version the project
+  loads. htmx 2 stays the default: htmx 4 changed attribute
+  inheritance, error swaps and event names, and an existing project
+  does not move by itself.
 - **`c.htmxRedirect(url)`**: where to go after a form, whoever posted
   it. A form htmx posted gets the address in `HX-Redirect`; any other
   request a 303. Answering htmx with a plain redirect makes the browser
@@ -90,6 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`spider install` fetches htmx 2.0.11** (it was 2.0.4). A project
+  that already has `public/js/htmx.min.js` keeps the file it has:
+  delete it and run `spider install` to get the new one.
 - **`Config.layout` and `Config.env` are deprecated.** Nothing reads
   either (a template names its layout with `extends`; the environment
   changes no behaviour). They still compile, and will be removed in a
@@ -226,6 +236,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Two generators run in the same second gave their migrations the
+  same number** (`spider g feature a && spider g feature b` in a
+  script). A new migration is now numbered after every one the project
+  has.
 - Doc comments that were no longer true: `Mailer.send` said a delivery
   had no time limit (it has had one since 0.10.0), and `HtmxHeaders`
   did not say that `trigger_after_swap` and `trigger_after_settle` are

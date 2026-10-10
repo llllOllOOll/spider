@@ -1,4 +1,5 @@
 const std = @import("std");
+const htmx = @import("htmx.zig");
 
 // Embedded templates
 const build_zig_tmpl = @embedFile("templates/build.zig.template");
@@ -344,7 +345,7 @@ fn writeFile(io: std.Io, dir: std.Io.Dir, path: []const u8, content: []const u8)
     try writer.interface.flush();
 }
 
-pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_kit: ui_mod.Kit, skip_downloads: bool, api_only: bool, no_db: bool, use_pg: bool, with_pwa: bool) !void {
+pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_kit: ui_mod.Kit, skip_downloads: bool, api_only: bool, no_db: bool, use_pg: bool, with_pwa: bool, htmx_version: htmx.Version) !void {
     // check zig is available
     const zig_result = std.process.run(allocator, io, .{
         .argv = &.{ "zig", "version" },
@@ -500,7 +501,13 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
         inline for (files) |f| {
             const path = f[0];
             const tmpl = f[1];
-            const content = render(allocator, tmpl, app_name, zon_safe_name, fingerprint, "", sqlite_enabled) catch |err| {
+            const rendered = render(allocator, tmpl, app_name, zon_safe_name, fingerprint, "", sqlite_enabled) catch |err| {
+                fail_err = err;
+                return err;
+            };
+            defer allocator.free(rendered);
+            // The layouts load the htmx the project was asked for.
+            const content = htmx.layout(allocator, rendered, htmx_version) catch |err| {
                 fail_err = err;
                 return err;
             };

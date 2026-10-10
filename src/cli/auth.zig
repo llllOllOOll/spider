@@ -130,7 +130,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
         std.debug.print("  update  src/features/mod.zig\n", .{});
 
         // Generate migration
-        const timestamp = migration_updater.generateTimestamp(io);
+        const timestamp = migration_updater.generateTimestamp(io, root_dir);
         const migration_name = try std.fmt.allocPrint(allocator, "{d}_create_users.sql", .{timestamp});
         defer allocator.free(migration_name);
 

@@ -269,6 +269,12 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `@intFromEnum` into `@fromBackingInt` / `@backingInt`): after formatting
   a file you only meant to touch lightly, look at the diff.
 - `test-mysql*.zig` are leftovers; don't treat them as current tests.
+- htmx: a project is on htmx 2 or 4 (`spider new --htmx=4`), and says which
+  by the script its layouts load (`/js/htmx.min.js` or `/js/htmx4.min.js`;
+  `src/cli/htmx.zig`). The CLI's templates are written for htmx 2 and
+  `htmx.zig` rewrites the few spots that differ: a new template that uses
+  an htmx event name, inheritance or `hx-disabled-elt` needs its htmx 4
+  form there, and a run of both in a browser.
 - `.env.local` is yours and not in git. `spider.env` loads it, so a `PORT`
   line in it moves any app in this tree that calls `listen()` without a
   port.

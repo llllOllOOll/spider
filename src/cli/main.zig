@@ -64,10 +64,11 @@ pub fn main(init: std.process.Init) !void {
                 error.UnknownOption => usageError("unknown option '{s}' for `spider new` (see `spider new --help`)", .{bad}),
                 error.ExtraArgument => usageError("unexpected argument '{s}': `spider new` takes one app name", .{bad}),
                 error.UnknownUiKit => usageError("unknown UI kit in '{s}' (kits: daisyui, tailwind)", .{bad}),
+                error.UnknownHtmxVersion => usageError("unknown htmx version in '{s}' (versions: 2, 4)", .{bad}),
                 error.PwaNeedsViews => usageError("--pwa needs HTML views; it can't be combined with --api", .{}),
             };
             if (o.daisyui_alias) std.debug.print("note: --daisyui is the default now (same as --ui=daisyui); the app shell with navbar and sidebar is src/shared/templates/app.html (`extends \"app\"`).\n", .{});
-            try new.run(io, allocator, o.app_name, ui_mod.find(o.ui).?, o.skip_downloads, o.api, o.no_db, o.pg, o.pwa);
+            try new.run(io, allocator, o.app_name, ui_mod.find(o.ui).?, o.skip_downloads, o.api, o.no_db, o.pg, o.pwa, o.htmx);
         },
         .generate => {
             if (rest.len == 0) {
@@ -138,6 +139,8 @@ test {
     _ = @import("update.zig");
     _ = @import("self_update.zig");
     _ = @import("mod_updater.zig");
+    _ = @import("migration_updater.zig");
+    _ = @import("htmx.zig");
     _ = @import("dev.zig");
     _ = ui_mod;
     _ = icons_mod;
