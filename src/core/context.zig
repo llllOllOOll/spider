@@ -223,6 +223,8 @@ pub const Ctx = struct {
     _loaded: ?*anyopaque = null,
     /// Config.trusted_proxies, for clientIp().
     _trusted_proxies: []const []const u8 = &.{},
+    /// Config.sse_allowed_origins, for the SSE response head.
+    _sse_allowed_origins: []const []const u8 = &.{},
     /// The server is running under `spider dev` (modules/dev_reload.zig).
     _dev_reload: bool = false,
     _loaded_type: ?*const anyopaque = null,

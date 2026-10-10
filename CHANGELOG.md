@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **SSE streams are no longer readable from any site.** Every stream
+  answered `Access-Control-Allow-Origin: *`, fixed in the code: a page on
+  any other site could read a stream that did not depend on cookies. The
+  header is now sent only to the origins listed in `sse_allowed_origins`
+  (`spider.config.zig`), naming the origin. **An app whose streams are
+  read from another origin must list it** (or `&.{"*"}` for the old
+  behaviour). An app that reads its own streams changes nothing.
 - **The process's own environment wins over every `.env` file.**
   `.env.<SPIDER_ENV>` and `.env.local` used to replace variables the
   process already had (a container's `PORT`, a secret set by the

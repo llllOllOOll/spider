@@ -529,6 +529,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._request_id = request_id,
                 ._watch = &watch,
                 ._trusted_proxies = ctx.config.trusted_proxies,
+                ._sse_allowed_origins = ctx.config.sse_allowed_origins,
                 ._dev_reload = dev_reload.compiled_in and (ctx.config.dev_reload orelse false),
                 ._route = m.meta,
             };
@@ -556,6 +557,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 ._request_id = request_id,
                 ._watch = &watch,
                 ._trusted_proxies = ctx.config.trusted_proxies,
+                ._sse_allowed_origins = ctx.config.sse_allowed_origins,
                 ._dev_reload = dev_reload.compiled_in and (ctx.config.dev_reload orelse false),
             };
             var mw_buf_404: [64]MiddlewareFn = undefined;

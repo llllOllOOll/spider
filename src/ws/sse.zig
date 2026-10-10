@@ -210,6 +210,23 @@ pub const Sse = struct {
     }
 };
 
+/// What `Access-Control-Allow-Origin` says for a request from `origin`
+/// (its Origin header, if any), given the origins the app allows: the
+/// origin itself when it is listed, `*` when the list has `*`, or null:
+/// no header, and the browser keeps the stream from the other site's page.
+fn corsOrigin(allowed: []const []const u8, origin: ?[]const u8) ?[]const u8 {
+    for (allowed) |entry| {
+        if (std.mem.eql(u8, entry, "*")) return "*";
+    }
+    const from = origin orelse return null;
+    // A header value goes back out: nothing that could start another line.
+    if (std.mem.indexOfAny(u8, from, "\r\n") != null) return null;
+    for (allowed) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry, from)) return from;
+    }
+    return null;
+}
+
 /// True for the errors a handler returns only because its client went
 /// away: every stream ends that way, and it is not worth a log line.
 fn isDisconnect(err: anyerror) bool {
@@ -244,10 +261,16 @@ pub fn buildHandler(comptime handler: fn (*Sse) anyerror!void) Handler {
                 "HTTP/1.1 200 OK\r\n" ++
                     "Content-Type: text/event-stream\r\n" ++
                     "Cache-Control: no-cache\r\n" ++
-                    "Connection: keep-alive\r\n" ++
-                    "Access-Control-Allow-Origin: *\r\n" ++
-                    "\r\n",
+                    "Connection: keep-alive\r\n",
             );
+            // Another site may read the stream only when the app listed it
+            // (Config.sse_allowed_origins). The answer names that origin, so
+            // it differs per origin: Vary keeps caches from mixing them.
+            if (corsOrigin(ctx._sse_allowed_origins, ctx.header("Origin"))) |origin| {
+                try writer.print("Access-Control-Allow-Origin: {s}\r\n", .{origin});
+                if (!std.mem.eql(u8, origin, "*")) try writer.writeAll("Vary: Origin\r\n");
+            }
+            try writer.writeAll("\r\n");
             try writer.flush();
 
             var rand_buf: [8]u8 = undefined;
@@ -791,4 +814,21 @@ test "isDisconnect: a client that went away is not news, a failing handler is" {
     try std.testing.expect(!isDisconnect(error.OutOfMemory));
     try std.testing.expect(!isDisconnect(error.UniqueViolation));
     try std.testing.expect(!isDisconnect(error.Unexpected));
+}
+
+test "corsOrigin: only a listed origin, or anyone when the list says so" {
+    const none: []const []const u8 = &.{};
+    const one: []const []const u8 = &.{ "https://app.example.com", "http://localhost:5173" };
+    const any: []const []const u8 = &.{"*"};
+
+    try std.testing.expect(corsOrigin(none, "https://app.example.com") == null);
+    try std.testing.expect(corsOrigin(none, null) == null);
+    try std.testing.expectEqualStrings("https://app.example.com", corsOrigin(one, "https://app.example.com").?);
+    try std.testing.expectEqualStrings("HTTPS://APP.EXAMPLE.COM", corsOrigin(one, "HTTPS://APP.EXAMPLE.COM").?);
+    try std.testing.expectEqualStrings("http://localhost:5173", corsOrigin(one, "http://localhost:5173").?);
+    try std.testing.expect(corsOrigin(one, "https://app.example.com.evil.example") == null);
+    try std.testing.expect(corsOrigin(one, "https://app.example.com/") == null);
+    try std.testing.expect(corsOrigin(one, null) == null);
+    try std.testing.expectEqualStrings("*", corsOrigin(any, "https://anywhere.example").?);
+    try std.testing.expectEqualStrings("*", corsOrigin(any, null).?);
 }

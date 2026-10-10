@@ -88,6 +88,13 @@ pub const Config = struct {
     /// CIDRs or addresses, e.g. &.{"10.0.0.0/8", "172.16.0.0/12"} for a
     /// proxy on a private network. Empty (the default): the header is ignored.
     trusted_proxies: []const []const u8 = &.{},
+    /// Other sites whose pages may read this app's SSE streams, as origins
+    /// (`"https://app.example.com"`: scheme, host and port, no path). A
+    /// stream answers a listed origin with `Access-Control-Allow-Origin`
+    /// naming it. Empty (the default): only the app's own pages.
+    /// `&.{"*"}` lets any site read them: only for streams with nothing
+    /// private in them.
+    sse_allowed_origins: []const []const u8 = &.{},
     /// Longest a server push to an SSE/WebSocket client may stay blocked
     /// (its socket buffer full: the client stopped reading). The connection
     /// is then closed, so the client reconnects instead of silently missing
