@@ -157,6 +157,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   = 20`, a form that did not send `per_page` gave 0. A field the form does
   not send now takes its default. (A checkbox is the exception: not sent
   means unchecked, so it is false whatever the default.)
+- **A request body sent in chunks was not read.** With
+  `Transfer-Encoding: chunked` (a client that does not know the length in
+  advance: some HTTP libraries, devices, streamed uploads) the handler saw
+  no body, and `bodyJson` or `parseForm` failed with `BodyEmpty`. The body
+  is read now, within `max_body_bytes` (413 when it grows past it) and the
+  body deadline.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

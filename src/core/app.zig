@@ -289,6 +289,24 @@ fn readBody(r: *Io.Reader, arena: std.mem.Allocator, len: u64, watch: *Watchdog.
     return buf;
 }
 
+/// Reads a chunked body to its end, with the same deadline as `readBody`.
+/// `max` bytes at most (0: no limit): a longer body is error.PayloadTooLarge.
+fn readChunkedBody(r: *Io.Reader, arena: std.mem.Allocator, max: u64, watch: *Watchdog.Entry, timeout_ms: u32) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    while (true) {
+        watch.arm(timeout_ms);
+        const avail = r.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        if (max != 0 and out.items.len + avail.len > max) return error.PayloadTooLarge;
+        try out.appendSlice(arena, avail);
+        r.toss(avail.len);
+    }
+    watch.disarm();
+    return out.items;
+}
+
 fn headerIgnoreCase(headers: std.StringHashMapUnmanaged([]const u8), name: []const u8) ?[]const u8 {
     var it = headers.iterator();
     while (it.next()) |e| {
@@ -376,6 +394,18 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
 
         var body_error: ?anyerror = null;
         const body: ?[]const u8 = blk: {
+            // A body of unknown length, sent in chunks: read to its end,
+            // up to max_body_bytes (there is no length to refuse upfront).
+            if (request.head.transfer_encoding == .chunked) {
+                var body_io_buf: [4096]u8 = undefined;
+                const body_reader = request.readerExpectNone(&body_io_buf);
+                request.head.target = target;
+                const chunked = readChunkedBody(body_reader, arena, ctx.config.max_body_bytes, &watch, ctx.config.body_timeout_ms) catch |err| {
+                    body_error = err;
+                    break :blk null;
+                };
+                break :blk if (chunked.len == 0) null else chunked;
+            }
             const cl = request.head.content_length orelse break :blk null;
             if (cl == 0) break :blk null;
             var body_io_buf: [4096]u8 = undefined;
@@ -387,6 +417,15 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 body_error = err;
                 break :blk null;
             };
+        };
+        if (body_error) |err| if (err == error.PayloadTooLarge) {
+            std.log.warn("rid={s} {s} {s}: chunked request body over max_body_bytes ({d})", .{ request_id, method_name, path, ctx.config.max_body_bytes });
+            request.respond("Payload Too Large", .{
+                .status = .payload_too_large,
+                .extra_headers = &.{ .{ .name = "content-type", .value = "text/plain" }, .{ .name = "X-Request-Id", .value = request_id } },
+                .keep_alive = false,
+            }) catch |werr| logRespondError(werr, request_id, method_name, path);
+            break;
         };
         // A body that couldn't be read (client stalled/disconnected mid-upload,
         // OOM) used to reach the handler as "no body" and surface as a

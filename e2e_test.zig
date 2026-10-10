@@ -920,6 +920,62 @@ test "body limit: a body within max_body_bytes is read as before" {
     try std.testing.expect(std.mem.endsWith(u8, r.bytes, "1024"));
 }
 
+test "chunked body: a body sent with Transfer-Encoding: chunked reaches the handler" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    // "hello world" in two chunks, as a client that does not know the
+    // length in advance sends it.
+    try send(io, stream, "POST /len HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" ++
+        "6\r\nhello \r\n5\r\nworld\r\n0\r\n\r\n");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 200"));
+    try std.testing.expect(std.mem.endsWith(u8, r.bytes, "11"));
+}
+
+test "chunked body: one that grows over max_body_bytes gets 413" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    // No length is declared, so the limit is met while reading: 3 chunks
+    // of 512 bytes against a limit of 1024.
+    const chunk: [512]u8 = @splat('x');
+    try send(io, stream, "POST /len HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" ++
+        "200\r\n" ++ chunk ++ "\r\n200\r\n" ++ chunk ++ "\r\n200\r\n" ++ chunk ++ "\r\n0\r\n\r\n");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(r.closed_by_server);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 413"));
+}
+
+test "chunked body: one that stops arriving gets 400 and the connection closed" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    try send(io, stream, "POST /len HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nhel");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(r.closed_by_server);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 400"));
+}
+
+test "chunked body: a client that hangs up in the middle of a chunk gets 400, not half a body" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    // Announces a chunk of 6 bytes, sends 3, and closes its side.
+    try send(io, stream, "POST /len HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nhel");
+    try stream.shutdown(io, .send);
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 400"));
+}
+
 // ── Large bodies keep the request head intact ────────────────────────────
 // Path, headers and request id were slices into the connection's read
 // buffer; reading a body larger than that buffer overwrote them. The route

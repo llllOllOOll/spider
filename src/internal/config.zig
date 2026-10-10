@@ -79,11 +79,12 @@ pub const Config = struct {
     /// request is answered 400 and the connection closed. Milliseconds,
     /// 0 = off. Default: 60 s.
     body_timeout_ms: u32 = 60_000,
-    /// Largest request body accepted, in bytes, from its Content-Length: a
-    /// bigger one is answered 413 before anything is read or allocated (the
-    /// connection is then closed). Uploads that go straight to object storage
-    /// (presigned URLs) never reach it; raise it for apps that take files
-    /// through the app. Default: 10 MiB.
+    /// Largest request body accepted, in bytes. With a Content-Length, a
+    /// bigger one is answered 413 before anything is read or allocated; a
+    /// chunked body, which declares no length, is answered 413 as soon as
+    /// it passes the limit. The connection is then closed. Uploads that go
+    /// straight to object storage (presigned URLs) never reach it; raise it
+    /// for apps that take files through the app. Default: 10 MiB.
     max_body_bytes: u64 = 10 * 1024 * 1024,
     /// Cross-site request check, on by default: a state-changing request a
     /// browser sends from another site (CSRF) or a cross-site WebSocket

@@ -200,10 +200,9 @@ pub const Ctx = struct {
     /// start with `_auth_`; read those with `userId`, `hasRole` and the
     /// like.
     params: std.StringHashMapUnmanaged([]const u8),
-    /// The request body as it arrived, or null when there is none. Only a
-    /// body announced by `Content-Length` is read: one sent with chunked
-    /// transfer encoding is not, and the handler sees null. See `bodyJson`
-    /// and `parseForm`.
+    /// The request body, whole, or null when there is none. A body sent
+    /// with chunked transfer encoding arrives here put together, like one
+    /// with a `Content-Length`. See `bodyJson` and `parseForm`.
     body: ?[]const u8 = null,
     _db: ?*const Database = null,
     _views: ?ViewsConfig = null,
