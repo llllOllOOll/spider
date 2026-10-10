@@ -91,6 +91,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   placeholders were left in the address; and a value with `/`, `?` or a
   space changed the address asked for. Values are URL-encoded now and the
   two options combine.
+- **`spider.forceHttps` behind two proxies redirected forever.** The
+  protocol header had to be exactly `https`; a chain of proxies sends a
+  list (`https, http`). The first value, the client's, decides now, in
+  any letter case.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

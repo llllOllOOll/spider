@@ -44,11 +44,19 @@ pub fn forceHttps(comptime opts: Options) MiddlewareFn {
             const target = c.getPath();
             if (c.route().allow_http or pathAllowed(opts.allow_http_paths, target)) return next(c);
             const proto = c.header(opts.proto_header) orelse "https";
-            if (std.mem.eql(u8, proto, "https")) return next(c);
+            if (isHttps(proto)) return next(c);
             const base = env.getOr(opts.base_url_env, opts.default_base_url);
             return c.redirect(try std.fmt.allocPrint(c.arena, "{s}{s}", .{ base, target }));
         }
     }.mw;
+}
+
+/// Whether the proxy's protocol header says the client came over HTTPS.
+/// Behind more than one proxy the header lists a value per hop
+/// ("https, http"): the first is the one the client used.
+fn isHttps(proto: []const u8) bool {
+    const first = if (std.mem.indexOfScalar(u8, proto, ',')) |comma| proto[0..comma] else proto;
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, first, " \t"), "https");
 }
 
 fn pathAllowed(paths: []const []const u8, target: []const u8) bool {
@@ -67,4 +75,17 @@ test "pathAllowed: exact, or prefix with a trailing *" {
     try std.testing.expect(pathAllowed(&paths, "/api/access/intelbras/auth"));
     try std.testing.expect(pathAllowed(&paths, "/api/access/intelbras"));
     try std.testing.expect(!pathAllowed(&paths, "/api/access/other"));
+}
+
+test "isHttps: the protocol the client used, as proxies write it" {
+    try std.testing.expect(isHttps("https"));
+    try std.testing.expect(!isHttps("http"));
+    // A chain of proxies lists one value per hop, the client's first.
+    try std.testing.expect(isHttps("https, http"));
+    try std.testing.expect(isHttps("https,http"));
+    try std.testing.expect(!isHttps("http, https"));
+    try std.testing.expect(isHttps("HTTPS"));
+    try std.testing.expect(isHttps(" https "));
+    try std.testing.expect(!isHttps(""));
+    try std.testing.expect(!isHttps("httpsx"));
 }
