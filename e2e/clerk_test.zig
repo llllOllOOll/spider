@@ -13,6 +13,7 @@ var started = false;
 var start_mutex: std.Io.Mutex = .init;
 
 var jwks_calls: std.atomic.Value(u32) = .init(0);
+var token_calls: std.atomic.Value(u32) = .init(0);
 
 // A debug allocator on purpose: it overwrites memory when it is freed, so
 // a URL that Clerk freed and kept using does not look valid by accident.
@@ -26,6 +27,7 @@ fn idpKeys(c: *spider.Ctx) !spider.Response {
 }
 
 fn idpToken(c: *spider.Ctx) !spider.Response {
+    _ = token_calls.fetchAdd(1, .seq_cst);
     return c.json(.{ .id_token = "header.payload.signature" }, .{});
 }
 
@@ -66,6 +68,7 @@ fn runApp(port: u16) void {
 
     var s = spider.app(.{});
     s
+        .get("/login", clerk.loginHandler(), .{ .public = true })
         .get("/auth/callback", clerk.callbackHandler(), .{ .public = true })
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
         std.log.err("clerk app listen() failed: {s}", .{@errorName(err)});
@@ -96,16 +99,99 @@ test "clerk: the key set can be downloaded again after init (a token with a new 
     try std.testing.expectEqual(@as(u32, 2), jwks_calls.load(.seq_cst));
 }
 
-test "clerk callback: the code becomes the session cookie and a redirect" {
+/// The value of `name` in a query string or in a Set-Cookie line.
+fn valueOf(text: []const u8, name: []const u8) ?[]const u8 {
+    var at: usize = 0;
+    while (std.mem.indexOfPos(u8, text, at, name)) |i| : (at = i + 1) {
+        const before_ok = i == 0 or text[i - 1] == '?' or text[i - 1] == '&' or text[i - 1] == ' ';
+        const eq = i + name.len;
+        if (!before_ok or eq >= text.len or text[eq] != '=') continue;
+        const end = std.mem.indexOfAnyPos(u8, text, eq + 1, "&;") orelse text.len;
+        return text[eq + 1 .. end];
+    }
+    return null;
+}
+
+/// Every Set-Cookie line of a response whose cookie is `name`.
+fn setCookieLine(res: h.HttpResponse, name: []const u8) ?[]const u8 {
+    var it = std.mem.splitSequence(u8, res.head, "\r\n");
+    while (it.next()) |line| {
+        if (!std.ascii.startsWithIgnoreCase(line, "set-cookie:")) continue;
+        const value = std.mem.trim(u8, line["set-cookie:".len..], " ");
+        if (std.mem.startsWith(u8, value, name) and value.len > name.len and value[name.len] == '=') return value;
+    }
+    return null;
+}
+
+const state_cookie = "__clerk_oauth_state";
+
+test "clerk login: redirects to Clerk with a state that is also a cookie of this browser" {
     try ensureStarted(std.testing.io);
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
+    const a = arena.allocator();
 
-    const res = try h.request(std.testing.io, arena.allocator(), app_port, "/auth/callback?code=abc", .{});
+    const res = try h.request(std.testing.io, a, app_port, "/login", .{});
+    try std.testing.expectEqual(@as(u16, 302), res.status);
+    const location = res.header("Location").?;
+    try std.testing.expect(std.mem.indexOf(u8, location, "/oauth/authorize?response_type=code&client_id=pk_test_") != null);
+    // The redirect address is one value of the URL.
+    try std.testing.expectEqualStrings("http%3A//127.0.0.1/auth/callback", valueOf(location, "redirect_uri").?);
+
+    const state = valueOf(location, "state").?;
+    try std.testing.expect(state.len >= 32);
+    const cookie = setCookieLine(res, state_cookie).?;
+    try std.testing.expectEqualStrings(state, valueOf(cookie, state_cookie).?);
+    try std.testing.expect(std.mem.indexOf(u8, cookie, "HttpOnly") != null);
+
+    const again = try h.request(std.testing.io, a, app_port, "/login", .{});
+    try std.testing.expect(!std.mem.eql(u8, state, valueOf(again.header("Location").?, "state").?));
+}
+
+test "clerk callback: with this browser's state, the code becomes the session cookie and a redirect" {
+    try ensureStarted(std.testing.io);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const login = try h.request(std.testing.io, a, app_port, "/login", .{});
+    const state = valueOf(login.header("Location").?, "state").?;
+    const cookie_line = try std.fmt.allocPrint(a, "Cookie: {s}={s}", .{ state_cookie, state });
+
+    const res = try h.request(std.testing.io, a, app_port, try std.fmt.allocPrint(a, "/auth/callback?code=abc&state={s}", .{state}), .{ .headers = &.{cookie_line} });
     try std.testing.expectEqual(@as(u16, 302), res.status);
     try std.testing.expectEqualStrings("/home", res.header("Location").?);
-    const cookie = res.header("Set-Cookie").?;
-    try std.testing.expect(std.mem.startsWith(u8, cookie, "__session=header.payload.signature;"));
+    const session = setCookieLine(res, "__session").?;
+    try std.testing.expect(std.mem.startsWith(u8, session, "__session=header.payload.signature;"));
+    // The state did its job: its cookie is removed.
+    const cleared = setCookieLine(res, state_cookie).?;
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "Max-Age=0") != null);
+}
+
+test "clerk callback: a state that is not this browser's goes back to the login, and Clerk is not asked" {
+    try ensureStarted(std.testing.io);
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const login = try h.request(std.testing.io, a, app_port, "/login", .{});
+    const state = valueOf(login.header("Location").?, "state").?;
+    const cookie_line = try std.fmt.allocPrint(a, "Cookie: {s}={s}", .{ state_cookie, state });
+    const before = token_calls.load(.seq_cst);
+
+    // No cookie: a link someone else made. No state. Another state.
+    const targets = [_]struct { target: []const u8, headers: []const []const u8 }{
+        .{ .target = try std.fmt.allocPrint(a, "/auth/callback?code=abc&state={s}", .{state}), .headers = &.{} },
+        .{ .target = "/auth/callback?code=abc", .headers = &.{cookie_line} },
+        .{ .target = "/auth/callback?code=abc&state=0000000000000000000000000000000f", .headers = &.{cookie_line} },
+    };
+    for (targets) |t| {
+        const res = try h.request(std.testing.io, a, app_port, t.target, .{ .headers = t.headers });
+        try std.testing.expectEqual(@as(u16, 302), res.status);
+        try std.testing.expectEqualStrings("/login", res.header("Location").?);
+        try std.testing.expect(setCookieLine(res, "__session") == null);
+    }
+    try std.testing.expectEqual(before, token_calls.load(.seq_cst));
 }
 
 test "clerk callback: without a code it is a 400" {

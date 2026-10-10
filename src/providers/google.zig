@@ -79,7 +79,7 @@ pub fn login(c: *Ctx, config: GoogleConfig) !Response {
 
     var opts = try c.withCookie(state_cookie, state, .{
         .max_age = 600,
-        .secure = !std.mem.startsWith(u8, config.redirect_uri, "http://"),
+        .secure = url_util.cookiesSecureFor(config.redirect_uri),
     });
     opts.status = .found;
     return c.redirectWith(try authUrlWith(c.arena, config, .{ .state = state }), opts);
@@ -90,8 +90,9 @@ pub fn login(c: *Ctx, config: GoogleConfig) !Response {
 /// Nothing is asked of Google before the state matches. Fails with one of
 /// `Error`, or with the HTTP client's error when Google cannot be reached.
 /// The state is checked before the code, so a visitor who refused consent
-/// gets error.OAuthCodeMissing. The cookie is not removed: it expires by
-/// itself, 10 minutes after `login` set it.
+/// gets error.OAuthCodeMissing. The cookie stays (this function returns a
+/// profile, not a response) and expires by itself 10 minutes after `login`
+/// set it; `clearState` removes it with the response that follows.
 pub fn callback(c: *Ctx, config: GoogleConfig) !GoogleProfile {
     const expected = c.cookie(state_cookie) orelse return error.OAuthStateMismatch;
     const given = c.queryDecoded("state") orelse return error.OAuthStateMismatch;
@@ -99,6 +100,19 @@ pub fn callback(c: *Ctx, config: GoogleConfig) !GoogleProfile {
     const code = c.queryDecoded("code") orelse return error.OAuthCodeMissing;
     if (code.len == 0) return error.OAuthCodeMissing;
     return fetchProfile(c, code, config);
+}
+
+/// A cookie for `ResponseOptions.cookies` that removes the state cookie
+/// `login` set, for the response that follows a `callback`:
+///
+/// ```zig
+/// const profile = try spider.google.callback(c, config);
+/// const cookies = try c.arena.alloc([2][]const u8, 1);
+/// cookies[0] = try spider.google.clearState(c, config);
+/// return c.redirectWith("/", .{ .status = .found, .cookies = cookies });
+/// ```
+pub fn clearState(c: *Ctx, config: GoogleConfig) ![2][]const u8 {
+    return .{ state_cookie, try c.deleteCookie(state_cookie, .{ .secure = url_util.cookiesSecureFor(config.redirect_uri) }) };
 }
 
 /// The user as Google's userinfo endpoint describes them. The strings live in

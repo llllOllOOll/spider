@@ -61,7 +61,11 @@ fn login(c: *spider.Ctx) !spider.Response {
 
 fn callback(c: *spider.Ctx) !spider.Response {
     const profile = try spider.google.callback(c, config);
-    return c.text(try std.fmt.allocPrint(c.arena, "{s}|{s}|{s}|{s}", .{ profile.id, profile.email, profile.name, profile.picture }), .{});
+    // What a real callback does next: its own session, and the state
+    // cookie out of the way.
+    const cookies = try c.arena.alloc([2][]const u8, 1);
+    cookies[0] = try spider.google.clearState(c, config);
+    return c.text(try std.fmt.allocPrint(c.arena, "{s}|{s}|{s}|{s}", .{ profile.id, profile.email, profile.name, profile.picture }), .{ .cookies = cookies });
 }
 
 fn runApp(port: u16) void {
@@ -160,6 +164,12 @@ test "google callback: the right state and a good code give the profile" {
     const res = try h.request(std.testing.io, a, app_port, target, .{ .headers = &.{started_login.cookie_line} });
     try std.testing.expectEqual(@as(u16, 200), res.status);
     try std.testing.expectEqualStrings("1001|ana@example.com|Ana Ribeiro|https://example.com/ana.png", res.body);
+
+    // clearState: the same cookie, emptied and expired.
+    const cleared = res.header("Set-Cookie").?;
+    try std.testing.expect(std.mem.startsWith(u8, cleared, spider.google.state_cookie ++ "=;"));
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "Max-Age=0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "Path=/") != null);
 }
 
 test "google callback: a state that is not this browser's is refused before any call to Google" {

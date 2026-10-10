@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`clerk.loginHandler()` / `clerk.login(c)`**: the login route for
+  Clerk's OAuth flow. It redirects with a random `state` that it also
+  keeps in a cookie. `Clerk.authUrlWith(arena, .{ .state })` is there
+  for an app that keeps the state its own way.
+- **`spider.google.clearState(c, config)`**: a `.cookies` entry that
+  removes the state cookie in the response after a callback (it used to
+  stay for its 10 minutes).
 - **`c.io()`**: the `std.Io` the server runs on, for code inside a request
   that needs one (the HTTP client, files, sleep). It replaces reading the
   field `c._io`, which keeps working.
@@ -43,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: the Clerk callback checks the OAuth `state`**
+  (`ClerkConfig.verify_state`, on by default). It did not: anyone could
+  send a visitor a callback link carrying a code of their own, and the
+  visitor's browser was logged in as them. A callback whose state is
+  not the cookie's is now sent back to `login_path` before Clerk is
+  asked anything. A login must start at `clerk.loginHandler()`; an app
+  that redirected to `authUrl()` itself mounts the handler instead.
+- **`Clerk.authUrl` URL-encodes** the key and the redirect address.
+- **Clerk's session cookie is `Secure` only when the app is reached over
+  https**, the same rule as Keycloak and Google.
 - **Breaking: a JWT must say `"alg":"RS256"` in its header**
   (`spider.jwks`, and so Keycloak and Clerk). The header's `alg` was not
   read: every token was checked as RS256 whatever it claimed. A token

@@ -1,6 +1,6 @@
 //! Clerk login (`spider.clerk`): the token check of `spider.jwks` configured
-//! from a Clerk publishable key, plus the OAuth callback that sets the session
-//! cookie.
+//! from a Clerk publishable key, plus the OAuth login redirect and the
+//! callback that sets the session cookie.
 
 const std = @import("std");
 const pacman = @import("pacman");
@@ -9,6 +9,7 @@ const Response = @import("../core/context.zig").Response;
 const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 const Handler = @import("../routing/router.zig").Handler;
 const jwks = @import("jwks.zig");
+const url_util = @import("../internal/url.zig");
 const JwksAuth = jwks.JwksAuth;
 
 /// What `Clerk.init` takes. Nothing is read from the environment: the app
@@ -35,6 +36,21 @@ pub const ClerkConfig = struct {
     roles_claim: ?[]const u8 = null,
     /// See JwksConfig.map_claims.
     map_claims: ?*const fn (c: *Ctx, claims: std.json.ObjectMap) anyerror!void = null,
+    /// Check the OAuth `state` on the callback against the cookie
+    /// `loginHandler()` set, so that nobody can finish a login of their own
+    /// in a visitor's browser. Every login must then start at
+    /// `loginHandler()` (or `login`): the callback of a hand-built URL has
+    /// no matching cookie and is sent back to `login_path`.
+    verify_state: bool = true,
+    /// Cookie that keeps the state (HttpOnly, SameSite=Lax, 10 minutes;
+    /// Secure unless `redirect_uri` is plain http, like the session cookie).
+    state_cookie_name: []const u8 = "__clerk_oauth_state",
+};
+
+/// Options of `Clerk.authUrlWith`.
+pub const AuthUrlOptions = struct {
+    /// Sent to Clerk and given back to the redirect address as `?state=`.
+    state: ?[]const u8 = null,
 };
 
 /// One Clerk instance for the app. The middleware and the callback handler
@@ -49,6 +65,7 @@ pub const ClerkConfig = struct {
 /// defer clerk.deinit();
 /// server
 ///     .use(clerk.middleware())
+///     .get("/login", clerk.loginHandler(), .{ .public = true })
 ///     .get("/auth/callback", clerk.callbackHandler(), .{ .public = true });
 /// ```
 pub const Clerk = struct {
@@ -104,15 +121,64 @@ pub const Clerk = struct {
         self.jwks.deinit();
     }
 
-    /// The URL that starts the OAuth flow (`{issuer}/oauth/authorize`), to
-    /// redirect the user to. Allocated in `arena`. The values are not
-    /// URL-encoded and no `state` parameter is added.
+    /// The URL that starts the OAuth flow (`{issuer}/oauth/authorize`),
+    /// without a `state`. Allocated in `arena`; the values are URL-encoded.
+    /// A login route calls `login` (or mounts `loginHandler()`), which adds
+    /// the state the callback checks.
     pub fn authUrl(self: *const Clerk, arena: std.mem.Allocator) ![]u8 {
-        return std.fmt.allocPrint(
-            arena,
-            "{s}/oauth/authorize?response_type=code&client_id={s}&redirect_uri={s}",
-            .{ self.domain, self.config.publishable_key, self.config.redirect_uri },
-        );
+        return self.authUrlWith(arena, .{});
+    }
+
+    /// `authUrl` with a `state`, URL-encoded like the rest.
+    pub fn authUrlWith(self: *const Clerk, arena: std.mem.Allocator, opts: AuthUrlOptions) ![]u8 {
+        var url: std.ArrayList(u8) = .empty;
+        try url.print(arena, "{s}/oauth/authorize?response_type=code&client_id={s}&redirect_uri={s}", .{
+            self.domain,
+            try url_util.encodeQueryValue(arena, self.config.publishable_key),
+            try url_util.encodeQueryValue(arena, self.config.redirect_uri),
+        });
+        if (opts.state) |state| try url.print(arena, "&state={s}", .{try url_util.encodeQueryValue(arena, state)});
+        return url.items;
+    }
+
+    /// The handler for the login route (`login_path`): `login`.
+    pub fn loginHandler(self: *Clerk) Handler {
+        const S = struct {
+            var instance: ?*Clerk = null;
+            fn h(c: *Ctx) anyerror!Response {
+                return instance.?.login(c);
+            }
+        };
+        S.instance = self;
+        return S.h;
+    }
+
+    /// Redirects (302) the visitor to Clerk with a random `state`, also kept
+    /// in a cookie of this browser; `callbackHandler()` compares the two.
+    pub fn login(self: *Clerk, c: *Ctx) !Response {
+        var random: [16]u8 = undefined;
+        std.Io.random(c.io(), &random);
+        const state = try c.arena.dupe(u8, &std.fmt.bytesToHex(random, .lower));
+
+        const headers = try c.arena.alloc([2][]const u8, 2);
+        headers[0] = .{ "Location", try self.authUrlWith(c.arena, .{ .state = state }) };
+        headers[1] = .{ "Set-Cookie", try c.setCookie(self.config.state_cookie_name, state, .{
+            .secure = self.secureCookies(),
+            .max_age = 600,
+        }) };
+        return Response{ .status = .found, .headers = headers };
+    }
+
+    fn secureCookies(self: *const Clerk) bool {
+        return url_util.cookiesSecureFor(self.config.redirect_uri);
+    }
+
+    /// Whether the callback's `state` is the one this browser was given.
+    fn stateMatches(self: *const Clerk, c: *Ctx) bool {
+        const expected = c.cookie(self.config.state_cookie_name) orelse return false;
+        const given = c.queryDecoded("state") orelse return false;
+        if (expected.len == 0 or expected.len != given.len) return false;
+        return std.crypto.timing_safe.compare(u8, expected, given, .big) == .eq;
     }
 
     /// The middleware that checks the `__session` token of every request (see
@@ -124,12 +190,14 @@ pub const Clerk = struct {
         return self.jwks.middleware();
     }
 
-    /// The handler for the route named by `redirect_uri`: exchanges `code`
-    /// for tokens, sets the `__session` cookie (the ID token, or the access
-    /// token when there is none; 7 days) and redirects to
-    /// `after_callback_path`. 400 without `code`; 502 when Clerk returns no
-    /// token. The OAuth `state` is not checked. Mark the route `.public`, or
-    /// the middleware stops the callback before it gets here.
+    /// The handler for the route named by `redirect_uri`: checks the `state`
+    /// against the cookie `login` set (when it does not match: redirect to
+    /// `login_path`, and Clerk is not asked anything), exchanges `code` for
+    /// tokens, sets the `__session` cookie (the ID token, or the access
+    /// token when there is none; 7 days), removes the state cookie and
+    /// redirects to `after_callback_path`. 400 without `code`; 502 when
+    /// Clerk returns no token. Mark the route `.public`, or the middleware
+    /// stops the callback before it gets here.
     pub fn callbackHandler(self: *Clerk) Handler {
         const S = struct {
             var instance: ?*Clerk = null;
@@ -144,6 +212,14 @@ pub const Clerk = struct {
     fn callbackFn(self: *Clerk, c: *Ctx) !Response {
         const code = c.query("code") orelse
             return c.text("Missing authorization code", .{ .status = .bad_request });
+
+        // Before anything is asked of Clerk: a callback this browser did
+        // not start must not log anyone in.
+        if (self.config.verify_state and !self.stateMatches(c)) {
+            const headers = try c.arena.alloc([2][]const u8, 1);
+            headers[0] = .{ "Location", self.config.login_path };
+            return Response{ .status = .found, .headers = headers };
+        }
 
         const token_url = try std.fmt.allocPrint(c.arena, "{s}/oauth/token", .{self.domain});
 
@@ -170,17 +246,20 @@ pub const Clerk = struct {
 
         const cookie_str = try c.setCookie("__session", jwt, .{
             .http_only = true,
-            .secure = true,
+            .secure = self.secureCookies(),
             .same_site = "Lax",
             .path = "/",
             .max_age = 86400 * 7,
         });
 
         // In the request's arena: the response is sent after this returns.
-        const headers = try c.arena.alloc([2][]const u8, 2);
-        headers[0] = .{ "Location", self.config.after_callback_path };
-        headers[1] = .{ "Set-Cookie", cookie_str };
-        return Response{ .status = .found, .headers = headers };
+        var headers: std.ArrayList([2][]const u8) = .empty;
+        try headers.append(c.arena, .{ "Location", self.config.after_callback_path });
+        try headers.append(c.arena, .{ "Set-Cookie", cookie_str });
+        if (self.config.verify_state) {
+            try headers.append(c.arena, .{ "Set-Cookie", try c.deleteCookie(self.config.state_cookie_name, .{ .secure = self.secureCookies() }) });
+        }
+        return Response{ .status = .found, .headers = headers.items };
     }
 };
 
