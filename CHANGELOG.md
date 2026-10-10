@@ -86,6 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Google sign-in: the redirect address was not URL-encoded.** A
   `redirect_uri` with a query string of its own leaked its parameters into
   Google's URL. `client_id` and `redirect_uri` are encoded now.
+- **HTTP client: `params` and `query` did not work together, and a
+  param value was not encoded.** With both options the `:name`
+  placeholders were left in the address; and a value with `/`, `?` or a
+  space changed the address asked for. Values are URL-encoded now and the
+  two options combine.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

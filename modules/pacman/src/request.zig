@@ -34,9 +34,8 @@ pub const FetchOptions = struct {
     /// (after a `?`, or a `&` when the URL already has a query).
     query: []const [2][]const u8 = &.{},
     /// Values for `:name` placeholders in the URL: `.{ "id", "42" }` turns
-    /// `/users/:id` into `/users/42`. The value is inserted as it is (not
-    /// URL-encoded); a placeholder without a value stays. Not applied when
-    /// `query` is also set.
+    /// `/users/:id` into `/users/42`. The value is URL-encoded, so it stays
+    /// one path segment; a placeholder without a value stays as written.
     params: []const [2][]const u8 = &.{}, // URL path parameters
     /// A URI the caller already parsed, used instead of parsing the URL.
     /// `query` and `params` are then ignored.
@@ -365,7 +364,17 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
                 // Look for matching parameter value
                 for (opts.params) |param| {
                     if (std.mem.eql(u8, param[0], param_name)) {
-                        try param_buf.appendSlice(aa, param[1]);
+                        // One path segment: a '/', a '?' or a space in the
+                        // value must not change which address is asked for.
+                        for (param[1]) |c| {
+                            if (shouldEscape(c)) {
+                                try param_buf.append(aa, '%');
+                                try param_buf.append(aa, UPPER_HEX[c >> 4]);
+                                try param_buf.append(aa, UPPER_HEX[c & 15]);
+                            } else {
+                                try param_buf.append(aa, c);
+                            }
+                        }
                         found = true;
                         break;
                     }
@@ -389,12 +398,13 @@ fn requestNoDeadline(io: Io, allocator: std.mem.Allocator, url: []const u8, opts
 
     // Handle query parameters
     if (opts.query.len > 0) {
-        var query_buf = std.ArrayList(u8).initCapacity(aa, url.len + opts.query.len + 10) catch unreachable;
+        // Onto the URL as `params` left it, not the one that came in.
+        var query_buf = std.ArrayList(u8).initCapacity(aa, final_url.len + opts.query.len + 10) catch unreachable;
 
-        try query_buf.appendSlice(aa, url);
+        try query_buf.appendSlice(aa, final_url);
 
         // Check if URL already has query parameters
-        const has_query = std.mem.indexOfScalar(u8, url, '?') != null;
+        const has_query = std.mem.indexOfScalar(u8, final_url, '?') != null;
         if (has_query) {
             // URL already has query parameters, add with & separator
             try query_buf.append(aa, '&');
