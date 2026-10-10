@@ -72,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on it for another HTTP request, so the client only learned that the
   stream was over when the idle timeout closed it. The connection is now
   closed as soon as the handler returns.
+- **SQLite: `query(i64, ...)` answered 0 when the statement failed.** A
+  statement that failed while running looked the same as one with no row.
+  The error is returned now, for `spider.sqlite.query` and inside a
+  transaction.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

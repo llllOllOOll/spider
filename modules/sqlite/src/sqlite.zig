@@ -176,6 +176,8 @@ pub fn query(comptime T: type, arena: std.mem.Allocator, sql: []const u8, params
 
     if (T == i64) {
         if (rows.next()) |row| return row.int(0);
+        // No row: nothing matched, or the statement failed while running.
+        if (rows.err) |err| return err;
         return 0;
     }
 
@@ -261,6 +263,8 @@ pub const Transaction = struct {
         defer rows.deinit();
         if (T == i64) {
             if (rows.next()) |row| return row.int(0);
+            // No row: nothing matched, or the statement failed while running.
+            if (rows.err) |err| return err;
             return 0;
         }
         var items = std.ArrayListUnmanaged(T).empty;
@@ -500,6 +504,26 @@ test "transaction - a rollback after the commit does nothing (defer tx.rollback(
 
     var again = try begin();
     try again.commit();
+}
+
+test "query(i64) - a statement that fails while running is an error, not 0" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Prepares fine, fails when it runs: SQLite refuses abs() of the
+    // smallest integer.
+    const sql = "SELECT abs(-9223372036854775808)";
+    try std.testing.expect(std.meta.isError(query(i64, arena.allocator(), sql, .{})));
+
+    var tx = try begin();
+    defer tx.rollback();
+    try std.testing.expect(std.meta.isError(tx.query(i64, arena.allocator(), sql, .{})));
+
+    // No row at all is still 0.
+    try queryExecute(void, arena.allocator(), "CREATE TEMP TABLE empty_t (n INTEGER)");
+    try std.testing.expectEqual(@as(i64, 0), try tx.query(i64, arena.allocator(), "SELECT n FROM empty_t", .{}));
 }
 
 test "queryOne - single row return" {
