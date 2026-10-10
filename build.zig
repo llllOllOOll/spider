@@ -504,6 +504,24 @@ pub fn build(b: *std.Build) void {
     const test_sqlite_step = b.step("test-sqlite", "Run sqlite tests");
     test_sqlite_step.dependOn(&run_sqlite_tests.step);
 
+    // test-r2 — the R2 module's unit tests (signing, addresses, config;
+    // nothing reaches the network). The module takes `*spider.Ctx` in its
+    // API, so its tests get the real `spider` module.
+    const r2_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("modules/r2/src/r2.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "spider", .module = mod },
+                .{ .name = "pacman", .module = pacman_dep.module("pacman") },
+            },
+        }),
+    });
+    const test_r2_step = b.step("test-r2", "Run R2 module tests (no network)");
+    test_r2_step.dependOn(&b.addRunArtifact(r2_test).step);
+
     // test-xlsx — the xlsx module's own unit tests (std only). They are
     // not part of `test`: the default build does not compile the module.
     const xlsx_test = b.addTest(.{

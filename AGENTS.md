@@ -27,6 +27,7 @@ All from the repo root.
 | HTTP client tests | `zig build test-pacman` | network access (most tests call httpbingo.org) |
 | Same, scripted local servers | `zig build test-pacman-local` (also with `-Dio_backend=zio`) | — |
 | SQLite tests | `zig build test-sqlite` | — (the tests get an env stub as their `spider` module) |
+| R2 module tests | `zig build test-r2` | — (signing, addresses, config; no network) |
 | xlsx module tests | `zig build test-xlsx` | — (`cd modules/xlsx && zig build test-libreoffice` needs LibreOffice) |
 | Format | `zig fmt <the files you touched>` | never `zig fmt src` (reformats unrelated files) |
 

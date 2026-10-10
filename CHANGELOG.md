@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing else. **Check each `useAt` of your app**: a page that was
   outside a guard by this accident is inside it now, and the other way
   round.
+- **R2: a missing setting is an error when the client is created.**
+  `R2.init` and `R2.initFromEnv` accepted an empty account id, key or
+  bucket and failed at the first upload with a refused signature. They
+  return `error.R2ConfigMissing` now and log which one. **An app that
+  creates its R2 client at start without the variables set (a developer's
+  machine, a test) no longer starts that way**: set them, or create the
+  client only where it is used.
 - **Forms: a number field with text that is not a number is an error.**
   `c.parseForm` and `spider.Form` turned "12,50" or "abc" in a number
   field into 0 and went on. It is `error.InvalidNumber` now, a 400. A
@@ -209,6 +216,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `error.InvalidJson` now, a 400, with the parser's name for the problem
   in `c.errorDetail()`. The errors `bodyJson` already returned by name
   (`MissingField`, `SyntaxError`, ...) are unchanged.
+- **R2: `publicUrl` did not encode the key.** A file name with a space,
+  an accent, `#` or `?` gave an address that pointed elsewhere or nowhere.
+  The key is percent-encoded as a path now. Also: the clock is read
+  through `std.Io` instead of a Linux system call, a failed `delete` is
+  logged like the other operations, and the unused address `init`
+  allocated and never freed is gone. The module's tests were never run by
+  any build step: `zig build test-r2` runs them now.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

@@ -59,25 +59,33 @@ pub const R2 = struct {
     /// `Connection: close`, so each of them opens a connection of its own.
     client: pacman.Client,
 
-    /// Creates the client for `config`. Makes no network call, so wrong
-    /// credentials show up on the first operation. Free it with `deinit`.
-    /// The HTTP client and the endpoint address are allocated with
-    /// `std.heap.smp_allocator`; `deinit` does not free the address, so
-    /// create one `R2` per process rather than one per request.
+    /// Creates the client for `config`. `error.R2ConfigMissing` when the
+    /// account id, a key or the bucket is empty (the log says which). It
+    /// makes no network call, so wrong credentials show up on the first
+    /// operation. Free it with `deinit`. The HTTP client is allocated with
+    /// `std.heap.smp_allocator`: create one `R2` per process rather than
+    /// one per request.
     pub fn init(io: std.Io, config: R2Config) !R2 {
-        const base_url = try std.fmt.allocPrint(
-            std.heap.smp_allocator,
-            "https://{s}.r2.cloudflarestorage.com",
-            .{config.account_id},
-        );
-        const client = try pacman.Client.init(io, std.heap.smp_allocator, .{ .base_url = base_url });
+        // Said at start: an empty one used to show only at the first
+        // request, as a signature the service refuses.
+        inline for (.{ "account_id", "access_key", "secret_key", "bucket" }) |field| {
+            if (@field(config, field).len == 0) {
+                // (warn under test: the tests of this rule provoke it.)
+                const format = "r2: `{s}` is empty (R2Config, or its variable in the environment)";
+                if (@import("builtin").is_test) std.log.warn(format, .{field}) else std.log.err(format, .{field});
+                return error.R2ConfigMissing;
+            }
+        }
+        // Every request gives its whole address (the signature covers the
+        // host), so the client has no base address of its own.
+        const client = try pacman.Client.init(io, std.heap.smp_allocator, .{ .base_url = "" });
         return .{ .config = config, .client = client };
     }
 
     /// `init` with the configuration read from the environment (or `.env`):
     /// `R2_ACCOUNT_ID`, `R2_ACCESS_KEY`, `R2_SECRET_KEY`, `R2_BUCKET` and
-    /// `R2_PUBLIC_URL`. A missing variable becomes an empty string without an
-    /// error; the region is `auto`.
+    /// `R2_PUBLIC_URL`. `error.R2ConfigMissing` when one of the first four
+    /// is not set; `R2_PUBLIC_URL` is optional. The region is `auto`.
     pub fn initFromEnv(io: std.Io) !R2 {
         const env = @import("spider").env;
         return init(io, .{
@@ -113,7 +121,7 @@ pub const R2 = struct {
             .path = .{ .percent_encoded = path },
         };
 
-        var res = try pacman.request(c._io, c.arena, "", .{
+        var res = try pacman.request(c.io(), c.arena, "", .{
             .method = .PUT,
             .uri = uri,
             .body = .{ .raw = body },
@@ -164,7 +172,7 @@ pub const R2 = struct {
         // response — the transfer_encoding=none+content_length=null read-hang
         // risk that close guards against doesn't apply, so this call can
         // safely reuse the persistent connection pool.
-        var res = try pacman.request(c._io, c.arena, "", .{
+        var res = try pacman.request(c.io(), c.arena, "", .{
             .method = .PUT,
             .uri = uri,
             .body = .{ .raw = "" },
@@ -200,7 +208,7 @@ pub const R2 = struct {
             .path = .{ .percent_encoded = path },
         };
 
-        var res = try pacman.request(c._io, c.arena, "", .{
+        var res = try pacman.request(c.io(), c.arena, "", .{
             .method = .GET,
             .uri = uri,
             .headers = &.{
@@ -221,7 +229,7 @@ pub const R2 = struct {
 
     /// Deletes the object `key`. Fails with `error.NotFound` when R2 answers
     /// 404, `error.R2DeleteFailed` on any other status than 200 or 204
-    /// (nothing is logged, unlike `put` and `get`), or the HTTP client's error.
+    /// (logged, like `put` and `get`), or the HTTP client's error.
     pub fn delete(self: *R2, c: *Ctx, key: []const u8) !void {
         const host = try self.endpointHost(c.arena);
         const path = try self.requestPath(c.arena, key);
@@ -234,7 +242,7 @@ pub const R2 = struct {
             .path = .{ .percent_encoded = path },
         };
 
-        var res = try pacman.request(c._io, c.arena, "", .{
+        var res = try pacman.request(c.io(), c.arena, "", .{
             .method = .DELETE,
             .uri = uri,
             .headers = &.{
@@ -247,7 +255,10 @@ pub const R2 = struct {
         defer res.deinit();
 
         if (res.status == .not_found) return error.NotFound;
-        if (res.status != .ok and res.status != .no_content) return error.R2DeleteFailed;
+        if (res.status != .ok and res.status != .no_content) {
+            std.log.err("r2 delete failed status={d} path={s}", .{ @intFromEnum(res.status), path });
+            return error.R2DeleteFailed;
+        }
     }
 
     /// Whether the object `key` exists: true on 200, false on 404. The content
@@ -265,7 +276,7 @@ pub const R2 = struct {
             .path = .{ .percent_encoded = path },
         };
 
-        var res = try pacman.request(c._io, c.arena, "", .{
+        var res = try pacman.request(c.io(), c.arena, "", .{
             .method = .HEAD,
             .uri = uri,
             .headers = &.{
@@ -293,7 +304,7 @@ pub const R2 = struct {
     /// strings built on the way are not freed. Fails with `error.NoSpaceLeft`
     /// when the secret key is longer than 252 bytes, or `error.OutOfMemory`.
     pub fn presignedPut(self: *const R2, allocator: std.mem.Allocator, key: []const u8, content_type: []const u8, expires_sec: u32) ![]const u8 {
-        const dt = currentDateTime();
+        const dt = currentDateTime(self.client.io);
         const date_str = dt.date[0..];
         const datetime_str = dt.datetime[0..];
 
@@ -380,7 +391,7 @@ pub const R2 = struct {
     ///
     /// Allocation and errors as in `presignedPut`.
     pub fn presignedGet(self: *const R2, allocator: std.mem.Allocator, key: []const u8, expires_sec: u32) ![]const u8 {
-        const dt = currentDateTime();
+        const dt = currentDateTime(self.client.io);
         const date_str = dt.date[0..];
         const datetime_str = dt.datetime[0..];
 
@@ -442,10 +453,26 @@ pub const R2 = struct {
     // ─── Utilities ───────────────────────────────────────────────
 
     /// `config.pub_url`, a `/` and `key`, allocated with `allocator`. The key
-    /// is not percent-encoded and the object is not checked. Only useful for a
-    /// bucket with a public domain.
+    /// is percent-encoded as a path (its `/` stay); the object is not checked.
+    /// Only useful for a bucket with a public domain.
     pub fn publicUrl(self: *const R2, allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
-        return std.fmt.allocPrint(allocator, "{s}/{s}", .{ self.config.pub_url, key });
+        // The key as a path: its slashes stay, everything else that is not
+        // a plain letter, digit or - _ . ~ is percent-encoded.
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try out.appendSlice(allocator, self.config.pub_url);
+        try out.append(allocator, '/');
+        for (key) |ch| {
+            switch (ch) {
+                '/', 'A'...'Z', 'a'...'z', '0'...'9', '-', '_', '.', '~' => try out.append(allocator, ch),
+                else => {
+                    try out.append(allocator, '%');
+                    try out.append(allocator, UPPER_HEX[ch >> 4]);
+                    try out.append(allocator, UPPER_HEX[ch & 0xf]);
+                },
+            }
+        }
+        return out.toOwnedSlice(allocator);
     }
 
     /// Builds the key `tenant_id/category/filename`, allocated with
@@ -494,7 +521,7 @@ pub const R2 = struct {
         payload_hash: []const u8,
         extra_headers: []const [2][]const u8,
     ) !SignedRequest {
-        const dt = currentDateTime();
+        const dt = currentDateTime(self.client.io);
         const date_str = dt.date[0..];
         const datetime_str = dt.datetime[0..];
 
@@ -606,11 +633,16 @@ const DateTimeStrs = struct {
     datetime: [16]u8,
 };
 
-fn currentDateTime() DateTimeStrs {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
-    const secs: u64 = @intCast(ts.sec);
+/// Now, read from the Io the client runs on (not from one operating
+/// system's clock call).
+fn currentDateTime(io: std.Io) DateTimeStrs {
+    const now = std.Io.Clock.now(.real, io);
+    return dateTimeAt(@intCast(@divFloor(now.nanoseconds, std.time.ns_per_s)));
+}
 
+/// The UTC date and time of `secs` seconds after 1970, in the two forms a
+/// signature uses: `20261010` and `20261010T123456Z`.
+fn dateTimeAt(secs: u64) DateTimeStrs {
     var days = secs / 86400;
     const time_of_day = secs % 86400;
 
@@ -673,10 +705,13 @@ test "R2 signRequest produces valid authorization header" {
     });
     defer r2.deinit();
 
-    const payload_hash = try sha256Hex(allocator, "hello world");
-    defer allocator.free(payload_hash);
+    // signRequest leaves the strings it builds on the way to its caller's
+    // allocator, which is a request's arena.
+    var arena: std.heap.ArenaAllocator = .init(allocator);
+    defer arena.deinit();
+    const payload_hash = try sha256Hex(arena.allocator(), "hello world");
 
-    const signed = try r2.signRequest(allocator, "PUT", "test/file.txt", payload_hash, &.{});
+    const signed = try r2.signRequest(arena.allocator(), "PUT", "test/file.txt", payload_hash, &.{});
 
     try std.testing.expect(signed.authorization.len > 0);
     try std.testing.expect(std.mem.startsWith(u8, signed.authorization, "AWS4-HMAC-SHA256 Credential="));
@@ -718,4 +753,41 @@ test "R2 objectKey" {
     const key = try r2.objectKey(allocator, "tenant-123", "boletos", "jan.pdf");
     defer allocator.free(key);
     try std.testing.expectEqualStrings("tenant-123/boletos/jan.pdf", key);
+}
+
+test "R2 publicUrl: a key with spaces, accents or marks is one valid address" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    var r2 = try R2.init(threaded.io(), .{ .account_id = "test", .access_key = "key", .secret_key = "secret", .bucket = "bucket", .pub_url = "https://pub-xyz.r2.dev" });
+    defer r2.deinit();
+
+    const url = try r2.publicUrl(allocator, "docs/ata reunião #3?.pdf");
+    defer allocator.free(url);
+    // The slashes of the key stay: they are its folders.
+    try std.testing.expectEqualStrings("https://pub-xyz.r2.dev/docs/ata%20reuni%C3%A3o%20%233%3F.pdf", url);
+}
+
+test "R2 init: a setting that is missing is an error at start, not at the first upload" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const full: R2Config = .{ .account_id = "acc", .access_key = "key", .secret_key = "secret", .bucket = "bucket" };
+
+    inline for (.{ "account_id", "access_key", "secret_key", "bucket" }) |field| {
+        var config = full;
+        @field(config, field) = "";
+        try std.testing.expectError(error.R2ConfigMissing, R2.init(io, config));
+    }
+    // The public address is optional: a private bucket has none.
+    var r2 = try R2.init(io, full);
+    r2.deinit();
+}
+
+test "dateTimeAt: the date and time of a moment, as the signature wants them" {
+    const at = dateTimeAt(1791635696); // 2026-10-10 12:34:56 UTC
+    try std.testing.expectEqualStrings("20261010", &at.date);
+    try std.testing.expectEqualStrings("20261010T123456Z", &at.datetime);
+    const leap = dateTimeAt(1709164800); // 2024-02-29 00:00:00 UTC
+    try std.testing.expectEqualStrings("20240229T000000Z", &leap.datetime);
 }
