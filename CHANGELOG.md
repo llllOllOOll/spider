@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SSE messages without a name.** An event name of `""`
+  (`hub.emitHtmlTo(channel, "", html)`, `sse.sendHtml("", html)`) sends
+  the data with no `event:` line. htmx 4 swaps only such messages into
+  the page (a named one becomes a DOM event there); htmx 2 keeps using
+  named events with `sse-swap`.
+- **`sse.open()`**: sends the response head of a stream now, for a
+  handler that does long work before it joins a channel.
 - **`spider.pg`: an array column maps to a slice field.** A struct with
   `features: []const []const u8` takes a `TEXT[]` column, `ids: []const
   i64` a `BIGINT[]`, and so on for every element type a field can have.
@@ -214,6 +221,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An SSE stream looked open to the client before its handler was on a
+  channel.** The response head was sent as soon as the request arrived;
+  the handler joined its channel a moment later, and an event emitted
+  in between was lost with nothing to show for it (a page that opened
+  its stream and missed the change that came right after). The head is
+  now sent when the handler listens (`join`, `subscribe`, `wait`) or
+  with its first event. `subscribeWithReplay` opens after every channel
+  is added.
 - **R2: a secret key over 252 bytes failed every signed call** with
   `error.NoSpaceLeft` (a fixed buffer). Any length works.
 - **R2: `presignedPut` and `presignedGet` left a dozen strings

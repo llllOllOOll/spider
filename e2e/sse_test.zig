@@ -17,6 +17,23 @@ fn events(sse: *spider.Sse) !void {
     sse.wait();
 }
 
+/// A handler with something to do before it listens (a query, a check):
+/// it joins its channel a moment after the request arrived.
+fn slow(sse: *spider.Sse) !void {
+    std.Io.sleep(sse.io, .fromMilliseconds(300), .awake) catch {};
+    try sse.join("room:slow");
+    sse.wait();
+}
+
+/// Sends a piece of HTML to a room as a message without a name: what
+/// htmx 4 swaps into the page.
+fn push(c: *spider.Ctx) !spider.Response {
+    const room = c.params.get("room") orelse "lobby";
+    const channel = try std.fmt.allocPrint(c.arena, "room:{s}", .{room});
+    c.sseHub().emitHtmlTo(channel, "", "<p id=\"note\">New\nmessage</p>");
+    return c.text("sent", .{});
+}
+
 /// One connection, several channels — what an app does instead of opening
 /// one EventSource per channel.
 fn multi(sse: *spider.Sse) !void {
@@ -65,6 +82,8 @@ fn runApp(p: u16) void {
         .sseSweep(null)
         .sse("/events/:room", events)
         .sse("/multi", multi)
+        .sse("/slow", slow)
+        .post("/push/:room", push, .{})
         .sse("/failing", failing)
         .post("/emit/:room", emit, .{})
         .get("/sse-count", count, .{})
@@ -323,4 +342,45 @@ test "sse: when the handler returns, the server closes the stream" {
         _ = client.reader.interface.takeByte() catch |err| break err;
     };
     try std.testing.expectEqual(error.EndOfStream, ended);
+}
+
+test "sse: a message without a name carries its data and no event line" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try ensureStarted(io);
+
+    var client: SseClient = undefined;
+    try client.open(io, "unnamed");
+    defer client.close(io);
+    try waitForCountAt(io, arena.allocator(), "/sse-count/unnamed", 1);
+
+    const before = client.seen.items.len;
+    _ = try h.request(io, arena.allocator(), port, "/push/unnamed", .{ .method = "POST", .body = "" });
+    try client.expectContains("data: <p id=\"note\">New\ndata: message</p>\n\n");
+    // Nothing names the message: a browser (and htmx 4) reads it as the
+    // default one.
+    try std.testing.expect(std.mem.indexOf(u8, client.seen.items[before..], "event:") == null);
+}
+
+test "sse: a stream is not open for the client before its handler is on its channel" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try ensureStarted(io);
+
+    // The handler of /slow joins its channel 300 ms after the request.
+    var client: SseClient = undefined;
+    try client.openPath(io, "/slow");
+    defer client.close(io);
+
+    // The moment the client has its answer, an event for that channel is
+    // sent. The client must get it: "the stream is open" has to mean
+    // "what is sent from now on arrives".
+    _ = try h.request(io, arena.allocator(), port, "/emit/slow", .{ .method = "POST", .body = "" });
+    try client.expectContains("event: ping");
 }

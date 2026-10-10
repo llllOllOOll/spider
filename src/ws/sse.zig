@@ -61,7 +61,9 @@ pub const Sse = struct {
     }
 
     /// send() for HTML: `html` goes out as is (not JSON-encoded), one
-    /// `data:` line per line — for htmx's SSE extension (`sse-swap`).
+    /// `data:` line per line, for htmx's SSE extension: a named event for
+    /// htmx 2 (`sse-swap`), `""` as `event` for htmx 4, which swaps only a
+    /// message without a name.
     pub fn sendHtml(self: *Sse, event: []const u8, html: []const u8) !void {
         try self.writeFrame(Hub.sendSse, .{ event, html });
     }
@@ -103,6 +105,16 @@ pub const Sse = struct {
         const owned = try self.arena.dupe(u8, channel);
         self.channel = owned;
         try self._hub.updateChannel(self._conn_id, owned);
+        // On the channel: from here on the client may see the stream open.
+        self.open();
+    }
+
+    /// Sends the response head if nothing was sent yet. The stream calls it
+    /// by itself once the handler listens (`join`, `subscribe`, `wait`) and
+    /// before the first event; a handler that does long work before any of
+    /// those may call it to answer the client sooner.
+    pub fn open(self: *Sse) void {
+        self._hub.open(self._conn_id) catch {};
     }
 
     /// join() plus replay: if the client reconnected with a Last-Event-ID
@@ -126,6 +138,11 @@ pub const Sse = struct {
     /// at 6, so one EventSource per channel per tab runs out after a few tabs.
     /// The name is copied; the `channel` field holds the first one given.
     pub fn subscribe(self: *Sse, channel: []const u8) !void {
+        try self.addChannel(channel);
+        self.open();
+    }
+
+    fn addChannel(self: *Sse, channel: []const u8) !void {
         try self._hub.addChannel(self._conn_id, channel);
         if (self.channel.len == 0) self.channel = try self.arena.dupe(u8, channel);
     }
@@ -134,7 +151,10 @@ pub const Sse = struct {
     /// across all of them (Last-Event-ID is hub-wide, so one id covers every
     /// channel), in the original emit order.
     pub fn subscribeWithReplay(self: *Sse, channels: []const []const u8) !void {
-        for (channels) |ch| try self.subscribe(ch);
+        // On every channel first, then open: the client must not see the
+        // stream while some of its channels are still to come.
+        for (channels) |ch| try self.addChannel(ch);
+        self.open();
         const last_id = self.lastEventId() orelse return;
 
         var all: std.ArrayListUnmanaged(Hub.HistoryEntry) = .empty;
@@ -217,6 +237,7 @@ pub const Sse = struct {
     /// failed write). Call it last: it is what keeps the handler, and so the
     /// stream, alive.
     pub fn wait(self: *Sse) void {
+        self.open();
         var buf: [1]u8 = undefined;
         var read_buf: [256]u8 = undefined;
         var reader = net.Stream.Reader.init(self._stream, self.io, &read_buf);
@@ -269,24 +290,27 @@ pub fn buildHandler(comptime handler: fn (*Sse) anyerror!void) Handler {
         pub fn call(ctx: *Ctx) anyerror!Response {
             const hub = ctx._sse_hub orelse return ctx.text("", .{});
 
-            var write_buf: [512]u8 = undefined;
-            var sw = net.Stream.Writer.init(ctx._stream, ctx._io, &write_buf);
-            const writer = &sw.interface;
-            try writer.writeAll(
-                "HTTP/1.1 200 OK\r\n" ++
-                    "Content-Type: text/event-stream\r\n" ++
-                    "Cache-Control: no-cache\r\n" ++
-                    "Connection: keep-alive\r\n",
-            );
+            // The answer's head is written here and sent later: with the
+            // first thing the stream carries, or when the handler says it
+            // is listening (join, subscribe, wait). Sent at once, a client
+            // saw the stream as open while its handler was still on its
+            // way to a channel, and an event emitted in between was lost.
+            var head: std.ArrayList(u8) = .empty;
+            try head.appendSlice(ctx.arena, "HTTP/1.1 200 OK\r\n" ++
+                "Content-Type: text/event-stream\r\n" ++
+                "Cache-Control: no-cache\r\n" ++
+                "Connection: keep-alive\r\n");
             // Another site may read the stream only when the app listed it
             // (Config.sse_allowed_origins). The answer names that origin, so
             // it differs per origin: Vary keeps caches from mixing them.
             if (corsOrigin(ctx._sse_allowed_origins, ctx.header("Origin"))) |origin| {
-                try writer.print("Access-Control-Allow-Origin: {s}\r\n", .{origin});
-                if (!std.mem.eql(u8, origin, "*")) try writer.writeAll("Vary: Origin\r\n");
+                try head.print(ctx.arena, "Access-Control-Allow-Origin: {s}\r\n", .{origin});
+                if (!std.mem.eql(u8, origin, "*")) try head.appendSlice(ctx.arena, "Vary: Origin\r\n");
             }
-            try writer.writeAll("\r\n");
-            try writer.flush();
+            // Then a sensible default, so that the browser's EventSource
+            // does not fall back to its own unspecified reconnect delay;
+            // `sse.setRetry(ms)` in the handler replaces it.
+            try head.print(ctx.arena, "\r\nretry: {d}\n\n", .{Hub.default_retry_ms});
 
             var rand_buf: [8]u8 = undefined;
             std.Io.random(ctx._io, &rand_buf);
@@ -297,6 +321,7 @@ pub fn buildHandler(comptime handler: fn (*Sse) anyerror!void) Handler {
                 .stream = ctx._stream,
                 .type = .sse,
                 .watch = ctx._watch,
+                .head = head.items,
             });
             defer hub.remove(conn_id);
 
@@ -310,10 +335,9 @@ pub fn buildHandler(comptime handler: fn (*Sse) anyerror!void) Handler {
                 .io = ctx._io,
             };
 
-            // Sensible default so the browser's EventSource doesn't fall back
-            // to its own unspecified (~3s) reconnect delay; apps can override
-            // via sse.setRetry(ms) before/after this from within `handler`.
-            sse.setRetry(Hub.default_retry_ms) catch {};
+            // A handler that returns without having sent or joined anything
+            // still answers: the head goes out before the stream ends.
+            defer hub.open(conn_id) catch {};
 
             handler(&sse) catch |err| {
                 // The response is already a stream: nothing can be answered

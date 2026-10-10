@@ -73,6 +73,12 @@ pub const Hub = struct {
         last_activity: ?std.Io.Timestamp = null,
         /// The connection's watchdog entry, used to bound hub writes.
         watch: ?*Watchdog.Entry = null,
+        /// Bytes that go out before anything else is written to the
+        /// connection: an SSE stream's response head. It is sent with the
+        /// first write (an event, a heartbeat, or `open`), so a client does
+        /// not see the stream as open before its handler is listening. Not
+        /// copied: it must stay valid until the connection is removed.
+        head: ?[]const u8 = null,
     };
 
     /// Heap-allocated (stable address) so a broadcast/heartbeat/sweep
@@ -334,7 +340,29 @@ pub const Hub = struct {
         // watchdog shuts the socket down and the write fails.
         if (slot.conn.watch) |w| if (self.write_timeout_ms != 0) w.armWrite(self.write_timeout_ms);
         defer if (slot.conn.watch) |w| w.disarm();
+        // The response head first, once: whoever writes first sends it,
+        // under this same lock, so nothing can get ahead of it.
+        if (slot.conn.head) |head| {
+            slot.conn.head = null;
+            try writeBytes(self, slot.conn.stream, head);
+        }
         return @call(.auto, writeFn, .{ self, slot.conn.stream } ++ args);
+    }
+
+    fn writeBytes(self: *Hub, stream: net.Stream, bytes: []const u8) !void {
+        var write_buf: [512]u8 = undefined;
+        var sw = net.Stream.Writer.init(stream, self.io, &write_buf);
+        try sw.interface.writeAll(bytes);
+        try sw.interface.flush();
+    }
+
+    fn writeNothing(_: *Hub, _: net.Stream) !void {}
+
+    // internal: `Sse` calls it when its handler is ready to receive.
+    // Sends the connection's pending head, if it was not sent yet. After
+    // this the client sees the stream as open.
+    pub fn open(self: *Hub, conn_id: u64) !void {
+        return self.writeToConn(conn_id, writeNothing, .{});
     }
 
     // internal: what the hub does with a connection whose write failed.
@@ -443,8 +471,12 @@ pub const Hub = struct {
     }
 
     /// emitTo() for HTML: `html` goes out as is (not JSON-encoded), one
-    /// `data:` line per line, so htmx's SSE extension can swap it in
-    /// (`<div hx-ext="sse" sse-connect="/events" sse-swap="badge">`).
+    /// `data:` line per line, so htmx's SSE extension can swap it in. With
+    /// htmx 2 the page picks a named event (`<div hx-ext="sse"
+    /// sse-connect="/events" sse-swap="badge">`). htmx 4 swaps only a
+    /// message WITHOUT a name: pass `""` as `event` (`<div
+    /// hx-sse:connect="/events">`); a named event becomes a DOM event there
+    /// (`hx-trigger="badge from:body"`).
     /// Recorded in the channel's history like emitTo(). Render it once for
     /// everyone on the channel: it must not carry per-user data.
     pub fn emitHtmlTo(self: *Hub, channel: []const u8, event: []const u8, html: []const u8) void {
@@ -1554,9 +1586,13 @@ test "Hub: emitHtmlTo records the raw HTML (not JSON) for replay" {
 // `data:` with raw newlines inside would end the event early.
 pub fn writeSseFrame(w: *std.Io.Writer, id: ?u64, event: []const u8, data: []const u8) !void {
     if (id) |n| try w.print("id: {d}\n", .{n});
-    try w.writeAll("event: ");
-    try w.writeAll(event);
-    try w.writeAll("\n");
+    // An empty name is a message without one: the default message of the
+    // protocol (`onmessage` in a browser, what htmx 4 swaps into the page).
+    if (event.len > 0) {
+        try w.writeAll("event: ");
+        try w.writeAll(event);
+        try w.writeAll("\n");
+    }
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |line| {
         try w.writeAll("data: ");
