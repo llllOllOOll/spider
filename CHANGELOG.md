@@ -163,6 +163,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no body, and `bodyJson` or `parseForm` failed with `BodyEmpty`. The body
   is read now, within `max_body_bytes` (413 when it grows past it) and the
   body deadline.
+- **Keycloak / JWKS: an address that does not exist sent visitors to the
+  login.** Without a token, any path no route matches was redirected to
+  `login_path`; after signing in, the visitor got the 404. It is a 404
+  from the start now, for everyone, as with `spider.session`.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

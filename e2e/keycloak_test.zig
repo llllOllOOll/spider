@@ -627,3 +627,16 @@ test "the built-in /up probe is public behind the auth middleware" {
     defer e.deinit();
     try std.testing.expectEqual(@as(u16, 200), (try e.get("/up", &.{})).status);
 }
+
+test "jwks: an address that is no route gets its 404 whoever asks, not a trip to the login" {
+    var e = try Env.init();
+    defer e.deinit();
+
+    // Nobody signed in, an address the app does not have.
+    const anonymous = try e.get("/no/such/page", &.{});
+    try std.testing.expectEqual(@as(u16, 404), anonymous.status);
+
+    // A real route still sends an anonymous browser to the login.
+    const guarded = try e.get("/tickets", &.{});
+    try std.testing.expectEqual(@as(u16, 302), guarded.status);
+}

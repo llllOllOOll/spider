@@ -373,11 +373,12 @@ pub const JwksAuth = struct {
     /// from `Authorization: Bearer` or the cookie, verifies it, checks `exp`
     /// and `nbf`, and sets the request's user (`c.userId()` is the token's
     /// `sub`), roles and organizations, which is what `.authenticated`,
-    /// `.roles` and `.org_roles` on a route check. Routes marked `.public` and
-    /// `auth_skip_paths` pass untouched.
+    /// `.roles` and `.org_roles` on a route check. Routes marked `.public`,
+    /// `auth_skip_paths` and a path no route matches (it gets its 404) pass
+    /// untouched.
     ///
-    /// Without a token: redirect (302) to `login_path`, also for a path no
-    /// route matches. With one that does not verify: 401 with the error's
+    /// Without a token: redirect (302) to `login_path`. With one that does
+    /// not verify: 401 with the error's
     /// name as the body. Expired: see `refresh_path`. In `api_mode` all three
     /// are a JSON 401. Not valid yet (`nbf`): 401, plain text.
     ///
@@ -402,6 +403,10 @@ pub const JwksAuth = struct {
         else
             full_path;
         if (c.route().public) return next(c);
+        // An address that is no route gets its 404 whoever asks (as
+        // spider.session does): there is nothing here to protect, and a
+        // redirect to the login would say otherwise.
+        if (!c.hasRoute()) return next(c);
         for (self.config.auth_skip_paths) |skip| {
             if (std.mem.eql(u8, path, skip) or
                 (std.mem.startsWith(u8, path, skip) and
