@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **SQLite: a row that does not fit the struct is an error.** A struct
+  field with no column of its name used to get 0, `""` or `false` without
+  a word, and a NULL column read into a field that is not optional became
+  `""` or 0. They are now `error.ColumnMissing` and `error.UnexpectedNull`,
+  logged with the struct and the field, as in `spider.pg`. To say that a
+  value may be absent, make the field optional (`?[]const u8`) or give it
+  a default (`role: []const u8 = "user"`). **An app that relied on the
+  silent zero has to change its struct or its SELECT.**
 - **An object is true in a template condition.** `if (post) { ... }` used
   to be false whatever `post` held; it is now true when the name holds an
   object.

@@ -106,7 +106,7 @@ Needs `.pg = true` on the dependency. `init(allocator, io, .{ .host, .port, .dat
 
 ## SQLite — `spider.sqlite`
 
-Needs `.sqlite = true` on the dependency. `init(allocator, io, .{ .path = ?[]const u8 (null → env SQLITE_PATH, else "db.sqlite"), .size = 5 })`, `deinit()`, `query(T, arena, sql, params)`, `queryOne`, `queryExecute`, `begin()` → transaction (`commit`/`rollback`). Params are `?`.
+Needs `.sqlite = true` on the dependency. `init(allocator, io, .{ .path = ?[]const u8 (null → env SQLITE_PATH, else "db.sqlite"), .size = 5 })`, `deinit()`, `query(T, arena, sql, params)`, `queryOne`, `queryExecute`, `begin()` → transaction (`commit`/`rollback`; a second call does nothing, so `defer tx.rollback()` is safe). Params are `?`. Mapping a row to a struct follows `spider.pg`: a field with no column of its name is `error.ColumnMissing`, a NULL column is `error.UnexpectedNull`, unless the field is optional (null) or has a default (the default). `query(i64, ...)`: first column of the first row, 0 with no row, the statement's error when it fails.
 
 ## SSE / WebSocket
 

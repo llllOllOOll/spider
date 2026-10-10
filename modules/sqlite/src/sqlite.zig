@@ -90,18 +90,6 @@ fn QueryResult(comptime T: type) type {
     return []T;
 }
 
-// ── nullValue ─────────────────────────────────────────────
-fn nullValue(comptime T: type) T {
-    return switch (@typeInfo(T)) {
-        .optional => null,
-        .int => 0,
-        .float => 0.0,
-        .bool => false,
-        .pointer => &[_]u8{},
-        else => undefined,
-    };
-}
-
 // ── decodeField ───────────────────────────────────────────
 fn decodeField(comptime T: type, row: zqlite.Row, col: usize, arena: std.mem.Allocator) !T {
     const info = @typeInfo(T);
@@ -123,12 +111,27 @@ fn decodeField(comptime T: type, row: zqlite.Row, col: usize, arena: std.mem.All
     };
 }
 
-// ── mapRow ────────────────────────────────────────────────
+// ── Mapping a row to a struct ─────────────────────────────
+
+/// What a row can fail to give a struct: no column with the field's name,
+/// or a NULL where the field cannot hold one.
+pub const MappingError = error{ ColumnMissing, UnexpectedNull };
+
+/// A field the row cannot fill: logged with the struct and the field, and
+/// returned. (At warn under test: the default test runner fails a test that
+/// logs an error, and the tests of this rule provoke it on purpose.)
+fn mappingIssue(comptime T: type, comptime field: []const u8, err: MappingError) MappingError {
+    const format = "[sqlite] {s} mapping {s}.{s}: make the field optional, give it a default, or select the column";
+    const args = .{ @errorName(err), @typeName(T), field };
+    if (@import("builtin").is_test) std.log.warn(format, args) else std.log.err(format, args);
+    return err;
+}
+
 fn mapRow(comptime T: type, row: zqlite.Row, arena: std.mem.Allocator) !T {
     var item: T = undefined;
     const info = @typeInfo(T).@"struct";
     const col_count: usize = @intCast(row.columnCount());
-    inline for (info.field_names, info.field_types) |field_name, field_type| {
+    inline for (info.field_names, info.field_types, info.field_attrs) |field_name, field_type, attrs| {
         var col_idx: ?usize = null;
         for (0..col_count) |i| {
             if (std.mem.eql(u8, row.columnName(i), field_name)) {
@@ -136,10 +139,27 @@ fn mapRow(comptime T: type, row: zqlite.Row, arena: std.mem.Allocator) !T {
                 break;
             }
         }
+        // The same rule as spider.pg: an optional takes null, a field with
+        // a default takes it, anything else is an error. A missing column
+        // used to become 0, "" or false without a word.
+        const is_optional = @typeInfo(field_type) == .optional;
+        const default = comptime attrs.defaultValue(field_type);
         if (col_idx) |ci| {
-            @field(item, field_name) = try decodeField(field_type, row, ci, arena);
+            @field(item, field_name) = if (row.columnType(ci) != .null)
+                try decodeField(field_type, row, ci, arena)
+            else if (is_optional)
+                null
+            else if (default) |d|
+                d
+            else
+                return mappingIssue(T, field_name, error.UnexpectedNull);
         } else {
-            @field(item, field_name) = nullValue(field_type);
+            @field(item, field_name) = if (is_optional)
+                null
+            else if (default) |d|
+                d
+            else
+                return mappingIssue(T, field_name, error.ColumnMissing);
         }
     }
     return item;
@@ -148,15 +168,18 @@ fn mapRow(comptime T: type, row: zqlite.Row, arena: std.mem.Allocator) !T {
 // ── query ─────────────────────────────────────────────────
 /// Runs one statement with `?` parameters and gives back what `T` asks for:
 /// - a struct: every row as a `[]T` allocated in `arena`. A field takes the
-///   column of the same name; a field with no such column gets null, 0,
-///   false or "". Fields may be `[]const u8` (copied into `arena`), `bool`,
-///   integers, floats, enums (stored as their name; error.InvalidEnumValue
-///   for another text) and optionals of those (null for a NULL column).
+///   column of the same name. Fields may be `[]const u8` (copied into
+///   `arena`), `bool`, integers, floats, enums (stored as their name;
+///   error.InvalidEnumValue for another text) and optionals of those.
 /// - `i64`: the first column of the first row, 0 when there is no row.
 /// - `void`: nothing; for INSERT, UPDATE and DELETE.
 ///
 /// Fails with the SQLite error of the statement (a constraint, a missing
-/// table, a syntax error).
+/// table, a syntax error), and with a `MappingError` when a row does not
+/// fit `T`: error.ColumnMissing for a field with no column of its name,
+/// error.UnexpectedNull for a NULL column. A field that is optional takes
+/// null in both cases, and a field with a default takes its default; any
+/// other field is the error. The same rule as `spider.pg`.
 ///
 /// ```zig
 /// const posts = try spider.sqlite.query(Post, c.arena, "SELECT id, title FROM posts WHERE author = ?", .{author});
@@ -566,6 +589,39 @@ test "transaction - rollback" {
     const Row = struct { id: i64 };
     const rows = try query(Row, arena.allocator(), "SELECT id FROM rb_test", .{});
     try std.testing.expectEqual(@as(usize, 0), rows.len);
+}
+
+test "mapRow - a field with no column, or a NULL into a field that cannot hold one, is an error" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try queryExecute(void, a, "CREATE TEMP TABLE map_t (id INTEGER, name TEXT)");
+    try queryExecute(void, a, "INSERT INTO map_t VALUES (1, 'ana'), (2, NULL)");
+
+    // A typo in the SELECT, or a column that was renamed: not a silent 0.
+    const Wrong = struct { id: i64, nmae: []const u8 };
+    try std.testing.expectError(error.ColumnMissing, query(Wrong, a, "SELECT id, name FROM map_t WHERE id = 1", .{}));
+    try std.testing.expectError(error.ColumnMissing, queryOne(Wrong, a, "SELECT id, name FROM map_t WHERE id = 1", .{}));
+
+    // NULL into a field that is not optional: not a silent "".
+    const Strict = struct { id: i64, name: []const u8 };
+    try std.testing.expectError(error.UnexpectedNull, query(Strict, a, "SELECT id, name FROM map_t WHERE id = 2", .{}));
+
+    // What says "this may be absent": an optional, or a default.
+    const Loose = struct { id: i64, name: ?[]const u8, extra: ?i64, role: []const u8 = "user", n: i64 = 7 };
+    const rows = try query(Loose, a, "SELECT id, name, NULL AS n FROM map_t ORDER BY id", .{});
+    try std.testing.expectEqualStrings("ana", rows[0].name.?);
+    try std.testing.expect(rows[1].name == null);
+    try std.testing.expect(rows[0].extra == null);
+    try std.testing.expectEqualStrings("user", rows[0].role);
+    try std.testing.expectEqual(@as(i64, 7), rows[0].n);
+
+    var tx = try begin();
+    defer tx.rollback();
+    try std.testing.expectError(error.ColumnMissing, tx.query(Wrong, a, "SELECT id, name FROM map_t WHERE id = 1", .{}));
 }
 
 test "mapRow - i64 and optional fields" {
