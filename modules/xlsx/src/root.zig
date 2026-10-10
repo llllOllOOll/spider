@@ -121,6 +121,14 @@ pub const ReadValue = reader.Value;
 pub const SheetInfo = reader.SheetInfo;
 /// The time of day of a read cell that holds no date.
 pub const TimeOfDay = date.TimeOfDay;
+/// Which limit a file went over: the type of `ReadDiagnostic.limit`.
+pub const ReadLimitKind = reader.LimitKind;
+/// Which part of the file a read error is about: the type of `ReadDiagnostic.part`.
+pub const ReadPart = reader.Part;
+/// Whether a sheet is shown, hidden, or hidden from the menu too: the type of `SheetInfo.visibility`.
+pub const SheetVisibility = reader.Visibility;
+/// Which day serial number 0 stands for in a workbook: the 1900 system, or the 1904 one of old Mac files.
+pub const DateSystem = date.DateSystem;
 
 /// The container seam: implement `Packager` to replace the zip writer.
 pub const Packager = zip.Packager;
@@ -160,4 +168,17 @@ test {
     _ = zip_reader;
     _ = xml_reader;
     _ = reader;
+}
+
+test "the types of the fields a caller reads have a name at the root" {
+    // ReadDiagnostic.limit, ReadDiagnostic.part, SheetInfo.visibility and
+    // the date system of a workbook: a caller that switches on them, or
+    // stores them, has to be able to write their type.
+    const diagnostic: ReadDiagnostic = .{};
+    const limit: ?ReadLimitKind = diagnostic.limit;
+    const part: ReadPart = diagnostic.part;
+    try std.testing.expect(limit == null);
+    try std.testing.expectEqual(ReadPart.none, part);
+    try std.testing.expect(SheetVisibility == @FieldType(SheetInfo, "visibility"));
+    try std.testing.expect(@typeInfo(DateSystem) == .@"enum");
 }

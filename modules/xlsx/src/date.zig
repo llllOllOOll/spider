@@ -96,10 +96,16 @@ pub const TimeOfDay = struct {
     second: u8,
     millisecond: u16,
 
-    /// From the fraction of a day (0 up to 1, never negative), rounded to
-    /// the millisecond; anything from 1 on gives 23:59:59.999.
+    /// From the fraction of a day (0 up to 1), rounded to the millisecond.
+    /// Anything from 1 on gives 23:59:59.999; a negative number, or one
+    /// that is not a number, gives 00:00:00.
     pub fn fromFraction(fraction: f64) TimeOfDay {
-        const ms: u32 = @min(86_399_999, @as(u32, @intFromFloat(@round(fraction * 86_400_000.0))));
+        // Brought into the day before it becomes an integer: a negative
+        // number, one far past 1 or not a number at all would otherwise be
+        // a conversion the language does not define.
+        const last: f64 = 86_399_999;
+        const scaled = @round(fraction * 86_400_000.0);
+        const ms: u32 = if (!(scaled > 0)) 0 else if (scaled >= last) 86_399_999 else @intFromFloat(scaled);
         return .{
             .hour = @intCast(ms / 3_600_000),
             .minute = @intCast(ms / 60_000 % 60),
@@ -290,4 +296,17 @@ test "serial numbers back to dates, in both systems" {
     try testing.expectEqual(DateTime{ .year = 2026, .month = 10, .day = 8 }, precise);
     try testing.expectEqual(TimeOfDay{ .hour = 18, .minute = 0, .second = 0, .millisecond = 0 }, TimeOfDay.fromFraction(0.75));
     try testing.expectEqual(TimeOfDay{ .hour = 23, .minute = 59, .second = 59, .millisecond = 999 }, TimeOfDay.fromFraction(0.999_999_999));
+}
+
+test "TimeOfDay.fromFraction: any number gives a time of day, never a crash" {
+    try std.testing.expectEqual(TimeOfDay{ .hour = 12, .minute = 0, .second = 0, .millisecond = 0 }, TimeOfDay.fromFraction(0.5));
+    // Out of the day on either side: midnight, or the last millisecond.
+    const midnight: TimeOfDay = .{ .hour = 0, .minute = 0, .second = 0, .millisecond = 0 };
+    const last: TimeOfDay = .{ .hour = 23, .minute = 59, .second = 59, .millisecond = 999 };
+    try std.testing.expectEqual(midnight, TimeOfDay.fromFraction(-0.25));
+    try std.testing.expectEqual(midnight, TimeOfDay.fromFraction(-1e300));
+    try std.testing.expectEqual(midnight, TimeOfDay.fromFraction(std.math.nan(f64)));
+    try std.testing.expectEqual(last, TimeOfDay.fromFraction(1.0));
+    try std.testing.expectEqual(last, TimeOfDay.fromFraction(1e300));
+    try std.testing.expectEqual(last, TimeOfDay.fromFraction(std.math.inf(f64)));
 }

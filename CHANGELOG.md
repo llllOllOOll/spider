@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `require_route_access` on, and a socket could not be limited to signed-in
   users at the route. A request that fails the checks is answered 401 or
   403 before the protocol is switched.
+- **xlsx: names for four types a caller meets.** `xlsx.ReadLimitKind`
+  (`ReadDiagnostic.limit`), `xlsx.ReadPart` (`ReadDiagnostic.part`),
+  `xlsx.SheetVisibility` (`SheetInfo.visibility`) and `xlsx.DateSystem`:
+  they were types of public fields with no name to write.
 - **`current_user` in every view.** When the request has a user (a session,
   a token, `c.setUser`), templates can read `current_user.id`,
   `current_user.email` and `current_user.name` without the handler passing
@@ -229,6 +233,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   how much fits. Also: the VAPID token is written as JSON properly (a
   quote in the configured subject broke it), and the clock is read
   through `std.Io` instead of a Linux system call.
+- **xlsx: `TimeOfDay.fromFraction` crashed on a number outside the day.**
+  A negative fraction, a huge one or not-a-number was converted to an
+  integer the language does not define (a panic in safe builds). They
+  give 00:00:00 or 23:59:59.999 now. The module's README was brought in
+  line with the code (stored entries are read, limits are errors, a
+  date-time gets a date-time format) and its example is in English.
 - The two files the build writes for an app without its own
   (`spider_config.zig`, `template_helpers.zig`) end with a newline, so
   `zig build` documentation of an app no longer reports them as errors.

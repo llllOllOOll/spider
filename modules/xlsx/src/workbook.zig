@@ -203,7 +203,7 @@ pub const max_header_footer_len = 255;
 ///
 /// Protection is a guard against editing by accident, not security:
 /// the file is not encrypted, anyone can read it, and the password is
-/// kept as a 15-bit hash that many other passwords also match.
+/// kept as a 16-bit hash that many other passwords also match.
 pub const Protection = struct {
     /// Asked for when the user removes the protection. Null: no
     /// password, protection is removed with a click.

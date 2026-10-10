@@ -130,9 +130,9 @@ A style is a plain value: build one, copy it, change a field.
 - **Formulas carry no result.** The program that opens the file calculates
   them (the workbook asks for it). Viewers that do not calculate show
   nothing; write the number yourself when that matters.
-- **Dates** are numbers with a date format, in the 1900 date system. A date
-  or date-time gets the reader's short date format unless the style names a
-  number format. `DateTime.fromUnix` gives UTC; add the zone offset to the
+- **Dates** are numbers with a date format, in the 1900 date system. Unless
+  the style names a number format, a date gets the reader's short date
+  format and a date-time the short date followed by `h:mm`. `DateTime.fromUnix` gives UTC; add the zone offset to the
   timestamp first for local time.
 - **Limits** are Excel's and are checked when a value is set: 1,048,576
   rows, 16,384 columns, 32,767 characters per cell, 8,192 per formula, 31
@@ -254,10 +254,10 @@ source you know.
 | `max_total_bytes` | 128 MiB | 2 GiB | All parts, uncompressed. |
 | `max_compression_ratio` | 200 | 1,000 | Uncompressed/compressed, for parts over 1 MiB. |
 | `max_shared_strings_bytes` | 32 MiB | 256 MiB | Memory of the shared strings table. |
-| `max_rows` | 100,000 | 1,048,576 | Rows read from one sheet. |
+| `max_rows` | 100,000 | 1,048,576 | Rows one sheet may have; one more is `error.LimitExceeded`. |
 | `max_columns` | 16,384 | 16,384 | Highest column (Excel's limit). |
 | `max_cell_text` | 32,767 | 32,767 | Characters in one cell (Excel's limit). |
-| `max_merged_ranges` | 10,000 | 10,000 | Merged ranges kept per sheet. |
+| `max_merged_ranges` | 10,000 | 10,000 | Merged ranges one sheet may have; one more is `error.LimitExceeded`. |
 | `xml.max_depth` | 64 | 64 | Nested XML elements. |
 | `xml.max_attributes` | 64 | 64 | Attributes on one element. |
 | `xml.max_name_len` | 256 | 256 | Bytes in an XML name. |
@@ -296,24 +296,24 @@ const import_limits: xlsx.ReadLimits = .{
 fn importPeople(c: *spider.Ctx) !spider.Response {
     var form = try c.parseMultipart();
     defer form.deinit();
-    const files = form.getFile("planilha") orelse return error.BadRequest;
+    const files = form.getFile("spreadsheet") orelse return error.BadRequest;
     if (files.len != 1) return error.BadRequest;
 
     var diagnostic: xlsx.ReadDiagnostic = .{};
     const book = xlsx.Reader.openDiagnosed(c.arena, files[0].data, import_limits, &diagnostic) catch |err| switch (err) {
         error.OutOfMemory => return err,
         // Say what is wrong in the user's terms; log the diagnostic.
-        error.Unsupported => return c.text("Envie um arquivo .xlsx (não .xls).", .{ .status = .unprocessable_entity }),
-        error.Encrypted => return c.text("O arquivo está protegido por senha.", .{ .status = .unprocessable_entity }),
-        error.LimitExceeded => return c.text("A planilha é grande demais.", .{ .status = .unprocessable_entity }),
-        else => return c.text("Não foi possível ler a planilha.", .{ .status = .unprocessable_entity }),
+        error.Unsupported => return c.text("Send an .xlsx file (not .xls).", .{ .status = .unprocessable_entity }),
+        error.Encrypted => return c.text("The file is protected by a password.", .{ .status = .unprocessable_entity }),
+        error.LimitExceeded => return c.text("The spreadsheet is too big.", .{ .status = .unprocessable_entity }),
+        else => return c.text("The spreadsheet could not be read.", .{ .status = .unprocessable_entity }),
     };
     defer book.deinit();
 
     const rows = try book.rows(0, .{});
     defer rows.deinit();
     var imported: usize = 0;
-    while (rows.next() catch return c.text("A planilha está danificada ou é grande demais.", .{ .status = .unprocessable_entity })) |row| {
+    while (rows.next() catch return c.text("The spreadsheet is damaged or too big.", .{ .status = .unprocessable_entity })) |row| {
         if (row.number == 0) continue; // the header
         var name: ?[]const u8 = null;
         var document: ?u64 = null;
@@ -359,7 +359,7 @@ Advice for imports:
 - **Macros**: an .xlsm is read as data; its macros are ignored and never
   run.
 - zip64 archives (files past 4 GiB) and compression methods other than
-  deflate.
+  deflate and stored (no compression).
 - Styles other than the number format, column widths and hidden columns,
   comments, images, charts, pivot tables, data validation, conditional
   formatting, defined names.
@@ -406,7 +406,7 @@ What that leaves open:
   the shared strings and styles to be known late — the reason streaming
   writers use inline strings. The part functions already write to a
   `*std.Io.Writer`.
-- **Reading** is three layers, each usable alone: `src/zip_reader.zig`
+- **Reading** is three layers (only the last is part of the API; the two under it are internal): `src/zip_reader.zig`
   (an archive in memory, checked against its central directory, read in
   pieces with the CRC-32 verified at the end; `std.zip` only reads from a
   file and verifies nothing), `src/xml_reader.zig` (a pull parser with a
