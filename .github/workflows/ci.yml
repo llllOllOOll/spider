@@ -1,0 +1,97 @@
+# Every push to develop or main, and every pull request to them: the whole
+# test suite, then the official modules (spider-modules) against the same
+# commit. The jobs run side by side; a red one blocks the merge when the
+# branch is protected.
+#
+# Not here: `zig build test-pacman`, which reaches the internet and would
+# fail for reasons that are not Spider's (`test-pacman-local` covers the
+# client with scripted local servers).
+name: CI
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request cancels the run before it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Build and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build (library and CLI)
+        run: zig build
+      - name: Unit tests (with the doc and version rules)
+        run: zig build test
+      - name: Unit tests built with spider.pg
+        run: zig build test -Dpg=true
+      - name: SQLite
+        run: zig build test-sqlite
+      - name: R2, xlsx, QR code
+        run: zig build test-r2 test-xlsx test-qrcode
+      - name: HTTP client against local servers
+        run: zig build test-pacman-local
+
+  e2e:
+    name: End to end (${{ matrix.io_backend }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        io_backend: [threaded, zio]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: A real listening server
+        run: zig build test-e2e -Dio_backend=${{ matrix.io_backend }}
+
+  pg:
+    name: PostgreSQL
+    runs-on: ubuntu-latest
+    # A disposable database, only for this job.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: spider
+          POSTGRES_PASSWORD: spider
+          POSTGRES_DB: spider_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spider -d spider_db"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      PG_HOST: 127.0.0.1
+      PG_PORT: 5432
+      PG_USER: spider
+      PG_PASSWORD: spider
+      PG_DB: spider_db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: spider.pg and the migration engine
+        run: zig build test-pg
+
+  ecosystem:
+    name: Official modules
+    uses: ./.github/workflows/ecosystem.yml
