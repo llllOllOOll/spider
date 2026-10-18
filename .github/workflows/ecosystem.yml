@@ -1,0 +1,21 @@
+# Runs the official modules (llllOllOOll/spider-modules) against this
+# commit: the release gate of RFC 0001 (docs/rfcs/0001-modules.md).
+#
+# Manual for now: spider-modules is not published yet. When it is:
+#   1. uncomment `schedule` below (nightly against main);
+#   2. in release.yml, add `needs: ecosystem` to the release job and an
+#      `ecosystem:` job that `uses:` this workflow with the tag's ref, so a
+#      release does not ship while an official module fails.
+name: Ecosystem
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  # schedule:
+  #   - cron: '0 3 * * *'
+
+jobs:
+  modules:
+    uses: llllOllOOll/spider-modules/.github/workflows/ecosystem.yml@main
+    with:
+      spider_ref: ${{ github.sha }}

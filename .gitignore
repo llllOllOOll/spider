@@ -2,7 +2,10 @@
 zig-out/
 zig-pkg/
 examples/
-docs/
+docs/*
+# versioned: design decisions and guides
+!docs/rfcs/
+!docs/guides/
 src/test_templates.zig
 **/old_*.zig
 **/_old*.zig

@@ -98,7 +98,8 @@ Before calling a change done: `zig build test`, and for anything under
 ```
 src/spider.zig        public API (everything apps import) + test discovery block
 src/core/
-  app.zig             Server(T): routes, middleware, mountFeatures, listen(),
+  app.zig             Server(T): routes, middleware, mountFeatures, mountModules
+                      (+ checkModules, migrateModules), listen(),
                       accept loop, handleConnection (request lifecycle),
                       writeRoutes (SPIDER_ROUTES / `spider routes`)
   handler.zig         handler wrapping shared by Server and Group (extractors)
@@ -107,6 +108,13 @@ src/core/
   extractors.zig      spider.Path(T, name) / spider.Form(T) handler params
   watchdog.zig        connection deadlines (idle/header/body/stream write)
   listen_port.zig     the port and host listen() takes (test, dev, PORT, config)
+  module.zig          modules (RFC 0001): spider.module manifests, the
+                      compile-time rules (manifest, signatures, requires,
+                      start order), spider.Check and the checks run before
+                      listen(); modules_test.zig drives them on a Server
+  migration.zig       spider.Migration, keys (`module/name`), checksums; std only
+                      (the pg tests build it alone)
+src/version.zig       spider.version (= build.zig.zon, checked by version_check_tool.zig)
 src/routing/          router (trie + static map; RouteMeta), Group (defaults, use),
                       route_config.zig (the route config keys, checked at comptime)
 src/render/           template engine: parser → AST → renderer; escaping, RawHtml
@@ -160,6 +168,18 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `server.mountFeatures(features)` (or `mountFeature(x)` one at a time;
   `mount()` stays for groups that live elsewhere). Route matching doesn't
   depend on registration order.
+- Modules (RFC 0001, `docs/rfcs/0001-modules.md`): a namespace with
+  `pub const spider_module = spider.module(.{ ... })`, mounted with
+  `server.mountModules(.{ ... })` (one call). The rules are functions that
+  return the problem as text (`manifestProblem`, `planProblem`,
+  `declProblem` in core/module.zig): test them there, at comptime, since a
+  compile error cannot be tested. `listen()` runs the checks before binding
+  (`error.ModulesNotReady`); `SPIDER_CHECK` / `SPIDER_MIGRATE` make it print
+  the report / apply module migrations and return (CLI: `spider check
+  --modules`, `spider migrate`). Module migrations live in
+  `modules/pg/src/migrations.zig` (rows `module/name` + `checksum` in
+  `schema_migrations`). The official modules are in the `spider-modules`
+  repository; `scripts/ecosystem.sh` there is the release gate.
 - App conventions: `src/conventions.zig` (rules) behind
   `spider.testing.expectConventions()` (generated apps run it in `zig build
   test`) and `spider check` (CLI, via the spider_testing module).

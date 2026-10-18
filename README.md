@@ -227,6 +227,24 @@ them all; `spider routes` prints the result.
 
 ---
 
+## Modules
+
+A module is a package that plugs into an app through one contract: a
+manifest Spider checks at compile time (name, version, the Spider versions
+it supports, the modules it requires), its own migrations, and a `check`
+that runs before the server listens. A module that does not fit does not
+compile; one that is not ready keeps the server from starting.
+
+```zig
+try server.mountModules(.{@import("spider_notify")}).mountFeatures(features).listen(.{});
+```
+
+`spider migrate` applies the modules' migrations before the app's, and
+`spider check --modules` reports what each module still needs. Writing
+and using modules: [docs/guides/modules.md](docs/guides/modules.md); the
+design: [RFC 0001](docs/rfcs/0001-modules.md). The official modules live in
+the `spider-modules` repository.
+
 ## Routing
 
 ```zig

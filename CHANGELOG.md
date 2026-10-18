@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Modules (RFC 0001, `docs/rfcs/0001-modules.md`): packages that plug into an
+app through one contract that is checked before they can run. Nothing here
+asks an existing app to change: an app without modules builds, migrates
+and starts as before.
+
+### Added
+
+- **`spider.module(.{ ... })` and `server.mountModules(.{ ... })`.** A
+  module declares a manifest: name, version, the Spider range it supports,
+  the modules it requires, its migrations and the environment variables it
+  reads. At compile time Spider checks the manifest (the range against
+  `spider.version` included), the exact signatures of `check`, `boot`,
+  `shutdown`, `jobs` and `routes` (a route builder with parameters is an
+  error, not skipped), unique names and the dependencies between modules
+  (missing or circular), and computes the order they start in.
+- **Modules are checked before the server listens.** `listen()` runs, for
+  every module, Spider's own checks (required environment variables;
+  migrations applied, with the checksum they ran with) and the module's
+  `check(c: *spider.Check)`, and refuses to start with
+  `error.ModulesNotReady` and a report listing every problem.
+  `server.checkModules(arena, io)` gives the same report to an app's tests;
+  `spider check --modules` (`SPIDER_CHECK=1`) prints it.
+- **Modules ship their migrations.** `server.migrateModules(arena)`
+  (`spider migrate`, `SPIDER_MIGRATE=1`) applies them in start order, each
+  in its own transaction with its `schema_migrations` row, under an
+  advisory lock. They are recorded as `module/name` with a SHA-256
+  checksum (a new nullable `checksum` column; the app's own rows are
+  untouched); an applied migration that was edited stops the migration
+  and the start (`error.MigrationChanged`); BEGIN/COMMIT inside one is
+  refused before anything runs. `spider migrate` runs the modules' first
+  when the app mounts any, then the app's files; `--no-modules` and
+  `--modules-only` pick one side.
+- **Lifecycle.** Modules boot in dependency order before the features;
+  `shutdown(b: spider.Boot)` runs from `server.deinit()` in reverse order,
+  after the jobs stopped.
+- **`spider.version`**, the version of this Spider as a
+  `std.SemanticVersion`; `zig build test` fails when it differs from
+  `build.zig.zon`.
+- `.github/workflows/ecosystem.yml`: runs the official modules
+  (`spider-modules`) against a commit. Manual until that repository is
+  published; then it becomes the release gate.
+- Docs: `docs/rfcs/0001-modules.md` (the decision and roadmap) and
+  `docs/guides/modules.md` (writing and using a module).
+
+### Changed
+
+- `mountFeatures` skips a namespace that declares `spider_module`: it is a
+  module, mounted once by `mountModules`.
+- `spider migrate` refuses unknown options instead of ignoring them.
+- The library version is `0.11.0-dev.1` until the release (the CLI keeps
+  its own version).
+
 ## [0.10.1] - 2026-10-10
 
 What building a second example app on PostgreSQL and htmx 4 turned up.
