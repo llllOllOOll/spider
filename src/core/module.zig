@@ -389,27 +389,12 @@ pub fn runChecks(report: *Report, io: Io, entries: []const Entry, status: ?Statu
             const value = env_get(var_name) orelse "";
             if (std.mem.trim(u8, value, " \t\r\n").len == 0) report.add(name, "{s} is required but not set", .{var_name});
         }
-        if (e.manifest.migrations.len > 0) migrations: {
-            const read = status orelse {
-                report.add(name, "ships database migrations, but the app is built without PostgreSQL (build Spider with -Dpg=true)", .{});
-                break :migrations;
-            };
+        if (e.manifest.migrations.len > 0) {
             const steps = stepsOf(arena, &.{e}) catch {
                 report.add(name, "out of memory while listing its migrations", .{});
-                break :migrations;
+                continue;
             };
-            const states = read(arena, steps) catch |err| {
-                if (err == error.DatabaseNotInitialized)
-                    report.add(name, "ships database migrations, but the database is not open: call spider.pg.init(...) before listen()", .{})
-                else
-                    report.add(name, "could not read schema_migrations: error.{s}", .{@errorName(err)});
-                break :migrations;
-            };
-            for (steps, states) |s, st| switch (st) {
-                .applied => {},
-                .pending => report.add(name, "migration {s}/{s} is not applied (run `spider migrate`)", .{ s.module, s.name }),
-                .changed => report.add(name, "migration {s}/{s} changed after it was applied (its checksum differs): add a new migration instead of editing an applied one", .{ s.module, s.name }),
-            };
+            checkMigrations(report, name, steps, status);
         }
         if (report.problems.items.len != before) continue;
         const f = e.check orelse continue;
@@ -418,14 +403,49 @@ pub fn runChecks(report: *Report, io: Io, entries: []const Entry, status: ?Statu
     }
 }
 
+// internal: records in `report`, under `owner`, every one of `steps` that
+// is not applied or changed after it was applied (the modules' and the
+// app's migrations alike); `status` is null when the app is built without
+// PostgreSQL.
+pub fn checkMigrations(report: *Report, owner: []const u8, steps: []const migration.Step, status: ?StatusFn) void {
+    if (steps.len == 0) return;
+    const read = status orelse {
+        report.add(owner, "ships database migrations, but the app is built without PostgreSQL (build Spider with -Dpg=true)", .{});
+        return;
+    };
+    const states = read(report.arena, steps) catch |err| {
+        if (err == error.DatabaseNotInitialized)
+            report.add(owner, "ships database migrations, but the database is not open: call spider.pg.init(...) before listen()", .{})
+        else
+            report.add(owner, "could not read schema_migrations: error.{s}", .{@errorName(err)});
+        return;
+    };
+    for (steps, states) |s, st| {
+        const k = migration.key(report.arena, s.module, s.name) catch s.name;
+        switch (st) {
+            .applied => {},
+            .pending => report.add(owner, "migration {s} is not applied (run `spider migrate`)", .{k}),
+            .changed => report.add(owner, "migration {s} changed after it was applied (its checksum differs): add a new migration instead of editing an applied one", .{k}),
+        }
+    }
+}
+
 // internal: the migrations of `entries`, in start order, as steps for
 // spider.pg.migrations.
 pub fn stepsOf(arena: std.mem.Allocator, entries: []const Entry) ![]migration.Step {
     var out: std.ArrayList(migration.Step) = .empty;
     for (entries) |e| for (e.manifest.migrations) |mig| {
-        try out.append(arena, .{ .module = e.manifest.name, .name = mig.name, .sql = mig.sql });
+        try out.append(arena, .{ .module = e.manifest.name, .name = mig.name, .sql = migration.upSection(mig.sql) });
     };
     return out.items;
+}
+
+// internal: the app's own migrations as steps (no module: their keys are
+// their bare names).
+pub fn appStepsOf(arena: std.mem.Allocator, list: []const Migration) ![]migration.Step {
+    const out = try arena.alloc(migration.Step, list.len);
+    for (list, out) |mig, *o| o.* = .{ .module = "", .name = mig.name, .sql = migration.upSection(mig.sql) };
+    return out;
 }
 
 // ── tests ──────────────────────────────────────────────────────────────

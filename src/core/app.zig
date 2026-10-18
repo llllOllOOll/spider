@@ -36,6 +36,7 @@ const views_mod = @import("../render/views.zig");
 const dev_reload = @import("../modules/dev_reload.zig");
 const listen_port = @import("listen_port.zig");
 const module_mod = @import("module.zig");
+const migration_mod = @import("migration.zig");
 const health_mod = @import("../modules/health.zig");
 const Hub = @import("../ws/hub.zig").Hub;
 const Ws = @import("../ws/ws.zig").Ws;
@@ -898,6 +899,8 @@ pub fn Server(comptime T: type) type {
         module_shutdown_hooks: std.ArrayListUnmanaged(ShutdownFn) = .empty,
         /// How many times mountModules ran: more than once is refused by listen().
         module_mounts: u8 = 0,
+        /// The app's own migrations (see migrations()), after the modules'.
+        app_migrations: []const migration_mod.Migration = &.{},
 
         // internal: `spider.app` and `spider.appWithConfig` call it.
         pub fn init() Self {
@@ -1449,38 +1452,77 @@ pub fn Server(comptime T: type) type {
             }) catch |err| std.log.err("job not scheduled: {s}", .{@errorName(err)});
         }
 
-        /// Runs the checks of every mounted module, as listen() does before
-        /// it starts: Spider's own (required environment variables set;
-        /// migrations applied, with the checksum they were applied with)
-        /// and each module's `check()`. Returns the report, allocated in
-        /// `arena`; `report.ok()` is true when nothing failed. Useful in an
-        /// app's tests:
+        /// The app's own migrations, embedded in the binary: they run after
+        /// the modules' ones, with the same guarantees (a transaction per
+        /// migration, with its `schema_migrations` row, under a lock; a
+        /// checksum that refuses an applied migration whose SQL changed),
+        /// and listen() refuses to start while one is pending. Keys are the
+        /// bare names, as `spider migrate` has always recorded the files of
+        /// `src/core/db/migrations/`, so the rows already there count as
+        /// applied. The list comes from `spider.addMigrations` in build.zig:
         ///
         /// ```zig
-        /// const report = server.checkModules(arena, io);
+        /// // build.zig
+        /// exe.root_module.addImport("migrations", spider_build.addMigrations(b, spider_dep, "src/core/db/migrations"));
+        /// // main.zig
+        /// _ = server.mountModules(.{notify}).migrations(@import("migrations").all);
+        /// ```
+        ///
+        /// Fails the build when a name is not `NNNN_description`, when the
+        /// names are not in increasing order, or when a file has no SQL.
+        pub fn migrations(self: *Self, comptime list: []const migration_mod.Migration) *Self {
+            comptime {
+                @setEvalBranchQuota(1_000_000);
+                if (migration_mod.listProblem("migrations", list)) |p| @compileError(p);
+            }
+            self.app_migrations = list;
+            return self;
+        }
+
+        /// Runs what listen() checks before it starts, for every mounted
+        /// module and the app's own migrations: Spider's checks (required
+        /// environment variables set; migrations applied, with the checksum
+        /// they were applied with) and each module's `check()`. Returns the
+        /// report, allocated in `arena`; `report.ok()` is true when nothing
+        /// failed. Useful in an app's tests:
+        ///
+        /// ```zig
+        /// const report = server.check(arena, io);
         /// try std.testing.expect(report.ok());
         /// ```
-        pub fn checkModules(self: *Self, arena: std.mem.Allocator, io: Io) module_mod.Report {
+        pub fn check(self: *Self, arena: std.mem.Allocator, io: Io) module_mod.Report {
             var report: module_mod.Report = .{ .arena = arena };
             if (self.module_mounts > 1) report.add("spider", "mountModules ran {d} times: mount every module in one call, so their order and dependencies are checked together", .{self.module_mounts});
             module_mod.runChecks(&report, io, self.module_entries.items, migrationStatus());
+            if (self.app_migrations.len > 0) {
+                report.checked += 1;
+                if (module_mod.appStepsOf(arena, self.app_migrations)) |steps|
+                    module_mod.checkMigrations(&report, "app", steps, migrationStatus())
+                else |_|
+                    report.add("app", "out of memory while listing its migrations", .{});
+            }
             return report;
         }
 
-        /// Applies the pending migrations of every mounted module, in the
-        /// order the modules start, each in its own transaction with its
-        /// `schema_migrations` row (key `module/name`, with the checksum of
-        /// its SQL). Returns how many ran (0 when no mounted module ships
-        /// migrations, with or without a database). Fails with
-        /// error.NoDatabase when the app is built without PostgreSQL,
-        /// error.DatabaseNotInitialized before `spider.pg.init`,
+        /// Applies every pending migration: the mounted modules' ones first,
+        /// in the order the modules start, then the app's own (see
+        /// migrations()). Each runs in its own transaction with its
+        /// `schema_migrations` row (key `module/name`, or the bare name for
+        /// the app's, with the checksum of its SQL); a migration that cannot
+        /// run in a transaction (`CREATE INDEX CONCURRENTLY`) runs alone,
+        /// outside one. Rows from before checksums get theirs. Returns how
+        /// many ran (0 when there are none, with or without a database).
+        /// Fails with error.NoDatabase when the app is built without
+        /// PostgreSQL, error.DatabaseNotInitialized before `spider.pg.init`,
         /// error.MigrationChanged when an applied migration's SQL differs
         /// from what ran, or the database's error (the failed migration is
         /// rolled back; the ones before it stay applied). What `spider
         /// migrate` runs (`SPIDER_MIGRATE=1`).
-        pub fn migrateModules(self: *Self, arena: std.mem.Allocator) !usize {
-            const steps = try module_mod.stepsOf(arena, self.module_entries.items);
-            // Modules without migrations need no database.
+        pub fn migrate(self: *Self, arena: std.mem.Allocator) !usize {
+            const module_steps = try module_mod.stepsOf(arena, self.module_entries.items);
+            const app_steps = try module_mod.appStepsOf(arena, self.app_migrations);
+            const steps = try std.mem.concat(arena, migration_mod.Step, &.{ module_steps, app_steps });
+            // No migrations need no database.
             if (steps.len == 0) return 0;
             if (comptime !build_options.pg) return error.NoDatabase;
             return @import("spider_pg").migrations.apply(arena, steps);
@@ -1491,15 +1533,15 @@ pub fn Server(comptime T: type) type {
             return null;
         }
 
-        /// listen()'s gate: every module ready, or error.ModulesNotReady
-        /// with the report in the log.
-        fn requireModulesReady(self: *Self) !void {
-            if (self.module_entries.items.len == 0 and self.module_mounts <= 1) return;
+        /// listen()'s gate: every module and the app's migrations ready, or
+        /// error.ModulesNotReady with the report in the log.
+        fn requireReady(self: *Self) !void {
+            if (self.module_entries.items.len == 0 and self.module_mounts <= 1 and self.app_migrations.len == 0) return;
             var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
             defer arena_state.deinit();
             var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{});
             defer threaded.deinit();
-            const report = self.checkModules(arena_state.allocator(), threaded.io());
+            const report = self.check(arena_state.allocator(), threaded.io());
             if (report.ok()) return;
             var out: Io.Writer.Allocating = .init(arena_state.allocator());
             report.write(&out.writer) catch {};
@@ -1766,10 +1808,11 @@ pub fn Server(comptime T: type) type {
         ///
         /// With `SPIDER_ROUTES` set it prints the route table and returns instead
         /// (what `spider routes` runs). With `SPIDER_CHECK` set it prints the
-        /// modules' report (see checkModules) and returns, with
+        /// modules' report (see check) and returns, with
         /// `error.ModulesNotReady` when a module failed (`spider check
-        /// --modules`). With `SPIDER_MIGRATE` set it applies the modules'
-        /// migrations (see migrateModules) and returns (`spider migrate`).
+        /// --modules`). With `SPIDER_MIGRATE` set it applies the
+        /// migrations, the modules' and then the app's (see migrate), and
+        /// returns (`spider migrate`; see also `spider.migrating`).
         ///
         /// Before it binds the address it runs every module's checks and
         /// fails with `error.ModulesNotReady`, the report in the log, when
@@ -1786,10 +1829,10 @@ pub fn Server(comptime T: type) type {
                 try out.interface.flush();
                 return;
             }
-            if (env.get("SPIDER_CHECK") != null) return self.printModuleCheck();
-            if (env.get("SPIDER_MIGRATE") != null) return self.printModuleMigrate();
+            if (env.get("SPIDER_CHECK") != null) return self.printCheck();
+            if (env.get("SPIDER_MIGRATE") != null) return self.printMigrate();
             try self.checkRouteAccess();
-            try self.requireModulesReady();
+            try self.requireReady();
             self.config.dev_reload = dev_reload.resolve(self.config.dev_reload);
             if (comptime build_options.io_backend == .zio) {
                 return self.listenZio(options);
@@ -1797,12 +1840,12 @@ pub fn Server(comptime T: type) type {
             return self.listenThreaded(options);
         }
 
-        fn printModuleCheck(self: *Self) !void {
+        fn printCheck(self: *Self) !void {
             var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
             defer arena_state.deinit();
             var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{});
             defer threaded.deinit();
-            const report = self.checkModules(arena_state.allocator(), threaded.io());
+            const report = self.check(arena_state.allocator(), threaded.io());
             var buf: [4096]u8 = undefined;
             var out = std.Io.File.stdout().writer(threaded.io(), &buf);
             try report.write(&out.interface);
@@ -1810,15 +1853,15 @@ pub fn Server(comptime T: type) type {
             if (!report.ok()) return error.ModulesNotReady;
         }
 
-        fn printModuleMigrate(self: *Self) !void {
+        fn printMigrate(self: *Self) !void {
             var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
             defer arena_state.deinit();
             var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{});
             defer threaded.deinit();
-            const applied = try self.migrateModules(arena_state.allocator());
+            const applied = try self.migrate(arena_state.allocator());
             var buf: [256]u8 = undefined;
             var out = std.Io.File.stdout().writer(threaded.io(), &buf);
-            try out.interface.print("spider: {d} module migration(s) applied\n", .{applied});
+            try out.interface.print("spider: {d} migration(s) applied\n", .{applied});
             try out.interface.flush();
         }
 

@@ -99,7 +99,7 @@ Before calling a change done: `zig build test`, and for anything under
 src/spider.zig        public API (everything apps import) + test discovery block
 src/core/
   app.zig             Server(T): routes, middleware, mountFeatures, mountModules
-                      (+ checkModules, migrateModules), listen(),
+                      (+ check, migrate), listen(),
                       accept loop, handleConnection (request lifecycle),
                       writeRoutes (SPIDER_ROUTES / `spider routes`)
   handler.zig         handler wrapping shared by Server and Group (extractors)
@@ -112,7 +112,7 @@ src/core/
                       compile-time rules (manifest, signatures, requires,
                       start order), spider.Check and the checks run before
                       listen(); modules_test.zig drives them on a Server
-  migration.zig       spider.Migration, keys (`module/name`), checksums; std only
+  migration.zig       spider.Migration, keys, the up part of a file, checksums; std only
                       (the pg tests build it alone)
 src/version.zig       spider.version (= build.zig.zon, checked by version_check_tool.zig)
 src/routing/          router (trie + static map; RouteMeta), Group (defaults, use),
@@ -175,10 +175,12 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   `declProblem` in core/module.zig): test them there, at comptime, since a
   compile error cannot be tested. `listen()` runs the checks before binding
   (`error.ModulesNotReady`); `SPIDER_CHECK` / `SPIDER_MIGRATE` make it print
-  the report / apply module migrations and return (CLI: `spider check
-  --modules`, `spider migrate`). Module migrations live in
-  `modules/pg/src/migrations.zig` (rows `module/name` + `checksum` in
-  `schema_migrations`). The official modules are in the `spider-modules`
+  the report / apply the migrations and return (CLI: `spider check
+  --modules`, `spider migrate`). The migration engine lives in
+  `modules/pg/src/migrations.zig` (rows `module/name`, or the bare name for
+  the app's own, + `checksum` in `schema_migrations`); an app embeds its
+  own files with `spider.addMigrations` (build.zig) and
+  `server.migrations(...)`. The official modules are in the `spider-modules`
   repository; `scripts/ecosystem.sh` there is the release gate.
 - App conventions: `src/conventions.zig` (rules) behind
   `spider.testing.expectConventions()` (generated apps run it in `zig build

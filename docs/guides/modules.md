@@ -48,10 +48,10 @@ spider: 1 module(s) not ready, refusing to start
   notify: migration notify/0001_init is not applied (run `spider migrate`)
 ```
 
-In tests, `server.checkModules(arena, io)` returns the same report:
+In tests, `server.check(arena, io)` returns the same report:
 
 ```zig
-const report = server.checkModules(arena, io);
+const report = server.check(arena, io);
 try std.testing.expect(report.ok());
 ```
 
@@ -151,9 +151,9 @@ deinit()  jobs stop → shutdown(module N) → … → shutdown(module 1)
   var server = spider.app(.{});
   defer server.deinit();
   _ = server.mountModules(.{my_module});
-  try std.testing.expect(!server.checkModules(arena, io).ok()); // migrations pending
-  _ = try server.migrateModules(arena);
-  try std.testing.expect(server.checkModules(arena, io).ok());
+  try std.testing.expect(!server.check(arena, io).ok()); // migrations pending
+  _ = try server.migrate(arena);
+  try std.testing.expect(server.check(arena, io).ok());
   ```
 
 ### Packaging
@@ -164,13 +164,67 @@ deinit()  jobs stop → shutdown(module N) → … → shutdown(module 1)
   `scripts/ecosystem.sh` builds and tests them against a Spider checkout:
   it is Spider's release gate, and a module's `.spider` range says which
   versions it passed on.
+- A repository of modules whose root `build.zig` depends on Spider for its
+  own tests returns early when it is not the root build
+  (`if (!b.isRoot()) return;`): an app that depends on it only takes the
+  modules' files, and a second Spider in the app's build would share its
+  `spider_pg` with the app's ("file exists in modules 'spider' and
+  'spider0'").
+
+## The app's own migrations
+
+The app's migrations can go through the same engine as the modules', in
+the binary:
+
+```zig
+// build.zig: every *.sql file of the folder, by name
+exe.root_module.addImport("migrations", @import("spider").addMigrations(b, spider_dep, "src/core/db/migrations"));
+
+// main.zig
+const modules = .{notify};
+const migrations = @import("migrations").all;
+
+try spider.pg.init(allocator, io, .{});
+defer spider.pg.deinit();
+// `spider migrate`: migrate and return, before anything serving needs
+// (an identity provider, a cache).
+if (spider.migrating()) {
+    var migrator = spider.app(.{});
+    defer migrator.deinit();
+    return migrator.mountModules(modules).migrations(migrations).listen(.{});
+}
+var server = spider.app(.{});
+defer server.deinit();
+try server.mountModules(modules).migrations(migrations).mountFeatures(features).listen(.{});
+```
+
+- **Same rules, same table.** The modules' migrations run first, then the
+  app's, each in its own transaction with its `schema_migrations` row,
+  under the lock, with a checksum. An app's migration is recorded under
+  its bare file name, as `spider migrate` always did, so the rows already
+  there count as applied; the first run records their checksums, and an
+  edit is caught from then on.
+- **Old files keep working.** A file runs from its `-- migrate:up` line
+  (or its start) up to `-- migrate:down` (or its end). A `BEGIN; ...
+  COMMIT;` around all of it is left out (the transaction is Spider's); any
+  other transaction control is refused. A statement that PostgreSQL
+  refuses in a transaction (`CREATE INDEX CONCURRENTLY`, `VACUUM`, ...)
+  must be alone in its migration, and then runs outside one.
+- **`listen()` refuses to start** while one of them is pending or changed
+  (the report's owner is `app`).
+- **Migrating a server needs only the binary**: `SPIDER_MIGRATE=1 ./app`
+  with the same environment as the app. `spider migrate` sees
+  `addMigrations(` in build.zig and runs `zig build run` with
+  `SPIDER_MIGRATE` set.
+- Applying stays a step of its own: nothing migrates when the app starts.
 
 ## Errors
 
 | Error | From | Meaning |
 |---|---|---|
 | `error.ModulesNotReady` | `listen()`, `SPIDER_CHECK` | a module's checks failed; the report is in the log |
-| `error.NoDatabase` | `migrateModules` | the app is built without `-Dpg=true` |
-| `error.DatabaseNotInitialized` | `migrateModules`, checks | `spider.pg.init` was not called before |
-| `error.MigrationChanged` | `migrateModules` | an applied migration was edited |
-| `error.MigrationHasTransactionControl` | `migrateModules` | BEGIN/COMMIT/ROLLBACK inside a migration |
+| `error.NoDatabase` | `migrate` | the app is built without `-Dpg=true` |
+| `error.DatabaseNotInitialized` | `migrate`, checks | `spider.pg.init` was not called before |
+| `error.MigrationChanged` | `migrate` | an applied migration was edited |
+| `error.MigrationHasTransactionControl` | `migrate` | BEGIN/COMMIT/ROLLBACK inside a migration |
+| `error.MigrationNotAlone` | `migrate` | a statement that cannot run in a transaction shares its migration with others |

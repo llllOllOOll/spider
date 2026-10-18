@@ -170,14 +170,30 @@ pub const module = @import("core/module.zig").module;
 pub const Manifest = @import("core/module.zig").Manifest;
 /// The environment variables a module declares in its manifest (`.env`).
 pub const ModuleEnv = @import("core/module.zig").Env;
-/// One database migration a module ships: `.{ .name = "0001_init", .sql = @embedFile(...) }`.
+/// One database migration, a module's or the app's own: `.{ .name = "0001_init", .sql = @embedFile(...) }`.
 pub const Migration = @import("core/migration.zig").Migration;
 /// Given to a module's `check(c)` before the server starts: `c.fail(...)`, `c.env(...)`.
 pub const Check = @import("core/module.zig").Check;
-/// The modules' checks (`server.checkModules`): `report.ok()`, `report.write(w)`.
+/// The modules' checks (`server.check`): `report.ok()`, `report.write(w)`.
 pub const ModuleReport = @import("core/module.zig").Report;
 /// One problem in a `ModuleReport`: the module and the message.
 pub const ModuleProblem = @import("core/module.zig").Problem;
+/// Whether this run is `spider migrate` (`SPIDER_MIGRATE` set): listen()
+/// then applies the migrations and returns without serving. An app whose
+/// main() does work before listen() that migrating does not need (an
+/// identity provider, a cache) migrates first and returns:
+///
+/// ```zig
+/// try spider.pg.init(allocator, io, .{});
+/// if (spider.migrating()) {
+///     var server = spider.app(.{});
+///     defer server.deinit();
+///     return server.mountModules(.{notify}).migrations(app_migrations.all).listen(.{});
+/// }
+/// ```
+pub fn migrating() bool {
+    return env.get("SPIDER_MIGRATE") != null;
+}
 // internal: migration steps, keys and checksums, for spider.pg.migrations.
 pub const migration = @import("core/migration.zig");
 // internal: the template engine's file; apps use `spider.Template` and `c.view`.

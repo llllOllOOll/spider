@@ -1,16 +1,19 @@
-//! Internal: the migrations of modules, on PostgreSQL. Apps call them
-//! through `server.migrateModules` (what `spider migrate` runs) and
-//! `server.checkModules` (what listen() runs before it starts); this file
-//! only knows steps (`module/name` + SQL) and `schema_migrations`.
+//! Internal: database migrations on PostgreSQL, a module's and the app's
+//! own alike. Apps call them through `server.migrate` (what `spider
+//! migrate` runs) and `server.check` (what listen() runs before it starts);
+//! this file only knows steps (module, name, SQL) and `schema_migrations`.
 //!
-//! `schema_migrations` is the table `spider migrate` already keeps for the
-//! app's own files (`version` primary key, `ran_at`). Modules add a
-//! `checksum` column (added here when missing, NULL for the app's rows) and
-//! record their migrations as `module/name`, which no file name can be.
+//! `schema_migrations` is the table `spider migrate` has always kept for the
+//! app's files (`version` primary key, `ran_at`), plus a `checksum` column
+//! (added here when missing). A module's migration is recorded as
+//! `module/name`, an app's as its bare name, as before, so the rows already
+//! there count as applied; the first `apply` records their checksums.
 //!
 //! Each step runs in its own transaction, together with its row, under an
 //! advisory lock: two processes migrating at the same time (a deploy) never
-//! run the same step twice, and a step that fails leaves nothing behind.
+//! run the same step twice, and a step that fails leaves nothing behind. A
+//! step that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`) is
+//! alone in its migration and runs outside one, under the same lock.
 
 const std = @import("std");
 const pg = @import("pg.zig");
@@ -26,6 +29,11 @@ const table_ddl =
 const checksum_ddl = "ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT";
 // One lock for every migrating process: hashtext('spider_migrations').
 const lock_sql = "SELECT pg_advisory_xact_lock(hashtext('spider_migrations'))";
+const session_lock_sql = "SELECT pg_advisory_lock(hashtext('spider_migrations'))";
+const session_unlock_sql = "SELECT pg_advisory_unlock(hashtext('spider_migrations'))";
+const recorded_sql = "SELECT checksum FROM schema_migrations WHERE version = $1";
+const insert_sql = "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)";
+const baseline_sql = "UPDATE schema_migrations SET checksum = $2 WHERE version = $1 AND checksum IS NULL";
 
 const Recorded = struct { version: []const u8, checksum: ?[]const u8 };
 
@@ -55,75 +63,206 @@ pub fn status(arena: std.mem.Allocator, steps: []const Step) anyerror![]const St
         "SELECT version, NULL::text AS checksum FROM schema_migrations WHERE version = ANY($1)";
     const rows = try pg.query(Recorded, arena, sql, .{keys});
 
+    var recorded: std.StringHashMapUnmanaged(?[]const u8) = .empty;
+    try recorded.ensureTotalCapacity(arena, @intCast(rows.len));
+    for (rows) |r| recorded.putAssumeCapacity(r.version, r.checksum);
     for (steps, keys, out) |s, k, *st| {
-        for (rows) |r| {
-            if (!std.mem.eql(u8, r.version, k)) continue;
-            const recorded = r.checksum orelse {
-                st.* = .applied;
-                break;
-            };
-            const now = spider.migration.checksum(s.sql);
-            st.* = if (std.mem.eql(u8, recorded, &now)) .applied else .changed;
-            break;
-        }
+        const entry = recorded.get(k) orelse continue;
+        const sum = entry orelse {
+            st.* = .applied;
+            continue;
+        };
+        const now = spider.migration.checksum(s.sql);
+        st.* = if (std.mem.eql(u8, sum, &now)) .applied else .changed;
     }
     return out;
 }
 
+// internal: what runs of a step: its statements, and whether they run in a
+// transaction (Spider's) or alone outside one.
+const Plan = struct {
+    statements: []const []const u8,
+    transaction: bool,
+};
+
+// internal: the plan of a step, or why it is refused (logged).
+// error.MigrationHasTransactionControl for BEGIN, COMMIT, ROLLBACK or a
+// savepoint (the transaction is Spider's): an app's migration may still
+// wrap all of its SQL in `BEGIN; ... COMMIT;`, as files written for
+// `spider migrate` before Spider ran them in a transaction did, and the
+// wrapper is left out. error.MigrationNotAlone when a statement that cannot
+// run in a transaction shares its migration with others.
+fn planOf(arena: std.mem.Allocator, s: Step) !Plan {
+    var list: std.ArrayList([]const u8) = .empty;
+    var it: pg.Statements = .{ .sql = s.sql };
+    while (it.next()) |stmt| {
+        // A statement of comments only (a migration whose up part is a
+        // note) is nothing to run: PostgreSQL answers it with an empty
+        // response.
+        if (pg.skipSqlNoise(stmt).len == 0) continue;
+        try list.append(arena, stmt);
+    }
+    var stmts = list.items;
+    if (s.ofApp() and stmts.len >= 2 and pg.txControl(stmts[0]) == .open and
+        pg.txControl(stmts[stmts.len - 1]) == .close and isCommit(stmts[stmts.len - 1]))
+    {
+        stmts = stmts[1 .. stmts.len - 1];
+    }
+    const k = try spider.migration.key(arena, s.module, s.name);
+    var alone = false;
+    for (stmts) |stmt| {
+        if (pg.txControl(stmt) != .none) {
+            std.log.err("migration {s}: remove `{s}`: Spider runs each migration in a transaction of its own", .{ k, firstLine(stmt) });
+            return error.MigrationHasTransactionControl;
+        }
+        if (cannotRunInTransaction(stmt)) alone = true;
+    }
+    if (alone and stmts.len != 1) {
+        std.log.err("migration {s}: `{s}` cannot run in a transaction: put it alone in a migration of its own", .{ k, firstLine(firstNonTransactional(stmts)) });
+        return error.MigrationNotAlone;
+    }
+    return .{ .statements = stmts, .transaction = !alone };
+}
+
+fn isCommit(stmt: []const u8) bool {
+    const w = pg.nextWord(stmt).word;
+    return std.ascii.eqlIgnoreCase(w, "COMMIT") or std.ascii.eqlIgnoreCase(w, "END");
+}
+
+fn firstNonTransactional(stmts: []const []const u8) []const u8 {
+    for (stmts) |stmt| if (cannotRunInTransaction(stmt)) return stmt;
+    return stmts[0];
+}
+
+// internal: whether PostgreSQL refuses `stmt` inside a transaction block:
+// an index built or dropped CONCURRENTLY, VACUUM, a database, a tablespace
+// or ALTER SYSTEM.
+fn cannotRunInTransaction(stmt: []const u8) bool {
+    var words: [4][]const u8 = undefined;
+    var rest = stmt;
+    for (&words) |*w| {
+        const next = pg.nextWord(rest);
+        w.* = next.word;
+        rest = next.rest;
+    }
+    const eq = std.ascii.eqlIgnoreCase;
+    if (eq(words[0], "VACUUM")) return true;
+    if (eq(words[0], "ALTER") and eq(words[1], "SYSTEM")) return true;
+    if (eq(words[0], "CREATE") or eq(words[0], "DROP")) {
+        if (eq(words[1], "DATABASE") or eq(words[1], "TABLESPACE")) return true;
+        const index_at: usize = if (eq(words[1], "UNIQUE")) 2 else 1;
+        if (eq(words[index_at], "INDEX") and eq(words[index_at + 1], "CONCURRENTLY")) return true;
+    }
+    if (eq(words[0], "REINDEX")) return containsWord(stmt, "CONCURRENTLY");
+    return false;
+}
+
+fn containsWord(stmt: []const u8, word: []const u8) bool {
+    var rest = stmt;
+    while (true) {
+        const next = pg.nextWord(rest);
+        if (next.word.len == 0) {
+            if (next.rest.len == 0) return false;
+            rest = next.rest[1..];
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(next.word, word)) return true;
+        rest = next.rest;
+    }
+}
+
 // internal: runs every pending step, in order, each in its own transaction
-// with its row. Returns how many ran. error.DatabaseNotInitialized before
-// spider.pg.init. error.MigrationChanged (nothing more
-// runs) when an applied step's SQL differs from what ran;
-// error.MigrationHasTransactionControl when a step's SQL holds BEGIN,
-// COMMIT or ROLLBACK (the transaction is Spider's); or the database's
-// error for a failed step, which is rolled back.
+// with its row; records the checksum of applied steps whose row has none.
+// Returns how many ran. error.DatabaseNotInitialized before spider.pg.init.
+// Refused before anything runs: error.MigrationHasTransactionControl,
+// error.MigrationNotAlone (see planOf). error.MigrationChanged (nothing
+// more runs) when an applied step's SQL differs from what ran; or the
+// database's error for a failed step, which is rolled back (a step outside
+// a transaction is a single statement: it ran or it did not).
 pub fn apply(arena: std.mem.Allocator, steps: []const Step) anyerror!usize {
     if (!pg.isInitialized()) return error.DatabaseNotInitialized;
+
+    // Refuse before running anything.
+    const plans = try arena.alloc(Plan, steps.len);
+    for (steps, plans) |s, *p| p.* = try planOf(arena, s);
+
     try pg.query(void, arena, table_ddl, .{});
     try pg.query(void, arena, checksum_ddl, .{});
 
-    // Refuse before running anything: a step with transaction control would
-    // commit Spider's transaction halfway.
-    for (steps) |s| {
-        var it: pg.Statements = .{ .sql = s.sql };
-        while (it.next()) |stmt| {
-            if (pg.txControl(stmt) != .none) {
-                std.log.err("migration {s}/{s}: remove `{s}`: Spider runs each migration in a transaction of its own", .{ s.module, s.name, firstLine(stmt) });
-                return error.MigrationHasTransactionControl;
-            }
-        }
-    }
-
     var applied: usize = 0;
-    for (steps) |s| {
+    var baselined: usize = 0;
+    for (steps, plans) |s, p| {
         const k = try spider.migration.key(arena, s.module, s.name);
         const sum = spider.migration.checksum(s.sql);
-
-        var tx = try pg.begin();
-        defer tx.rollback();
-        try tx.query(void, arena, lock_sql, .{});
-        if (try tx.queryOne(struct { checksum: ?[]const u8 }, arena, "SELECT checksum FROM schema_migrations WHERE version = $1", .{k})) |row| {
-            if (row.checksum) |recorded| if (!std.mem.eql(u8, recorded, &sum)) {
-                std.log.err("migration {s} changed after it was applied (checksum {s}, now {s}): add a new migration instead of editing an applied one", .{ k, recorded, &sum });
-                return error.MigrationChanged;
-            };
-            continue;
+        const outcome = if (p.transaction)
+            try applyInTransaction(arena, k, &sum, p.statements)
+        else
+            try applyAlone(arena, k, &sum, p.statements[0]);
+        switch (outcome) {
+            .ran => {
+                applied += 1;
+                std.log.info("migration {s} applied", .{k});
+            },
+            .baselined => baselined += 1,
+            .already => {},
         }
-
-        var it: pg.Statements = .{ .sql = s.sql };
-        while (it.next()) |stmt| {
-            _ = tx.conn.exec(stmt, .{}) catch |err| {
-                const typed = pg.fail(tx.conn, err);
-                std.log.err("migration {s} failed: {s}", .{ k, @errorName(typed) });
-                return typed;
-            };
-        }
-        try tx.query(void, arena, "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)", .{ k, @as([]const u8, &sum) });
-        try tx.commit();
-        applied += 1;
-        std.log.info("migration {s} applied", .{k});
     }
+    if (baselined > 0) std.log.info("recorded the checksums of {d} migration(s) applied before Spider kept them", .{baselined});
     return applied;
+}
+
+const Outcome = enum { ran, baselined, already };
+
+fn applyInTransaction(arena: std.mem.Allocator, k: []const u8, sum: *const [spider.migration.checksum_len]u8, statements: []const []const u8) !Outcome {
+    var tx = try pg.begin();
+    defer tx.rollback();
+    try tx.query(void, arena, lock_sql, .{});
+    if (try tx.queryOne(struct { checksum: ?[]const u8 }, arena, recorded_sql, .{k})) |row| {
+        const outcome = try alreadyRecorded(k, row.checksum, sum);
+        if (outcome == .baselined) {
+            try tx.query(void, arena, baseline_sql, .{ k, @as([]const u8, sum) });
+            try tx.commit();
+        }
+        return outcome;
+    }
+    for (statements) |stmt| {
+        _ = tx.conn.exec(stmt, .{}) catch |err| {
+            const typed = pg.fail(tx.conn, err);
+            std.log.err("migration {s} failed: {s}", .{ k, @errorName(typed) });
+            return typed;
+        };
+    }
+    try tx.query(void, arena, insert_sql, .{ k, @as([]const u8, sum) });
+    try tx.commit();
+    return .ran;
+}
+
+fn applyAlone(arena: std.mem.Allocator, k: []const u8, sum: *const [spider.migration.checksum_len]u8, statement: []const u8) !Outcome {
+    const conn = try pg.acquireConn();
+    defer pg.releaseConn(conn);
+    try pg.queryOn(conn, void, arena, session_lock_sql, .{});
+    defer pg.queryOn(conn, void, arena, session_unlock_sql, .{}) catch {};
+    if (try pg.queryOneOn(conn, struct { checksum: ?[]const u8 }, arena, recorded_sql, .{k})) |row| {
+        const outcome = try alreadyRecorded(k, row.checksum, sum);
+        if (outcome == .baselined) try pg.queryOn(conn, void, arena, baseline_sql, .{ k, @as([]const u8, sum) });
+        return outcome;
+    }
+    _ = conn.exec(statement, .{}) catch |err| {
+        const typed = pg.fail(conn, err);
+        std.log.err("migration {s} failed: {s}", .{ k, @errorName(typed) });
+        return typed;
+    };
+    try pg.queryOn(conn, void, arena, insert_sql, .{ k, @as([]const u8, sum) });
+    return .ran;
+}
+
+/// A step whose row exists: unchanged, to be baselined (no checksum yet),
+/// or error.MigrationChanged.
+fn alreadyRecorded(k: []const u8, recorded: ?[]const u8, sum: *const [spider.migration.checksum_len]u8) !Outcome {
+    const was = recorded orelse return .baselined;
+    if (std.mem.eql(u8, was, sum)) return .already;
+    std.log.err("migration {s} changed after it was applied (checksum {s}, now {s}): add a new migration instead of editing an applied one", .{ k, was, sum });
+    return error.MigrationChanged;
 }
 
 fn firstLine(stmt: []const u8) []const u8 {
@@ -244,4 +383,102 @@ test "migrations: rows written before checksums count as applied" {
     const steps = [_]Step{.{ .module = "spidertest_e", .name = "0001_x", .sql = "SELECT 1" }};
     try std.testing.expectEqualSlices(State, &.{.applied}, try status(a, &steps));
     try std.testing.expectEqual(@as(usize, 0), try apply(a, &steps));
+}
+
+test "migrations: the app's own, by bare name; a BEGIN ... COMMIT wrapper is left out" {
+    try initTestDb(std.testing.allocator);
+    defer pg.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const clean = struct {
+        fn run(ar: std.mem.Allocator) void {
+            pg.query(void, ar, "DROP TABLE IF EXISTS spidertest_f_t", .{}) catch {};
+            pg.query(void, ar, "DELETE FROM schema_migrations WHERE version LIKE '999000000%_spidertest_f_%'", .{}) catch {};
+        }
+    }.run;
+    defer clean(a);
+    clean(a);
+
+    const steps = [_]Step{
+        .{ .module = "", .name = "9990000001_spidertest_f_create", .sql = "BEGIN;\nCREATE TABLE spidertest_f_t (id int);\nCOMMIT;\n" },
+        .{ .module = "", .name = "9990000002_spidertest_f_fill", .sql = "INSERT INTO spidertest_f_t VALUES (1); INSERT INTO spidertest_f_t VALUES (2)" },
+        .{ .module = "", .name = "9990000003_spidertest_f_note", .sql = "-- nothing to change: the table is reused\n" },
+    };
+    try std.testing.expectEqual(@as(usize, 3), try apply(a, &steps));
+    try std.testing.expectEqualSlices(State, &.{ .applied, .applied, .applied }, try status(a, &steps));
+    try std.testing.expectEqual(@as(i64, 2), try pg.query(i64, a, "SELECT count(*) FROM spidertest_f_t", .{}));
+    try std.testing.expect((try pg.queryOne(struct { n: i64 }, a, "SELECT count(*) AS n FROM schema_migrations WHERE version = '9990000001_spidertest_f_create' AND checksum IS NOT NULL", .{})).?.n == 1);
+}
+
+test "migrations: transaction control inside an app's migration, not as its wrapper, is refused" {
+    try initTestDb(std.testing.allocator);
+    defer pg.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const steps = [_]Step{.{ .module = "", .name = "9990000005_spidertest_g", .sql = "CREATE TABLE spidertest_g_t (id int); COMMIT; CREATE TABLE spidertest_g_u (id int)" }};
+    try std.testing.expectError(error.MigrationHasTransactionControl, apply(a, &steps));
+    try std.testing.expect((try pg.queryOne(struct { t: bool }, a, "SELECT to_regclass('spidertest_g_t') IS NULL AS t", .{})).?.t);
+}
+
+test "migrations: CREATE INDEX CONCURRENTLY runs alone, outside a transaction; not alone it is refused" {
+    try initTestDb(std.testing.allocator);
+    defer pg.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    defer cleanUp(a, "spidertest_h", &.{"spidertest_h_t"});
+    cleanUp(a, "spidertest_h", &.{"spidertest_h_t"});
+
+    const together = [_]Step{.{ .module = "spidertest_h", .name = "0001_both", .sql = "CREATE TABLE spidertest_h_t (id int); CREATE INDEX CONCURRENTLY spidertest_h_i ON spidertest_h_t (id)" }};
+    try std.testing.expectError(error.MigrationNotAlone, apply(a, &together));
+
+    const steps = [_]Step{
+        .{ .module = "spidertest_h", .name = "0001_table", .sql = "CREATE TABLE spidertest_h_t (id int)" },
+        .{ .module = "spidertest_h", .name = "0002_index", .sql = "-- migrate:up\nCREATE INDEX CONCURRENTLY IF NOT EXISTS spidertest_h_i ON spidertest_h_t (id);\n" },
+    };
+    try std.testing.expectEqual(@as(usize, 2), try apply(a, &steps));
+    try std.testing.expectEqual(@as(usize, 0), try apply(a, &steps));
+    try std.testing.expectEqualSlices(State, &.{ .applied, .applied }, try status(a, &steps));
+    try std.testing.expect((try pg.queryOne(struct { t: bool }, a, "SELECT to_regclass('spidertest_h_i') IS NOT NULL AS t", .{})).?.t);
+}
+
+test "migrations: rows from before checksums get theirs, and an edit is caught from then on" {
+    try initTestDb(std.testing.allocator);
+    defer pg.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const clean = struct {
+        fn run(ar: std.mem.Allocator) void {
+            pg.query(void, ar, "DELETE FROM schema_migrations WHERE version = '9990000004_spidertest_i'", .{}) catch {};
+        }
+    }.run;
+    defer clean(a);
+    clean(a);
+    try pg.query(void, a, table_ddl, .{});
+    try pg.query(void, a, checksum_ddl, .{});
+    try pg.query(void, a, "INSERT INTO schema_migrations (version) VALUES ('9990000004_spidertest_i')", .{});
+
+    const v1 = [_]Step{.{ .module = "", .name = "9990000004_spidertest_i", .sql = "SELECT 1" }};
+    try std.testing.expectEqual(@as(usize, 0), try apply(a, &v1)); // nothing runs again
+    const sum = spider.migration.checksum("SELECT 1");
+    try std.testing.expectEqualStrings(&sum, (try pg.queryOne(struct { checksum: []const u8 }, a, "SELECT checksum FROM schema_migrations WHERE version = '9990000004_spidertest_i'", .{})).?.checksum);
+    const v2 = [_]Step{.{ .module = "", .name = "9990000004_spidertest_i", .sql = "SELECT 2" }};
+    try std.testing.expectEqualSlices(State, &.{.changed}, try status(a, &v2));
+    try std.testing.expectError(error.MigrationChanged, apply(a, &v2));
+}
+
+test "cannotRunInTransaction: the statements PostgreSQL refuses in a transaction block" {
+    try std.testing.expect(cannotRunInTransaction("CREATE INDEX CONCURRENTLY i ON t (a)"));
+    try std.testing.expect(cannotRunInTransaction("-- note\ncreate unique index concurrently i on t (a)"));
+    try std.testing.expect(cannotRunInTransaction("DROP INDEX CONCURRENTLY IF EXISTS i"));
+    try std.testing.expect(cannotRunInTransaction("REINDEX (VERBOSE) INDEX CONCURRENTLY i"));
+    try std.testing.expect(cannotRunInTransaction("VACUUM ANALYZE t"));
+    try std.testing.expect(cannotRunInTransaction("CREATE DATABASE d"));
+    try std.testing.expect(cannotRunInTransaction("ALTER SYSTEM SET work_mem = '8MB'"));
+    try std.testing.expect(!cannotRunInTransaction("CREATE INDEX i ON t (a)"));
+    try std.testing.expect(!cannotRunInTransaction("REINDEX INDEX i"));
+    try std.testing.expect(!cannotRunInTransaction("CREATE TABLE concurrently (id int)"));
 }

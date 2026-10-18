@@ -216,16 +216,21 @@ pub fn commandHelp(cmd: Command) []const u8 {
         .migrate =>
         \\Usage: spider migrate [--no-modules | --modules-only]
         \\
-        \\Apply pending migrations from src/core/db/migrations/*.sql (the
-        \\"-- migrate:up" part), in order. Reads the database from .env:
-        \\SQLITE_PATH for SQLite, PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/PG_DB for
-        \\PostgreSQL. Run it from the project root.
+        \\Apply pending migrations, in order, from the project root.
         \\
-        \\When the app mounts modules (mountModules under src/), their migrations
-        \\run first: `zig build run` with SPIDER_MIGRATE set, each migration in
-        \\its own transaction, recorded as module/name with a checksum. A
-        \\migration edited after it ran stops everything. --no-modules runs only
-        \\the app's files; --modules-only only the modules'.
+        \\An app whose build.zig calls spider.addMigrations has its migrations
+        \\in the binary: `spider migrate` runs `zig build run` with
+        \\SPIDER_MIGRATE set, which applies the modules' migrations and then the
+        \\app's, each in its own transaction with its schema_migrations row and
+        \\a checksum (a migration edited after it ran stops everything). The
+        \\same binary migrates a production server: SPIDER_MIGRATE=1 ./app.
+        \\
+        \\Otherwise it reads src/core/db/migrations/*.sql (the "-- migrate:up"
+        \\part) itself, with the database from .env: SQLITE_PATH for SQLite,
+        \\PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/PG_DB for PostgreSQL; when the app
+        \\mounts modules (mountModules under src/), their migrations run first.
+        \\--no-modules runs only the app's files; --modules-only only the
+        \\modules' (neither applies to an app that embeds its migrations).
         \\
         ,
         .routes =>

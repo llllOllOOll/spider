@@ -27,9 +27,9 @@ and starts as before.
   migrations applied, with the checksum they ran with) and the module's
   `check(c: *spider.Check)`, and refuses to start with
   `error.ModulesNotReady` and a report listing every problem.
-  `server.checkModules(arena, io)` gives the same report to an app's tests;
+  `server.check(arena, io)` gives the same report to an app's tests;
   `spider check --modules` (`SPIDER_CHECK=1`) prints it.
-- **Modules ship their migrations.** `server.migrateModules(arena)`
+- **Modules ship their migrations.** `server.migrate(arena)`
   (`spider migrate`, `SPIDER_MIGRATE=1`) applies them in start order, each
   in its own transaction with its `schema_migrations` row, under an
   advisory lock. They are recorded as `module/name` with a SHA-256
@@ -39,6 +39,22 @@ and starts as before.
   refused before anything runs. `spider migrate` runs the modules' first
   when the app mounts any, then the app's files; `--no-modules` and
   `--modules-only` pick one side.
+- **The app's migrations can live in the binary too.**
+  `spider.addMigrations(b, spider_dep, "src/core/db/migrations")` in
+  build.zig embeds every `*.sql` file of the folder, and
+  `server.migrations(list)` hands them to the server: the same engine as
+  the modules' (a transaction per migration with its row, the lock, the
+  checksum), after the modules' ones, and `listen()` refuses to start
+  while one is pending. Keys are the bare file names `spider migrate` has
+  always written, so the rows already there count as applied; the first
+  run records their checksums. Files written for the old runner keep
+  working: a `BEGIN; ... COMMIT;` around the whole file is left out, and a
+  migration that cannot run in a transaction (`CREATE INDEX
+  CONCURRENTLY`, alone in its file) runs outside one. With it, a
+  production server migrates with its own binary (`SPIDER_MIGRATE=1
+  ./app`) and needs neither the CLI nor the files. `spider migrate`
+  detects it and just runs the binary. `spider.migrating()` tells main()
+  it is a migrate run, to skip what migrating does not need.
 - **Lifecycle.** Modules boot in dependency order before the features;
   `shutdown(b: spider.Boot)` runs from `server.deinit()` in reverse order,
   after the jobs stopped.
@@ -56,6 +72,12 @@ and starts as before.
 - `mountFeatures` skips a namespace that declares `spider_module`: it is a
   module, mounted once by `mountModules`.
 - `spider migrate` refuses unknown options instead of ignoring them.
+
+### Fixed
+
+- `spider migrate` ran the `-- migrate:down` part of a file that has no
+  `-- migrate:up` line, right after the rest of it (a table created and
+  dropped in the same run). The down part never runs now.
 - The library version is `0.11.0-dev.1` until the release (the CLI keeps
   its own version).
 

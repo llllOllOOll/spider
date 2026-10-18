@@ -14,13 +14,21 @@ fn getEnvValue(content: []const u8, key: []const u8, default: []const u8) []cons
     return default;
 }
 
+/// What follows `-- migrate:up` (or the start, when the file has none) up
+/// to `-- migrate:down`: the down part never runs, also in a file without
+/// the up line.
 fn extractUpSection(sql: []const u8) []const u8 {
     const up_marker = "-- migrate:up\n";
     const down_marker = "-- migrate:down";
-    const start = std.mem.indexOf(u8, sql, up_marker) orelse return sql;
-    const content_start = start + up_marker.len;
+    const content_start = if (std.mem.indexOf(u8, sql, up_marker)) |start| start + up_marker.len else 0;
     const end = std.mem.indexOf(u8, sql[content_start..], down_marker) orelse return sql[content_start..];
     return sql[content_start .. content_start + end];
+}
+
+test "extractUpSection: never the down part, with or without the up line" {
+    try std.testing.expectEqualStrings("CREATE TABLE t (id int);\n", extractUpSection("-- migrate:up\nCREATE TABLE t (id int);\n-- migrate:down\nDROP TABLE t;\n"));
+    try std.testing.expectEqualStrings("CREATE TABLE t (id int);\n", extractUpSection("CREATE TABLE t (id int);\n-- migrate:down\nDROP TABLE t;\n"));
+    try std.testing.expectEqualStrings("SELECT 1;", extractUpSection("SELECT 1;"));
 }
 
 fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {

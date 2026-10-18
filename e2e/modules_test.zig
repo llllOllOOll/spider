@@ -90,3 +90,23 @@ test "modules: started in dependency order before the features, routes served" {
 test "modules: a module that is not ready keeps the server from listening" {
     try std.testing.expectError(error.ModulesNotReady, spider.testing.start(runBroken));
 }
+
+// e2e/fixtures/app_migrations, embedded by spider.addMigrations (build.zig).
+const fixture_migrations = @import("test_app_migrations");
+
+test "addMigrations: every .sql file of the folder, named after it, in order; the server takes them" {
+    try std.testing.expectEqual(@as(usize, 2), fixture_migrations.all.len);
+    try std.testing.expectEqualStrings("1700000000_create_items", fixture_migrations.all[0].name);
+    try std.testing.expect(std.mem.indexOf(u8, fixture_migrations.all[0].sql, "CREATE TABLE fixture_items") != null);
+    try std.testing.expectEqualStrings("1700000100_add_name", fixture_migrations.all[1].name);
+
+    try std.testing.expectError(error.ModulesNotReady, spider.testing.start(runWithMigrations));
+}
+
+// Built without PostgreSQL: the app's migrations cannot be applied, so the
+// server does not start.
+fn runWithMigrations() !void {
+    var server = spider.app(.{});
+    defer server.deinit();
+    try server.migrations(fixture_migrations.all).listen(.{});
+}

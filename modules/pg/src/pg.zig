@@ -7,7 +7,7 @@ const pg_lib = @import("pg");
 const env = @import("spider").env;
 
 // internal: the migrations of modules, called by the server's
-// migrateModules/checkModules (see migrations.zig).
+// migrate/check (see migrations.zig).
 pub const migrations = @import("migrations.zig");
 
 /// What `array` returns: a list of values to pass as one query parameter.
@@ -174,6 +174,18 @@ pub fn deinit() void {
         db_pool = null;
     }
     db_allocator = null;
+}
+
+// internal: query() on a connection taken with acquireConn() (migrations.zig
+// runs a migration that cannot be in a transaction on one connection, under
+// a session lock).
+pub fn queryOn(conn: *pg_lib.Conn, comptime T: type, arena: std.mem.Allocator, sql: []const u8, params: anytype) !QueryResult(T) {
+    return execTyped(conn, T, arena, sql, params);
+}
+
+// internal: queryOne() on a connection taken with acquireConn().
+pub fn queryOneOn(conn: *pg_lib.Conn, comptime T: type, arena: std.mem.Allocator, sql: []const u8, params: anytype) !?T {
+    return execTypedOne(conn, T, arena, sql, params);
 }
 
 // internal: a raw driver connection from the pool; apps use query() or begin().
@@ -900,7 +912,9 @@ pub const TxControl = enum {
     inside,
 };
 
-fn skipSqlNoise(sql: []const u8) []const u8 {
+// internal: `sql` past leading spaces and comments ("" when it holds
+// nothing else: migrations.zig skips such a statement).
+pub fn skipSqlNoise(sql: []const u8) []const u8 {
     var rest = sql;
     while (true) {
         rest = std.mem.trimStart(u8, rest, " \t\r\n");
@@ -914,7 +928,9 @@ fn skipSqlNoise(sql: []const u8) []const u8 {
     }
 }
 
-fn nextWord(sql: []const u8) struct { word: []const u8, rest: []const u8 } {
+// internal: the first word of `sql` after spaces and comments, and what
+// follows it (migrations.zig reads the leading keywords of a statement).
+pub fn nextWord(sql: []const u8) struct { word: []const u8, rest: []const u8 } {
     const s = skipSqlNoise(sql);
     var i: usize = 0;
     while (i < s.len and std.ascii.isAlphabetic(s[i])) i += 1;

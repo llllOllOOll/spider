@@ -1,4 +1,4 @@
-// Server.mountModules, checkModules, migrateModules and listen()'s gate,
+// Server.mountModules, check, migrate and listen()'s gate,
 // on a real Server without a network (see module.zig for the rules
 // themselves, tested there).
 
@@ -7,6 +7,7 @@ const app_mod = @import("app.zig");
 const Server = app_mod.Server;
 const module = @import("module.zig").module;
 const Check = @import("module.zig").Check;
+const Migration = @import("migration.zig").Migration;
 const Ctx = @import("context.zig").Ctx;
 const Response = @import("context.zig").Response;
 const Group = @import("../routing/group.zig").Group;
@@ -120,7 +121,7 @@ test "mountModules: dependency order, routes, jobs, modules before features, shu
     }), recorded());
 }
 
-test "checkModules: a ready set runs every module's check, in start order" {
+test "check: a ready set runs every module's check, in start order" {
     event_count = 0;
     var s = Server(NoDeco).init();
     defer s.deinit();
@@ -129,7 +130,7 @@ test "checkModules: a ready set runs every module's check, in start order" {
     defer arena.deinit();
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
-    const report = s.checkModules(arena.allocator(), threaded.io());
+    const report = s.check(arena.allocator(), threaded.io());
     try std.testing.expect(report.ok());
     try std.testing.expectEqual(@as(usize, 2), report.checked);
     try std.testing.expectEqualDeep(@as([]const []const u8, &.{"check notify"}), recorded());
@@ -164,7 +165,7 @@ const with_migrations = struct {
     });
 };
 
-test "checkModules: every problem of every module, then listen() refuses before binding" {
+test "check: every problem of every module, then listen() refuses before binding" {
     event_count = 0;
     var s = Server(NoDeco).init();
     defer s.deinit();
@@ -173,7 +174,7 @@ test "checkModules: every problem of every module, then listen() refuses before 
     defer arena.deinit();
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
-    const report = s.checkModules(arena.allocator(), threaded.io());
+    const report = s.check(arena.allocator(), threaded.io());
     try std.testing.expect(!report.ok());
 
     var buf: [2048]u8 = undefined;
@@ -200,7 +201,7 @@ test "mountModules: a second call is refused by listen()" {
     defer arena.deinit();
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
-    const report = s.checkModules(arena.allocator(), threaded.io());
+    const report = s.check(arena.allocator(), threaded.io());
     try std.testing.expect(!report.ok());
     try std.testing.expectEqualStrings("spider", report.problems.items[0].module);
     try std.testing.expectError(error.ModulesNotReady, s.listen(.{ .port = 1, .host = "127.0.0.1" }));
@@ -210,22 +211,48 @@ const app_notices_alone = struct {
     pub const spider_module = module(.{ .name = "app_notices_alone", .version = "1.0.0", .spider = ">=0.10.0 <1.0.0" });
 };
 
-test "migrateModules: without PostgreSQL error.NoDatabase; before spider.pg.init error.DatabaseNotInitialized" {
+test "migrate: without PostgreSQL error.NoDatabase; before spider.pg.init error.DatabaseNotInitialized" {
     var s = Server(NoDeco).init();
     defer s.deinit();
     _ = s.mountModules(.{with_migrations});
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectError(if (with_pg) error.DatabaseNotInitialized else error.NoDatabase, s.migrateModules(arena.allocator()));
+    try std.testing.expectError(if (with_pg) error.DatabaseNotInitialized else error.NoDatabase, s.migrate(arena.allocator()));
 }
 
-test "migrateModules: modules without migrations need no database" {
+test "migrate: modules without migrations need no database" {
     var s = Server(NoDeco).init();
     defer s.deinit();
     _ = s.mountModules(.{ notify, app_notices });
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectEqual(@as(usize, 0), try s.migrateModules(arena.allocator()));
+    try std.testing.expectEqual(@as(usize, 0), try s.migrate(arena.allocator()));
+}
+
+const app_migrations = [_]Migration{
+    .{ .name = "1700000000_create_items", .sql = "-- migrate:up\nCREATE TABLE items (id int);\n-- migrate:down\nDROP TABLE items;\n" },
+    .{ .name = "1700000100_add_name", .sql = "ALTER TABLE items ADD name text;" },
+};
+
+test "migrations: the app's own are checked like a module's, and listen() refuses while they are not applied" {
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.mountModules(.{notify}).migrations(&app_migrations);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const report = s.check(arena.allocator(), threaded.io());
+    try std.testing.expect(!report.ok());
+    try std.testing.expectEqual(@as(usize, 2), report.checked); // notify and the app
+    try std.testing.expectEqual(@as(usize, 1), report.problems.items.len);
+    try std.testing.expectEqualStrings("app", report.problems.items[0].module);
+    try std.testing.expectEqualStrings(if (with_pg)
+        "ships database migrations, but the database is not open: call spider.pg.init(...) before listen()"
+    else
+        "ships database migrations, but the app is built without PostgreSQL (build Spider with -Dpg=true)", report.problems.items[0].message);
+    try std.testing.expectError(if (with_pg) error.DatabaseNotInitialized else error.NoDatabase, s.migrate(arena.allocator()));
+    try std.testing.expectError(error.ModulesNotReady, s.listen(.{ .port = 1, .host = "127.0.0.1" }));
 }
 
 test "no modules: nothing checked, listen() goes on as before" {
@@ -235,7 +262,7 @@ test "no modules: nothing checked, listen() goes on as before" {
     defer arena.deinit();
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
-    const report = s.checkModules(arena.allocator(), threaded.io());
+    const report = s.check(arena.allocator(), threaded.io());
     try std.testing.expect(report.ok());
     try std.testing.expectEqual(@as(usize, 0), report.checked);
 }

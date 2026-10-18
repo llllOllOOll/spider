@@ -88,10 +88,18 @@ pub fn main(init: std.process.Init) !void {
             var bad: []const u8 = "";
             const scope = modules_cmd.parseMigrateArgs(rest, &bad) catch
                 usageError("unknown option '{s}' for `spider migrate` (see `spider migrate --help`)", .{bad});
+            const root = try fs_utils.findProjectRoot(io);
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            if (modules_cmd.appEmbedsMigrations(io, arena.allocator(), root)) {
+                // The binary holds every migration, the modules' and the app's.
+                if (scope != .all) usageError("this app embeds its migrations (spider.addMigrations): `spider migrate` applies them all, modules first; --no-modules and --modules-only are for apps that keep them as files", .{});
+                std.debug.print("Running migrations (zig build run with SPIDER_MIGRATE)...\n", .{});
+                const code = try modules_cmd.runApp(io, init.environ_map, "SPIDER_MIGRATE");
+                if (code != 0) std.process.exit(code);
+                return;
+            }
             if (scope != .app_only) {
-                const root = try fs_utils.findProjectRoot(io);
-                var arena = std.heap.ArenaAllocator.init(allocator);
-                defer arena.deinit();
                 if (modules_cmd.appUsesModules(io, arena.allocator(), root)) {
                     // Modules first: the app's migrations may use their tables.
                     std.debug.print("Running module migrations (zig build run with SPIDER_MIGRATE)...\n", .{});
@@ -167,6 +175,7 @@ test {
     _ = pwa_mod;
     _ = check_mod;
     _ = modules_cmd;
+    _ = migrate;
 }
 
 test "every file with tests is part of the CLI test binary" {
