@@ -54,5 +54,7 @@
         "AGENTS.md",
         "llms.txt",
         "modules",
+        // Apps' and modules' database tests use it (spider_dep.path("test_runner.zig")).
+        "test_runner.zig",
     },
 }

@@ -465,24 +465,29 @@ pub fn build(b: *std.Build) void {
         test_zio_backend_step.dependOn(&run_zio_backend_test.step);
     }
 
-    // test-e2e — real-socket tests against Server.listen() (threaded
-    // backend). Has side effects (binds TCP listeners), so it's a separate
-    // step from `test`.
-    const e2e_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("e2e_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "spider", .module = mod },
-                .{ .name = "test_app_migrations", .module = migrationsModule(b, mod, "e2e/fixtures/app_migrations") },
-            },
-        }),
-    });
-    const run_e2e_test = b.addRunArtifact(e2e_test);
-    run_e2e_test.has_side_effects = true;
-    const test_e2e_step = b.step("test-e2e", "Run end-to-end tests against a real listening Server");
-    test_e2e_step.dependOn(&run_e2e_test.step);
+    // Only in Spider's own build: e2e/ is not part of the package
+    // (build.zig.zon .paths), and its fixture folder is listed while this
+    // file is configured (addMigrations), which an app's build must not do.
+    if (b.isRoot()) {
+        // test-e2e — real-socket tests against Server.listen() (threaded
+        // backend). Has side effects (binds TCP listeners), so it's a separate
+        // step from `test`.
+        const e2e_test = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("e2e_test.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "spider", .module = mod },
+                    .{ .name = "test_app_migrations", .module = migrationsModule(b, mod, "e2e/fixtures/app_migrations") },
+                },
+            }),
+        });
+        const run_e2e_test = b.addRunArtifact(e2e_test);
+        run_e2e_test.has_side_effects = true;
+        const test_e2e_step = b.step("test-e2e", "Run end-to-end tests against a real listening Server");
+        test_e2e_step.dependOn(&run_e2e_test.step);
+    }
 
     // test-pacman — the HTTP client's own tests (modules/pacman). Most of
     // them call httpbingo.org, so they need network access.
