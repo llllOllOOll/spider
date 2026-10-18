@@ -35,6 +35,7 @@ const default_config = @import("../internal/config.zig").default;
 const views_mod = @import("../render/views.zig");
 const dev_reload = @import("../modules/dev_reload.zig");
 const listen_port = @import("listen_port.zig");
+const module_mod = @import("module.zig");
 const health_mod = @import("../modules/health.zig");
 const Hub = @import("../ws/hub.zig").Hub;
 const Ws = @import("../ws/ws.zig").Ws;
@@ -790,7 +791,8 @@ fn buildWsWrapper(comptime handler: fn (*Ws) anyerror!void) Handler {
     return W.call;
 }
 
-/// Passed to a feature's `boot()` (see Server.mountFeatures).
+/// Passed to a feature's or a module's `boot()` and to a module's
+/// `shutdown()` (see Server.mountFeatures and Server.mountModules).
 pub const Boot = struct {
     /// Thread-safe, lives for the whole process.
     allocator: std.mem.Allocator,
@@ -799,6 +801,8 @@ pub const Boot = struct {
 };
 // internal: the type of a feature's boot().
 pub const BootFn = *const fn (Boot) anyerror!void;
+// internal: the type of a module's shutdown().
+pub const ShutdownFn = *const fn (Boot) void;
 
 /// A periodic task a feature declares: `pub const jobs = .{spider.every(60_000, retryLoop)};`
 /// Runs on its own thread every `every_ms` with the SSE hub (like sseInterval).
@@ -886,6 +890,14 @@ pub fn Server(comptime T: type) type {
         interval_threads: std.ArrayListUnmanaged(IntervalEntry) = .empty,
         /// Features' boot() hooks, run by listen() before the first accept.
         boot_hooks: std.ArrayListUnmanaged(BootFn) = .empty,
+        /// Mounted modules, in the order they start (see mountModules).
+        module_entries: std.ArrayListUnmanaged(module_mod.Entry) = .empty,
+        /// Modules' boot() hooks, run before the features'.
+        module_boot_hooks: std.ArrayListUnmanaged(BootFn) = .empty,
+        /// Modules' shutdown() hooks, run by deinit() in reverse order.
+        module_shutdown_hooks: std.ArrayListUnmanaged(ShutdownFn) = .empty,
+        /// How many times mountModules ran: more than once is refused by listen().
+        module_mounts: u8 = 0,
 
         // internal: `spider.app` and `spider.appWithConfig` call it.
         pub fn init() Self {
@@ -917,6 +929,10 @@ pub fn Server(comptime T: type) type {
             for (self.interval_threads.items) |*e| {
                 if (e.thread) |t| t.join();
             }
+            self.runShutdownHooks();
+            self.module_entries.deinit(std.heap.smp_allocator);
+            self.module_boot_hooks.deinit(std.heap.smp_allocator);
+            self.module_shutdown_hooks.deinit(std.heap.smp_allocator);
             if (self.views_index) |*idx| idx.deinit();
             self.router.deinit();
             for (self.ws_route_hubs.items) |*rh| {
@@ -1342,13 +1358,167 @@ pub fn Server(comptime T: type) type {
         /// Registers every feature of an app's `features` module: for each
         /// `pub const <name>` that is a namespace, see mountFeature().
         /// Features are visited in declaration order; route matching doesn't
-        /// depend on registration order.
+        /// depend on registration order. A namespace that declares
+        /// `spider_module` is a module: it is skipped here and mounted with
+        /// mountModules().
         pub fn mountFeatures(self: *Self, comptime features: type) *Self {
             inline for (@typeInfo(features).@"struct".decl_names) |name| {
                 const F = @field(features, name);
-                if (@TypeOf(F) == type and @typeInfo(F) == .@"struct") _ = self.mountFeature(F);
+                if (@TypeOf(F) == type and @typeInfo(F) == .@"struct" and !@hasDecl(F, "spider_module")) _ = self.mountFeature(F);
             }
             return self;
+        }
+
+        /// Mounts modules: namespaces that declare
+        /// `pub const spider_module = spider.module(.{ ... })` (see
+        /// `spider.module`). At compile time it checks every manifest, the
+        /// exact signatures of `check`, `boot`, `shutdown`, `routes` and
+        /// `jobs` (a route builder with parameters is an error, not skipped),
+        /// that each name is mounted once and that every module a module
+        /// `requires` is in the same call, without cycles. It fails the build
+        /// with a message naming the module otherwise.
+        ///
+        /// Modules start in dependency order (ties keep the order given),
+        /// before the features: listen() runs every module's checks, then
+        /// the modules' `boot()`, then the features'. deinit() runs the
+        /// modules' `shutdown()` in reverse order. Mount every module in one
+        /// call: listen() refuses a second one.
+        ///
+        /// ```zig
+        /// _ = server.mountModules(.{ notify, @import("spider_audit") })
+        ///     .mountFeatures(features);
+        /// ```
+        pub fn mountModules(self: *Self, comptime modules: anytype) *Self {
+            const list = comptime moduleTypes(modules);
+            const manifests = comptime blk: {
+                var ms: [list.len]module_mod.Manifest = undefined;
+                for (list, 0..) |M, i| ms[i] = module_mod.manifestOf(M);
+                break :blk ms;
+            };
+            comptime {
+                if (module_mod.planProblem(&manifests)) |p| @compileError("mountModules: " ++ p);
+                for (list, manifests) |M, m| {
+                    if (module_mod.declProblem(M, Boot, Group, Job)) |p|
+                        @compileError(std.fmt.comptimePrint("mountModules: module \"{s}\": {s}", .{ m.name, p }));
+                }
+            }
+            const start_order = comptime module_mod.order(&manifests) catch unreachable;
+            self.module_mounts +|= 1;
+            const smp = std.heap.smp_allocator;
+            inline for (start_order) |i| {
+                const M = list[i];
+                self.module_entries.append(smp, .{
+                    .manifest = manifests[i],
+                    .check = if (@hasDecl(M, "check")) M.check else null,
+                }) catch |err| std.log.err("module {s} not registered: {s}", .{ manifests[i].name, @errorName(err) });
+                if (@hasDecl(M, "routes")) {
+                    inline for (@typeInfo(M.routes).@"struct".decl_names) |fname| {
+                        const f = @field(M.routes, fname);
+                        const FT = @TypeOf(f);
+                        if (comptime @typeInfo(FT) == .@"fn" and @typeInfo(FT).@"fn".return_type == Group) _ = self.mount(f());
+                    }
+                }
+                if (@hasDecl(M, "jobs")) inline for (M.jobs) |job| self.addJob(job);
+                if (@hasDecl(M, "boot")) self.module_boot_hooks.append(smp, M.boot) catch |err|
+                    std.log.err("module {s}: boot hook not registered: {s}", .{ manifests[i].name, @errorName(err) });
+                if (@hasDecl(M, "shutdown")) self.module_shutdown_hooks.append(smp, M.shutdown) catch |err|
+                    std.log.err("module {s}: shutdown hook not registered: {s}", .{ manifests[i].name, @errorName(err) });
+            }
+            return self;
+        }
+
+        fn moduleTypes(comptime modules: anytype) [modules.len]type {
+            const List = @TypeOf(modules);
+            if (@typeInfo(List) != .@"struct" or !@typeInfo(List).@"struct".is_tuple)
+                @compileError("mountModules takes a tuple of modules: .{ notify, audit }");
+            var out: [modules.len]type = undefined;
+            for (&out, 0..) |*o, i| {
+                if (@TypeOf(modules[i]) != type) @compileError("mountModules: every item must be a module namespace (a type)");
+                o.* = modules[i];
+            }
+            return out;
+        }
+
+        fn addJob(self: *Self, j: Job) void {
+            self.ensureSseHub();
+            self.interval_threads.append(std.heap.smp_allocator, .{
+                .hub = if (self.sse_hub) |*h| h else unreachable,
+                .ms = j.every_ms,
+                .callback = j.run,
+                .io = undefined,
+            }) catch |err| std.log.err("job not scheduled: {s}", .{@errorName(err)});
+        }
+
+        /// Runs the checks of every mounted module, as listen() does before
+        /// it starts: Spider's own (required environment variables set;
+        /// migrations applied, with the checksum they were applied with)
+        /// and each module's `check()`. Returns the report, allocated in
+        /// `arena`; `report.ok()` is true when nothing failed. Useful in an
+        /// app's tests:
+        ///
+        /// ```zig
+        /// const report = server.checkModules(arena, io);
+        /// try std.testing.expect(report.ok());
+        /// ```
+        pub fn checkModules(self: *Self, arena: std.mem.Allocator, io: Io) module_mod.Report {
+            var report: module_mod.Report = .{ .arena = arena };
+            if (self.module_mounts > 1) report.add("spider", "mountModules ran {d} times: mount every module in one call, so their order and dependencies are checked together", .{self.module_mounts});
+            module_mod.runChecks(&report, io, self.module_entries.items, migrationStatus());
+            return report;
+        }
+
+        /// Applies the pending migrations of every mounted module, in the
+        /// order the modules start, each in its own transaction with its
+        /// `schema_migrations` row (key `module/name`, with the checksum of
+        /// its SQL). Returns how many ran (0 when no mounted module ships
+        /// migrations, with or without a database). Fails with
+        /// error.NoDatabase when the app is built without PostgreSQL,
+        /// error.DatabaseNotInitialized before `spider.pg.init`,
+        /// error.MigrationChanged when an applied migration's SQL differs
+        /// from what ran, or the database's error (the failed migration is
+        /// rolled back; the ones before it stay applied). What `spider
+        /// migrate` runs (`SPIDER_MIGRATE=1`).
+        pub fn migrateModules(self: *Self, arena: std.mem.Allocator) !usize {
+            const steps = try module_mod.stepsOf(arena, self.module_entries.items);
+            // Modules without migrations need no database.
+            if (steps.len == 0) return 0;
+            if (comptime !build_options.pg) return error.NoDatabase;
+            return @import("spider_pg").migrations.apply(arena, steps);
+        }
+
+        fn migrationStatus() ?module_mod.StatusFn {
+            if (comptime build_options.pg) return @import("spider_pg").migrations.status;
+            return null;
+        }
+
+        /// listen()'s gate: every module ready, or error.ModulesNotReady
+        /// with the report in the log.
+        fn requireModulesReady(self: *Self) !void {
+            if (self.module_entries.items.len == 0 and self.module_mounts <= 1) return;
+            var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+            defer arena_state.deinit();
+            var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{});
+            defer threaded.deinit();
+            const report = self.checkModules(arena_state.allocator(), threaded.io());
+            if (report.ok()) return;
+            var out: Io.Writer.Allocating = .init(arena_state.allocator());
+            report.write(&out.writer) catch {};
+            var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out.written(), "\n"), '\n');
+            while (lines.next()) |line| {
+                if (builtin.is_test) std.log.warn("{s}", .{line}) else std.log.err("{s}", .{line});
+            }
+            return error.ModulesNotReady;
+        }
+
+        fn runShutdownHooks(self: *Self) void {
+            if (self.module_shutdown_hooks.items.len == 0) return;
+            var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{});
+            defer threaded.deinit();
+            var i = self.module_shutdown_hooks.items.len;
+            while (i > 0) {
+                i -= 1;
+                self.module_shutdown_hooks.items[i](.{ .allocator = std.heap.smp_allocator, .io = threaded.io() });
+            }
         }
 
         /// Registers one feature namespace (usually its mod.zig):
@@ -1374,13 +1544,7 @@ pub fn Server(comptime T: type) type {
             if (@hasDecl(F, "jobs")) {
                 inline for (F.jobs) |job| {
                     const j: Job = job;
-                    self.ensureSseHub();
-                    self.interval_threads.append(std.heap.smp_allocator, .{
-                        .hub = if (self.sse_hub) |*h| h else unreachable,
-                        .ms = j.every_ms,
-                        .callback = j.run,
-                        .io = undefined,
-                    }) catch |err| std.log.err("job not scheduled: {s}", .{@errorName(err)});
+                    self.addJob(j);
                 }
             }
             if (@hasDecl(F, "boot")) {
@@ -1391,6 +1555,12 @@ pub fn Server(comptime T: type) type {
         }
 
         fn runBootHooks(self: *Self, io: Io) !void {
+            for (self.module_boot_hooks.items) |hook| {
+                hook(.{ .allocator = std.heap.smp_allocator, .io = io }) catch |err| {
+                    std.log.err("module boot() failed: {s}", .{@errorName(err)});
+                    return err;
+                };
+            }
             for (self.boot_hooks.items) |hook| {
                 hook(.{ .allocator = std.heap.smp_allocator, .io = io }) catch |err| {
                     std.log.err("feature boot() failed: {s}", .{@errorName(err)});
@@ -1595,12 +1765,18 @@ pub fn Server(comptime T: type) type {
         /// ```
         ///
         /// With `SPIDER_ROUTES` set it prints the route table and returns instead
-        /// (what `spider routes` runs).
+        /// (what `spider routes` runs). With `SPIDER_CHECK` set it prints the
+        /// modules' report (see checkModules) and returns, with
+        /// `error.ModulesNotReady` when a module failed (`spider check
+        /// --modules`). With `SPIDER_MIGRATE` set it applies the modules'
+        /// migrations (see migrateModules) and returns (`spider migrate`).
         ///
-        /// It fails with `error.RouteAccessUndeclared` under
-        /// `require_route_access`, with the error of a feature's `boot()`, or
-        /// with the system's error when the address cannot be bound (a port in
-        /// use, a host that is not an IP address).
+        /// Before it binds the address it runs every module's checks and
+        /// fails with `error.ModulesNotReady`, the report in the log, when
+        /// one is not ready. It also fails with `error.RouteAccessUndeclared`
+        /// under `require_route_access`, with the error of a module's or a
+        /// feature's `boot()`, or with the system's error when the address
+        /// cannot be bound (a port in use, a host that is not an IP address).
         pub fn listen(self: *Self, options: ListenOptions) !void {
             if (env.get("SPIDER_ROUTES")) |mode| {
                 var threaded = std.Io.Threaded.init_single_threaded;
@@ -1610,12 +1786,40 @@ pub fn Server(comptime T: type) type {
                 try out.interface.flush();
                 return;
             }
+            if (env.get("SPIDER_CHECK") != null) return self.printModuleCheck();
+            if (env.get("SPIDER_MIGRATE") != null) return self.printModuleMigrate();
             try self.checkRouteAccess();
+            try self.requireModulesReady();
             self.config.dev_reload = dev_reload.resolve(self.config.dev_reload);
             if (comptime build_options.io_backend == .zio) {
                 return self.listenZio(options);
             }
             return self.listenThreaded(options);
+        }
+
+        fn printModuleCheck(self: *Self) !void {
+            var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+            defer arena_state.deinit();
+            var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{});
+            defer threaded.deinit();
+            const report = self.checkModules(arena_state.allocator(), threaded.io());
+            var buf: [4096]u8 = undefined;
+            var out = std.Io.File.stdout().writer(threaded.io(), &buf);
+            try report.write(&out.interface);
+            try out.interface.flush();
+            if (!report.ok()) return error.ModulesNotReady;
+        }
+
+        fn printModuleMigrate(self: *Self) !void {
+            var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+            defer arena_state.deinit();
+            var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{});
+            defer threaded.deinit();
+            const applied = try self.migrateModules(arena_state.allocator());
+            var buf: [256]u8 = undefined;
+            var out = std.Io.File.stdout().writer(threaded.io(), &buf);
+            try out.interface.print("spider: {d} module migration(s) applied\n", .{applied});
+            try out.interface.flush();
         }
 
         /// Default backend. One `Io.Threaded` pool shared by every worker

@@ -4,3 +4,5 @@
 //! field the real one doesn't have and broke `zig build test-pg`.
 pub const env = @import("internal/env.zig");
 pub const Database = @import("core/database.zig").Database;
+// internal: migration steps and states, for the pg module's migrations.zig.
+pub const migration = @import("core/migration.zig");

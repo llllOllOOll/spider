@@ -141,6 +141,8 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption(IoBackend, "io_backend", io_backend);
+    // Whether spider.pg is part of this build (module migrations need it).
+    build_options.addOption(bool, "pg", with_pg);
     const templates = b.option(
         Templates,
         "templates",
@@ -343,6 +345,18 @@ pub fn build(b: *std.Build) void {
         "/pg_driver_impl/", "--skip",             "/templates/",
     });
     test_step.dependOn(&run_doc_check.step);
+    // spider.version (src/version.zig) says the version of build.zig.zon.
+    const version_check_tool = b.addExecutable(.{
+        .name = "spider-version-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/version_check_tool.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const run_version_check = b.addRunArtifact(version_check_tool);
+    run_version_check.has_side_effects = true;
+    run_version_check.addDirectoryArg(b.path("."));
+    test_step.dependOn(&run_version_check.step);
     // CLI argument handling (src/cli/args.zig, via src/cli/main.zig's test block).
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cli_exe.root_module })).step);
 

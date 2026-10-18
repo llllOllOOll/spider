@@ -161,6 +161,25 @@ pub const dbgRequest = @import("middlewares/dbg_request.zig").middleware;
 pub const dbgResponse = @import("middlewares/dbg_response.zig").middleware;
 /// Environment variables, with `.env` loaded: `spider.env.getOr("NAME", "default")`.
 pub const env = @import("internal/env.zig");
+/// The version of this Spider (`std.SemanticVersion`): `spider.version.minor`.
+pub const version = @import("version.zig").version;
+/// Declares a module: `pub const spider_module = spider.module(.{ .name, .version, .spider, ... })`,
+/// checked at compile time. Mounted with `server.mountModules(.{ ... })`.
+pub const module = @import("core/module.zig").module;
+/// What a module declares about itself (`M.spider_module.manifest`).
+pub const Manifest = @import("core/module.zig").Manifest;
+/// The environment variables a module declares in its manifest (`.env`).
+pub const ModuleEnv = @import("core/module.zig").Env;
+/// One database migration a module ships: `.{ .name = "0001_init", .sql = @embedFile(...) }`.
+pub const Migration = @import("core/migration.zig").Migration;
+/// Given to a module's `check(c)` before the server starts: `c.fail(...)`, `c.env(...)`.
+pub const Check = @import("core/module.zig").Check;
+/// The modules' checks (`server.checkModules`): `report.ok()`, `report.write(w)`.
+pub const ModuleReport = @import("core/module.zig").Report;
+/// One problem in a `ModuleReport`: the module and the message.
+pub const ModuleProblem = @import("core/module.zig").Problem;
+// internal: migration steps, keys and checksums, for spider.pg.migrations.
+pub const migration = @import("core/migration.zig");
 // internal: the template engine's file; apps use `spider.Template` and `c.view`.
 pub const template = @import("render/template.zig");
 // internal: how deep components may nest before a render fails.
@@ -232,6 +251,11 @@ pub fn deinitWsHub(allocator: std.mem.Allocator) void {
 // explicitly import each file as a whole container, which forces full
 // analysis of it, including its test blocks.
 test {
+    _ = @import("version.zig");
+    _ = @import("internal/semver.zig");
+    _ = @import("core/migration.zig");
+    _ = @import("core/module.zig");
+    _ = @import("core/modules_test.zig");
     _ = @import("ws/hub.zig");
     _ = @import("ws/sse.zig");
     _ = @import("binding/multipart.zig");

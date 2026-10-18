@@ -6,6 +6,10 @@ const std = @import("std");
 const pg_lib = @import("pg");
 const env = @import("spider").env;
 
+// internal: the migrations of modules, called by the server's
+// migrateModules/checkModules (see migrations.zig).
+pub const migrations = @import("migrations.zig");
+
 /// What `array` returns: a list of values to pass as one query parameter.
 pub fn ArrayParameter(comptime T: type) type {
     return struct {
@@ -155,6 +159,12 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, overrides: DbConfig) !void
         std.log.info("pg: connected ({d} connections)", .{pool_size});
         break;
     }
+}
+
+// internal: whether init() opened the pool (the module migrations check it
+// before touching the database).
+pub fn isInitialized() bool {
+    return db_pool != null;
 }
 
 /// Closes the pool. No query may run after it.
@@ -329,7 +339,9 @@ fn recordError(e: anytype) void {
 /// line (warn for data/constraint classes 22/23 — usually bad input — err
 /// otherwise; `detail` only at debug since it can carry personal data) and
 /// returns the typed error. Non-PG errors (connection, OOM...) pass through.
-fn fail(conn: *pg_lib.Conn, err: anyerror) anyerror {
+// internal: turns a driver error into the typed one, logging the server's
+// message; migrations.zig uses it too.
+pub fn fail(conn: *pg_lib.Conn, err: anyerror) anyerror {
     if (err != error.PG) return err;
     const e = conn.err orelse return err;
     recordError(e);
@@ -927,15 +939,17 @@ pub fn txControl(sql: []const u8) TxControl {
     return .none;
 }
 
-/// The statements of a script, one at a time, trimmed, empty ones skipped.
-/// A `;` only ends a statement outside strings ('..'), quoted names (".."),
-/// dollar-quoted bodies ($$..$$, $tag$..$tag$) and comments (-- and /* */):
-/// a function body such as `$$ BEGIN ...; END; $$` stays in one piece.
-const Statements = struct {
+// internal: the statements of a script, one at a time, trimmed, empty ones
+// skipped (execRaw, and migrations.zig for a module's migration). A `;`
+// only ends a statement outside strings ('..'), quoted names (".."),
+// dollar-quoted bodies ($$..$$, $tag$..$tag$) and comments (-- and /* */):
+// a function body such as `$$ BEGIN ...; END; $$` stays in one piece.
+pub const Statements = struct {
     sql: []const u8,
     pos: usize = 0,
 
-    fn next(self: *Statements) ?[]const u8 {
+    // internal: the next statement, trimmed, or null at the end.
+    pub fn next(self: *Statements) ?[]const u8 {
         while (self.pos < self.sql.len) {
             const start = self.pos;
             const end = self.endOfStatement();
@@ -2238,3 +2252,7 @@ test "mapping: an array column becomes a slice field" {
 }
 
 const Room2 = struct { name: []const u8, features: []const []const u8 };
+
+test {
+    _ = migrations;
+}

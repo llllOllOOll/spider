@@ -9,6 +9,8 @@ const self_update = @import("self_update.zig");
 
 const cli_args = @import("args.zig");
 const routes_cmd = @import("routes_cmd.zig");
+const modules_cmd = @import("modules_cmd.zig");
+const fs_utils = @import("fs_utils.zig");
 const ui_mod = @import("ui.zig");
 const icons_mod = @import("icons.zig");
 const pwa_mod = @import("pwa.zig");
@@ -82,7 +84,25 @@ pub fn main(init: std.process.Init) !void {
             _ = it.next(); // subcommand
             try generate.run(io, allocator, rest[0], &it);
         },
-        .migrate => try migrate.run(io, allocator),
+        .migrate => {
+            var bad: []const u8 = "";
+            const scope = modules_cmd.parseMigrateArgs(rest, &bad) catch
+                usageError("unknown option '{s}' for `spider migrate` (see `spider migrate --help`)", .{bad});
+            if (scope != .app_only) {
+                const root = try fs_utils.findProjectRoot(io);
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
+                if (modules_cmd.appUsesModules(io, arena.allocator(), root)) {
+                    // Modules first: the app's migrations may use their tables.
+                    std.debug.print("Running module migrations (zig build run with SPIDER_MIGRATE)...\n", .{});
+                    const code = try modules_cmd.runApp(io, init.environ_map, "SPIDER_MIGRATE");
+                    if (code != 0) std.process.exit(code);
+                } else if (scope == .modules_only) {
+                    std.debug.print("no module mounted (no mountModules( under src/): nothing to do\n", .{});
+                }
+            }
+            if (scope != .modules_only) try migrate.run(io, allocator);
+        },
         .routes => {
             var bad: []const u8 = "";
             const mode = routes_cmd.parseMode(rest, &bad) catch |err| switch (err) {
@@ -101,7 +121,7 @@ pub fn main(init: std.process.Init) !void {
             if (code != 0) std.process.exit(code);
         },
         .check => {
-            const code = try check_mod.run(io, allocator, rest);
+            const code = try check_mod.run(io, allocator, init.environ_map, rest);
             if (code != 0) std.process.exit(code);
         },
         .add, .remove => {
@@ -146,6 +166,7 @@ test {
     _ = icons_mod;
     _ = pwa_mod;
     _ = check_mod;
+    _ = modules_cmd;
 }
 
 test "every file with tests is part of the CLI test binary" {
