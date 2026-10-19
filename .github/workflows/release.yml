@@ -6,8 +6,16 @@ on:
       - 'v*'
 
 jobs:
+  # The release gate: the whole suite and the official modules
+  # (spider-modules) on the tagged commit. Nothing is built or published
+  # while one of them fails.
+  ci:
+    name: Tests and official modules
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build for ${{ matrix.platform }}
+    needs: ci
     runs-on: ubuntu-latest
     strategy:
       matrix:

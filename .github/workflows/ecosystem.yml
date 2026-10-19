@@ -1,11 +1,9 @@
 # Runs the official modules (llllOllOOll/spider-modules) against this
 # commit: the release gate of RFC 0001 (docs/rfcs/0001-modules.md). Called
-# by ci.yml on every push and pull request to develop and main; also by
-# hand. spider-modules runs the same check nightly against Spider main.
-#
-# To make it gate releases too: in release.yml, add an `ecosystem:` job that
-# `uses:` this workflow, and `needs: ecosystem` to the release job, so a
-# release does not ship while an official module fails.
+# by ci.yml on every push and pull request to develop and main, and so by
+# release.yml on every tag (a release does not ship while an official
+# module fails); also by hand. spider-modules runs the same check nightly
+# against Spider main.
 name: Ecosystem
 
 on:

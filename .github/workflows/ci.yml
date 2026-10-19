@@ -14,6 +14,8 @@ on:
   pull_request:
     branches: [develop, main]
   workflow_dispatch:
+  # release.yml runs it on the tag before building anything.
+  workflow_call:
 
 permissions:
   contents: read
