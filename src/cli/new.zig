@@ -42,7 +42,6 @@ const main_zig_api_tmpl = @embedFile("templates/main.zig.api.template");
 const main_zig_api_sqlite_tmpl = @embedFile("templates/main.zig.api.sqlite.template");
 const build_zig_api_tmpl = @embedFile("templates/build.zig.api.template");
 const migrations_zig_sqlite_tmpl = @embedFile("templates/migrations.zig.sqlite.template");
-const migrations_zig_pg_tmpl = @embedFile("templates/migrations.zig.pg.template");
 const agents_md_tmpl = @embedFile("templates/AGENTS.md.template");
 const agents_views_html_tmpl = @embedFile("templates/agents_views_html.md.template");
 const agents_views_api_tmpl = @embedFile("templates/agents_views_api.md.template");
@@ -155,7 +154,7 @@ fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: 
         .{ "{{variant}}", variant },
         .{ "{{feature_api_flag}}", if (api_only) " --api" else "" },
         .{ "{{extra_commands}}", if (!no_db and use_pg) "| First-time setup | `docker compose up -d db` |\n" else "" },
-        .{ "{{core_db_line}}", if (no_db) "" else "\n  db/migrations.zig       migration list (+ SQL files in db/migrations/)" },
+        .{ "{{core_db_line}}", if (no_db) "" else if (use_pg) "\n  db/migrations/          SQL files, built into the binary (build.zig: spider.addMigrations)" else "\n  db/migrations.zig       migration list (+ SQL files in db/migrations/)" },
         .{ "{{views_layout}}", if (api_only) agents_views_api_tmpl else agents_views_html_tmpl },
         .{ "{{views_conventions}}", if (api_only) agents_views_conv_api_tmpl else agents_views_conv_html_tmpl },
         .{ "{{db_section}}", if (no_db) agents_db_none_tmpl else if (use_pg) agents_db_pg_tmpl else agents_db_sqlite_tmpl },
@@ -182,7 +181,7 @@ pub fn renderAppTest(allocator: std.mem.Allocator, app_name: []const u8, api_onl
         \\    // (never the development one: the tests write to it) and migrate:
         \\    //
         \\    //     try spider.pg.init(gpa, io, .{{ .database = "{s}_test" }});
-        \\    //     try @import("core").db.migrations.migrate(gpa);
+        \\    //     _ = try main.migrate(gpa);
         \\
     , .{app_name});
     defer allocator.free(pg_note);
@@ -257,6 +256,8 @@ test "renderAppTest: a scratch database only for SQLite, a first test for every 
     defer a.free(pg);
     try std.testing.expect(has(u8, pg, "//     try spider.pg.init(gpa, io, .{ .database = \"blog_test\" });") != null);
     try std.testing.expect(has(u8, pg, "\n    try spider.pg.init") == null);
+    try std.testing.expect(has(u8, pg, "//     _ = try main.migrate(gpa);") != null);
+    try std.testing.expect(has(u8, pg, "core.db.migrations") == null);
     try std.testing.expect(has(u8, pg, "{{") == null);
 
     const api = try renderAppTest(a, "blog", true, true, false);
@@ -620,9 +621,19 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
         }
     }
 
-    if (!effective_no_db) {
-        const db_module = if (use_pg) "pg" else "sqlite";
-        const selected_migrations_tmpl = if (use_pg) migrations_zig_pg_tmpl else migrations_zig_sqlite_tmpl;
+    if (!effective_no_db and use_pg) {
+        // The migrations are the files of this folder, built into the
+        // binary (build.zig: spider.addMigrations): no list to keep.
+        writeFile(io, project_dir, "src/core/db/migrations/.gitkeep", "") catch |err| {
+            fail_err = err;
+            return err;
+        };
+        std.debug.print("  create  {s}/src/core/db/migrations/\n", .{app_name});
+    }
+
+    if (!effective_no_db and !use_pg) {
+        const db_module = "sqlite";
+        const selected_migrations_tmpl = migrations_zig_sqlite_tmpl;
         const migrations_content = render(allocator, selected_migrations_tmpl, app_name, zon_safe_name, fingerprint, db_module, sqlite_enabled) catch |err| {
             fail_err = err;
             return err;

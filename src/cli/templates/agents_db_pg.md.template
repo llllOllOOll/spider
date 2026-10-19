@@ -13,7 +13,10 @@
   try tx.commit();` — never `query(void, .., "BEGIN")` (refused: each call
   runs on its own pooled connection).
 - Migrations: `src/core/db/migrations/<timestamp>_<name>.sql` with
-  `-- migrate:up` / `-- migrate:down` sections, listed in
-  `src/core/db/migrations.zig`. `spider g feature` creates one; apply it with
-  `spider migrate`, then restart the app. **Until you do, the feature's pages
-  answer 500**; the log shows `relation "<table>" does not exist`.
+  `-- migrate:up` / `-- migrate:down` sections (only the up part runs). Every
+  file of the folder is built into the binary (`spider.addMigrations` in
+  build.zig); `main()` applies the pending ones before serving (`migrate()`
+  in src/main.zig), each in its own transaction with its row in
+  `schema_migrations`, so restarting the app (or `spider migrate`) applies a
+  new one. `spider g feature` creates one. **Never edit a migration that
+  ran**: the app refuses to start (`error.MigrationChanged`); add a new one.

@@ -1,5 +1,6 @@
 const std = @import("std");
 const fs_utils = @import("fs_utils.zig");
+const modules_cmd = @import("modules_cmd.zig");
 
 /// The number a new migration gets: the current second, or one more than
 /// the highest number already in `src/core/db/migrations/` when that is not
@@ -62,6 +63,44 @@ test "a new migration is numbered after every one there is" {
     try std.testing.expect(second > first);
 }
 
+/// Whether the project's build.zig builds its migrations into the binary
+/// (spider.addMigrations): then every file of src/core/db/migrations/ is a
+/// migration, and there is no list to keep.
+pub fn projectEmbedsMigrations(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir) bool {
+    const text = root_dir.readFileAlloc(io, "build.zig", allocator, .limited(8 * 1024 * 1024)) catch return false;
+    defer allocator.free(text);
+    return modules_cmd.mentionsAddMigrations(text);
+}
+
+/// Makes a new migration file (`<timestamp>_create_<plural>.sql`) part of the
+/// app. Nothing to do when build.zig embeds the folder; otherwise its entry
+/// in src/core/db/migrations.zig, exported by src/core/db/mod.zig and
+/// src/core/mod.zig (created when missing).
+pub fn registerMigration(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir, timestamp: u64, plural: []const u8, migrations_zig_tmpl: []const u8) !void {
+    if (projectEmbedsMigrations(io, allocator, root_dir)) {
+        std.debug.print("  (built into the binary by spider.addMigrations: no list to update)\n", .{});
+        return;
+    }
+    try updateMigrationsZig(io, allocator, root_dir, timestamp, plural, migrations_zig_tmpl);
+    std.debug.print("  update  src/core/db/migrations.zig\n", .{});
+
+    const db_mod_content = root_dir.readFileAlloc(io, "src/core/db/mod.zig", allocator, .limited(256)) catch "";
+    defer if (db_mod_content.len > 0) allocator.free(db_mod_content);
+    if (db_mod_content.len == 0 or std.mem.indexOf(u8, db_mod_content, "pub const migrations") == null) {
+        try fs_utils.writeFile(io, root_dir, "src/core/db/mod.zig", "pub const migrations = @import(\"migrations.zig\");\n");
+        std.debug.print("  create  src/core/db/mod.zig\n", .{});
+    }
+
+    const core_mod_content = try root_dir.readFileAlloc(io, "src/core/mod.zig", allocator, .limited(4096));
+    defer allocator.free(core_mod_content);
+    if (std.mem.indexOf(u8, core_mod_content, "pub const db") == null) {
+        const updated = try std.mem.concat(allocator, u8, &.{ core_mod_content, "pub const db = @import(\"db/mod.zig\");\n" });
+        defer allocator.free(updated);
+        try fs_utils.writeFile(io, root_dir, "src/core/mod.zig", updated);
+        std.debug.print("  update  src/core/mod.zig\n", .{});
+    }
+}
+
 pub fn updateMigrationsZig(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir, timestamp: u64, plural: []const u8, migrations_zig_tmpl: []const u8) !void {
     const migrations_zig_path = "src/core/db/migrations.zig";
 
@@ -92,4 +131,30 @@ pub fn updateMigrationsZig(io: std.Io, allocator: std.mem.Allocator, root_dir: s
         defer allocator.free(new_content);
         try fs_utils.writeFile(io, root_dir, migrations_zig_path, new_content);
     }
+}
+
+test "registerMigration: a project that embeds its migrations keeps no list" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "exe.root_module.addImport(\"migrations\", @import(\"spider\").addMigrations(b, spider_dep, \"src/core/db/migrations\"));\n" });
+    try registerMigration(io, std.testing.allocator, tmp.dir, 1791667710, "rooms", "const MIGRATIONS = [_]Migration{\n    // {{entry}}\n};\n\nfn extractUpSection");
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "src/core/db/migrations.zig", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "src/core/db/mod.zig", .{}));
+}
+
+test "registerMigration: a project with a list gets the entry, and db/mod.zig and core's export" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "build.zig", .data = "const std = @import(\"std\");\n" });
+    try tmp.dir.createDirPath(io, "src/core");
+    try tmp.dir.writeFile(io, .{ .sub_path = "src/core/mod.zig", .data = "pub const x = 1;\n" });
+    try registerMigration(io, std.testing.allocator, tmp.dir, 1791667710, "rooms", "const MIGRATIONS = [_]Migration{\n    // {{entry}}\n};\n\nfn extractUpSection");
+    const list = try tmp.dir.readFileAlloc(io, "src/core/db/migrations.zig", std.testing.allocator, .limited(4096));
+    defer std.testing.allocator.free(list);
+    try std.testing.expect(std.mem.indexOf(u8, list, "\"1791667710_create_rooms\"") != null);
+    const core = try tmp.dir.readFileAlloc(io, "src/core/mod.zig", std.testing.allocator, .limited(4096));
+    defer std.testing.allocator.free(core);
+    try std.testing.expect(std.mem.indexOf(u8, core, "pub const db = @import(\"db/mod.zig\");") != null);
 }

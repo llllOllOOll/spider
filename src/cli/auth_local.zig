@@ -101,8 +101,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, api: bool) !void {
     defer allocator.free(migration_path);
     try fs_utils.writeFile(io, root_dir, migration_path, if (db == .pg) migration_pg_tmpl else migration_sqlite_tmpl);
     std.debug.print("  create  {s}\n", .{migration_path});
-    try migration_updater.updateMigrationsZig(io, allocator, root_dir, timestamp, "users", if (db == .pg) migrations_zig_pg_tmpl else migrations_zig_sqlite_tmpl);
-    std.debug.print("  update  src/core/db/migrations.zig\n", .{});
+    try migration_updater.registerMigration(io, allocator, root_dir, timestamp, "users", if (db == .pg) migrations_zig_pg_tmpl else migrations_zig_sqlite_tmpl);
 
     // The middleware, and where a visitor without a session is sent.
     const new_main = try withSession(allocator, main_src, api);

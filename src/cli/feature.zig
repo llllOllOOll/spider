@@ -187,30 +187,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     std.debug.print("  create  {s}\n", .{migration_path});
 
     const migrations_zig_tmpl = if (std.mem.eql(u8, db_module, "pg")) migrations_zig_pg_tmpl else migrations_zig_sqlite_tmpl;
-    try migration_updater.updateMigrationsZig(io, allocator, root_dir, timestamp, plural, migrations_zig_tmpl);
-    std.debug.print("  update  src/core/db/migrations.zig\n", .{});
-
-    // ensure src/core/db/mod.zig exists and exports migrations
-    const db_mod_content = root_dir.readFileAlloc(io, "src/core/db/mod.zig", allocator, .limited(256)) catch "";
-    if (db_mod_content.len == 0 or std.mem.indexOf(u8, db_mod_content, "pub const migrations") == null) {
-        if (db_mod_content.len > 0) allocator.free(db_mod_content);
-        try fs_utils.writeFile(io, root_dir, "src/core/db/mod.zig", "pub const migrations = @import(\"migrations.zig\");\n");
-        std.debug.print("  create  src/core/db/mod.zig\n", .{});
-    } else if (db_mod_content.len > 0) {
-        allocator.free(db_mod_content);
-    }
-
-    // ensure src/core/mod.zig has pub const db = ...
-    {
-        const core_mod_content = try root_dir.readFileAlloc(io, "src/core/mod.zig", allocator, .limited(4096));
-        defer allocator.free(core_mod_content);
-        if (std.mem.indexOf(u8, core_mod_content, "pub const db") == null) {
-            const updated = try std.mem.concat(allocator, u8, &.{ core_mod_content, "pub const db = @import(\"db/mod.zig\");\n" });
-            defer allocator.free(updated);
-            try fs_utils.writeFile(io, root_dir, "src/core/mod.zig", updated);
-            std.debug.print("  update  src/core/mod.zig\n", .{});
-        }
-    }
+    try migration_updater.registerMigration(io, allocator, root_dir, timestamp, plural, migrations_zig_tmpl);
 
     try mod_updater.updateFeaturesMod(io, allocator, features_dir, feature);
     std.debug.print("  update  src/features/mod.zig\n", .{});

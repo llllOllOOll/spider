@@ -4,6 +4,10 @@ const core = @import("core");
 const features = @import("features");
 const db = spider.pg;
 
+/// The migrations: every file of src/core/db/migrations/, built into the
+/// binary (build.zig: spider.addMigrations).
+const migrations = @import("migrations").all;
+
 pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
 
 pub fn main(init: std.process.Init) !void {
@@ -13,12 +17,30 @@ pub fn main(init: std.process.Init) !void {
     try db.init(allocator, io, .{});
     defer db.deinit();
 
-    // Applies the migrations that have not run yet, the ones `spider migrate`
-    // applies: a new database, or a new container, is ready when the server
-    // starts. The list is src/core/db/migrations.zig.
-    try core.db.migrations.migrate(allocator);
+    // Applies the migrations that have not run yet: a new database, or a new
+    // container, is ready when the server starts. `spider migrate`
+    // (SPIDER_MIGRATE=1) only migrates.
+    const applied = try migrate(allocator);
+    if (spider.migrating()) {
+        std.log.info("{d} migration(s) applied", .{applied});
+        return;
+    }
 
     try serve(allocator, io);
+}
+
+/// Applies the migrations that have not run yet, in order, each in its own
+/// transaction with its row in schema_migrations, under a lock: several
+/// copies of the app starting at once apply each one once. Returns how many
+/// ran. A migration edited after it ran stops it (error.MigrationChanged):
+/// add a new one instead. main() calls it, and so can the tests, on a test
+/// database.
+pub fn migrate(allocator: std.mem.Allocator) !usize {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var migrator = spider.app(.{});
+    defer migrator.deinit();
+    return migrator.migrations(migrations).migrate(arena.allocator());
 }
 
 /// Builds the server and listens. main() calls it, and so do the tests in

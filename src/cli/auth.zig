@@ -142,31 +142,9 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
         try fs_utils.writeFile(io, root_dir, migration_path, migration_content);
         std.debug.print("  create  {s}\n", .{migration_path});
 
-        // Update src/core/db/migrations.zig
-        try migration_updater.updateMigrationsZig(io, allocator, root_dir, timestamp, "users", migrations_zig_tmpl);
-        std.debug.print("  update  src/core/db/migrations.zig\n", .{});
-
-        // Ensure src/core/db/mod.zig exists and exports migrations
-        {
-            const db_mod_content = root_dir.readFileAlloc(io, "src/core/db/mod.zig", allocator, .limited(256)) catch "";
-            defer if (db_mod_content.len > 0) allocator.free(db_mod_content);
-            if (db_mod_content.len == 0 or std.mem.indexOf(u8, db_mod_content, "pub const migrations") == null) {
-                try fs_utils.writeFile(io, root_dir, "src/core/db/mod.zig", "pub const migrations = @import(\"migrations.zig\");\n");
-                std.debug.print("  create  src/core/db/mod.zig\n", .{});
-            }
-        }
-
-        // Ensure src/core/mod.zig has pub const db = ...
-        {
-            const core_mod_content = try root_dir.readFileAlloc(io, "src/core/mod.zig", allocator, .limited(4096));
-            defer allocator.free(core_mod_content);
-            if (std.mem.indexOf(u8, core_mod_content, "pub const db") == null) {
-                const updated = try std.mem.concat(allocator, u8, &.{ core_mod_content, "pub const db = @import(\"db/mod.zig\");\n" });
-                defer allocator.free(updated);
-                try fs_utils.writeFile(io, root_dir, "src/core/mod.zig", updated);
-                std.debug.print("  update  src/core/mod.zig\n", .{});
-            }
-        }
+        // The migration in the app: the list (src/core/db/migrations.zig), or
+        // nothing when build.zig embeds the folder.
+        try migration_updater.registerMigration(io, allocator, root_dir, timestamp, "users", migrations_zig_tmpl);
     }
 
     // Select provider config

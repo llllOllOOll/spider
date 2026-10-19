@@ -66,6 +66,10 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("spider", spider_mod);
     exe.root_module.addImport("core", core_mod);
     exe.root_module.addImport("features", features_mod);
+    // The migrations: every *.sql file of src/core/db/migrations/, built into
+    // the binary (a new file is picked up on the next build); main.zig
+    // applies them.
+    exe.root_module.addImport("migrations", @import("spider").addMigrations(b, spider_dep, "src/core/db/migrations"));
 
     b.installArtifact(exe);
 
