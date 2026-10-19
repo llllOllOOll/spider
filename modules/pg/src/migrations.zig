@@ -78,6 +78,33 @@ pub fn status(arena: std.mem.Allocator, steps: []const Step) anyerror![]const St
     return out;
 }
 
+// internal: the keys recorded in schema_migrations for `module` ("" for
+// the app's own: keys without a `/`) that are not among `steps`, sorted:
+// migrations a newer binary applied (this one is a rollback). Read-only;
+// none without the table. error.DatabaseNotInitialized before
+// spider.pg.init.
+pub fn unknownApplied(arena: std.mem.Allocator, module: []const u8, steps: []const Step) anyerror![]const []const u8 {
+    if (!pg.isInitialized()) return error.DatabaseNotInitialized;
+    const exists = (try pg.queryOne(struct { t: bool }, arena, "SELECT to_regclass('schema_migrations') IS NOT NULL AS t", .{})).?.t;
+    if (!exists) return &.{};
+    const keys = try arena.alloc([]const u8, steps.len);
+    for (steps, keys) |s, *k| k.* = try spider.migration.key(arena, s.module, s.name);
+    const Row = struct { version: []const u8 };
+    const rows = if (module.len == 0)
+        try pg.query(Row, arena,
+            \\SELECT version FROM schema_migrations
+            \\WHERE strpos(version, '/') = 0 AND NOT (version = ANY($1)) ORDER BY version
+        , .{keys})
+    else
+        try pg.query(Row, arena,
+            \\SELECT version FROM schema_migrations
+            \\WHERE starts_with(version, $2) AND NOT (version = ANY($1)) ORDER BY version
+        , .{ keys, try std.fmt.allocPrint(arena, "{s}/", .{module}) });
+    const out = try arena.alloc([]const u8, rows.len);
+    for (rows, out) |r, *o| o.* = r.version;
+    return out;
+}
+
 // internal: what runs of a step: its statements, and whether they run in a
 // transaction (Spider's) or alone outside one.
 const Plan = struct {
@@ -481,4 +508,40 @@ test "cannotRunInTransaction: the statements PostgreSQL refuses in a transaction
     try std.testing.expect(!cannotRunInTransaction("CREATE INDEX i ON t (a)"));
     try std.testing.expect(!cannotRunInTransaction("REINDEX INDEX i"));
     try std.testing.expect(!cannotRunInTransaction("CREATE TABLE concurrently (id int)"));
+}
+
+test "unknownApplied: a module's and the app's keys the binary does not know, never another module's" {
+    try initTestDb(std.testing.allocator);
+    defer pg.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const clean = struct {
+        fn run(ar: std.mem.Allocator) void {
+            pg.query(void, ar, "DELETE FROM schema_migrations WHERE version LIKE 'spidertest\\_j%' OR version LIKE '999000001%'", .{}) catch {};
+        }
+    }.run;
+    defer clean(a);
+    clean(a);
+    try pg.query(void, a, table_ddl, .{});
+    try pg.query(void, a, checksum_ddl, .{});
+    try pg.query(void, a,
+        \\INSERT INTO schema_migrations (version) VALUES
+        \\  ('spidertest_j/0001_a'), ('spidertest_j/0002_b'), ('spidertest_jx/0001_a'),
+        \\  ('9990000010_app_known'), ('9990000011_app_newer')
+    , .{});
+
+    const module_steps = [_]Step{.{ .module = "spidertest_j", .name = "0001_a", .sql = "SELECT 1" }};
+    const unknown = try unknownApplied(a, "spidertest_j", &module_steps);
+    try std.testing.expectEqual(@as(usize, 1), unknown.len); // not spidertest_jx's, which only shares the prefix
+    try std.testing.expectEqualStrings("spidertest_j/0002_b", unknown[0]);
+
+    const app_steps = [_]Step{.{ .module = "", .name = "9990000010_app_known", .sql = "SELECT 1" }};
+    var found_newer = false;
+    for (try unknownApplied(a, "", &app_steps)) |v| {
+        try std.testing.expect(std.mem.indexOfScalar(u8, v, '/') == null);
+        try std.testing.expect(!std.mem.eql(u8, v, "9990000010_app_known"));
+        if (std.mem.eql(u8, v, "9990000011_app_newer")) found_newer = true;
+    }
+    try std.testing.expect(found_newer);
 }

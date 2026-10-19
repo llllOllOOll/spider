@@ -300,10 +300,14 @@ pub const Report = struct {
     arena: std.mem.Allocator,
     /// Every problem found, in the order the modules start.
     problems: std.ArrayList(Problem) = .empty,
+    /// What deserves attention without keeping the server from starting:
+    /// the database holds migrations this binary does not know (a newer
+    /// version migrated it; this one is a rollback).
+    warnings: std.ArrayList(Problem) = .empty,
     /// How many modules were checked.
     checked: usize = 0,
 
-    /// True when no module reported a problem.
+    /// True when no module reported a problem (warnings do not count).
     pub fn ok(self: *const Report) bool {
         return self.problems.items.len == 0;
     }
@@ -315,8 +319,20 @@ pub const Report = struct {
         self.problems.append(self.arena, .{ .module = module_name, .message = message }) catch {};
     }
 
-    /// Writes the report: one line per problem, under a summary line.
+    // internal: records a warning, as `add` does a problem.
+    pub fn warn(self: *Report, module_name: []const u8, comptime fmt: []const u8, args: anytype) void {
+        const message = std.fmt.allocPrint(self.arena, fmt, args) catch fmt;
+        self.warnings.append(self.arena, .{ .module = module_name, .message = message }) catch {};
+    }
+
+    /// Writes the report: one line per problem, under a summary line, then
+    /// one line per warning.
     pub fn write(self: *const Report, w: *Io.Writer) Io.Writer.Error!void {
+        try self.writeSummary(w);
+        for (self.warnings.items) |p| try w.print("  {s}: warning: {s}\n", .{ p.module, p.message });
+    }
+
+    fn writeSummary(self: *const Report, w: *Io.Writer) Io.Writer.Error!void {
         if (self.ok()) {
             try w.print("spider: {d} module(s) ready\n", .{self.checked});
             return;
@@ -375,11 +391,22 @@ pub const Entry = struct {
 // when the app is built with PostgreSQL), in the order of `steps`.
 pub const StatusFn = *const fn (arena: std.mem.Allocator, steps: []const migration.Step) anyerror![]const migration.State;
 
+// internal: the keys recorded for `module_name` ("" for the app's own) that
+// are not among `steps` (spider.pg.migrations.unknownApplied).
+pub const UnknownFn = *const fn (arena: std.mem.Allocator, module_name: []const u8, steps: []const migration.Step) anyerror![]const []const u8;
+
+// internal: what the checks read in the database; null when the app is
+// built without PostgreSQL.
+pub const Db = struct {
+    status: StatusFn,
+    unknown: UnknownFn,
+};
+
 // internal: runs the checks of every entry, in order, into `report`.
 // Spider's own checks come first (required environment variables,
 // migrations applied and unchanged); a module whose own checks failed does
 // not run its `check`, which would only repeat the cause.
-pub fn runChecks(report: *Report, io: Io, entries: []const Entry, status: ?StatusFn) void {
+pub fn runChecks(report: *Report, io: Io, entries: []const Entry, db: ?Db) void {
     const arena = report.arena;
     for (entries) |e| {
         report.checked += 1;
@@ -394,7 +421,7 @@ pub fn runChecks(report: *Report, io: Io, entries: []const Entry, status: ?Statu
                 report.add(name, "out of memory while listing its migrations", .{});
                 continue;
             };
-            checkMigrations(report, name, steps, status);
+            checkMigrations(report, name, name, steps, db);
         }
         if (report.problems.items.len != before) continue;
         const f = e.check orelse continue;
@@ -405,15 +432,17 @@ pub fn runChecks(report: *Report, io: Io, entries: []const Entry, status: ?Statu
 
 // internal: records in `report`, under `owner`, every one of `steps` that
 // is not applied or changed after it was applied (the modules' and the
-// app's migrations alike); `status` is null when the app is built without
-// PostgreSQL.
-pub fn checkMigrations(report: *Report, owner: []const u8, steps: []const migration.Step, status: ?StatusFn) void {
+// app's migrations alike; `module_name` is "" for the app's), and warns
+// about the migrations of `module_name` the database holds that `steps` does not: a
+// newer binary applied them, this one is a rollback. `db` is null when the
+// app is built without PostgreSQL.
+pub fn checkMigrations(report: *Report, owner: []const u8, module_name: []const u8, steps: []const migration.Step, db: ?Db) void {
     if (steps.len == 0) return;
-    const read = status orelse {
+    const d = db orelse {
         report.add(owner, "ships database migrations, but the app is built without PostgreSQL (build Spider with -Dpg=true)", .{});
         return;
     };
-    const states = read(report.arena, steps) catch |err| {
+    const states = d.status(report.arena, steps) catch |err| {
         if (err == error.DatabaseNotInitialized)
             report.add(owner, "ships database migrations, but the database is not open: call spider.pg.init(...) before listen()", .{})
         else
@@ -428,6 +457,23 @@ pub fn checkMigrations(report: *Report, owner: []const u8, steps: []const migrat
             .changed => report.add(owner, "migration {s} changed after it was applied (its checksum differs): add a new migration instead of editing an applied one", .{k}),
         }
     }
+    const unknown = d.unknown(report.arena, module_name, steps) catch return;
+    if (unknown.len == 0) return;
+    report.warn(owner, "{s}", .{unknownMessage(report.arena, unknown)});
+}
+
+// internal: the warning about migrations the database holds and this
+// binary does not know (check and migrate say the same).
+pub fn unknownMessage(arena: std.mem.Allocator, unknown: []const []const u8) []const u8 {
+    return std.fmt.allocPrint(arena, "the database holds {d} migration(s) this binary does not know ({s}): a newer version applied them; this one runs on a schema it was not built for", .{ unknown.len, listed(arena, unknown) }) catch "the database holds migrations this binary does not know";
+}
+
+/// Up to three names, then how many more.
+fn listed(arena: std.mem.Allocator, names: []const []const u8) []const u8 {
+    const shown = @min(names.len, 3);
+    const head = std.mem.join(arena, ", ", names[0..shown]) catch return "";
+    if (names.len == shown) return head;
+    return std.fmt.allocPrint(arena, "{s} and {d} more", .{ head, names.len - shown }) catch head;
 }
 
 // internal: the migrations of `entries`, in start order, as steps for
@@ -617,6 +663,18 @@ fn statusAllApplied(arena: std.mem.Allocator, steps: []const migration.Step) any
     return out;
 }
 
+fn noneUnknown(_: std.mem.Allocator, _: []const u8, _: []const migration.Step) anyerror![]const []const u8 {
+    return &.{};
+}
+
+fn fourUnknown(_: std.mem.Allocator, module_name: []const u8, _: []const migration.Step) anyerror![]const []const u8 {
+    if (!std.mem.eql(u8, module_name, "b")) return &.{};
+    return &.{ "b/0003_a", "b/0004_b", "b/0005_c", "b/0006_d" };
+}
+
+const db_pending: Db = .{ .status = statusAllPending, .unknown = noneUnknown };
+const db_applied: Db = .{ .status = statusAllApplied, .unknown = noneUnknown };
+
 var own_check_ran = false;
 
 fn ownCheck(c: *Check) anyerror!void {
@@ -642,7 +700,7 @@ test "runChecks: env, migrations, the module's own check, every problem listed" 
         .{ .manifest = with_env, .check = ownCheck }, // own check skipped: env failed
         .{ .manifest = with_migs },
         .{ .manifest = clean, .check = ownCheck },
-    }, statusAllPending);
+    }, db_pending);
     try testing.expect(!report.ok());
     try testing.expectEqual(@as(usize, 3), report.checked);
 
@@ -672,12 +730,30 @@ test "runChecks: migrations without PostgreSQL, and a ready set" {
     try testing.expect(std.mem.indexOf(u8, no_pg.problems.items[0].message, "without PostgreSQL") != null);
 
     var ready: Report = .{ .arena = arena_state.allocator() };
-    runChecks(&ready, undefined, &.{.{ .manifest = with_migs }}, statusAllApplied);
+    runChecks(&ready, undefined, &.{.{ .manifest = with_migs }}, db_applied);
     try testing.expect(ready.ok());
     var buf: [128]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     try ready.write(&w);
     try testing.expectEqualStrings("spider: 1 module(s) ready\n", w.buffered());
+}
+
+test "runChecks: migrations the binary does not know warn, and the server may still start" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const with_migs: Manifest = .{ .name = "b", .version = "1.0.0", .spider = "1.0.0", .migrations = &.{.{ .name = "0001_x", .sql = "s" }} };
+    var report: Report = .{ .arena = arena_state.allocator() };
+    runChecks(&report, undefined, &.{.{ .manifest = with_migs }}, .{ .status = statusAllApplied, .unknown = fourUnknown });
+    try testing.expect(report.ok());
+    try testing.expectEqual(@as(usize, 1), report.warnings.items.len);
+    var buf: [512]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try report.write(&w);
+    try testing.expectEqualStrings(
+        \\spider: 1 module(s) ready
+        \\  b: warning: the database holds 4 migration(s) this binary does not know (b/0003_a, b/0004_b, b/0005_c and 1 more): a newer version applied them; this one runs on a schema it was not built for
+        \\
+    , w.buffered());
 }
 
 test "stepsOf: every migration, keyed by its module, in start order" {

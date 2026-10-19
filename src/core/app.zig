@@ -1497,7 +1497,7 @@ pub fn Server(comptime T: type) type {
             if (self.app_migrations.len > 0) {
                 report.checked += 1;
                 if (module_mod.appStepsOf(arena, self.app_migrations)) |steps|
-                    module_mod.checkMigrations(&report, "app", steps, migrationStatus())
+                    module_mod.checkMigrations(&report, "app", "", steps, migrationStatus())
                 else |_|
                     report.add("app", "out of memory while listing its migrations", .{});
             }
@@ -1525,11 +1525,29 @@ pub fn Server(comptime T: type) type {
             // No migrations need no database.
             if (steps.len == 0) return 0;
             if (comptime !build_options.pg) return error.NoDatabase;
-            return @import("spider_pg").migrations.apply(arena, steps);
+            const m = @import("spider_pg").migrations;
+            const applied = try m.apply(arena, steps);
+            // A database ahead of this binary (a rollback): said, not refused.
+            for (self.module_entries.items) |e| {
+                if (e.manifest.migrations.len == 0) continue;
+                warnUnknown(arena, e.manifest.name, e.manifest.name, try module_mod.stepsOf(arena, &.{e}));
+            }
+            if (app_steps.len > 0) warnUnknown(arena, "app", "", app_steps);
+            return applied;
         }
 
-        fn migrationStatus() ?module_mod.StatusFn {
-            if (comptime build_options.pg) return @import("spider_pg").migrations.status;
+        fn warnUnknown(arena: std.mem.Allocator, owner: []const u8, module_name: []const u8, steps: []const migration_mod.Step) void {
+            if (comptime !build_options.pg) return;
+            const unknown = @import("spider_pg").migrations.unknownApplied(arena, module_name, steps) catch return;
+            if (unknown.len == 0) return;
+            std.log.warn("{s}: {s}", .{ owner, module_mod.unknownMessage(arena, unknown) });
+        }
+
+        fn migrationStatus() ?module_mod.Db {
+            if (comptime build_options.pg) {
+                const m = @import("spider_pg").migrations;
+                return .{ .status = m.status, .unknown = m.unknownApplied };
+            }
             return null;
         }
 
@@ -1542,7 +1560,11 @@ pub fn Server(comptime T: type) type {
             var threaded: Io.Threaded = .init(std.heap.smp_allocator, .{});
             defer threaded.deinit();
             const report = self.check(arena_state.allocator(), threaded.io());
-            if (report.ok()) return;
+            if (report.ok()) {
+                // Ready, but worth knowing (a rollback onto a newer schema).
+                for (report.warnings.items) |p| std.log.warn("{s}: {s}", .{ p.module, p.message });
+                return;
+            }
             var out: Io.Writer.Allocating = .init(arena_state.allocator());
             report.write(&out.writer) catch {};
             var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out.written(), "\n"), '\n');
