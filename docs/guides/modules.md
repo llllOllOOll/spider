@@ -212,11 +212,18 @@ try server.mountModules(modules).migrations(migrations).mountFeatures(features).
   must be alone in its migration, and then runs outside one.
 - **`listen()` refuses to start** while one of them is pending or changed
   (the report's owner is `app`).
+- **A rollback is noticed, not refused.** When the database holds
+  migrations the binary does not know (a newer version applied them), the
+  report has a warning (`report.warnings`), `listen()` logs it and starts,
+  and `migrate` logs it too: an older binary must still be able to run
+  while you deploy the newer one again.
 - **Migrating a server needs only the binary**: `SPIDER_MIGRATE=1 ./app`
   with the same environment as the app. `spider migrate` sees
   `addMigrations(` in build.zig and runs `zig build run` with
   `SPIDER_MIGRATE` set.
-- Applying stays a step of its own: nothing migrates when the app starts.
+- Applying stays a step of its own unless main() asks for it: a project
+  made with `spider new --pg` migrates in `main()` before it serves
+  (`migrate()` in its `src/main.zig`); an app can as well keep it manual.
 
 ## Errors
 

@@ -1,4 +1,4 @@
-# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider v0.10.1
+# <img src="assets/spider_logo.png" width="32" height="32" alt="Spider Logo"> Spider v0.11.0
 
 Build web servers in Zig — performant, productive, and batteries-included.
 
@@ -31,7 +31,7 @@ curl -fsSL https://spiderme.org/install.sh | bash
 Or a specific version:
 
 ```bash
-curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.10.1
+curl -fsSL https://spiderme.org/install.sh | bash -s -- --version v0.11.0
 ```
 
 Then `spider new myapp` creates a project with Spider already added as a
@@ -239,7 +239,8 @@ compile; one that is not ready keeps the server from starting.
 try server.mountModules(.{@import("spider_notify")}).mountFeatures(features).listen(.{});
 ```
 
-`spider migrate` applies the modules' migrations before the app's, and
+`spider migrate` applies the modules' migrations before the app's (see
+[Migrations](#migrations-postgresql)), and
 `spider check --modules` reports what each module still needs. Writing
 and using modules: [docs/guides/modules.md](docs/guides/modules.md); the
 design: [RFC 0001](docs/rfcs/0001-modules.md). The official modules live in
@@ -869,6 +870,38 @@ defer spider.sqlite.deinit();
 
 Same `query`/`queryOne`/`queryExecute`/`begin()` API; the scalar type is `i64`.
 
+### Migrations (PostgreSQL)
+
+The migrations are `.sql` files in `src/core/db/migrations/`
+(`<number>_<name>.sql`; only what follows `-- migrate:up` runs, up to
+`-- migrate:down`). Built into the binary, they need neither the CLI nor
+the files on a server:
+
+```zig
+// build.zig: every *.sql file of the folder, by name
+exe.root_module.addImport("migrations", @import("spider").addMigrations(b, spider_dep, "src/core/db/migrations"));
+
+// main.zig
+var server = spider.app(.{});
+try server.migrations(@import("migrations").all).listen(.{});
+```
+
+- `SPIDER_MIGRATE=1 ./app` (what `spider migrate` runs) applies the pending
+  ones and exits: each in its own transaction with its row in
+  `schema_migrations`, under a lock, so two deploys never apply one twice.
+- `listen()` refuses to start while one is pending, or was edited after it
+  ran (a checksum is kept): never edit a migration that ran, add a new one.
+  When the database holds migrations the binary does not know (a rollback
+  onto a newer schema), it starts and warns.
+- An app that already kept files there keeps its history: the rows that
+  exist count as applied, a `BEGIN; ... COMMIT;` around a whole file is left
+  out, and `CREATE INDEX CONCURRENTLY`, alone in its file, runs outside a
+  transaction.
+- Modules' migrations run first (see [Modules](#modules)).
+
+A project made with `spider new --pg` is set up this way, and its
+`main()` migrates before it serves (`migrate()` in `src/main.zig`).
+
 ---
 
 ## Server-Sent Events (SSE)
@@ -1255,7 +1288,7 @@ spider new myapp --skip-downloads     # don't download tailwindcss, alpine, htmx
 spider g feature posts [--api]        # CRUD feature + migration
 spider g auth [--provider=keycloak] [--api]
 
-spider migrate                        # apply src/core/db/migrations/*.sql
+spider migrate                        # apply the pending migrations (modules', then the app's)
 
 # Routes and conventions
 spider routes                         # method, path, access, flags

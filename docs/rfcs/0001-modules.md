@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Accepted — phases 0 to 4 implemented (branch `feat/modules`, Spider 0.11.0-dev.1); see *Implementation* |
+| **Status** | Accepted — phases 0 to 4 implemented in Spider 0.11.0; see *Implementation* |
 | **Author** | Spider maintainer |
 | **Created** | 2026-10-17 |
 | **Applies to** | Spider 0.10.1 and later |
