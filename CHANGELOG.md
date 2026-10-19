@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-18
+
 Modules (RFC 0001, `docs/rfcs/0001-modules.md`): packages that plug into an
-app through one contract that is checked before they can run. Nothing here
+app through one contract that is checked before they can run, and one
+migration engine for the modules and the app, in the binary. Nothing here
 asks an existing app to change: an app without modules builds, migrates
-and starts as before.
+and starts as before, and its migration history stays valid.
 
 ### Added
 
@@ -55,15 +58,30 @@ and starts as before.
   ./app`) and needs neither the CLI nor the files. `spider migrate`
   detects it and just runs the binary. `spider.migrating()` tells main()
   it is a migrate run, to skip what migrating does not need.
+- **A rollback is noticed.** When the database holds migrations the binary
+  does not know (a newer version applied them), the check warns and the
+  server still starts: `report.warnings`, logged by `listen()`.
+- **New PostgreSQL projects use the engine.** `spider new --pg` embeds
+  `src/core/db/migrations/` (`spider.addMigrations`), and the generated
+  `main()` migrates before it serves through `migrate()` in `src/main.zig`
+  (also for the tests, on a test database). `spider g feature` and
+  `spider g auth` only write the `.sql` file in such a project; projects
+  with a `src/core/db/migrations.zig` list keep getting their entry.
 - **Lifecycle.** Modules boot in dependency order before the features;
   `shutdown(b: spider.Boot)` runs from `server.deinit()` in reverse order,
   after the jobs stopped.
 - **`spider.version`**, the version of this Spider as a
   `std.SemanticVersion`; `zig build test` fails when it differs from
   `build.zig.zon`.
-- `.github/workflows/ecosystem.yml`: runs the official modules
-  (`spider-modules`) against a commit. Manual until that repository is
-  published; then it becomes the release gate.
+- **CI and the release gate.** `.github/workflows/ci.yml` runs on every push
+  and pull request to `develop` and `main`: build, unit tests (also with
+  `spider.pg`), SQLite, R2/xlsx/QR code, the HTTP client against local
+  servers, end to end on both io backends, `spider.pg` against PostgreSQL
+  17, and the official modules (`spider-modules`, `ecosystem.yml`) against
+  the same commit. `release.yml` runs it on the tag first: a release does
+  not ship while a test or an official module fails.
+- `test_runner.zig` is part of the package (modules' and apps' database
+  tests use it).
 - Docs: `docs/rfcs/0001-modules.md` (the decision and roadmap) and
   `docs/guides/modules.md` (writing and using a module).
 
@@ -72,14 +90,16 @@ and starts as before.
 - `mountFeatures` skips a namespace that declares `spider_module`: it is a
   module, mounted once by `mountModules`.
 - `spider migrate` refuses unknown options instead of ignoring them.
+- Spider and the CLI are 0.11.0; `spider new` starts projects on it.
 
 ### Fixed
 
 - `spider migrate` ran the `-- migrate:down` part of a file that has no
   `-- migrate:up` line, right after the rest of it (a table created and
   dropped in the same run). The down part never runs now.
-- The library version is `0.11.0-dev.1` until the release (the CLI keeps
-  its own version).
+- Spider fetched by URL (an app's or a module's dependency) aborted its
+  build while configuring: the test-e2e step listed a folder that is not
+  part of the package. That step now exists only in Spider's own build.
 
 ## [0.10.1] - 2026-10-10
 

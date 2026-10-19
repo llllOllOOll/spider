@@ -6,7 +6,7 @@
 const std = @import("std");
 
 /// The version of this Spider, as text: the same as `build.zig.zon`.
-pub const string = "0.11.0-dev.1";
+pub const string = "0.11.0";
 
 /// The version of this Spider: `spider.version.major`, `.minor`, `.patch`.
 ///
