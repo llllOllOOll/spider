@@ -1116,6 +1116,94 @@ test "unary not operator - precedence with or" {
     try std.testing.expectEqualStrings("yes", r2);
 }
 
+test "== null / != null: a missing name or a null optional is null" {
+    // `null` used to be compared as the text "null": `id != null` was true
+    // for a new record, and the form posted to /items//update.
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc, "if (id != null) {edit} else {new}|if (id == null) {none}");
+    defer tmpl.deinit();
+
+    const missing = try tmpl.render(.{}, alc);
+    defer alc.free(missing);
+    try std.testing.expectEqualStrings("new|none", missing);
+
+    const no_id: ?[]const u8 = null;
+    const null_opt = try tmpl.render(.{ .id = no_id }, alc);
+    defer alc.free(null_opt);
+    try std.testing.expectEqualStrings("new|none", null_opt);
+
+    const some_id: ?[]const u8 = "7";
+    const present = try tmpl.render(.{ .id = some_id }, alc);
+    defer alc.free(present);
+    try std.testing.expectEqualStrings("edit|", present);
+
+    const empty = try tmpl.render(.{ .id = "" }, alc);
+    defer alc.free(empty);
+    try std.testing.expectEqualStrings("edit|", empty);
+}
+
+test "!= null on a field of a loop item" {
+    const alc = std.testing.allocator;
+    const Move = struct { cost: ?f64 = null };
+    const moves = [_]Move{ .{ .cost = 2.5 }, .{} };
+    var tmpl = try Template.init(alc, "for (moves) |m| {[if (m.cost != null) {<b>{ m.cost }</b>} else {-}]}");
+    defer tmpl.deinit();
+    const out = try tmpl.render(.{ .moves = @as([]const Move, &moves) }, alc);
+    defer alc.free(out);
+    try std.testing.expectEqualStrings("[<b>2.5</b>][-]", out);
+}
+
+test "{ list.len } prints the count, as in a condition" {
+    const alc = std.testing.allocator;
+    const Item = struct { id: []const u8 };
+    const items = [_]Item{ .{ .id = "a" }, .{ .id = "b" } };
+    var tmpl = try Template.init(alc, "[{ items.len }][{ name.len }][{ none.len }]");
+    defer tmpl.deinit();
+    const out = try tmpl.render(.{ .items = @as([]const Item, &items), .name = "Ana" }, alc);
+    defer alc.free(out);
+    try std.testing.expectEqualStrings("[2][3][]", out);
+}
+
+test "== / != with a name on the right compares with its value" {
+    // The right side used to be taken as text: `loc.id == selected_id`
+    // compared with the string "selected_id", and no option was selected.
+    const alc = std.testing.allocator;
+    const Loc = struct { id: []const u8 };
+    const locs = [_]Loc{ .{ .id = "a" }, .{ .id = "b" } };
+    var tmpl = try Template.init(alc, "for (locs) |loc| {if (loc.id == selected_id) {[{ loc.id }]} else {{ loc.id }}}|if (count != limit) {differ}|if (count > low) {more}");
+    defer tmpl.deinit();
+    const out = try tmpl.render(.{ .locs = @as([]const Loc, &locs), .selected_id = "b", .count = 3, .limit = 5, .low = 2 }, alc);
+    defer alc.free(out);
+    try std.testing.expectEqualStrings("a[b]|differ|more", out);
+}
+
+test "== / != with a number, true or false on the right are literals" {
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc, "if (n == 0) {zero}|if (on == true) {on}|if (on != false) {not off}|if (t == -1) {minus}");
+    defer tmpl.deinit();
+    const out = try tmpl.render(.{ .n = 0, .on = true, .t = -1 }, alc);
+    defer alc.free(out);
+    try std.testing.expectEqualStrings("zero|on|not off|minus", out);
+}
+
+test "a function call in a condition is an error, not false" {
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc, "if (std.mem.eql(u8, m, \"fin\")) {yes} else {no}");
+    defer tmpl.deinit();
+    try std.testing.expectError(error.UnsupportedCondition, tmpl.render(.{ .m = "fin" }, alc));
+
+    var cmp = try Template.init(alc, "if (len(items) > 0) {yes}");
+    defer cmp.deinit();
+    try std.testing.expectError(error.UnsupportedCondition, cmp.render(.{}, alc));
+
+    // Parentheses inside a quoted literal are text.
+    var quoted = try Template.init(alc, "if (label == \"a (b)\") {yes}");
+    defer quoted.deinit();
+    const out = try quoted.render(.{ .label = "a (b)" }, alc);
+    defer alc.free(out);
+    try std.testing.expectEqualStrings("yes", out);
+}
+
 test "unary not operator - does not break != operator" {
     const alc = std.testing.allocator;
     // "!=" contains "!" but never as the leading character of a trimmed

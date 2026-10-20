@@ -290,6 +290,22 @@ test "escape: expression props are escaped once, literal props stay template mar
     try expectRender(&comps, "<Badge label=\"A &amp; B\" text=\"{ name }\" />", .{ .name = "x < y & z" }, "<span title=\"A &amp; B\">x &lt; y &amp; z</span>");
 }
 
+test "props: a literal prop is its text, even when the caller has a value of that name" {
+    // `name="cst_icms"` rendered the caller's `cst_icms` ("90"): the form
+    // field saved into another column, silently.
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("Field", "<input name=\"{ name }\">");
+    try expectRender(&comps, "<Field name=\"cst_icms\" />", .{ .cst_icms = "90" }, "<input name=\"cst_icms\">");
+}
+
+test "props: an expression prop that resolves to nothing is empty, like an interpolation" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("Field", "<input name=\"{ name }\">");
+    try expectRender(&comps, "<Field name=\"{ user.nickname }\" />", .{}, "<input name=\"\">");
+}
+
 test "escape: nested component props pass the raw value down, escaped only at output" {
     var comps: Comps = .{};
     defer comps.deinit();

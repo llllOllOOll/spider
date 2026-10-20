@@ -395,7 +395,7 @@ pub fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *us
                     const prop_value_raw = template[val_start..pos.*];
                     const prop_value = trimString(prop_value_raw);
                     pos.* += 2;
-                    try props.append(alc, Prop{ .name = prop_name, .value = try alc.dupe(u8, prop_value) });
+                    try props.append(alc, Prop{ .name = prop_name, .value = try alc.dupe(u8, prop_value), .is_expr = true });
                 } else {
                     const val_start = pos.*;
                     while (pos.* < template.len and template[pos.*] != '"') pos.* += 1;

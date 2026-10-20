@@ -6,6 +6,9 @@ const std = @import("std");
 pub const Prop = struct {
     name: []const u8,
     value: []const u8,
+    /// Written `attr="{ expr }"`: the value is looked up in the caller's
+    /// context. A literal `attr="text"` never is.
+    is_expr: bool = false,
 };
 
 pub const Node = union(enum) {

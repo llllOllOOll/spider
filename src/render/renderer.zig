@@ -115,7 +115,11 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             try result.appendSlice(alc, text);
         },
         .interpolation => |expr| {
-            if (resolveValue(ctx, expr)) |v| try appendValue(alc, result, v);
+            if (resolveValue(ctx, expr)) |v| {
+                try appendValue(alc, result, v);
+            } else if (lenOf(ctx, expr)) |n| {
+                try result.print(alc, "{d}", .{n});
+            }
         },
         .interpolation_with_default => |iwd| {
             const value = resolveValue(ctx, iwd.expr);
@@ -132,7 +136,7 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             }
         },
         .if_node => |ifn| {
-            const cond = evalBool(ctx, ifn.condition, alc);
+            const cond = try evalBool(ctx, ifn.condition, alc);
             if (cond) {
                 for (ifn.then_body) |n| try renderNode(n, ctx, alc, result, state);
             } else if (ifn.else_body) |eb| {
@@ -184,11 +188,14 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             defer comp_ctx.deinit(alc);
 
             for (comp.props) |prop| {
-                if (resolveValue(ctx, prop.value)) |val| {
-                    try comp_ctx.set(alc, prop.name, try dupeValue(alc, val));
-                } else {
+                if (!prop.is_expr) {
                     // A literal prop is template source, like the markup around it.
                     try comp_ctx.set(alc, prop.name, Value{ .html = try alc.dupe(u8, prop.value) });
+                } else if (resolveValue(ctx, prop.value)) |val| {
+                    try comp_ctx.set(alc, prop.name, try dupeValue(alc, val));
+                } else {
+                    // Nothing by that name: empty, as `{ expr }` is.
+                    try comp_ctx.set(alc, prop.name, Value{ .string = try alc.dupe(u8, "") });
                 }
             }
 
@@ -258,6 +265,17 @@ fn resolveSegment(current: ?Value, seg: []const u8) ?Value {
     return c.object.get(seg);
 }
 
+/// `list.len` (or a string's): the count, when the name before `.len` is
+/// a list or a string. A field named `len` is found by resolveValue first.
+fn lenOf(ctx: *const Context, expr: []const u8) ?usize {
+    if (!std.mem.endsWith(u8, expr, ".len")) return null;
+    return switch (resolveValue(ctx, expr[0 .. expr.len - ".len".len]) orelse return null) {
+        .list => |l| l.len,
+        .string, .html => |t| t.len,
+        else => null,
+    };
+}
+
 fn resolveValue(ctx: *const Context, expr: []const u8) ?Value {
     var it = std.mem.splitScalar(u8, expr, '.');
     const first_seg = it.next() orelse return null;
@@ -274,35 +292,25 @@ fn resolveValue(ctx: *const Context, expr: []const u8) ?Value {
     return current;
 }
 
-fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) bool {
+const EvalError = error{ UnsupportedCondition, OutOfMemory };
+
+fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) EvalError!bool {
     // or binds looser than and — check first so each side may contain "and"
     if (std.mem.indexOf(u8, expr, " or ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right = trimWhitespace(expr[idx + 4 ..]);
-        return evalBool(ctx, left, alc) or evalBool(ctx, right, alc);
+        return try evalBool(ctx, left, alc) or try evalBool(ctx, right, alc);
     }
     if (std.mem.indexOf(u8, expr, " and ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right = trimWhitespace(expr[idx + 5 ..]);
-        return evalBool(ctx, left, alc) and evalBool(ctx, right, alc);
+        return try evalBool(ctx, left, alc) and try evalBool(ctx, right, alc);
     }
     if (std.mem.indexOf(u8, expr, " != ")) |idx| {
-        const left = trimWhitespace(expr[0..idx]);
-        const right_raw = trimWhitespace(expr[idx + 4 ..]);
-        const right = if (right_raw.len >= 2 and right_raw[0] == '"' and right_raw[right_raw.len - 1] == '"')
-            right_raw[1 .. right_raw.len - 1]
-        else
-            right_raw;
-        return !evalCompare(ctx, left, right, alc);
+        return !try evalCompare(ctx, trimWhitespace(expr[0..idx]), trimWhitespace(expr[idx + 4 ..]), alc);
     }
     if (std.mem.indexOf(u8, expr, " == ")) |idx| {
-        const left = trimWhitespace(expr[0..idx]);
-        const right_raw = trimWhitespace(expr[idx + 4 ..]);
-        const right = if (right_raw.len >= 2 and right_raw[0] == '"' and right_raw[right_raw.len - 1] == '"')
-            right_raw[1 .. right_raw.len - 1]
-        else
-            right_raw;
-        return evalCompare(ctx, left, right, alc);
+        return evalCompare(ctx, trimWhitespace(expr[0..idx]), trimWhitespace(expr[idx + 4 ..]), alc);
     }
     if (std.mem.indexOf(u8, expr, " <= ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
@@ -337,9 +345,10 @@ fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) bool {
     // group). Only a plain "!identifier" or "!left op right" is supported.
     const trimmed = trimWhitespace(expr);
     if (trimmed.len > 0 and trimmed[0] == '!') {
-        return !evalBool(ctx, trimmed[1..], alc);
+        return !try evalBool(ctx, trimmed[1..], alc);
     }
 
+    try refuseCall(expr);
     if (resolveValue(ctx, expr)) |value| {
         if (value == .boolean) return value.boolean;
         if (value == .string) return value.string.len > 0 and !std.mem.eql(u8, value.string, "false");
@@ -350,21 +359,59 @@ fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) bool {
     return false;
 }
 
-fn evalCompare(ctx: *Context, left: []const u8, right: []const u8, alc: std.mem.Allocator) bool {
-    const resolved = resolveLen(ctx, left, alc) catch return false;
-    defer alc.free(resolved);
-    return std.mem.eql(u8, resolved, right);
+fn isQuoted(text: []const u8) bool {
+    return text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"';
+}
+
+/// A condition only reads names: `std.mem.eql(u8, m, "x")` or `len(x)`
+/// used to be false without a word, so the page took the wrong branch.
+fn refuseCall(operand: []const u8) EvalError!void {
+    if (isQuoted(operand) or std.mem.indexOfScalar(u8, operand, '(') == null) return;
+    const log = if (builtin.is_test) std.log.warn else std.log.err;
+    log("[spider] template: a condition cannot call a function: {s} (compare with ==, or pass a bool)", .{operand});
+    return error.UnsupportedCondition;
+}
+
+/// The text one side of a comparison stands for, allocated with `alc`: a
+/// quoted literal without its quotes; a number, `true` or `false` as
+/// written; anything else is a name, read from the context (`list.len`
+/// included), and "" when there is no such name.
+fn operandText(ctx: *const Context, operand: []const u8, alc: std.mem.Allocator) EvalError![]const u8 {
+    if (isQuoted(operand)) return alc.dupe(u8, operand[1 .. operand.len - 1]);
+    if (std.mem.eql(u8, operand, "true") or std.mem.eql(u8, operand, "false") or isNumber(operand))
+        return alc.dupe(u8, operand);
+    try refuseCall(operand);
+    return resolveLen(ctx, operand, alc);
+}
+
+fn isNumber(text: []const u8) bool {
+    const digits = if (text.len > 1 and (text[0] == '-' or text[0] == '+')) text[1..] else text;
+    return digits.len > 0 and std.ascii.isDigit(digits[0]);
+}
+
+fn evalCompare(ctx: *Context, left: []const u8, right: []const u8, alc: std.mem.Allocator) EvalError!bool {
+    // A null optional is not in the context: null is "no such name".
+    if (std.mem.eql(u8, right, "null")) {
+        try refuseCall(left);
+        return resolveValue(ctx, left) == null;
+    }
+    const l = try operandText(ctx, left, alc);
+    defer alc.free(l);
+    const r = try operandText(ctx, right, alc);
+    defer alc.free(r);
+    return std.mem.eql(u8, l, r);
 }
 
 const Cmp = enum { lt, lte, gt, gte };
 
-fn evalNumCompare(ctx: *Context, left: []const u8, right: []const u8, cmp: Cmp, alc: std.mem.Allocator) bool {
-    const resolved = resolveLen(ctx, left, alc) catch return false;
-    defer alc.free(resolved);
-    const l = resolved;
+fn evalNumCompare(ctx: *Context, left: []const u8, right: []const u8, cmp: Cmp, alc: std.mem.Allocator) EvalError!bool {
+    const l = try operandText(ctx, left, alc);
+    defer alc.free(l);
+    const r = try operandText(ctx, right, alc);
+    defer alc.free(r);
 
     const lv = std.fmt.parseInt(i64, l, 10) catch return false;
-    const rv = std.fmt.parseInt(i64, right, 10) catch return false;
+    const rv = std.fmt.parseInt(i64, r, 10) catch return false;
 
     return switch (cmp) {
         .lt => lv < rv,
