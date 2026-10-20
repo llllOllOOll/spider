@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`spider.auth.jwtVerify` allocates every string of the claims with the
+  allocator it is given.** Pass an arena (`c.arena`, as the `Auth`
+  middleware does). With a general-purpose allocator the caller frees
+  each string, and a payload that fails to parse half way leaves the
+  strings read so far allocated.
+- **Template conditions read a name on either side.** `if (loc.id ==
+  selected_id)` compares with the value of `selected_id`; it used to
+  compare with the text "selected_id", so such a condition was never
+  true. Each side is a quoted string, a number, `true`/`false`, `null` or
+  a name. A bare word that is no name in the data is now "", not that
+  word: quote literals (`role == "admin"`).
+- **A function call in a template condition fails the render**
+  (`error.UnsupportedCondition`, logged with the condition):
+  `if (std.mem.eql(u8, m, "x"))` used to be false without a word.
+
+### Fixed
+
+- **A literal component prop was read as a name of the caller's data**:
+  `<Field name="cst_icms" />`, on a page whose data had `cst_icms = "90"`,
+  rendered `name="90"`, and the form saved into another field. A literal
+  is now its text; only `attr="{ expr }"` is looked up. An expression
+  prop that resolves to nothing is empty (it was the text of the
+  expression).
+- **`spider.form` `FormData.getArray` of a field sent once** (one
+  checkbox ticked, without `[]` in its name) returned a slice of memory
+  in its own stack frame, which the next call overwrote: a crash or
+  garbage values later.
+- **`spider.auth.jwtVerify` with claims of your own** returned `sub` and
+  every string other than `email`, `name` and `locale` pointing into
+  memory freed before it returned.
+- **`== null` / `!= null` in a template** compared with the text "null":
+  `if (id != null)` was true for a missing `id` and for a null optional.
+  A missing name and a null optional are now null.
+- **`{ list.len }` printed nothing**; it prints the count, as `.len`
+  already did in conditions.
+- Docs: path parameters (`c.params`, `spider.Path`) are percent-decoded;
+  `listen()` reads `PORT`; the PostgreSQL defaults are `spider` /
+  `spider` / `spider_db` with a pool of 10.
+
 ## [0.11.0] - 2026-10-18
 
 Modules (RFC 0001, `docs/rfcs/0001-modules.md`): packages that plug into an

@@ -197,7 +197,8 @@ pub const Ctx = struct {
     /// handler allocates for its answer goes here; nothing is freed by hand.
     arena: std.mem.Allocator,
     /// The `:name` segments of the matched route: `c.params.get("id")`.
-    /// A value is the segment as it came in the URL: not percent-decoded.
+    /// A value is percent-decoded: `/users/Ana%20Ribeiro` gives
+    /// "Ana Ribeiro", and `a%2Fb` is "a/b" in one segment.
     /// Spider also keeps who the request is from here, under names that
     /// start with `_auth_`; read those with `userId`, `hasRole` and the
     /// like.

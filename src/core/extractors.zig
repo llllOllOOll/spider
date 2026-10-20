@@ -18,8 +18,8 @@ const std = @import("std");
 /// that does not fit in `T`) never reaches the handler: the request fails
 /// with `error.InvalidPathParam`, a 400. A route without a `:name` segment
 /// of that name fails with `error.MissingPathParam`. Integers are read in
-/// base 10; a `[]const u8` is the segment as it came in the URL, not
-/// percent-decoded.
+/// base 10; a `[]const u8` is the segment percent-decoded (`Ana%20Ribeiro`
+/// is "Ana Ribeiro").
 pub fn Path(comptime T: type, comptime name: []const u8) type {
     switch (@typeInfo(T)) {
         .int => {},

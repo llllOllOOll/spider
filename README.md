@@ -664,8 +664,12 @@ if (users.len > 0) {
 }
 ```
 
-- Conditions: `==`/`!=` against a literal, `<`, `<=`, `>`, `>=`, `and`, `or`, `!x`,
-  `list.len` (`.len` works in conditions only; pass counts as data).
+- Conditions: `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `!x`, `list.len`.
+  Each side is a quoted string, a number, `true`/`false`, `null` (a missing
+  name or a null optional) or a name (`if (loc.id == selected_id)`). A
+  condition cannot call a function: `if (f(x))` fails the render
+  (`error.UnsupportedCondition`).
+- `{ list.len }` prints the count of a list (or the length of a string).
 - `??` applies when the value is missing, empty or `false`.
 - `{{ … }}` outputs a literal `{ … }` (Alpine `x-data`); `<script>`/`<style>`
   bodies are never interpolated.
@@ -698,7 +702,9 @@ is `false`; `spider check` flags it (`bool-attr`).
 </UserInfo>
 ```
 
-Props are literals or `{ expressions }` (escaped). A component has one
+Props are literals or `{ expressions }` (escaped). A literal is its text,
+even when a value of that name exists (`name="email"` is "email"); an
+expression that resolves to nothing is empty. A component has one
 `{ slot }`. `<SiteNav />` finds `SiteNav` or `site_nav`. Nesting is capped
 (`spider.template_max_component_depth`).
 
@@ -780,7 +786,7 @@ View names come from paths:
 
 ### PostgreSQL (pure Zig)
 
-Needs `.pg = true` on the spider dependency. A connection pool (default 5),
+Needs `.pg = true` on the spider dependency. A connection pool (default 10),
 retry on connection failures (5 attempts, 1s→8s backoff; auth errors fail at once).
 
 > Thanks to [karlseguin](https://github.com/karlseguin) for [pg.zig](https://github.com/karlseguin/pg.zig), the base of Spider's PostgreSQL driver (we use a customized fork).
@@ -802,10 +808,10 @@ pub fn main(init: std.process.Init) !void {
 |-------|-----|---------|
 | `.host` | `PG_HOST` | `localhost` |
 | `.port` | `PG_PORT` | `5432` |
-| `.user` | `PG_USER` | `postgres` |
-| `.password` | `PG_PASSWORD` | `postgres` |
-| `.database` | `PG_DB` | `postgres` |
-| `.pool_size` | — | `5` |
+| `.user` | `PG_USER` | `spider` |
+| `.password` | `PG_PASSWORD` | `spider` |
+| `.database` | `PG_DB` | `spider_db` |
+| `.pool_size` | — | `10` |
 | `.mapping` | — | `.fail` (missing column / NULL into a non-optional field → error; `.warn` logs once) |
 
 #### Queries
@@ -1249,7 +1255,7 @@ JWT_SECRET=my-secret-key
 
 ```zig
 const host = spider.env.getOr("PG_HOST", "localhost");
-const port = spider.env.getInt(u16, "PORT", 3000); // PORT is yours: Spider doesn't read it
+const port = spider.env.getInt(u16, "PORT", 3000); // listen() reads PORT too, after an explicit .port
 const debug = spider.env.getBool("DEBUG", false);
 const maybe = spider.env.get("OPTIONAL_KEY");      // ?[]const u8
 ```
