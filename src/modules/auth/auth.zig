@@ -122,81 +122,42 @@ test "jwtPayload: the payload of a token signed with the secret, nothing else" {
 /// Checks the signature of `token` and its `exp`, and returns its payload
 /// parsed as `T` (a struct with at least `sub` and `exp`).
 ///
-/// Safe with `T = Claims`, or a `T` whose only strings are fields named
-/// `email`, `name` and `locale`: those three (which must be `[]const u8`)
-/// are copied with `alloc`. Every other string or slice of the result (a
-/// string `sub`, a list of roles, the strings of a nested struct) points
-/// into memory that is freed before this function returns. For your own
-/// claims use `jwtPayload` and parse the payload yourself, as
-/// `spider.session` does.
+/// Every string and slice of the result (`sub`, `email`, a list of roles,
+/// the strings of a nested struct) is allocated with `alloc` and outlives
+/// the call. Pass an arena, such as `c.arena`: with another allocator the
+/// caller frees each one, and a payload that fails to parse half way
+/// leaves the strings read so far allocated.
 ///
-/// With `Claims`, `email` and `name` are copies allocated with `alloc` (the
-/// caller owns them). The header must be, byte for byte, the one `jwtSign`
-/// writes: an HS256 token another library signed with the same secret can
-/// fail here. Errors: `JwtError.InvalidFormat` (also when the payload has a
-/// field `T` does not, or lacks one it requires),
-/// `JwtError.InvalidSignature`, `JwtError.Expired` (`exp` greater than 0 and
-/// earlier than the current second; a token is still accepted during the
-/// second its `exp` names).
+/// The header must be, byte for byte, the one `jwtSign` writes: an HS256
+/// token another library signed with the same secret can fail here.
+/// Errors: `JwtError.InvalidFormat` (also when the payload has a field `T`
+/// does not, or lacks one it requires), `JwtError.InvalidSignature`,
+/// `JwtError.Expired` (`exp` greater than 0 and earlier than the current
+/// second; a token is still accepted during the second its `exp` names).
+///
+/// ```zig
+/// const claims = try spider.auth.jwtVerify(spider.auth.Claims, c.arena, c.io(), token, secret);
+/// ```
 pub fn jwtVerify(comptime T: type, alloc: std.mem.Allocator, io: std.Io, token: []const u8, secret: []const u8) !T {
     if (!@hasField(T, "sub")) @compileError("Claims must have 'sub' field");
     if (!@hasField(T, "exp")) @compileError("Claims must have 'exp' field");
 
-    var parts = std.mem.splitScalar(u8, token, '.');
-    const header_b64 = parts.next() orelse return JwtError.InvalidFormat;
-    const payload_b64 = parts.next() orelse return JwtError.InvalidFormat;
-    const sig_b64 = parts.next() orelse return JwtError.InvalidFormat;
-    if (parts.next() != null) return JwtError.InvalidFormat;
+    const payload = try jwtPayload(alloc, token, secret);
+    defer alloc.free(payload);
 
-    if (!std.mem.eql(u8, header_b64, HEADER_B64)) return JwtError.InvalidFormat;
-
-    const signing_input = try std.fmt.allocPrint(alloc, "{s}.{s}", .{ header_b64, payload_b64 });
-    defer alloc.free(signing_input);
-
-    var recomputed: [32]u8 = undefined;
-    std.crypto.auth.hmac.sha2.HmacSha256.create(&recomputed, signing_input, secret);
-
-    var expected_bytes: [32]u8 = undefined;
-    const decoded_sig_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(sig_b64) catch return JwtError.InvalidFormat;
-    if (decoded_sig_len != 32) return JwtError.InvalidSignature;
-    std.base64.url_safe_no_pad.Decoder.decode(&expected_bytes, sig_b64) catch return JwtError.InvalidSignature;
-    if (!std.crypto.timing_safe.eql([32]u8, expected_bytes, recomputed)) return JwtError.InvalidSignature;
-
-    const decoded_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(payload_b64) catch return JwtError.InvalidFormat;
-    const payload_json_buf = try alloc.alloc(u8, decoded_len);
-    defer alloc.free(payload_json_buf);
-    std.base64.url_safe_no_pad.Decoder.decode(payload_json_buf, payload_b64) catch return JwtError.InvalidFormat;
-
+    // `.alloc_always`: by default a string the JSON holds as is would point
+    // into `payload`, which is freed on return.
     // A validly signed payload that isn't the expected claims is still an
     // unusable token (401), not a server error.
-    var parsed = std.json.parseFromSlice(T, alloc, payload_json_buf[0..decoded_len], .{}) catch |err| switch (err) {
+    const claims = std.json.parseFromSliceLeaky(T, alloc, payload, .{ .allocate = .alloc_always }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return JwtError.InvalidFormat,
     };
-    defer parsed.deinit();
 
-    // Check the expiry
-    if (@hasField(T, "exp")) {
-        const now = std.Io.Clock.now(.real, io);
-        const now_sec: i64 = @intCast(@divFloor(now.nanoseconds, 1_000_000_000));
-        if (parsed.value.exp > 0 and parsed.value.exp < now_sec) {
-            return JwtError.Expired;
-        }
-    }
-
-    // The three strings are copied out of the parsed payload, which is
-    // freed on return. A copy that fails frees the ones made before it.
-    var result = parsed.value;
-    const copied = [_][]const u8{ "email", "name", "locale" };
-    var done: usize = 0;
-    errdefer inline for (copied, 0..) |field, i| {
-        if (@hasField(T, field) and i < done) alloc.free(@field(result, field));
-    };
-    inline for (copied, 0..) |field, i| {
-        if (@hasField(T, field)) @field(result, field) = try alloc.dupe(u8, @field(parsed.value, field));
-        done = i + 1;
-    }
-    return result;
+    const now = std.Io.Clock.now(.real, io);
+    const now_sec: i64 = @intCast(@divFloor(now.nanoseconds, 1_000_000_000));
+    if (claims.exp > 0 and claims.exp < now_sec) return JwtError.Expired;
+    return claims;
 }
 
 // ─── Cookie ─────────────────────────────────────────────────────────────────
@@ -387,6 +348,24 @@ test "jwtVerify: a signed token whose payload isn't the claims is InvalidFormat 
     try std.testing.expectError(error.InvalidSignature, jwtVerify(Claims, a, std.testing.io, token, "other"));
 }
 
+test "jwtVerify: every string of your own claims outlives the call" {
+    // Only email/name/locale used to be copied: `sub` and any other string
+    // pointed into the freed payload, and the next allocations of the same
+    // arena wrote over them.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const Mine = struct { sub: []const u8, exp: i64, roles: []const []const u8, original_id: ?[]const u8 = null };
+    const token = try jwtSign(a, Mine{ .sub = "target-id", .exp = 0, .roles = &.{ "admin", "billing" }, .original_id = "d910cea2" }, "secret");
+
+    const claims = try jwtVerify(Mine, a, std.testing.io, token, "secret");
+    for (0..32) |_| @memset(try a.alloc(u8, 512), 'X');
+    try std.testing.expectEqualStrings("target-id", claims.sub);
+    try std.testing.expectEqualStrings("d910cea2", claims.original_id.?);
+    try std.testing.expectEqual(@as(usize, 2), claims.roles.len);
+    try std.testing.expectEqualStrings("billing", claims.roles[1]);
+}
+
 test "isPublicPath: the query string does not make a public path private" {
     const paths = [_][]const u8{ "/login", "/assets/*" };
     try std.testing.expect(isPublicPath(&paths, "/login"));
@@ -399,28 +378,29 @@ test "isPublicPath: the query string does not make a public path private" {
 
 const WideClaims = struct { sub: i32, email: []const u8, name: []const u8, locale: []const u8, exp: i64 };
 
-fn verifyClaimsThenFree(alloc: std.mem.Allocator, token: []const u8) !void {
-    const claims = try jwtVerify(Claims, alloc, std.testing.io, token, "secret");
-    alloc.free(claims.email);
-    alloc.free(claims.name);
+fn verifyInArena(alloc: std.mem.Allocator, token: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const claims = try jwtVerify(WideClaims, arena.allocator(), std.testing.io, token, "secret");
+    try std.testing.expectEqualStrings("en", claims.locale);
 }
 
-fn verifyWideThenFree(alloc: std.mem.Allocator, token: []const u8) !void {
-    const claims = try jwtVerify(WideClaims, alloc, std.testing.io, token, "secret");
-    alloc.free(claims.email);
-    alloc.free(claims.name);
-    alloc.free(claims.locale);
+test "jwtVerify: in an arena, running out of memory half way is OutOfMemory and leaves nothing" {
+    const a = std.testing.allocator;
+    const wide = try jwtSign(a, WideClaims{ .sub = 7, .email = "ana@example.com", .name = "Ana", .locale = "en", .exp = 0 }, "secret");
+    defer a.free(wide);
+    try std.testing.checkAllAllocationFailures(a, verifyInArena, .{wide});
 }
 
-test "jwtVerify: nothing is left allocated when it runs out of memory half way" {
+test "jwtVerify: with a general-purpose allocator the caller frees each string" {
     const a = std.testing.allocator;
     const token = try jwtSign(a, Claims{ .sub = 7, .email = "ana@example.com", .name = "Ana", .exp = 0 }, "secret");
     defer a.free(token);
-    try std.testing.checkAllAllocationFailures(a, verifyClaimsThenFree, .{token});
-
-    const wide = try jwtSign(a, WideClaims{ .sub = 7, .email = "ana@example.com", .name = "Ana", .locale = "en", .exp = 0 }, "secret");
-    defer a.free(wide);
-    try std.testing.checkAllAllocationFailures(a, verifyWideThenFree, .{wide});
+    const claims = try jwtVerify(Claims, a, std.testing.io, token, "secret");
+    defer a.free(claims.email);
+    defer a.free(claims.name);
+    try std.testing.expectEqual(@as(i32, 7), claims.sub);
+    try std.testing.expectEqualStrings("ana@example.com", claims.email);
 }
 
 test "Auth.cookieFor / cookieCleared: the cookie the middleware reads, Secure as configured" {

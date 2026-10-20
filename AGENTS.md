@@ -270,8 +270,8 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 - **An app's own users** (`modules/password.zig`, `modules/session.zig`,
   `src/cli/auth_local.zig` + `templates/auth_local/`): what `spider g auth`
   generates by default. `spider.session` signs with `auth.jwtSign` and
-  verifies with `auth.jwtPayload` (the generic `jwtVerify` returns string
-  claims that point into freed memory: do not use it for new code). The
+  verifies with `auth.jwtPayload` (`jwtVerify` allocates every string of
+  the claims with the allocator it is given: pass an arena). The
   generator appends request tests to the project's `src/app_test.zig`
   only when its `run()` starts a database. `spider g auth
   --provider=keycloak` is the older generator (`src/cli/auth.zig`).
