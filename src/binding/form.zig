@@ -22,9 +22,11 @@ pub const FormData = struct {
     }
 
     pub fn getArray(self: *const FormData, key: []const u8) ?[]const []const u8 {
-        const entry = self.fields.get(key) orelse return null;
-        return switch (entry) {
-            .string => |v| &[_][]const u8{v},
+        // A field sent once is a `.string`: the slice of one is made over
+        // the value the map holds, so it lives as long as the FormData.
+        const entry = self.fields.getPtr(key) orelse return null;
+        return switch (entry.*) {
+            .string => |*v| @as(*const [1][]const u8, v)[0..],
             .array => |arr| arr.items,
         };
     }
@@ -289,6 +291,26 @@ test "FormData - getArray returns all values from array" {
     try std.testing.expectEqual(@as(usize, 2), result.?.len);
     try std.testing.expectEqualStrings("first", result.?[0]);
     try std.testing.expectEqualStrings("second", result.?[1]);
+}
+
+noinline fn overwriteStack() u8 {
+    var junk: [4096]u8 = undefined;
+    @memset(&junk, 0xAA);
+    std.mem.doNotOptimizeAway(&junk);
+    return junk[100];
+}
+
+test "FormData - getArray of a field sent once outlives the call" {
+    // One checkbox ticked, without `[]` in its name, is a `.string`: the
+    // slice used to point at a temporary in getArray's own frame.
+    const alloc = std.testing.allocator;
+    var form = try parse(alloc, "profile_id=abc-123");
+    defer form.deinit();
+
+    const ids = form.getArray("profile_id").?;
+    _ = overwriteStack();
+    try std.testing.expectEqual(@as(usize, 1), ids.len);
+    try std.testing.expectEqualStrings("abc-123", ids[0]);
 }
 
 test "FormData - mixed array and single values" {
