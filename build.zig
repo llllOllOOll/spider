@@ -39,12 +39,24 @@ pub const Templates = enum { auto, embedded, disk };
 pub fn testManifest(b: *std.Build, tool: *std.Build.Step.Compile, dir: []const u8, exclude: []const []const u8) *std.Build.Module {
     const run = b.addRunArtifact(tool);
     run.has_side_effects = true;
+    // The first one of a build also prunes the project's .zig-cache: Zig
+    // never removes old outputs, and each build of an app leaves a copy of
+    // its binary (src/cli/build_cache.zig; SPIDER_KEEP_ZIG_CACHE=1 turns it off).
+    // Once per project: this file is also the build script of the spider
+    // dependency, whose own calls must not use up the app's.
+    if (prune_cache_requested != b) {
+        prune_cache_requested = b;
+        run.setEnvironmentVariable("SPIDER_PRUNE_CACHE", "1");
+        run.setCwd(b.path("."));
+    }
     run.addDirectoryArg(b.path(dir));
     const out = run.addOutputFileArg("test_manifest.zig");
     run.addArg(dir);
     for (exclude) |e| run.addArg(e);
     return b.createModule(.{ .root_source_file = out });
 }
+
+var prune_cache_requested: ?*std.Build = null;
 
 pub const DevOptions = struct {
     /// Files, relative to the build root, that the page uses besides the
@@ -188,7 +200,27 @@ pub fn watchSources(b: *std.Build, run: *std.Build.Step.Run, dir: []const u8, ex
     }
 }
 
+/// Makes every compile step reachable from `step` wait for `prune`, but
+/// the compile of the tool that prunes.
+fn pruneBeforeCompiles(
+    b: *std.Build,
+    step: *std.Build.Step,
+    prune: *std.Build.Step,
+    tool: *std.Build.Step,
+    seen: *std.AutoHashMapUnmanaged(*std.Build.Step, void),
+) void {
+    if (step == prune or step == tool) return;
+    if (seen.contains(step)) return;
+    seen.put(b.allocator, step, {}) catch @panic("OOM");
+    for (step.dependencies.items) |dep| pruneBeforeCompiles(b, dep, prune, tool, seen);
+    if (step.tag == .compile) step.dependOn(prune);
+}
+
 pub fn build(b: *std.Build) void {
+    // Spider's own build prunes its .zig-cache from a step of its own that
+    // every top-level step runs (end of this function): its test steps do
+    // not all go through testManifest().
+    prune_cache_requested = b;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const with_pg = b.option(bool, "pg", "Enable PostgreSQL support") orelse false;
@@ -628,4 +660,20 @@ pub fn build(b: *std.Build) void {
     });
     const test_qrcode_step = b.step("test-qrcode", "Run QR code module tests");
     test_qrcode_step.dependOn(&b.addRunArtifact(qrcode_test).step);
+
+    // Every step (test, test-pg, test-sqlite, test-e2e, ...) first prunes
+    // the cache: Zig never removes old outputs, and the suites run all day.
+    const prune = b.addRunArtifact(manifest_tool);
+    prune.has_side_effects = true;
+    prune.setEnvironmentVariable("SPIDER_PRUNE_CACHE", "1");
+    prune.setCwd(b.path("."));
+    // Before any compile: one that ran first could find its cached output
+    // removed under it (a removed output only costs a compile when the
+    // cache is checked after the pruning).
+    var seen: std.AutoHashMapUnmanaged(*std.Build.Step, void) = .empty;
+    for (b.top_level_steps.values()) |top| {
+        if (std.mem.eql(u8, top.step.name, "uninstall")) continue;
+        top.step.dependOn(&prune.step);
+        pruneBeforeCompiles(b, &top.step, &prune.step, &manifest_tool.step, &seen);
+    }
 }

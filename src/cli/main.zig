@@ -16,6 +16,7 @@ const icons_mod = @import("icons.zig");
 const pwa_mod = @import("pwa.zig");
 const check_mod = @import("check.zig");
 const dev = @import("dev.zig");
+const clean_cmd = @import("clean.zig");
 
 const version = @import("version.zig").version;
 
@@ -132,6 +133,12 @@ pub fn main(init: std.process.Init) !void {
             const code = try check_mod.run(io, allocator, init.environ_map, rest);
             if (code != 0) std.process.exit(code);
         },
+        .clean => {
+            var bad: []const u8 = "";
+            const mode = clean_cmd.parseMode(rest, &bad) catch usageError("unknown option '{s}' for `spider clean` (see `spider clean --help`)", .{bad});
+            const code = try clean_cmd.run(io, allocator, mode);
+            if (code != 0) std.process.exit(code);
+        },
         .add, .remove => {
             const code = try pwa_mod.run(io, allocator, cmd == .add, rest);
             if (code != 0) std.process.exit(code);
@@ -158,6 +165,8 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = cli_args;
     _ = @import("feature.zig");
+    _ = clean_cmd;
+    _ = @import("build_cache.zig");
     _ = @import("routes_updater.zig");
     _ = @import("auth_updater.zig");
     _ = routes_cmd;

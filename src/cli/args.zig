@@ -18,6 +18,7 @@ pub const Command = enum {
     add,
     remove,
     check,
+    clean,
     dev,
     install,
     update,
@@ -38,6 +39,7 @@ pub const Command = enum {
             .{ "add", .add },
             .{ "remove", .remove },
             .{ "check", .check },
+            .{ "clean", .clean },
             .{ "dev", .dev },
             .{ "install", .install },
             .{ "update", .update },
@@ -159,6 +161,7 @@ pub const overview =
     \\  add pwa               Make the app an installable PWA (manifest, service worker)
     \\  remove pwa            Remove the PWA (and unregister it from browsers)
     \\  check                 Check the app follows Spider's conventions; --modules: its modules are ready
+    \\  clean                 Free the disk the build cache took (--all: the whole .zig-cache)
     \\  dev                   Build, run, and restart the app after every successful build
     \\  install               Download frontend assets (tailwindcss, alpine, htmx, icons)
     \\  update                Update the spider dependency in this project
@@ -297,6 +300,20 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\the layouts' <head> block, and replaces public/sw.js with one that
         \\clears its caches and unregisters itself in browsers that installed
         \\the app (deleting sw.js would leave them running the old one).
+        \\
+        ,
+        .clean =>
+        \\Usage: spider clean [--all]
+        \\
+        \\Zig never removes old outputs from .zig-cache: every build of an app
+        \\leaves a copy of its binary, and the cache grows by gigabytes a day.
+        \\Every build of a Spider app already prunes it, keeping the two newest
+        \\copies of each binary (SPIDER_KEEP_ZIG_CACHE=1 turns that off). This
+        \\keeps only the newest.
+        \\
+        \\Options:
+        \\  --all   Delete the whole .zig-cache (stop `spider dev` first); the
+        \\          next build compiles everything again.
         \\
         ,
         .check =>

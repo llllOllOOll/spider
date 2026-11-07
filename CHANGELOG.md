@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes. `spider.gzip` never reached them, as they are answered before
   the middlewares. A generated app's `app.css` goes from 80 KB to 12 KB,
   htmx from 52 KB to 17 KB.
+- **Every build of a Spider app prunes its `.zig-cache`.** Zig never
+  removes old outputs: each build left a new copy of the app's binary
+  (hundreds of MB in Debug), and one app's cache reached 25 GB in a day.
+  The first `testManifest()` step of a build now keeps the two newest
+  copies of each binary (outputs younger than two minutes are never
+  touched) and clears old `tmp/` leftovers, in `.zig-cache` and in the
+  `spider dev` cache inside it. Nothing changes in the app's build.zig.
+  An output goes only when two newer copies of the same binary exist
+  (same name, size within 0.5%): the newest output of a step must stay,
+  as Zig fails the step instead of compiling it again when it is gone.
+  Spider's own build does the same before every step (`test`, `test-pg`,
+  `test-e2e`, ...). `SPIDER_KEEP_ZIG_CACHE=1` turns it off.
+- **`spider clean`** keeps only the newest copy of each binary;
+  `spider clean --all` deletes the whole `.zig-cache`.
 - **`{ asset_url("css/app.css") }` is built into templates**: the file's
   URL with a version from its content (`/css/app.css?v=<hash>`), which the
   static files answer with a year-long `immutable` cache. A release build

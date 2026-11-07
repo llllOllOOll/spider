@@ -8,13 +8,29 @@
 //! build.zig itself changes — a new test file would never be noticed.
 //!
 //! Usage: spider-test-manifest <dir> <out.zig> <display_dir> [exclude...]
+//! With SPIDER_PRUNE_CACHE set it first prunes ./.zig-cache; with no
+//! arguments it only prunes (the step every Spider build step runs).
 
 const std = @import("std");
 const testing = @import("testing.zig");
+const build_cache = @import("cli/build_cache.zig");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const alc = init.arena.allocator();
+
+    // testManifest() asks one run per build to prune the project's
+    // .zig-cache (the tool runs in the build root): Zig never removes old
+    // outputs, and every build of an app leaves a copy of its binary.
+    if (init.environ_map.get("SPIDER_PRUNE_CACHE") != null and init.environ_map.get("SPIDER_KEEP_ZIG_CACHE") == null) {
+        if (std.Io.Dir.cwd().openDir(io, ".zig-cache", .{ .iterate = true })) |cache_dir| {
+            var dir = cache_dir;
+            defer dir.close(io);
+            const r = build_cache.prune(io, alc, dir, .{});
+            if (r.freed_bytes >= 1024 * 1024)
+                std.debug.print("spider: removed {d} old build output(s) from .zig-cache ({d} MB)\n", .{ r.removed, r.freed_bytes / (1024 * 1024) });
+        } else |_| {}
+    }
 
     var args: std.ArrayList([]const u8) = .empty;
     {
@@ -23,6 +39,8 @@ pub fn main(init: std.process.Init) !void {
         _ = it.next();
         while (it.next()) |a| try args.append(alc, try alc.dupe(u8, a));
     }
+    // No arguments: the run that only prunes (Spider's own build).
+    if (args.items.len == 0 and init.environ_map.get("SPIDER_PRUNE_CACHE") != null) return;
     if (args.items.len < 3) {
         std.debug.print("usage: spider-test-manifest <dir> <out.zig> <display_dir> [exclude...]\n", .{});
         std.process.exit(2);
