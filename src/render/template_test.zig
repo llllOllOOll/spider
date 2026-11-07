@@ -1563,6 +1563,23 @@ test "{ name if (cond) }: boolean attribute present only when cond holds" {
     try std.testing.expectEqualStrings("<input name=\"q\"  required>", off);
 }
 
+test "{ name if (cond) } and { \"class\" if (cond) } read the loop variable inside for and if bodies" {
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc,
+        \\for (items) |o| {<option { selected if (o.on) }>{ o.name }</option><i class="{ "sel" if (o.on) }"></i>}
+        \\if (show) {<input { checked if (show) }>}
+    );
+    defer tmpl.deinit();
+    const Item = struct { name: []const u8, on: bool };
+    const items = [_]Item{ .{ .name = "a", .on = true }, .{ .name = "b", .on = false } };
+    const r = try tmpl.render(.{ .items = &items, .show = true }, alc);
+    defer alc.free(r);
+    try std.testing.expectEqualStrings(
+        "<option selected>a</option><i class=\"sel\"></i><option >b</option><i class=\"\"></i>\n<input checked>",
+        r,
+    );
+}
+
 test "{ \"class\" if (cond) }: conditional class, with comparisons" {
     const alc = std.testing.allocator;
     var tmpl = try Template.init(alc, "<a class=\"ui-btn { \"ui-btn-active\" if (tab == \"home\") }\">x</a>");

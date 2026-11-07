@@ -253,41 +253,7 @@ pub const Parser = struct {
         const expr_raw = p.template[expr_start..p.pos];
         p.pos += 2;
 
-        // If the expression is an if/else block, parse and return it directly.
-        const trimmed_expr = trimWhitespace(expr_raw);
-        // `{ disabled if (locked) }` / `{ "ui-btn-active" if (tab == "home") }`:
-        // the word or string only when the condition holds — boolean
-        // attributes and conditional classes (`disabled="{ x }"` would print
-        // "false" and stay disabled). Sugar for `if (cond) { "text" }`.
-        if (suffixIf(trimmed_expr)) |s| {
-            const synthesized = try std.fmt.allocPrint(p.alc, "if ({s}) {{ \"{s}\" }}", .{ s.cond, s.text });
-            defer p.alc.free(synthesized);
-            var sub_pos: usize = 0;
-            return parseIfNode(p.alc, synthesized, &sub_pos);
-        }
-        if (std.mem.startsWith(u8, trimmed_expr, "if (")) {
-            var sub_pos: usize = 0;
-            return parseIfNode(p.alc, trimmed_expr, &sub_pos);
-        }
-
-        if (try tryParseCall(p.alc, trimmed_expr)) |call_node| {
-            return call_node;
-        }
-
-        if (std.mem.indexOf(u8, expr_raw, " ?? ")) |idx| {
-            const expr = trimWhitespace(expr_raw[0..idx]);
-            const default_raw = trimWhitespace(expr_raw[idx + 4 ..]);
-            const default_val = if (default_raw.len >= 2 and default_raw[0] == '"' and default_raw[default_raw.len - 1] == '"')
-                default_raw[1 .. default_raw.len - 1]
-            else
-                default_raw;
-            return Node{ .interpolation_with_default = .{
-                .expr = try p.alc.dupe(u8, expr),
-                .default = try p.alc.dupe(u8, default_val),
-            } };
-        }
-
-        return Node{ .interpolation = try p.alc.dupe(u8, expr_raw) };
+        return exprNode(p.alc, expr_raw);
     }
 
     fn parseText(p: *Parser) !Node {
@@ -492,6 +458,47 @@ pub fn parseIfNode(alc: std.mem.Allocator, str: []const u8, pos: *usize) ParseEr
     return Node{ .if_node = .{ .condition = condition, .then_body = then_body, .else_body = else_body } };
 }
 
+/// The node for what a `{ ... }` holds, at the top of a template and in the
+/// body of an `if` or a `for` alike (the body of a `for` once ignored the
+/// `{ word if (cond) }` sugar, so a loop variable never set it).
+fn exprNode(alc: std.mem.Allocator, expr_raw: []const u8) ParseError!Node {
+    const trimmed_expr = trimWhitespace(expr_raw);
+    // `{ disabled if (locked) }` / `{ "ui-btn-active" if (tab == "home") }`:
+    // the word or string only when the condition holds — boolean
+    // attributes and conditional classes (`disabled="{ x }"` would print
+    // "false" and stay disabled). Sugar for `if (cond) { "text" }`.
+    if (suffixIf(trimmed_expr)) |s| {
+        const synthesized = try std.fmt.allocPrint(alc, "if ({s}) {{ \"{s}\" }}", .{ s.cond, s.text });
+        defer alc.free(synthesized);
+        var sub_pos: usize = 0;
+        return parseIfNode(alc, synthesized, &sub_pos);
+    }
+    // If the expression is an if/else block, parse and return it directly.
+    if (std.mem.startsWith(u8, trimmed_expr, "if (")) {
+        var sub_pos: usize = 0;
+        return parseIfNode(alc, trimmed_expr, &sub_pos);
+    }
+
+    if (try tryParseCall(alc, trimmed_expr)) |call_node| {
+        return call_node;
+    }
+
+    if (std.mem.indexOf(u8, expr_raw, " ?? ")) |idx| {
+        const expr = trimWhitespace(expr_raw[0..idx]);
+        const default_raw = trimWhitespace(expr_raw[idx + 4 ..]);
+        const default_val = if (default_raw.len >= 2 and default_raw[0] == '"' and default_raw[default_raw.len - 1] == '"')
+            default_raw[1 .. default_raw.len - 1]
+        else
+            default_raw;
+        return Node{ .interpolation_with_default = .{
+            .expr = try alc.dupe(u8, expr),
+            .default = try alc.dupe(u8, default_val),
+        } };
+    }
+
+    return Node{ .interpolation = try alc.dupe(u8, expr_raw) };
+}
+
 pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
     // FIX: If the entire content is a quoted string literal, emit it as plain text without quotes.
     const trimmed = trimWhitespace(str);
@@ -565,24 +572,7 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             if (pos >= str.len) return error.UnclosedInterpolation;
             const expr_raw = str[expr_start..pos];
             pos += 2;
-            if (try tryParseCall(alc, trimWhitespace(expr_raw))) |call_node| {
-                try nodes.append(alc, call_node);
-                continue;
-            }
-            if (std.mem.indexOf(u8, expr_raw, " ?? ")) |idx| {
-                const expr = trimWhitespace(expr_raw[0..idx]);
-                const default_raw = trimWhitespace(expr_raw[idx + 4 ..]);
-                const default_val = if (default_raw.len >= 2 and default_raw[0] == '"' and default_raw[default_raw.len - 1] == '"')
-                    default_raw[1 .. default_raw.len - 1]
-                else
-                    default_raw;
-                try nodes.append(alc, Node{ .interpolation_with_default = .{
-                    .expr = try alc.dupe(u8, expr),
-                    .default = try alc.dupe(u8, default_val),
-                } });
-            } else {
-                try nodes.append(alc, Node{ .interpolation = try alc.dupe(u8, expr_raw) });
-            }
+            try nodes.append(alc, try exprNode(alc, expr_raw));
         } else if (std.mem.startsWith(u8, remaining, "{ slot }")) {
             try nodes.append(alc, Node{ .interpolation = try alc.dupe(u8, "slot") });
             pos += "{ slot }".len;
