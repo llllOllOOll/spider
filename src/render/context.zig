@@ -116,100 +116,135 @@ pub fn structToContext(alc: std.mem.Allocator, data: anytype) !Context {
     errdefer ctx.deinit(alc);
 
     const T = @TypeOf(data);
-    const info = @typeInfo(T);
-    if (info != .@"struct") return ctx;
+    if (@typeInfo(T) != .@"struct") return ctx;
 
-    inline for (info.@"struct".field_names) |field_name| {
-        const value = @field(data, field_name);
-        const field_info = @typeInfo(@TypeOf(value));
+    // Not generic past this point: the loop and its error paths are compiled
+    // once, and a struct adds only a small reader per field.
+    for (Fields(T).list) |f| {
+        if (try f.get(alc, &data)) |v| try ctx.set(alc, f.name, v);
+    }
+    return ctx;
+}
 
-        if (@TypeOf(value) == RawHtml) {
-            try ctx.set(alc, field_name, Value{ .html = try alc.dupe(u8, value.html) });
-        } else if (@TypeOf(value) == ?RawHtml) {
-            if (value) |v| try ctx.set(alc, field_name, Value{ .html = try alc.dupe(u8, v.html) });
-        } else if (field_info == .pointer) {
-            const ptr = field_info.pointer;
-            if (ptr.child == u8 and ptr.size == .slice) {
-                try ctx.set(alc, field_name, Value{ .string = try alc.dupe(u8, value) });
-            } else if (ptr.size == .one) {
-                const child_info = @typeInfo(ptr.child);
-                if (child_info == .array) {
-                    const array_info = child_info.array;
-                    if (array_info.child == u8) {
-                        const slice: []const u8 = value[0..];
-                        try ctx.set(alc, field_name, Value{ .string = try alc.dupe(u8, slice) });
-                    } else {
-                        const slice = @as([]const array_info.child, value[0..]);
-                        const elem_info = @typeInfo(array_info.child);
-                        if (elem_info == .@"struct") {
-                            try ctx.set(alc, field_name, Value{ .list = try structSliceToValueList(alc, slice) });
-                        } else if (elem_info == .pointer) {
-                            const elem_ptr = elem_info.pointer;
-                            if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
-                                try ctx.set(alc, field_name, Value{ .list = try stringSliceToValueList(alc, slice) });
-                            }
+/// A field of a struct the templates read: its name and how to get its value.
+const FieldReader = struct {
+    name: []const u8,
+    get: *const fn (alc: std.mem.Allocator, data: *const anyopaque) std.mem.Allocator.Error!?Value,
+};
+
+/// The readers of `T`'s fields, built at compile time.
+fn Fields(comptime T: type) type {
+    return struct {
+        const names = @typeInfo(T).@"struct".field_names;
+        const list: [names.len]FieldReader = blk: {
+            var arr: [names.len]FieldReader = undefined;
+            for (names, 0..) |name, i| arr[i] = .{ .name = name, .get = reader(name) };
+            break :blk arr;
+        };
+
+        fn reader(comptime name: []const u8) *const fn (std.mem.Allocator, *const anyopaque) std.mem.Allocator.Error!?Value {
+            return struct {
+                fn get(alc: std.mem.Allocator, data: *const anyopaque) std.mem.Allocator.Error!?Value {
+                    // A struct with only comptime fields has no bytes to point at.
+                    if (@sizeOf(T) == 0) return fieldValue(alc, @field(@as(T, undefined), name));
+                    const ptr: *const T = @ptrCast(@alignCast(data));
+                    return fieldValue(alc, @field(ptr, name));
+                }
+            }.get;
+        }
+    };
+}
+
+/// The template value of one field, or null for a null optional or a type
+/// templates do not read. Generic on the field's type only.
+fn fieldValue(alc: std.mem.Allocator, value: anytype) std.mem.Allocator.Error!?Value {
+    const field_info = @typeInfo(@TypeOf(value));
+
+    if (@TypeOf(value) == RawHtml) {
+        return Value{ .html = try alc.dupe(u8, value.html) };
+    } else if (@TypeOf(value) == ?RawHtml) {
+        if (value) |v| return Value{ .html = try alc.dupe(u8, v.html) };
+    } else if (field_info == .pointer) {
+        const ptr = field_info.pointer;
+        if (ptr.child == u8 and ptr.size == .slice) {
+            return Value{ .string = try alc.dupe(u8, value) };
+        } else if (ptr.size == .one) {
+            const child_info = @typeInfo(ptr.child);
+            if (child_info == .array) {
+                const array_info = child_info.array;
+                if (array_info.child == u8) {
+                    const s: []const u8 = value[0..];
+                    return Value{ .string = try alc.dupe(u8, s) };
+                } else {
+                    const slice = @as([]const array_info.child, value[0..]);
+                    const elem_info = @typeInfo(array_info.child);
+                    if (elem_info == .@"struct") {
+                        return Value{ .list = try structSliceToValueList(alc, slice) };
+                    } else if (elem_info == .pointer) {
+                        const elem_ptr = elem_info.pointer;
+                        if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
+                            return Value{ .list = try stringSliceToValueList(alc, slice) };
                         }
                     }
-                } else if (child_info == .@"struct") {
-                    try ctx.set(alc, field_name, Value{ .object = try structToObject(alc, value) });
                 }
-            } else if (ptr.size == .slice) {
-                const elem_info = @typeInfo(ptr.child);
-                if (elem_info == .@"struct") {
-                    try ctx.set(alc, field_name, Value{ .list = try structSliceToValueList(alc, value) });
-                } else if (elem_info == .pointer) {
-                    const elem_ptr = elem_info.pointer;
-                    if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
-                        try ctx.set(alc, field_name, Value{ .list = try stringSliceToValueList(alc, value) });
-                    }
+            } else if (child_info == .@"struct") {
+                return Value{ .object = try structToObject(alc, value) };
+            }
+        } else if (ptr.size == .slice) {
+            const elem_info = @typeInfo(ptr.child);
+            if (elem_info == .@"struct") {
+                return Value{ .list = try structSliceToValueList(alc, value) };
+            } else if (elem_info == .pointer) {
+                const elem_ptr = elem_info.pointer;
+                if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
+                    return Value{ .list = try stringSliceToValueList(alc, value) };
                 }
             }
-        } else if (field_info == .optional) {
-            if (value) |unwrapped| {
-                const inner_info = @typeInfo(@TypeOf(unwrapped));
-                if (inner_info == .pointer) {
-                    const ptr = inner_info.pointer;
-                    if (ptr.child == u8 and ptr.size == .slice) {
-                        try ctx.set(alc, field_name, Value{ .string = try alc.dupe(u8, unwrapped) });
-                    }
-                } else if (inner_info == .bool) {
-                    try ctx.set(alc, field_name, Value{ .boolean = unwrapped });
-                } else if (inner_info == .int or inner_info == .comptime_int) {
-                    const str = try std.fmt.allocPrint(alc, "{d}", .{unwrapped});
-                    try ctx.set(alc, field_name, Value{ .string = str });
-                } else if (inner_info == .float or inner_info == .comptime_float) {
-                    const str = try std.fmt.allocPrint(alc, "{d}", .{unwrapped});
-                    try ctx.set(alc, field_name, Value{ .string = str });
-                }
-            }
-        } else if (field_info == .bool) {
-            try ctx.set(alc, field_name, Value{ .boolean = value });
-        } else if (field_info == .int or field_info == .comptime_int) {
-            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
-            try ctx.set(alc, field_name, Value{ .string = str });
-        } else if (field_info == .float or field_info == .comptime_float) {
-            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
-            try ctx.set(alc, field_name, Value{ .string = str });
-        } else if (field_info == .array) {
-            const arr = field_info.array;
-            if (arr.child != u8) {
-                const slice = @as([]const arr.child, &value);
-                const elem_info = @typeInfo(arr.child);
-                if (elem_info == .@"struct") {
-                    try ctx.set(alc, field_name, Value{ .list = try structSliceToValueList(alc, slice) });
-                } else if (elem_info == .pointer) {
-                    const elem_ptr = elem_info.pointer;
-                    if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
-                        try ctx.set(alc, field_name, Value{ .list = try stringSliceToValueList(alc, slice) });
-                    }
-                }
-            }
-        } else if (field_info == .@"struct") {
-            try ctx.set(alc, field_name, Value{ .object = try structToObject(alc, value) });
         }
+    } else if (field_info == .optional) {
+        if (value) |unwrapped| {
+            const inner_info = @typeInfo(@TypeOf(unwrapped));
+            if (inner_info == .pointer) {
+                const ptr = inner_info.pointer;
+                if (ptr.child == u8 and ptr.size == .slice) {
+                    return Value{ .string = try alc.dupe(u8, unwrapped) };
+                }
+            } else if (inner_info == .bool) {
+                return Value{ .boolean = unwrapped };
+            } else if (inner_info == .int or inner_info == .comptime_int) {
+                const str = try std.fmt.allocPrint(alc, "{d}", .{unwrapped});
+                return Value{ .string = str };
+            } else if (inner_info == .float or inner_info == .comptime_float) {
+                const str = try std.fmt.allocPrint(alc, "{d}", .{unwrapped});
+                return Value{ .string = str };
+            }
+        }
+    } else if (field_info == .bool) {
+        return Value{ .boolean = value };
+    } else if (field_info == .int or field_info == .comptime_int) {
+        const str = try std.fmt.allocPrint(alc, "{d}", .{value});
+        return Value{ .string = str };
+    } else if (field_info == .float or field_info == .comptime_float) {
+        const str = try std.fmt.allocPrint(alc, "{d}", .{value});
+        return Value{ .string = str };
+    } else if (field_info == .array) {
+        const arr = field_info.array;
+        if (arr.child != u8) {
+            const slice = @as([]const arr.child, &value);
+            const elem_info = @typeInfo(arr.child);
+            if (elem_info == .@"struct") {
+                return Value{ .list = try structSliceToValueList(alc, slice) };
+            } else if (elem_info == .pointer) {
+                const elem_ptr = elem_info.pointer;
+                if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
+                    return Value{ .list = try stringSliceToValueList(alc, slice) };
+                }
+            }
+        }
+    } else if (field_info == .@"struct") {
+        return Value{ .object = try structToObject(alc, value) };
     }
-
-    return ctx;
+    return null;
 }
 
 fn structSliceToValueList(alc: std.mem.Allocator, slice: anytype) ![]const Value {
@@ -254,7 +289,7 @@ fn putOwned(alc: std.mem.Allocator, obj: *std.StringHashMapUnmanaged(Value), nam
 }
 
 // internal: converts a struct to the map of a `Value.object`.
-pub fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapUnmanaged(Value) {
+pub fn structToObject(alc: std.mem.Allocator, data: anytype) std.mem.Allocator.Error!std.StringHashMapUnmanaged(Value) {
     var obj = std.StringHashMapUnmanaged(Value){};
     errdefer {
         var it = obj.iterator();
@@ -265,85 +300,12 @@ pub fn structToObject(alc: std.mem.Allocator, data: anytype) !std.StringHashMapU
         obj.deinit(alc);
     }
 
-    const info = @typeInfo(@TypeOf(data));
-    if (info != .@"struct") return obj;
+    const T = @TypeOf(data);
+    if (@typeInfo(T) != .@"struct") return obj;
 
-    inline for (info.@"struct".field_names) |field_name| {
-        const value = @field(data, field_name);
-        const field_info = @typeInfo(@TypeOf(value));
-
-        if (@TypeOf(value) == RawHtml) {
-            try putOwned(alc, &obj, field_name, Value{ .html = try alc.dupe(u8, value.html) });
-        } else if (@TypeOf(value) == ?RawHtml) {
-            if (value) |v| try putOwned(alc, &obj, field_name, Value{ .html = try alc.dupe(u8, v.html) });
-        } else if (field_info == .pointer) {
-            const ptr = field_info.pointer;
-            if (ptr.child == u8 and ptr.size == .slice) {
-                try putOwned(alc, &obj, field_name, Value{ .string = try alc.dupe(u8, value) });
-            } else if (ptr.size == .one) {
-                const child_info = @typeInfo(ptr.child);
-                if (child_info == .array) {
-                    const array_info = child_info.array;
-                    if (array_info.child == u8) {
-                        const s: []const u8 = value[0..];
-                        try putOwned(alc, &obj, field_name, Value{ .string = try alc.dupe(u8, s) });
-                    } else {
-                        const slice = @as([]const array_info.child, value[0..]);
-                        const elem_info = @typeInfo(array_info.child);
-                        if (elem_info == .@"struct") {
-                            try putOwned(alc, &obj, field_name, Value{ .list = try structSliceToValueList(alc, slice) });
-                        } else if (elem_info == .pointer) {
-                            const elem_ptr = elem_info.pointer;
-                            if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
-                                try putOwned(alc, &obj, field_name, Value{ .list = try stringSliceToValueList(alc, slice) });
-                            }
-                        }
-                    }
-                } else if (child_info == .@"struct") {
-                    try putOwned(alc, &obj, field_name, Value{ .object = try structToObject(alc, value) });
-                }
-            } else if (ptr.size == .slice) {
-                const elem_info = @typeInfo(ptr.child);
-                if (elem_info == .@"struct") {
-                    try putOwned(alc, &obj, field_name, Value{ .list = try structSliceToValueList(alc, value) });
-                } else if (elem_info == .pointer) {
-                    const elem_ptr = elem_info.pointer;
-                    if (elem_ptr.child == u8 and elem_ptr.size == .slice) {
-                        try putOwned(alc, &obj, field_name, Value{ .list = try stringSliceToValueList(alc, value) });
-                    }
-                }
-            }
-        } else if (field_info == .optional) {
-            if (value) |unwrapped| {
-                const inner_info = @typeInfo(@TypeOf(unwrapped));
-                if (inner_info == .pointer) {
-                    const ptr = inner_info.pointer;
-                    if (ptr.child == u8 and ptr.size == .slice) {
-                        try putOwned(alc, &obj, field_name, Value{ .string = try alc.dupe(u8, unwrapped) });
-                    }
-                } else if (inner_info == .bool) {
-                    try putOwned(alc, &obj, field_name, Value{ .boolean = unwrapped });
-                } else if (inner_info == .int or inner_info == .comptime_int) {
-                    const str = try std.fmt.allocPrint(alc, "{d}", .{unwrapped});
-                    try putOwned(alc, &obj, field_name, Value{ .string = str });
-                } else if (inner_info == .float or inner_info == .comptime_float) {
-                    const str = try std.fmt.allocPrint(alc, "{d}", .{unwrapped});
-                    try putOwned(alc, &obj, field_name, Value{ .string = str });
-                }
-            }
-        } else if (field_info == .bool) {
-            try putOwned(alc, &obj, field_name, Value{ .boolean = value });
-        } else if (field_info == .int or field_info == .comptime_int) {
-            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
-            try putOwned(alc, &obj, field_name, Value{ .string = str });
-        } else if (field_info == .float or field_info == .comptime_float) {
-            const str = try std.fmt.allocPrint(alc, "{d}", .{value});
-            try putOwned(alc, &obj, field_name, Value{ .string = str });
-        } else if (field_info == .@"struct") {
-            try putOwned(alc, &obj, field_name, Value{ .object = try structToObject(alc, value) });
-        }
+    for (Fields(T).list) |f| {
+        if (try f.get(alc, &data)) |v| try putOwned(alc, &obj, f.name, v);
     }
-
     return obj;
 }
 

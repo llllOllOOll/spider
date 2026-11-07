@@ -39,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Debug builds of apps are less than half the size and build twice as
+  fast.** Spider's generic code made a copy of itself per struct field:
+  each field mapped by `spider.pg` had its own log calls, and each type
+  given to a template its own converter and render loop. That code is now
+  shared, and only a small reader per field remains. Measured on an app
+  with ~1,400 query row types and ~390 view data types (Debug, zio): the
+  binary went from 776 MB to 296 MB, a clean build from 42 s to 21 s, a
+  rebuild after an edit from 43 s to 20 s, and the build's peak memory
+  from 1.6 GB to 1.1 GB. Behaviour and log lines are the same.
+
 - **The check report names the app's migrations apart from the
   modules**: `spider: the app's migrations are not ready, refusing to
   start` (or `N module(s) and the app's migrations ...`) instead of

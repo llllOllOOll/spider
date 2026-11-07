@@ -214,11 +214,16 @@ pub const Template = struct {
     /// than `spider.template_max_component_depth`, with a parser error from a
     /// malformed component or layout, or `error.OutOfMemory`.
     pub fn render(self: *Template, context: anytype, alc: std.mem.Allocator) ![]const u8 {
-        try self.collectInline(alc);
-
         var ctx = try structToContext(alc, context);
         defer ctx.deinit(alc);
-        try self.addGlobals(&ctx, alc);
+        return self.renderContext(&ctx, alc);
+    }
+
+    /// `render` once the data is a Context. Not generic: one copy for every
+    /// data type, which keeps Debug binaries small.
+    fn renderContext(self: *Template, ctx: *Context, alc: std.mem.Allocator) ![]const u8 {
+        try self.collectInline(alc);
+        try self.addGlobals(ctx, alc);
 
         var state = RenderState.init(self.components, self.base_components);
         defer state.deinit(alc);
@@ -251,7 +256,7 @@ pub const Template = struct {
                             continue;
                         }
                     }
-                    try renderNode(node, &ctx, alc, &cur_buf, &state);
+                    try renderNode(node, ctx, alc, &cur_buf, &state);
                 }
                 try keepSlot(alc, &slot_bufs, cur_key, cur_buf);
                 cur_buf = .empty;
@@ -292,7 +297,7 @@ pub const Template = struct {
         errdefer result.deinit(alc);
 
         for (self.nodes) |node| {
-            try renderNode(node, &ctx, alc, &result, &state);
+            try renderNode(node, ctx, alc, &result, &state);
         }
 
         return result.toOwnedSlice(alc);
@@ -319,6 +324,13 @@ pub const Template = struct {
     /// the caller. Returns `error.ComponentNotFound` if the component name is
     /// not registered; otherwise fails like `render`.
     pub fn renderFragment(self: *Template, component_name: []const u8, context: anytype, alc: std.mem.Allocator) ![]const u8 {
+        var comp_ctx = try structToContext(alc, context);
+        defer comp_ctx.deinit(alc);
+        return self.renderFragmentContext(component_name, &comp_ctx, alc);
+    }
+
+    /// `renderFragment` once the data is a Context (not generic).
+    fn renderFragmentContext(self: *Template, component_name: []const u8, comp_ctx: *Context, alc: std.mem.Allocator) ![]const u8 {
         try self.collectInline(alc);
 
         const comp_template = self.findComponent(component_name) orelse return error.ComponentNotFound;
@@ -330,9 +342,7 @@ pub const Template = struct {
             alc.free(comp_nodes.nodes);
         }
 
-        var comp_ctx = try structToContext(alc, context);
-        defer comp_ctx.deinit(alc);
-        try self.addGlobals(&comp_ctx, alc);
+        try self.addGlobals(comp_ctx, alc);
 
         var state = RenderState.init(self.components, self.base_components);
         defer state.deinit(alc);
@@ -341,7 +351,7 @@ pub const Template = struct {
         errdefer result.deinit(alc);
 
         for (comp_nodes.nodes) |n| {
-            try renderNode(n, &comp_ctx, alc, &result, &state);
+            try renderNode(n, comp_ctx, alc, &result, &state);
         }
 
         return result.toOwnedSlice(alc);

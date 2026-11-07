@@ -601,66 +601,104 @@ fn sqlHead(sql: []const u8) []const u8 {
     return t[0..@min(t.len, 80)];
 }
 
-/// Missing column / NULL into a non-optional field with no default.
-fn mappingIssue(comptime T: type, comptime field: []const u8, comptime FieldT: type, err: MappingError, sql: []const u8) MappingError!FieldT {
+/// One flag per struct field: `.warn` logs a field's issue once per process
+/// (a query in a timer or a hot page would otherwise repeat the same line on
+/// every call). Holds no code, only the variable.
+fn WarnedOnce(comptime T: type, comptime field: []const u8) type {
+    return struct {
+        comptime {
+            _ = T;
+            _ = field;
+        }
+        var flag = std.atomic.Value(bool).init(false);
+    };
+}
+
+/// Logs a mapping issue; returns the error under `.fail`, nothing under
+/// `.warn` (the caller then uses the zero value).
+noinline fn reportMappingIssue(err: MappingError, type_name: []const u8, field: []const u8, sql: []const u8, warned: *std.atomic.Value(bool)) MappingError!void {
     switch (mapping_mode) {
         .fail => {
-            std.log.err("[pg] {s} mapping {s}.{s} for \"{s}\"", .{ @errorName(err), @typeName(T), field, sqlHead(sql) });
+            std.log.err("[pg] {s} mapping {s}.{s} for \"{s}\"", .{ @errorName(err), type_name, field, sqlHead(sql) });
             return err;
         },
         .warn => {
-            // Once per struct field per process: a query in a timer or a hot
-            // page would otherwise repeat the same line on every call.
-            const Once = struct {
-                var warned = std.atomic.Value(bool).init(false);
-            };
-            if (!Once.warned.swap(true, .monotonic)) {
-                std.log.warn("[pg] {s} mapping {s}.{s} for \"{s}\" (DbConfig.mapping = .warn: using the zero value; logged once)", .{ @errorName(err), @typeName(T), field, sqlHead(sql) });
+            if (!warned.swap(true, .monotonic)) {
+                std.log.warn("[pg] {s} mapping {s}.{s} for \"{s}\" (DbConfig.mapping = .warn: using the zero value; logged once)", .{ @errorName(err), type_name, field, sqlHead(sql) });
             }
-            return zeroValue(FieldT);
         },
     }
+}
+
+/// A column that did not decode into its field (not generic, see mappingIssue).
+noinline fn reportDecodeIssue(err: anyerror, type_name: []const u8, field: []const u8, oid: i32, sql: []const u8) void {
+    std.log.err("[pg] {s} decoding {s}.{s} (column oid {d}) for \"{s}\"", .{ @errorName(err), type_name, field, oid, sqlHead(sql) });
+}
+
+/// The index of the column named `name`, if the result has one.
+fn columnIndex(result: *pg_lib.Result, name: []const u8) ?usize {
+    for (result.column_names, 0..) |col, i| {
+        if (std.mem.eql(u8, col, name)) return i;
+    }
+    return null;
 }
 
 fn mapRow(comptime T: type, result: *pg_lib.Result, row: pg_lib.Row, arena: std.mem.Allocator, sql: []const u8) !T {
     var item: T = undefined;
     const info = @typeInfo(T).@"struct";
+    // Per field, one call to code generic only on the field's type (and its
+    // default): a struct does not get its own copy of the decoding and
+    // reporting, which kept Debug binaries hundreds of MB bigger.
     inline for (info.field_names, info.field_types, info.field_attrs) |field_name, field_type, attrs| {
-        var col_idx: ?usize = null;
-        for (result.column_names, 0..) |name, i| {
-            if (std.mem.eql(u8, name, field_name)) {
-                col_idx = i;
-                break;
-            }
-        }
-        const default = comptime attrs.defaultValue(field_type);
-        if (col_idx) |ci| {
-            const value = row.values[ci];
-            @field(item, field_name) = if (value.is_null)
-                (if (@typeInfo(field_type) == .optional)
-                    null
-                else if (default) |d|
-                    d
-                else
-                    try mappingIssue(T, field_name, field_type, error.UnexpectedNull, sql))
-            else
-                decodeField(field_type, value.data, row.oids[ci], arena) catch |err| blk: {
-                    const e: anyerror = err;
-                    if (e != error.TypeMismatch and e != error.IntegerOverflow and e != error.InvalidEnumValue) return err;
-                    std.log.err("[pg] {s} decoding {s}.{s} (column oid {d}) for \"{s}\"", .{ @errorName(err), @typeName(T), field_name, row.oids[ci], sqlHead(sql) });
-                    if (mapping_mode == .warn) break :blk zeroValue(field_type);
-                    return err;
-                };
-        } else {
-            @field(item, field_name) = if (@typeInfo(field_type) == .optional)
-                null
-            else if (default) |d|
-                d
-            else
-                try mappingIssue(T, field_name, field_type, error.ColumnMissing, sql);
-        }
+        @field(item, field_name) = try mapField(
+            field_type,
+            comptime attrs.defaultValue(field_type),
+            result,
+            row,
+            arena,
+            sql,
+            @typeName(T),
+            field_name,
+            &WarnedOnce(T, field_name).flag,
+        );
     }
     return item;
+}
+
+/// The value of one field: its column decoded, or null / the default / the
+/// mapping rule when the column is missing or NULL.
+fn mapField(
+    comptime FieldT: type,
+    comptime default: ?FieldT,
+    result: *pg_lib.Result,
+    row: pg_lib.Row,
+    arena: std.mem.Allocator,
+    sql: []const u8,
+    type_name: []const u8,
+    field: []const u8,
+    warned: *std.atomic.Value(bool),
+) !FieldT {
+    const is_optional = @typeInfo(FieldT) == .optional;
+    const ci = columnIndex(result, field) orelse {
+        if (is_optional) return null;
+        if (default) |d| return d;
+        try reportMappingIssue(error.ColumnMissing, type_name, field, sql, warned);
+        return zeroValue(FieldT);
+    };
+    const value = row.values[ci];
+    if (value.is_null) {
+        if (is_optional) return null;
+        if (default) |d| return d;
+        try reportMappingIssue(error.UnexpectedNull, type_name, field, sql, warned);
+        return zeroValue(FieldT);
+    }
+    return decodeField(FieldT, value.data, row.oids[ci], arena) catch |err| {
+        const e: anyerror = err;
+        if (e != error.TypeMismatch and e != error.IntegerOverflow and e != error.InvalidEnumValue) return err;
+        reportDecodeIssue(err, type_name, field, row.oids[ci], sql);
+        if (mapping_mode == .warn) return zeroValue(FieldT);
+        return err;
+    };
 }
 
 /// Scalar results (query(i32/i64, ...)): first column of the first row.
