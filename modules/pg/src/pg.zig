@@ -398,8 +398,141 @@ fn stmtName(sql: []const u8) StmtName {
 /// The driver options of a query: a cache name when the cache is on and
 /// the query has parameters (one without goes through the simple protocol).
 /// Makes room first when the connection keeps `statement_cache` already.
-fn cacheOpts(conn: *pg_lib.Conn, name: *const StmtName, n_params: usize, column_names: bool) pg_lib.Conn.QueryOpts {
-    if (statement_cache == 0 or n_params == 0) return .{ .column_names = column_names };
+/// Whether a statement may be kept prepared. Not one with an optional
+/// filter or a switch on a parameter (`($1 = '' OR col = $1)`, `$2 = 0 OR`,
+/// `$3 IS NULL OR`, `($4 = 'all' OR ...)`, `$5 = true OR`, `OR $1 IS NULL`,
+/// `COALESCE($1, col)`): after a few runs of a named
+/// statement Postgres may switch to a generic plan, which cannot drop the
+/// unused branch and so serves every combination of filters, often by
+/// reading the whole table (measured: 293 ms against 2 ms for a page of a
+/// 20 000-row list). Unnamed, as before the cache, the statement is
+/// planned for its values on every run. `/* spider:no-cache */` anywhere
+/// in the SQL keeps any other statement out of the cache.
+fn cacheable(sql: []const u8) bool {
+    if (std.mem.indexOf(u8, sql, "spider:no-cache") != null) return false;
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, sql, i, '$')) |at| {
+        i = at + 1;
+        var j = at + 1;
+        while (j < sql.len and std.ascii.isDigit(sql[j])) j += 1;
+        if (j == at + 1) continue;
+        // `$N` after `OR` (`OR $1 IS NULL`), or inside `COALESCE(`.
+        const before = std.mem.trimEnd(u8, sql[0..at], " \t\r\n(");
+        if (endsWithWord(before, "or") and optionalTest(sql, skipCasts(sql, j)) != null) return false;
+        if (endsWithWord(before, "coalesce")) return false;
+        // `$N = '' OR`, `$N = 0 OR`, `$N IS NULL OR`.
+        if (optionalTest(sql, skipCasts(sql, j))) |after| {
+            if (startsWithWord(sql[skipSpace(sql, after)..], "or")) return false;
+        }
+    }
+    return true;
+}
+
+/// After `$N`: past `::type`, `::type[]` and `::a::b` casts.
+fn skipCasts(sql: []const u8, from: usize) usize {
+    var j = from;
+    while (j + 1 < sql.len and sql[j] == ':' and sql[j + 1] == ':') {
+        j += 2;
+        while (j < sql.len and (std.ascii.isAlphanumeric(sql[j]) or sql[j] == '_')) j += 1;
+        while (j + 1 < sql.len and sql[j] == '[' and sql[j + 1] == ']') j += 2;
+    }
+    return j;
+}
+
+/// A comparison of the parameter with a fixed value at `from` (spaces
+/// allowed): `= ''`, `= 'all'`, `= 0`, `= -1`, `= true`, `= false` (or with
+/// `<>` / `!=`) or `IS NULL`. Where it ends, or null.
+fn optionalTest(sql: []const u8, from: usize) ?usize {
+    var j = skipSpace(sql, from);
+    const op: usize = if (std.mem.startsWith(u8, sql[j..], "<>") or std.mem.startsWith(u8, sql[j..], "!="))
+        2
+    else if (j < sql.len and sql[j] == '=')
+        1
+    else
+        0;
+    if (op > 0) {
+        j = skipSpace(sql, j + op);
+        if (j < sql.len and sql[j] == '\'') {
+            const end = std.mem.indexOfScalarPos(u8, sql, j + 1, '\'') orelse return null;
+            return end + 1;
+        }
+        var k = j;
+        if (k < sql.len and sql[k] == '-') k += 1;
+        const digits = k;
+        while (k < sql.len and std.ascii.isDigit(sql[k])) k += 1;
+        if (k > digits and (k == sql.len or !(std.ascii.isAlphanumeric(sql[k]) or sql[k] == '_'))) return k;
+        for ([_][]const u8{ "true", "false" }) |w| if (startsWithWord(sql[j..], w)) return j + w.len;
+        return null;
+    }
+    if (!startsWithWord(sql[j..], "is")) return null;
+    j = skipSpace(sql, j + 2);
+    if (!startsWithWord(sql[j..], "null")) return null;
+    return j + 4;
+}
+
+fn skipSpace(sql: []const u8, from: usize) usize {
+    var j = from;
+    while (j < sql.len and std.ascii.isWhitespace(sql[j])) j += 1;
+    return j;
+}
+
+fn startsWithWord(text: []const u8, word: []const u8) bool {
+    if (text.len < word.len or !std.ascii.eqlIgnoreCase(text[0..word.len], word)) return false;
+    return text.len == word.len or !(std.ascii.isAlphanumeric(text[word.len]) or text[word.len] == '_');
+}
+
+fn endsWithWord(text: []const u8, word: []const u8) bool {
+    if (text.len < word.len or !std.ascii.eqlIgnoreCase(text[text.len - word.len ..], word)) return false;
+    const k = text.len - word.len;
+    return k == 0 or !(std.ascii.isAlphanumeric(text[k - 1]) or text[k - 1] == '_');
+}
+
+test "statement cache: optional filters stay out of it (a generic plan would read everything)" {
+    const no = [_][]const u8{
+        "SELECT * FROM t WHERE ($1 = '' OR t.k = $1) ORDER BY id DESC LIMIT $2",
+        "SELECT * FROM t WHERE ($1::bigint = 0 OR t.id < $1)",
+        "SELECT * FROM t WHERE ($2::text IS NULL OR e.autor = $2)",
+        "SELECT * FROM t WHERE ($4::bigint::int = 0 OR x > $4)",
+        "SELECT * FROM t WHERE (t.k = $1 OR $1 IS NULL)",
+        "SELECT * FROM t WHERE ($1::text[] IS NULL OR t.k = ANY($1))",
+        "SELECT * FROM t WHERE t.situacao = COALESCE($1, 'vigente')",
+        "SELECT * FROM t WHERE ( $3 = ''\n  OR t.g = $3 )",
+        "SELECT * FROM t WHERE t.id = $1 /* spider:no-cache */",
+        "SELECT * FROM t WHERE ($5 = 'all' OR state = $5)",
+        "SELECT * FROM t WHERE (t.reporter_id = $1 OR $3 = true OR $5 = true)",
+        "SELECT * FROM t WHERE ($2::bool = false OR t.ativo)",
+        "SELECT * FROM t WHERE ($1 = -1 OR t.n = $1)",
+        "SELECT * FROM t WHERE ($3::text != 'restricted' OR m.role = 'admin')",
+        "SELECT * FROM t WHERE ($3 <> '' OR t.x)",
+    };
+    for (no) |sql| {
+        if (cacheable(sql)) {
+            std.debug.print("should not be cached: {s}\n", .{sql});
+            return error.TestUnexpectedResult;
+        }
+    }
+    const yes = [_][]const u8{
+        "SELECT * FROM t WHERE t.id = $1",
+        "SELECT * FROM t WHERE t.id = ANY($1::bigint[]) ORDER BY id",
+        "WITH param AS (SELECT $1::text, $2::bigint) SELECT * FROM t WHERE t.k = $1",
+        "SELECT * FROM t WHERE t.k = $1 OR t.j = $2",
+        "SELECT $1::text IS NULL AS vazio",
+        "UPDATE t SET n = $1 WHERE id = $2 AND ($3 IS NOT NULL)",
+        "SELECT * FROM t WHERE t.n = $10 OR t.m = 0",
+        "SELECT * FROM t WHERE $1 <> '' AND t.k = $1",
+        "SELECT * FROM t WHERE t.k = $1 AND t.flag = true OR t.j = 2",
+        "SELECT bool_or($2::text IS NOT NULL AND x.status::text = $2) FROM x",
+    };
+    for (yes) |sql| {
+        if (!cacheable(sql)) {
+            std.debug.print("should be cached: {s}\n", .{sql});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+fn cacheOpts(conn: *pg_lib.Conn, sql: []const u8, name: *const StmtName, n_params: usize, column_names: bool) pg_lib.Conn.QueryOpts {
+    if (statement_cache == 0 or n_params == 0 or !cacheable(sql)) return .{ .column_names = column_names };
     const kept = &conn._prepared_statements;
     if (!kept.contains(name) and kept.count() >= statement_cache) {
         // Any one: the hot statements are prepared again on their next run.
@@ -442,7 +575,7 @@ fn retryStale(conn: *pg_lib.Conn, err: anyerror, name: *const StmtName, opts: pg
 /// conn.queryOpts through the statement cache.
 fn runQuery(conn: *pg_lib.Conn, sql: []const u8, params: anytype) !*pg_lib.Result {
     const name = stmtName(sql);
-    const opts = cacheOpts(conn, &name, params.len, true);
+    const opts = cacheOpts(conn, sql, &name, params.len, true);
     return conn.queryOpts(sql, params, opts) catch |err| {
         if (!retryStale(conn, err, &name, opts)) return err;
         return conn.queryOpts(sql, params, opts);
@@ -452,7 +585,7 @@ fn runQuery(conn: *pg_lib.Conn, sql: []const u8, params: anytype) !*pg_lib.Resul
 /// conn.execOpts through the statement cache.
 fn runExec(conn: *pg_lib.Conn, sql: []const u8, params: anytype) !?i64 {
     const name = stmtName(sql);
-    const opts = cacheOpts(conn, &name, params.len, false);
+    const opts = cacheOpts(conn, sql, &name, params.len, false);
     return conn.execOpts(sql, params, opts) catch |err| {
         if (!retryStale(conn, err, &name, opts)) return err;
         return conn.execOpts(sql, params, opts);
@@ -2480,4 +2613,26 @@ test "statement cache: a full cache makes room, and 0 turns it off" {
     const kept = conn._prepared_statements.count();
     try std.testing.expectEqual(@as(i32, 41), try queryOn(conn, i32, a, "SELECT $1::int + 40", .{@as(i32, 1)}));
     try std.testing.expectEqual(kept, conn._prepared_statements.count());
+}
+
+test "statement cache: a query with an optional filter runs unnamed, planned for its values every time" {
+    try initTestDb(std.testing.allocator);
+    defer deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const conn = try acquireConn();
+    defer releaseConn(conn);
+
+    const before = conn._prepared_statements.count();
+    for (0..8) |_| {
+        const v = try queryOn(conn, i32, a, "SELECT count(*)::int FROM generate_series(1, 10) g WHERE ($1 = '' OR g::text = $1)", .{""});
+        try std.testing.expectEqual(@as(i32, 10), v);
+        const w = try queryOn(conn, i32, a, "SELECT count(*)::int FROM generate_series(1, 10) g WHERE ($1 = '' OR g::text = $1)", .{"3"});
+        try std.testing.expectEqual(@as(i32, 1), w);
+    }
+    try std.testing.expectEqual(before, conn._prepared_statements.count());
+    // The same statement without the optional filter is kept.
+    _ = try queryOn(conn, i32, a, "SELECT count(*)::int FROM generate_series(1, 10) g WHERE g::text = $1", .{"3"});
+    try std.testing.expectEqual(before + 1, conn._prepared_statements.count());
 }

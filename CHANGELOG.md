@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A query with an optional filter on a parameter is no longer kept in
+  `spider.pg`'s statement cache** (`($1 = '' OR col = $1)`, `$2 = 0 OR`,
+  `$3 IS NULL OR`, `($4 = 'all' OR ...)`, `$5 = true OR`, `$6 <> 'x' OR`,
+  `OR $1 IS NULL`, `COALESCE($1, col)`). After a few runs
+  of a named statement Postgres may switch to a generic plan, which cannot
+  drop the unused branch and serves every combination of filters, often
+  by reading the whole table: a 20 000-row list page went from 2 ms to
+  293 ms in an app after 0.12.0. Such a query now runs unnamed, planned
+  for its values every time, as before 0.12.0 (one round trip more than a
+  cached statement when Postgres would have kept a good plan: ~50 us).
+  `/* spider:no-cache */` in the SQL keeps any other statement out of the
+  cache. To keep the cache for a list with optional filters, build the SQL
+  with only the filters in use.
+
 ## [0.12.0] - 2026-11-07
 
 Faster apps and lighter builds. Static files go gzipped and versioned
