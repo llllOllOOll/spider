@@ -304,8 +304,12 @@ pub const Report = struct {
     /// the database holds migrations this binary does not know (a newer
     /// version migrated it; this one is a rollback).
     warnings: std.ArrayList(Problem) = .empty,
-    /// How many modules were checked.
+    /// How many modules were checked (the app's own migrations are not one:
+    /// see `app_migrations`).
     checked: usize = 0,
+    /// Whether the app's own migrations (`Server.migrations`) were checked.
+    /// Their problems are the ones whose `.module` is "app".
+    app_migrations: bool = false,
 
     /// True when no module reported a problem (warnings do not count).
     pub fn ok(self: *const Report) bool {
@@ -334,17 +338,35 @@ pub const Report = struct {
 
     fn writeSummary(self: *const Report, w: *Io.Writer) Io.Writer.Error!void {
         if (self.ok()) {
-            try w.print("spider: {d} module(s) ready\n", .{self.checked});
+            if (!self.app_migrations) {
+                try w.print("spider: {d} module(s) ready\n", .{self.checked});
+            } else if (self.checked == 0) {
+                try w.writeAll("spider: the app's migrations ready\n");
+            } else {
+                try w.print("spider: {d} module(s) and the app's migrations ready\n", .{self.checked});
+            }
             return;
         }
+        // Owners with a problem: each module once, and the app apart.
         var modules: usize = 0;
+        var app = false;
         for (self.problems.items, 0..) |p, i| {
+            if (std.mem.eql(u8, p.module, "app")) {
+                app = true;
+                continue;
+            }
             const seen = for (self.problems.items[0..i]) |prev| {
                 if (std.mem.eql(u8, prev.module, p.module)) break true;
             } else false;
             if (!seen) modules += 1;
         }
-        try w.print("spider: {d} module(s) not ready, refusing to start\n", .{modules});
+        if (!app) {
+            try w.print("spider: {d} module(s) not ready, refusing to start\n", .{modules});
+        } else if (modules == 0) {
+            try w.writeAll("spider: the app's migrations are not ready, refusing to start\n");
+        } else {
+            try w.print("spider: {d} module(s) and the app's migrations not ready, refusing to start\n", .{modules});
+        }
         for (self.problems.items) |p| try w.print("  {s}: {s}\n", .{ p.module, p.message });
     }
 };
@@ -736,6 +758,45 @@ test "runChecks: migrations without PostgreSQL, and a ready set" {
     var w: Io.Writer = .fixed(&buf);
     try ready.write(&w);
     try testing.expectEqualStrings("spider: 1 module(s) ready\n", w.buffered());
+}
+
+test "Report.write: the summary names the app's migrations apart from the modules" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var buf: [512]u8 = undefined;
+
+    var app_only: Report = .{ .arena = a, .app_migrations = true };
+    app_only.add("app", "migration 0001_x is not applied (run `spider migrate`)", .{});
+    var w: Io.Writer = .fixed(&buf);
+    try app_only.write(&w);
+    try testing.expectEqualStrings(
+        \\spider: the app's migrations are not ready, refusing to start
+        \\  app: migration 0001_x is not applied (run `spider migrate`)
+        \\
+    , w.buffered());
+
+    var both: Report = .{ .arena = a, .checked = 2, .app_migrations = true };
+    both.add("b", "MISSING_KEY is required but not set", .{});
+    both.add("app", "migration 0001_x is not applied (run `spider migrate`)", .{});
+    w = .fixed(&buf);
+    try both.write(&w);
+    try testing.expectEqualStrings(
+        \\spider: 1 module(s) and the app's migrations not ready, refusing to start
+        \\  b: MISSING_KEY is required but not set
+        \\  app: migration 0001_x is not applied (run `spider migrate`)
+        \\
+    , w.buffered());
+
+    const ready_both: Report = .{ .arena = a, .checked = 1, .app_migrations = true };
+    w = .fixed(&buf);
+    try ready_both.write(&w);
+    try testing.expectEqualStrings("spider: 1 module(s) and the app's migrations ready\n", w.buffered());
+
+    const ready_app: Report = .{ .arena = a, .app_migrations = true };
+    w = .fixed(&buf);
+    try ready_app.write(&w);
+    try testing.expectEqualStrings("spider: the app's migrations ready\n", w.buffered());
 }
 
 test "runChecks: migrations the binary does not know warn, and the server may still start" {

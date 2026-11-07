@@ -1495,7 +1495,7 @@ pub fn Server(comptime T: type) type {
             if (self.module_mounts > 1) report.add("spider", "mountModules ran {d} times: mount every module in one call, so their order and dependencies are checked together", .{self.module_mounts});
             module_mod.runChecks(&report, io, self.module_entries.items, migrationStatus());
             if (self.app_migrations.len > 0) {
-                report.checked += 1;
+                report.app_migrations = true;
                 if (module_mod.appStepsOf(arena, self.app_migrations)) |steps|
                     module_mod.checkMigrations(&report, "app", "", steps, migrationStatus())
                 else |_|

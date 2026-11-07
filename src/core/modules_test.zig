@@ -244,7 +244,8 @@ test "migrations: the app's own are checked like a module's, and listen() refuse
     defer threaded.deinit();
     const report = s.check(arena.allocator(), threaded.io());
     try std.testing.expect(!report.ok());
-    try std.testing.expectEqual(@as(usize, 2), report.checked); // notify and the app
+    try std.testing.expectEqual(@as(usize, 1), report.checked); // notify
+    try std.testing.expect(report.app_migrations);
     try std.testing.expectEqual(@as(usize, 1), report.problems.items.len);
     try std.testing.expectEqualStrings("app", report.problems.items[0].module);
     try std.testing.expectEqualStrings(if (with_pg)
