@@ -1,11 +1,15 @@
-<div x-data="{{show: false, message: '', type: 'success'}}"
-         @item-saved.window="message = 'Saved!'; type = 'success'; show = true; setTimeout(() => show = false, 3000)"
-         @item-deleted.window="message = 'Deleted!'; type = 'error'; show = true; setTimeout(() => show = false, 3000)"
-         x-show="show"
+<!-- Shows $store.toast (public/js/stores.js). Besides $store.toast.fire(msg),
+     these events fire it: item-saved and item-deleted, and spider:toast,
+     what spider.errorHandler sends (HX-Trigger) when an htmx request fails. -->
+<div x-data
+         @item-saved.window="$store.toast.fire('Saved!', 'success')"
+         @item-deleted.window="$store.toast.fire('Deleted!', 'error')"
+         @spider:toast.window="$store.toast.fire($event.detail.message, $event.detail.type)"
+         x-show="$store.toast.show"
          x-transition
          x-cloak
          class="ui-toast z-50">
-        <div :class="type === 'success' ? 'ui-alert ui-alert-success' : 'ui-alert ui-alert-error'">
-            <span x-text="message"></span>
+        <div :class="$store.toast.type === 'success' ? 'ui-alert ui-alert-success' : 'ui-alert ui-alert-error'">
+            <span x-text="$store.toast.message"></span>
         </div>
     </div>

@@ -1,0 +1,98 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const spider_dep = b.dependency("spider", .{
+        .target = target,
+        // Spider and what it builds (its drivers, the bundled SQLite) follow
+        // the app's mode. Without this they stay in Debug in a release build.
+        .optimize = optimize,
+        .pg = true,
+        // I/O backend: comment one line and uncomment the other.
+        .io_backend = .threaded, // OS threads, blocking sockets (default)
+        // .io_backend = .zio, // fibers on an event loop (epoll)
+    });
+    const spider_mod = spider_dep.module("spider");
+
+    // Register spider.config.zig
+    const config_exists = blk: {
+        std.Io.Dir.cwd().access(b.graph.io, "spider.config.zig", .{}) catch break :blk false;
+        break :blk true;
+    };
+    if (config_exists) {
+        const spider_config_mod = b.createModule(.{
+            .root_source_file = b.path("spider.config.zig"),
+            .imports = &.{
+                .{ .name = "spider", .module = spider_mod },
+            },
+        });
+        spider_mod.addImport("spider_config", spider_config_mod);
+    }
+
+    // ── core ──────────────────────────────────────────────────────────
+    const core_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/mod.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "spider", .module = spider_mod },
+        },
+    });
+
+    // ── features ──────────────────────────────────────────────────────
+    const features_mod = b.createModule(.{
+        .root_source_file = b.path("src/features/mod.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "spider", .module = spider_mod },
+            .{ .name = "core", .module = core_mod },
+        },
+    });
+
+    // ── Executable ────────────────────────────────────────────────────
+    const exe = b.addExecutable(.{
+        .name = "{{app_name}}",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    exe.root_module.addImport("spider", spider_mod);
+    exe.root_module.addImport("core", core_mod);
+    exe.root_module.addImport("features", features_mod);
+    // The migrations: every *.sql file of src/core/db/migrations/, built into
+    // the binary (a new file is picked up on the next build); main.zig
+    // applies them.
+    exe.root_module.addImport("migrations", @import("spider").addMigrations(b, spider_dep, "src/core/db/migrations"));
+
+    b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
+
+    const unit_tests = b.addTest(.{ .root_module = exe.root_module });
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
+    // core and features are separate modules: addTest only runs the tests of
+    // its own root module's files, so each one gets its own test binary.
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = core_mod })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = features_mod })).step);
+    // Files with tests per module, for the discovery test at each module's
+    // root (it fails if a file's tests were left out of the binary).
+    const spider_build = @import("spider");
+    const manifest_tool = spider_dep.artifact("spider-test-manifest");
+    exe.root_module.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src", &.{ "core/", "features/", "shared/" }));
+    core_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/core", &.{}));
+    features_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/features", &.{}));
+
+    // `spider dev` runs `zig build dev --watch`: build the app, then tell the
+    // supervisor where the new binary is.
+    _ = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{});
+}

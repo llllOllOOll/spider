@@ -19,11 +19,14 @@ pub fn main(init: std.process.Init) !void {
 
     // Applies the migrations that have not run yet: a new database, or a new
     // container, is ready when the server starts. `spider migrate`
-    // (SPIDER_MIGRATE=1) only migrates.
-    const applied = try migrate(allocator);
-    if (spider.migrating()) {
-        std.log.info("{d} migration(s) applied", .{applied});
-        return;
+    // (SPIDER_MIGRATE=1) only migrates. `spider check --modules` and
+    // `spider routes` (spider.inspecting()) only report: they change nothing.
+    if (!spider.inspecting()) {
+        const applied = try migrate(allocator);
+        if (spider.migrating()) {
+            std.log.info("{d} migration(s) applied", .{applied});
+            return;
+        }
     }
 
     try serve(allocator, io);
@@ -53,6 +56,10 @@ pub fn serve(allocator: std.mem.Allocator, io: std.Io) !void {
 
     var server = spider.app(.{});
     defer server.deinit();
+    // `spider check --modules` reports the migrations not applied yet. Only
+    // there: a normal start applied them in main(), and the tests run
+    // without a database.
+    if (spider.inspecting()) _ = server.migrations(migrations);
 
     // Routes live with their feature (src/features/<name>/routes.zig);
     // mountFeatures registers every feature listed in src/features/mod.zig.

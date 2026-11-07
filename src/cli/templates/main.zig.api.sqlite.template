@@ -13,8 +13,10 @@ pub fn main(init: std.process.Init) !void {
 
     // Applies the migrations that have not run yet, the ones `spider migrate`
     // applies: a new database, or a new container, is ready when the server
-    // starts. The list is src/core/db/migrations.zig.
-    try core.db.migrations.migrate(allocator);
+    // starts. The list is src/core/db/migrations.zig. `spider check
+    // --modules` and `spider routes` (spider.inspecting()) only report: they
+    // change nothing.
+    if (!spider.inspecting()) try core.db.migrations.migrate(allocator);
 
     try serve(allocator, io);
 }

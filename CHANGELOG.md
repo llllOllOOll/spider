@@ -44,6 +44,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A missing name and a null optional are now null.
 - **`{ list.len }` printed nothing**; it prints the count, as `.len`
   already did in conditions.
+- **`{ selected if (o.on) }` inside a `for` or an `if` printed nothing**,
+  even with `o.on` true: the body of a block did not know the
+  `{ word if (cond) }` / `{ "class" if (cond) }` sugar. It works there as
+  at the top of a template.
+- **`views_dir = null` scanned `src` for templates** and printed a
+  warning; it scans nothing now.
+- **Several copies of an app migrating a new PostgreSQL database at once**
+  failed (all but one: "duplicate key value violates unique constraint
+  pg_type_typname_nsp_index"): `schema_migrations` is now created under
+  the migrations' lock.
+- **`spider new --api --pg` generated a SQLite project that did not
+  compile.** It generates a PostgreSQL one, with its migrations built
+  into the binary.
+- **`spider check --modules` and `spider routes` applied the pending
+  migrations** of a generated project (its `main()` migrated before
+  `listen()`). They change nothing now, and on PostgreSQL the check
+  reports the app's migrations not applied yet. New `spider.inspecting()`
+  says whether a run is one of them.
+- **The toast of generated apps never showed `spider.errorHandler`'s
+  `spider:toast` event** (a failed htmx request). The `<Toast />`
+  component shows `$store.toast` and listens to it, on htmx 2 and 4.
+- **`spider new` on a CLI whose release is not tagged yet** saved the
+  main branch under the missing tag's name (`?ref=v0.11.0#<main>`). It
+  checks the tag first (`git ls-remote`) and says it uses main.
 - Docs: path parameters (`c.params`, `spider.Path`) are percent-decoded;
   `listen()` reads `PORT`; the PostgreSQL defaults are `spider` /
   `spider` / `spider_db` with a pool of 10.

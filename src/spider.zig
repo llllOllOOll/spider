@@ -194,6 +194,19 @@ pub const ModuleProblem = @import("core/module.zig").Problem;
 pub fn migrating() bool {
     return env.get("SPIDER_MIGRATE") != null;
 }
+/// Whether this run only reports: `spider check --modules` (`SPIDER_CHECK`
+/// set) or `spider routes` (`SPIDER_ROUTES` set). listen() then prints the
+/// report or the route table and returns without serving. An app that
+/// migrates in main() skips it on such a run, which must not change the
+/// database:
+///
+/// ```zig
+/// if (!spider.inspecting()) _ = try migrate(allocator);
+/// try serve(allocator, io);
+/// ```
+pub fn inspecting() bool {
+    return env.get("SPIDER_CHECK") != null or env.get("SPIDER_ROUTES") != null;
+}
 // internal: migration steps, keys and checksums, for spider.pg.migrations.
 pub const migration = @import("core/migration.zig");
 // internal: the template engine's file; apps use `spider.Template` and `c.view`.

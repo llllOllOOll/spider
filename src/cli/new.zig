@@ -41,6 +41,8 @@ const main_zig_sqlite_tmpl = @embedFile("templates/main.zig.sqlite.template");
 const main_zig_api_tmpl = @embedFile("templates/main.zig.api.template");
 const main_zig_api_sqlite_tmpl = @embedFile("templates/main.zig.api.sqlite.template");
 const build_zig_api_tmpl = @embedFile("templates/build.zig.api.template");
+const main_zig_api_pg_tmpl = @embedFile("templates/main.zig.api.pg.template");
+const build_zig_api_pg_tmpl = @embedFile("templates/build.zig.api.pg.template");
 const migrations_zig_sqlite_tmpl = @embedFile("templates/migrations.zig.sqlite.template");
 const agents_md_tmpl = @embedFile("templates/AGENTS.md.template");
 const agents_views_html_tmpl = @embedFile("templates/agents_views_html.md.template");
@@ -66,10 +68,70 @@ fn zigFetch(io: std.Io, app_name: []const u8, url: []const u8) !void {
     }
 }
 
+const spider_repo = "https://github.com/llllOllOOll/spider";
+
+/// Where the Spider dependency comes from.
+const FetchSource = enum { tag, main };
+
+/// The answer of `git ls-remote --tags <repo> refs/tags/<tag>` (null: git
+/// did not answer) read as where to fetch from: the tag when it is listed,
+/// main when git answered without it. `zig fetch ...?ref=<tag>` of a tag
+/// that does not exist saves the default branch without a word, under the
+/// tag's name, so the tag is checked first. Without an answer the tag is
+/// tried, and a fetch that fails falls back to main.
+fn fetchSource(ls_remote: ?[]const u8, tag: []const u8) FetchSource {
+    const out = ls_remote orelse return .tag;
+    var lines = std.mem.tokenizeAny(u8, out, "\r\n");
+    while (lines.next()) |line| {
+        const tab = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        const name = line[tab + 1 ..];
+        if (!std.mem.startsWith(u8, name, "refs/tags/")) continue;
+        const listed = std.mem.trimEnd(u8, name["refs/tags/".len..], "^{}");
+        if (std.mem.eql(u8, listed, tag)) return .tag;
+    }
+    return .main;
+}
+
+test "fetchSource: the tag only when git lists it" {
+    const listed = "b64fc5389b2548192c1df2b31edbfbd21128e1c1\trefs/tags/v0.11.0\nb896a90ade8d02fb814e1f362c1f14dfc713715d\trefs/tags/v0.11.0^{}\n";
+    try std.testing.expectEqual(FetchSource.tag, fetchSource(listed, "v0.11.0"));
+    try std.testing.expectEqual(FetchSource.main, fetchSource(listed, "v0.11"));
+    try std.testing.expectEqual(FetchSource.main, fetchSource("", "v0.12.0"));
+    try std.testing.expectEqual(FetchSource.main, fetchSource("abc\trefs/tags/v0.12.0-rc1\n", "v0.12.0"));
+    try std.testing.expectEqual(FetchSource.tag, fetchSource(null, "v0.12.0"));
+}
+
+/// What `git ls-remote --tags` answers for `tag`, or null when git is not
+/// there or fails (no network): the caller then trusts `zig fetch`.
+fn lsRemoteTag(io: std.Io, allocator: std.mem.Allocator, tag: []const u8) ?[]u8 {
+    const ref = std.fmt.allocPrint(allocator, "refs/tags/{s}", .{tag}) catch return null;
+    defer allocator.free(ref);
+    const res = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "ls-remote", "--tags", spider_repo, ref },
+    }) catch return null;
+    allocator.free(res.stderr);
+    const ok = switch (res.term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+    if (!ok) {
+        allocator.free(res.stdout);
+        return null;
+    }
+    return res.stdout;
+}
+
 /// Saves the Spider dependency: the release with this CLI's version. A CLI
-/// built from an unreleased tree has no such tag yet and falls back to main.
-fn runZigFetch(io: std.Io, app_name: []const u8) !void {
-    const repo = "git+https://github.com/llllOllOOll/spider";
+/// built from an unreleased tree has no such tag yet and falls back to main,
+/// saying so.
+fn runZigFetch(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void {
+    const repo = "git+" ++ spider_repo;
+    const answer = lsRemoteTag(io, allocator, spider_ref);
+    defer if (answer) |a| allocator.free(a);
+    if (fetchSource(answer, spider_ref) == .main) {
+        std.debug.print("warning: Spider {s} is not published; using the main branch instead\n", .{spider_ref});
+        return zigFetch(io, app_name, repo ++ "#main");
+    }
     zigFetch(io, app_name, repo ++ "?ref=" ++ spider_ref) catch {
         std.debug.print("warning: Spider {s} is not published; using the main branch instead\n", .{spider_ref});
         return zigFetch(io, app_name, repo ++ "#main");
@@ -266,6 +328,60 @@ test "renderAppTest: a scratch database only for SQLite, a first test for every 
     try std.testing.expect(has(u8, api, "{{") == null);
 }
 
+/// The build.zig of a new project: its kind (API or pages) and its database.
+fn buildZigTemplate(api_only: bool, no_db: bool, use_pg: bool) []const u8 {
+    if (api_only) return if (!no_db and use_pg) build_zig_api_pg_tmpl else build_zig_api_tmpl;
+    if (no_db) return build_zig_tmpl;
+    return if (use_pg) build_zig_pg_tmpl else build_zig_sqlite_tmpl;
+}
+
+/// The src/main.zig of a new project: its kind (API or pages) and its database.
+fn mainZigTemplate(api_only: bool, no_db: bool, use_pg: bool) []const u8 {
+    if (api_only) {
+        if (no_db) return main_zig_api_tmpl;
+        return if (use_pg) main_zig_api_pg_tmpl else main_zig_api_sqlite_tmpl;
+    }
+    if (no_db) return main_zig_tmpl;
+    return if (use_pg) main_zig_pg_tmpl else main_zig_sqlite_tmpl;
+}
+
+test "new --api --pg: a PostgreSQL main.zig and build.zig, not the SQLite ones" {
+    const has = std.mem.indexOf;
+    const main_pg = mainZigTemplate(true, false, true);
+    try std.testing.expect(has(u8, main_pg, "spider.pg") != null);
+    try std.testing.expect(has(u8, main_pg, "sqlite") == null);
+    try std.testing.expect(has(u8, main_pg, "spider_templates") == null);
+    try std.testing.expect(has(u8, main_pg, ".always_json = true") != null);
+    const build_pg = buildZigTemplate(true, false, true);
+    try std.testing.expect(has(u8, build_pg, ".pg = true") != null);
+    try std.testing.expect(has(u8, build_pg, "addMigrations") != null);
+    try std.testing.expect(has(u8, build_pg, "sqlite") == null);
+
+    try std.testing.expect(has(u8, mainZigTemplate(true, false, false), "spider.sqlite") != null);
+    try std.testing.expect(has(u8, buildZigTemplate(true, false, false), "{{sqlite_enabled}}") != null);
+    try std.testing.expect(has(u8, mainZigTemplate(false, false, true), "spider.pg") != null);
+    try std.testing.expect(has(u8, mainZigTemplate(true, true, false), "db.init") == null);
+}
+
+test "generated main.zig: spider check and spider routes never migrate" {
+    const has = std.mem.indexOf;
+    inline for (.{ main_zig_pg_tmpl, main_zig_api_pg_tmpl, main_zig_sqlite_tmpl, main_zig_api_sqlite_tmpl }) |tmpl| {
+        try std.testing.expect(has(u8, tmpl, "if (!spider.inspecting())") != null);
+    }
+    // PostgreSQL: the check report lists the app's migrations.
+    inline for (.{ main_zig_pg_tmpl, main_zig_api_pg_tmpl }) |tmpl| {
+        try std.testing.expect(has(u8, tmpl, "if (spider.inspecting()) _ = server.migrations(migrations);") != null);
+    }
+}
+
+test "the generated toast shows the event spider.errorHandler sends to htmx" {
+    const has = std.mem.indexOf;
+    // spider:toast is errorHandler's default `toast_event` (src/modules/errors.zig).
+    try std.testing.expect(has(u8, toast_tmpl, "@spider:toast.window=\"$store.toast.fire($event.detail.message, $event.detail.type)\"") != null);
+    try std.testing.expect(has(u8, toast_tmpl, "x-show=\"$store.toast.show\"") != null);
+    try std.testing.expect(has(u8, stores_js_tmpl, "Alpine.store('toast'") != null);
+}
+
 /// The generated .env: `.env.example` with the JWT_SECRET placeholder
 /// replaced by `secret`.
 pub fn envFromExample(allocator: std.mem.Allocator, example: []const u8, secret: []const u8) ![]u8 {
@@ -430,8 +546,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
 
     std.debug.print("Creating {s}...\n", .{app_name});
 
-    const selected_build_zig_tmpl = if (api_only) build_zig_api_tmpl else if (effective_no_db) build_zig_tmpl else if (use_pg) build_zig_pg_tmpl else build_zig_sqlite_tmpl;
-    const selected_main_zig_tmpl = if (api_only and effective_no_db) main_zig_api_tmpl else if (api_only) main_zig_api_sqlite_tmpl else if (effective_no_db) main_zig_tmpl else if (use_pg) main_zig_pg_tmpl else main_zig_sqlite_tmpl;
+    const selected_build_zig_tmpl = buildZigTemplate(api_only, effective_no_db, use_pg);
+    const selected_main_zig_tmpl = mainZigTemplate(api_only, effective_no_db, use_pg);
     const selected_env_example_tmpl = if (effective_no_db) env_example_nodb_tmpl else if (use_pg) env_example_pg_tmpl else env_example_tmpl;
 
     // For API projects, use sqlite_enabled flag in build.zig.api.template
@@ -705,7 +821,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
 
     current_step = "fetch spider";
     std.debug.print("Fetching Spider {s}...\n", .{spider_ref});
-    runZigFetch(io, app_name) catch |err| {
+    runZigFetch(io, allocator, app_name) catch |err| {
         fail_err = err;
         return err;
     };

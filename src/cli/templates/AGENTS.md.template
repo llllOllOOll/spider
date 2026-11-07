@@ -91,7 +91,7 @@ auth. Fix the code, not the check — and don't delete that test.
   `class="ui-btn { "ui-btn-active" if (current) }"` — never `disabled="{ x }"`
   (the attribute stays on when x is false; `spider check` flags it).
 - htmx response headers: `.headers = try c.htmx(.{ .retarget = "#form", .reswap = .outerHTML,
-  .trigger = try c.hxEvent("spider:toast", .{ .message = "Salvo", .type = "success" }) })`
+  .trigger = try c.hxEvent("spider:toast", .{ .message = "Saved", .type = "success" }) })`
   instead of building `HX-*` header arrays by hand.
 - The client's address is `c.clientIp()` (set `trusted_proxies` in spider.config.zig
   behind a proxy); never read X-Forwarded-For directly.
