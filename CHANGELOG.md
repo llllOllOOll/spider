@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-07
+
+Faster apps and lighter builds. Static files go gzipped and versioned
+(`asset_url`, now built in and used by the generated layouts), `spider.pg`
+keeps prepared statements per connection, Debug binaries are less than half
+the size, and every build prunes the `.zig-cache` it leaves behind. Plus
+template, form, auth and CLI fixes.
+
+Upgrading: change the Spider dependency to v0.12.0. Modules must accept it
+(`.spider = ">=0.12.0 <0.13.0"` or a range that contains 0.12.0); the
+official modules do from spider-modules' matching commit. Behind PgBouncer
+in transaction mode without `max_prepared_statements`, set
+`PG_STATEMENT_CACHE=0` (or `DbConfig.statement_cache = 0`). An app's own
+`asset_url` helper keeps working and still takes precedence.
+
 ### Added
 
 - **`spider.pg` keeps prepared statements per connection**: a query with
@@ -49,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still takes precedence.
 
 ### Changed
+
+- Spider and the CLI are 0.12.0; `spider new` starts projects on it.
 
 - **Generated layouts load their CSS and JavaScript through
   `asset_url`** (`spider new`): `/css/app.css?v=<hash>` and the same for

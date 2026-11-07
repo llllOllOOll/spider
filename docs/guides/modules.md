@@ -66,7 +66,7 @@ const spider = @import("spider");
 pub const spider_module = spider.module(.{
     .name = "audit",
     .version = "0.1.0",
-    .spider = ">=0.11.0 <0.12.0",
+    .spider = ">=0.12.0 <0.13.0",
     .requires = .{}, // other modules it needs, by name
     .migrations = .{
         .{ .name = "0001_init", .sql = @embedFile("sql/0001_init.sql") },
