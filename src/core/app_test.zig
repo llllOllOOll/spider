@@ -566,6 +566,12 @@ test "Loaded extractor: without a resourcePolicy for that type -> error.Resource
     try std.testing.expectEqual(std.http.Status.internal_server_error, context_mod.statusForError(r.err));
 }
 
+test "Config.views_dir = null scans no directory for templates" {
+    var s = app_mod.appWithConfig(.{ .views_dir = null, .static_dir = null });
+    defer s.deinit();
+    try std.testing.expect(s.views_index == null);
+}
+
 test "Config.static_dir sets the static root; null turns static files off; staticDir() still overrides" {
     var a = app_mod.appWithConfig(.{ .views_dir = null, .static_dir = "./assets" });
     defer a.deinit();
