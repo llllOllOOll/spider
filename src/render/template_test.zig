@@ -1273,11 +1273,20 @@ test "call syntax and script-tag attributes work inside if blocks too" {
 
 test "call syntax with no registered helper renders empty" {
     const alc = std.testing.allocator;
-    var tmpl = try Template.init(alc, "before[{ asset_url(\"app.css\") }]after");
+    var tmpl = try Template.init(alc, "before[{ no_such_helper(\"app.css\") }]after");
     defer tmpl.deinit();
     const r = try tmpl.render(.{}, alc);
     defer alc.free(r);
     try std.testing.expectEqualStrings("before[]after", r);
+}
+
+test "asset_url is built in: the file's URL (versioned once listen() set the static directory)" {
+    const alc = std.testing.allocator;
+    var tmpl = try Template.init(alc, "<link href=\"{ asset_url(\"css/app.css\") }\">");
+    defer tmpl.deinit();
+    const r = try tmpl.render(.{}, alc);
+    defer alc.free(r);
+    try std.testing.expect(std.mem.startsWith(u8, r, "<link href=\"/css/app.css"));
 }
 
 test "script tag attributes are still interpolated" {

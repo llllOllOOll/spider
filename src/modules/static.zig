@@ -16,7 +16,10 @@ const Response = @import("../core/context.zig").Response;
 /// (`application/octet-stream` when unknown). Every answer has an `ETag`
 /// (a matching `If-None-Match` gets 304) and `Cache-Control: no-cache`, or
 /// `public, max-age=31536000, immutable` when the URL has a `v` query
-/// parameter (`/app.css?v=3`).
+/// parameter (`/app.css?v=3`). Text files (CSS, JavaScript, SVG, JSON,
+/// HTML, ...) of 1 KiB or more go gzipped to a client that accepts it,
+/// with `Content-Encoding: gzip` and `Vary: Accept-Encoding`; each file is
+/// compressed once and kept in memory until its content changes.
 pub const StaticConfig = struct {
     /// The directory of the files, relative to the working directory.
     /// Empty: no static files.
@@ -66,7 +69,94 @@ pub const Request = struct {
     query: ?[]const u8 = null,
     /// The If-None-Match header.
     if_none_match: ?[]const u8 = null,
+    /// Whether the Accept-Encoding header accepts gzip (see acceptsGzip).
+    accept_gzip: bool = false,
 };
+
+// internal: whether an Accept-Encoding header value accepts gzip: `gzip`
+// or `*`, unless its weight is zero (`gzip;q=0`).
+pub fn acceptsGzip(accept_encoding: []const u8) bool {
+    var it = std.mem.splitScalar(u8, accept_encoding, ',');
+    while (it.next()) |item| {
+        var parts = std.mem.splitScalar(u8, item, ';');
+        const coding = std.mem.trim(u8, parts.first(), " \t");
+        if (!std.ascii.eqlIgnoreCase(coding, "gzip") and !std.mem.eql(u8, coding, "*")) continue;
+        var refused = false;
+        while (parts.next()) |param| {
+            const p = std.mem.trim(u8, param, " \t");
+            if (p.len >= 2 and (p[0] == 'q' or p[0] == 'Q') and p[1] == '=') {
+                const w = std.fmt.parseFloat(f32, p[2..]) catch 1;
+                refused = w <= 0;
+            }
+        }
+        if (!refused) return true;
+    }
+    return false;
+}
+
+/// Files smaller than this go as they are: gzip saves little on them.
+const min_gzip_bytes: usize = 1024;
+
+/// What compresses well: text. Images, fonts, archives and media already
+/// are compressed.
+fn compressible(content_type: []const u8) bool {
+    const types = [_][]const u8{ "text/", "application/javascript", "application/json", "application/manifest+json", "image/svg+xml", "image/x-icon" };
+    for (types) |t| if (std.mem.startsWith(u8, content_type, t)) return true;
+    return false;
+}
+
+/// The compressed files, by the hash of their content: a file that changes
+/// gets a new entry. Bounded: past `gzip_cache_limit` bytes it starts over.
+const GzCache = struct {
+    lock: std.atomic.Mutex = .unlocked,
+    map: std.AutoHashMapUnmanaged(u64, []const u8) = .empty,
+    bytes: usize = 0,
+};
+var gz_cache: GzCache = .{};
+const gzip_cache_limit: usize = 64 * 1024 * 1024;
+
+fn cacheLock() void {
+    while (!gz_cache.lock.tryLock()) std.atomic.spinLoopHint();
+}
+
+/// `body` gzipped, from the cache or compressed now (and kept). Memory
+/// that lives as long as the process; the result must not be freed.
+fn gzipped(body: []const u8, hash: u64) ![]const u8 {
+    cacheLock();
+    const hit = gz_cache.map.get(hash);
+    gz_cache.lock.unlock();
+    if (hit) |bytes| return bytes;
+
+    const gpa = std.heap.smp_allocator;
+    const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
+    defer gpa.free(window);
+    var out: std.Io.Writer.Allocating = try .initCapacity(gpa, body.len / 2 + 64);
+    defer out.deinit();
+    var compressor = try std.compress.flate.Compress.init(&out.writer, window, .gzip, .best);
+    try compressor.writer.writeAll(body);
+    try compressor.finish();
+    const bytes = try gpa.dupe(u8, out.written());
+
+    cacheLock();
+    defer gz_cache.lock.unlock();
+    // Another request compressed it meanwhile: keep that one.
+    if (gz_cache.map.get(hash)) |kept| {
+        gpa.free(bytes);
+        return kept;
+    }
+    if (gz_cache.bytes + bytes.len > gzip_cache_limit) {
+        var it = gz_cache.map.valueIterator();
+        while (it.next()) |v| gpa.free(v.*);
+        gz_cache.map.clearRetainingCapacity();
+        gz_cache.bytes = 0;
+    }
+    gz_cache.map.put(gpa, hash, bytes) catch {
+        gpa.free(bytes);
+        return error.OutOfMemory;
+    };
+    gz_cache.bytes += bytes.len;
+    return bytes;
+}
 
 // internal: the caching step of `serve`.
 // Adds caching to a static file response: an ETag from the content
@@ -78,19 +168,32 @@ pub const Request = struct {
 // with no body.
 pub fn withCache(arena: std.mem.Allocator, r: Response, req: Request) !Response {
     const body = r.body orelse "";
-    const etag = try std.fmt.allocPrint(arena, "\"{x:0>16}\"", .{std.hash.Wyhash.hash(0, body)});
+    const hash = std.hash.Wyhash.hash(0, body);
+    const etag = try std.fmt.allocPrint(arena, "\"{x:0>16}\"", .{hash});
+    // The gzipped bytes are another representation: another ETag (RFC 9110
+    // 8.8.3), from which "-gzip" is taken off to compare.
+    const text = compressible(r.content_type);
+    const gzip = text and req.accept_gzip and body.len >= min_gzip_bytes;
+    const gz_etag = try std.fmt.allocPrint(arena, "\"{x:0>16}-gzip\"", .{hash});
     const versioned = if (req.query) |q| hasParam(q, "v") else false;
-    const headers = try arena.alloc([2][]const u8, 2);
-    headers[0] = .{ "ETag", etag };
-    headers[1] = .{ "Cache-Control", if (versioned) "public, max-age=31536000, immutable" else "no-cache" };
+    var headers: std.ArrayList([2][]const u8) = try .initCapacity(arena, 4);
+    headers.appendAssumeCapacity(.{ "ETag", if (gzip) gz_etag else etag });
+    headers.appendAssumeCapacity(.{ "Cache-Control", if (versioned) "public, max-age=31536000, immutable" else "no-cache" });
+    if (text) headers.appendAssumeCapacity(.{ "Vary", "Accept-Encoding" });
     var out = r;
-    out.headers = headers;
     if (req.if_none_match) |inm| {
-        if (etagListHas(inm, etag)) {
+        if (etagListHas(inm, etag) or etagListHas(inm, gz_etag)) {
             out.status = .not_modified;
             out.body = "";
+            out.headers = headers.items;
+            return out;
         }
     }
+    if (gzip) {
+        out.body = try gzipped(body, hash);
+        headers.appendAssumeCapacity(.{ "Content-Encoding", "gzip" });
+    }
+    out.headers = headers.items;
     return out;
 }
 
@@ -253,4 +356,79 @@ test "serve: a file over max_file_bytes is error.StaticFileTooLarge; the limit c
     try std.testing.expectEqual(@as(usize, 2000), r.body.?.len);
     // The default is 10 MiB.
     try std.testing.expectEqual(@as(usize, 10 * 1024 * 1024), (StaticConfig{}).max_file_bytes);
+}
+
+fn gunzip(a: std.mem.Allocator, data: []const u8) ![]u8 {
+    var in: std.Io.Reader = .fixed(data);
+    var gz: std.compress.flate.Decompress = .init(&in, .gzip, &.{});
+    return gz.reader.allocRemaining(a, .unlimited);
+}
+
+test "serve: a text file is gzipped for a client that accepts it, with Vary and its own ETag" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const css: [4000]u8 = @splat('a');
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "app.css", .data = &css });
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const cfg: StaticConfig = .{ .dir = dir, .prefix = "/" };
+
+    const gz = (try serve(std.testing.io, a, cfg, "/app.css", .{ .accept_gzip = true })).?;
+    try std.testing.expectEqualStrings("gzip", headerValue(gz, "Content-Encoding").?);
+    try std.testing.expectEqualStrings("Accept-Encoding", headerValue(gz, "Vary").?);
+    try std.testing.expect(gz.body.?.len < css.len);
+    try std.testing.expectEqualStrings(&css, try gunzip(a, gz.body.?));
+    const gz_etag = headerValue(gz, "ETag").?;
+    try std.testing.expect(std.mem.endsWith(u8, gz_etag, "-gzip\""));
+
+    // Not accepted: the file as it is, still with Vary (a cache must not mix them).
+    const plain = (try serve(std.testing.io, a, cfg, "/app.css", .{})).?;
+    try std.testing.expect(headerValue(plain, "Content-Encoding") == null);
+    try std.testing.expectEqualStrings("Accept-Encoding", headerValue(plain, "Vary").?);
+    try std.testing.expectEqualStrings(&css, plain.body.?);
+    const plain_etag = headerValue(plain, "ETag").?;
+    try std.testing.expect(!std.mem.eql(u8, plain_etag, gz_etag));
+
+    // Either ETag revalidates the same content: 304, nothing to send.
+    for ([_][]const u8{ gz_etag, plain_etag }) |etag| {
+        const again = (try serve(std.testing.io, a, cfg, "/app.css", .{ .accept_gzip = true, .if_none_match = etag })).?;
+        try std.testing.expectEqual(std.http.Status.not_modified, again.status);
+        try std.testing.expectEqualStrings("", again.body.?);
+        try std.testing.expectEqualStrings(gz_etag, headerValue(again, "ETag").?);
+    }
+
+    // Compressed once: the next request gets the same bytes.
+    const second = (try serve(std.testing.io, a, cfg, "/app.css", .{ .accept_gzip = true })).?;
+    try std.testing.expectEqual(gz.body.?.ptr, second.body.?.ptr);
+}
+
+test "serve: images and small files are never gzipped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const big: [4000]u8 = @splat('b');
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &big });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "tiny.js", .data = "let a = 1;" });
+    const dir = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    const cfg: StaticConfig = .{ .dir = dir, .prefix = "/" };
+
+    const png = (try serve(std.testing.io, a, cfg, "/logo.png", .{ .accept_gzip = true })).?;
+    try std.testing.expect(headerValue(png, "Content-Encoding") == null);
+    try std.testing.expect(headerValue(png, "Vary") == null);
+    const tiny = (try serve(std.testing.io, a, cfg, "/tiny.js", .{ .accept_gzip = true })).?;
+    try std.testing.expect(headerValue(tiny, "Content-Encoding") == null);
+    try std.testing.expectEqualStrings("let a = 1;", tiny.body.?);
+}
+
+test "acceptsGzip: the Accept-Encoding header, q=0 refuses" {
+    try std.testing.expect(acceptsGzip("gzip, deflate, br"));
+    try std.testing.expect(acceptsGzip("br;q=1.0, GZIP;q=0.5"));
+    try std.testing.expect(acceptsGzip("*"));
+    try std.testing.expect(!acceptsGzip("br, deflate"));
+    try std.testing.expect(!acceptsGzip("gzip;q=0"));
+    try std.testing.expect(!acceptsGzip(""));
 }

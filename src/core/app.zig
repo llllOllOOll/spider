@@ -34,6 +34,7 @@ const Env = @import("../internal/config.zig").Env;
 const default_config = @import("../internal/config.zig").default;
 const views_mod = @import("../render/views.zig");
 const dev_reload = @import("../modules/dev_reload.zig");
+const assets_mod = @import("../render/assets.zig");
 const listen_port = @import("listen_port.zig");
 const module_mod = @import("module.zig");
 const migration_mod = @import("migration.zig");
@@ -458,6 +459,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             const static_hit = static_mod.serve(ctx.io, arena, ctx.static_config, path, .{
                 .query = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[q + 1 ..] else null,
                 .if_none_match = headerIgnoreCase(headers_map, "If-None-Match"),
+                .accept_gzip = static_mod.acceptsGzip(headerIgnoreCase(headers_map, "Accept-Encoding") orelse ""),
             }) catch |err| blk: {
                 if (err == error.StaticFileTooLarge) {
                     std.log.warn("rid={s} {s} {s}: the file is over static_max_file_bytes ({d}) and was not served; raise the limit in spider.config.zig, or serve it from somewhere else", .{ request_id, method_name, path, ctx.static_config.max_file_bytes });
@@ -467,7 +469,8 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
                 break :blk null;
             };
             if (static_hit) |static_response| {
-                var extra_hdrs_buf: [4]std.http.Header = undefined;
+                // content-type + ETag, Cache-Control, Vary, Content-Encoding.
+                var extra_hdrs_buf: [6]std.http.Header = undefined;
                 extra_hdrs_buf[0] = .{ .name = "content-type", .value = static_response.content_type };
                 var n_hdrs: usize = 1;
                 for (static_response.headers) |h| {
@@ -1900,6 +1903,7 @@ pub fn Server(comptime T: type) type {
             var threaded: Io.Threaded = .init(gpa, .{});
             defer threaded.deinit();
             const io = threaded.io();
+            assets_mod.configure(io, self.static_config.dir, self.static_config.prefix);
 
             const address = try Io.net.IpAddress.parse(host, port);
             var listener = try address.listen(io, .{ .reuse_address = true });
@@ -1979,6 +1983,7 @@ pub fn Server(comptime T: type) type {
             });
             defer rt.deinit();
             const io = rt.io();
+            assets_mod.configure(io, self.static_config.dir, self.static_config.prefix);
 
             const address = try Io.net.IpAddress.parse(host, port);
             var listener = try address.listen(io, .{ .reuse_address = true });

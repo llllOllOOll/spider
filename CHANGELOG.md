@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Static files are served gzipped** to clients that accept it: text
+  files (CSS, JavaScript, SVG, JSON, HTML, ...) of 1 KiB or more, with
+  `Content-Encoding: gzip` and `Vary: Accept-Encoding`. Each file is
+  compressed once (best level) and kept in memory until its content
+  changes. `spider.gzip` never reached them, as they are answered before
+  the middlewares. A generated app's `app.css` goes from 80 KB to 12 KB,
+  htmx from 52 KB to 17 KB.
+- **`{ asset_url("css/app.css") }` is built into templates**: the file's
+  URL with a version from its content (`/css/app.css?v=<hash>`), which the
+  static files answer with a year-long `immutable` cache. A release build
+  hashes each file once; a Debug build on every call, so edits show at
+  once. Nothing to list in build.zig. An app's own `asset_url` helper
+  still takes precedence.
+
 ### Changed
 
 - **The check report names the app's migrations apart from the

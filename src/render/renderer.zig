@@ -3,6 +3,7 @@
 //! calls. `Template.render` drives it.
 
 const std = @import("std");
+const assets = @import("assets.zig");
 const builtin = @import("builtin");
 const ast = @import("ast.zig");
 const ctx_mod = @import("context.zig");
@@ -225,14 +226,22 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             // framework's own build.zig wires an empty default, so this
             // @import always resolves and unknown calls just render empty.
             const helpers = @import("template_helpers");
+            var found = false;
             inline for (@typeInfo(helpers).@"struct".decl_names) |decl_name| {
                 if (std.mem.eql(u8, decl_name, call.name)) {
+                    found = true;
                     const value = @field(helpers, decl_name)(alc, call.args) catch null;
                     if (value) |v| {
                         defer alc.free(v);
                         try result.appendSlice(alc, v);
                     }
                 }
+            }
+            // Built in, unless the app's helpers define it.
+            if (!found and std.mem.eql(u8, call.name, "asset_url") and call.args.len == 1) {
+                const v = try assets.url(alc, call.args[0]);
+                defer alc.free(v);
+                try result.appendSlice(alc, v);
             }
         },
     }

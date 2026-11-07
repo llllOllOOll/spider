@@ -292,6 +292,7 @@ test {
     _ = @import("modules/push.zig");
     _ = @import("render/zmd/zmd.zig");
     _ = @import("render/template_test.zig");
+    _ = @import("render/assets.zig");
     _ = @import("render/template_safety_test.zig");
     _ = @import("render/embedded_test.zig");
     _ = @import("core/watchdog.zig");
