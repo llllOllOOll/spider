@@ -213,8 +213,7 @@ pub fn apply(arena: std.mem.Allocator, steps: []const Step) anyerror!usize {
     const plans = try arena.alloc(Plan, steps.len);
     for (steps, plans) |s, *p| p.* = try planOf(arena, s);
 
-    try pg.query(void, arena, table_ddl, .{});
-    try pg.query(void, arena, checksum_ddl, .{});
+    try ensureTable(arena);
 
     var applied: usize = 0;
     var baselined: usize = 0;
@@ -239,6 +238,21 @@ pub fn apply(arena: std.mem.Allocator, steps: []const Step) anyerror!usize {
 }
 
 const Outcome = enum { ran, baselined, already };
+
+/// Creates schema_migrations (and its checksum column) under the migrations'
+/// lock: `CREATE TABLE IF NOT EXISTS` is not safe in a race, and several
+/// copies of the app starting on a new database run it at once (all but
+/// one failed with "duplicate key value violates unique constraint
+/// pg_type_typname_nsp_index"). DDL is transactional: the ones that waited
+/// find the table there.
+fn ensureTable(arena: std.mem.Allocator) !void {
+    var tx = try pg.begin();
+    defer tx.rollback();
+    try tx.query(void, arena, lock_sql, .{});
+    try tx.query(void, arena, table_ddl, .{});
+    try tx.query(void, arena, checksum_ddl, .{});
+    try tx.commit();
+}
 
 fn applyInTransaction(arena: std.mem.Allocator, k: []const u8, sum: *const [spider.migration.checksum_len]u8, statements: []const []const u8) !Outcome {
     var tx = try pg.begin();
@@ -394,6 +408,37 @@ test "migrations: transaction control in a step is refused before anything runs"
     };
     try std.testing.expectError(error.MigrationHasTransactionControl, apply(a, &steps));
     try std.testing.expectEqualSlices(State, &.{ .pending, .pending }, try status(a, &steps));
+}
+
+test "migrations: replicas starting together on a new database all migrate" {
+    try initTestDb(std.testing.allocator);
+    defer pg.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    defer cleanUp(a, "spidertest_r", &.{});
+
+    const Replica = struct {
+        const steps = [_]Step{.{ .module = "spidertest_r", .name = "0001_x", .sql = "SELECT 1" }};
+        fn run(failed: *std.atomic.Value(u32)) void {
+            var state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+            defer state.deinit();
+            _ = apply(state.allocator(), &steps) catch {
+                _ = failed.fetchAdd(1, .monotonic);
+            };
+        }
+    };
+    // A new database each round: the table the migrations are recorded in
+    // does not exist yet, and every replica creates it at once.
+    var failed = std.atomic.Value(u32).init(0);
+    for (0..20) |_| {
+        try pg.query(void, a, "DROP TABLE IF EXISTS schema_migrations", .{});
+        var threads: [6]std.Thread = undefined;
+        for (&threads) |*t| t.* = try std.Thread.spawn(.{}, Replica.run, .{&failed});
+        for (threads) |t| t.join();
+    }
+    try std.testing.expectEqual(@as(u32, 0), failed.load(.monotonic));
+    try std.testing.expectEqualSlices(State, &.{.applied}, try status(a, &Replica.steps));
 }
 
 test "migrations: rows written before checksums count as applied" {
