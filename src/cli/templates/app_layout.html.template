@@ -6,10 +6,10 @@
     <title>{ title ?? "{{app_name}}" }</title>
     <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="shortcut icon" href="/favicon.ico">
-    <link rel="stylesheet" href="/css/app.css">
-    <script src="/js/htmx.min.js"></script>
-    <script defer src="/js/stores.js"></script>
-    <script defer src="/js/alpine.min.js"></script>
+    <link rel="stylesheet" href="{ asset_url("/css/app.css") }">
+    <script src="{ asset_url("/js/htmx.min.js") }"></script>
+    <script defer src="{ asset_url("/js/stores.js") }"></script>
+    <script defer src="{ asset_url("/js/alpine.min.js") }"></script>
     <style>[x-cloak] { display: none !important; }</style>
 </head>
 <!-- App shell: navbar, sidebar (a drawer on small screens) and a bottom nav

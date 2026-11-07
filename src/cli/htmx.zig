@@ -1,7 +1,9 @@
 //! Which htmx a project uses, 2 or 4, and what differs between them in
 //! what the CLI writes and downloads. A project says which one by the
 //! script its layouts load: `/js/htmx.min.js` is htmx 2, `/js/htmx4.min.js`
-//! is htmx 4. Nothing else records it.
+//! is htmx 4, inside `asset_url("...")` or not (projects made before it).
+//! Nothing else records it. Keep the leading slash in the templates: a
+//! `spider install` of an older CLI looks for exactly that text.
 const std = @import("std");
 
 pub const Version = enum {
@@ -18,8 +20,8 @@ pub const Version = enum {
 
 /// What the generated layouts carry for htmx 2: the line every template of
 /// the CLI is written with.
-pub const script_two = "<script src=\"/js/htmx.min.js\"></script>";
-pub const script_four = "<script src=\"/js/htmx4.min.js\"></script>";
+pub const script_two = "<script src=\"{ asset_url(\"/js/htmx.min.js\") }\"></script>";
+pub const script_four = "<script src=\"{ asset_url(\"/js/htmx4.min.js\") }\"></script>";
 
 /// The file names in `public/js/`, which is also how a project is read.
 pub const file_two = "htmx.min.js";
@@ -124,6 +126,10 @@ test "the layouts load the htmx the project was made with, and say which one it 
     try std.testing.expectEqual(Version.two, ofLayouts(&.{}));
     try std.testing.expect(!wantsSse(&.{script_four}));
     try std.testing.expect(wantsSse(&.{"<script src=\"/js/htmx4-sse.min.js\"></script>"}));
+    try std.testing.expect(wantsSse(&.{"<script src=\"{ asset_url(\"/js/htmx4-sse.min.js\") }\"></script>"}));
+    // Projects made before asset_url load the file directly.
+    try std.testing.expectEqual(Version.four, ofLayouts(&.{"<script src=\"/js/htmx4.min.js\"></script>"}));
+    try std.testing.expectEqual(Version.two, ofLayouts(&.{"<script src=\"/js/htmx.min.js\"></script>"}));
 }
 
 test "the generated form removes itself after a good request, in the words of each version" {

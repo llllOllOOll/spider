@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Generated layouts load their CSS and JavaScript through
+  `asset_url`** (`spider new`): `/css/app.css?v=<hash>` and the same for
+  htmx, Alpine and `stores.js`, cached by the browser for a year instead
+  of asked again on every page. The paths keep their leading slash, so an
+  older CLI's `spider install` still sees which htmx a project loads.
+
 - **Debug builds of apps are less than half the size and build twice as
   fast.** Spider's generic code made a copy of itself per struct field:
   each field mapped by `spider.pg` had its own log calls, and each type
