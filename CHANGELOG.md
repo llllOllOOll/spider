@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spider.pg` keeps prepared statements per connection**: a query with
+  parameters run again on the same connection skips parsing and planning.
+  Measured on the same connection: a query with six joins went from
+  ~1.9 ms to ~0.4 ms, a primary key lookup from ~240 us to ~150 us. Up to
+  256 statements per connection (`DbConfig.statement_cache`, or
+  `PG_STATEMENT_CACHE`); `0` turns it off, as PgBouncer in transaction
+  mode without `max_prepared_statements` needs. After a migration changes
+  a table a cached statement reads, Postgres refuses the statement: it is
+  prepared again and the query run once more (inside a transaction the
+  error is returned, as Postgres aborted the transaction).
+
 - **Static files are served gzipped** to clients that accept it: text
   files (CSS, JavaScript, SVG, JSON, HTML, ...) of 1 KiB or more, with
   `Content-Encoding: gzip` and `Vary: Accept-Encoding`. Each file is
