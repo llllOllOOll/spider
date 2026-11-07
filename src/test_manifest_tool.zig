@@ -26,9 +26,16 @@ pub fn main(init: std.process.Init) !void {
         if (std.Io.Dir.cwd().openDir(io, ".zig-cache", .{ .iterate = true })) |cache_dir| {
             var dir = cache_dir;
             defer dir.close(io);
-            const r = build_cache.prune(io, alc, dir, .{});
-            if (r.freed_bytes >= 1024 * 1024)
-                std.debug.print("spider: removed {d} old build output(s) from .zig-cache ({d} MB)\n", .{ r.removed, r.freed_bytes / (1024 * 1024) });
+            // Zig's global cache in the same directory (CI: setup-zig
+            // points ZIG_GLOBAL_CACHE_DIR at .zig-cache) holds the outputs
+            // of every project and Zig's own (compiler_rt, libc): nothing
+            // here can tell which are still current there. Left alone.
+            const shared = build_cache.holdsGlobalCache(io, dir);
+            if (!shared) {
+                const r = build_cache.prune(io, alc, dir, .{});
+                if (r.freed_bytes >= 1024 * 1024)
+                    std.debug.print("spider: removed {d} old build output(s) from .zig-cache ({d} MB)\n", .{ r.removed, r.freed_bytes / (1024 * 1024) });
+            }
         } else |_| {}
     }
 

@@ -52,6 +52,10 @@ in transaction mode without `max_prepared_statements`, set
   An output goes only when two newer copies of the same binary exist
   (same name, size within 0.5%): the newest output of a step must stay,
   as Zig fails the step instead of compiling it again when it is gone.
+  Only programs (the app, test binaries) are removed, never libraries or
+  objects (compiler_rt, libc, a C library), and a `.zig-cache` that also
+  holds Zig's global cache (CI with `ZIG_GLOBAL_CACHE_DIR=.zig-cache`) is
+  left alone.
   Spider's own build does the same before every step (`test`, `test-pg`,
   `test-e2e`, ...). `SPIDER_KEEP_ZIG_CACHE=1` turns it off.
 - **`spider clean`** keeps only the newest copy of each binary;

@@ -3,8 +3,11 @@
 //! copy of each executable and test binary in `.zig-cache/o/<hash>/`, and
 //! the old ones stay forever (an app's Debug binary is hundreds of MB: one
 //! working day filled 25 GB). `prune` removes the old copies and keeps the
-//! newest `keep` of each file name. Deleting from the cache is safe: a
-//! build that needs a removed output compiles it again.
+//! newest `keep` of each program. Only programs (executables and test
+//! binaries) are ever removed: libraries and objects (compiler_rt, libc,
+//! a C library) are small next to them, and different builds of them share
+//! a name and nearly a size, so an old copy cannot be told from a current
+//! one. A build that needs a removed old program compiles it again.
 //!
 //! Run on every build by the `spider-test-manifest` tool (`testManifest()`
 //! in build.zig, which every Spider app calls), and by `spider clean`.
@@ -19,8 +22,8 @@ pub const Options = struct {
     /// An output younger than this is never removed: another build (a
     /// `zig build test` next to `spider dev`) may be using it.
     min_age_ns: i96 = 2 * std.time.ns_per_min,
-    /// Files smaller than this are not counted: the executables, test
-    /// binaries and libraries are what fills the disk.
+    /// Programs smaller than this are not counted: the app's executable and
+    /// the test binaries are what fills the disk.
     min_artifact_bytes: u64 = 1024 * 1024,
     /// "Now", for the tests; the real clock when null.
     now: ?Io.Timestamp = null,
@@ -56,6 +59,27 @@ fn sameBinary(x: Artifact, y: Artifact) bool {
     const big: f64 = @floatFromInt(@max(x.size, y.size));
     const small: f64 = @floatFromInt(@min(x.size, y.size));
     return big - small <= big * same_binary_size_ratio;
+}
+
+/// An executable or a test binary: no extension and executable, or `.exe`.
+/// Never an archive, object or shared library (`.a`, `.o`, `.so`...).
+fn isProgram(name: []const u8, permissions: Io.File.Permissions) bool {
+    if (std.mem.endsWith(u8, name, ".exe")) return true;
+    if (std.mem.indexOfScalar(u8, name, '.') != null) return false;
+    if (comptime !Io.File.Permissions.has_executable_bit) return false;
+    return permissions.toMode() & 0o111 != 0;
+}
+
+/// Whether `cache_dir` is (also) Zig's global cache: it has the global
+/// cache's own directories, `p` (packages) or `b` (build runners). CI points
+/// ZIG_GLOBAL_CACHE_DIR at `.zig-cache`.
+pub fn holdsGlobalCache(io: Io, cache_dir: Io.Dir) bool {
+    for ([_][]const u8{ "p", "b" }) |name| {
+        var d = cache_dir.openDir(io, name, .{}) catch continue;
+        d.close(io);
+        return true;
+    }
+    return false;
 }
 
 /// Prunes the cache at `cache_dir` (a `.zig-cache`) and the caches nested
@@ -109,6 +133,7 @@ fn pruneOne(io: Io, alc: std.mem.Allocator, cache_dir: Io.Dir, opts: Options) Re
             total += st.size;
             if (now - st.mtime.nanoseconds < opts.min_age_ns) young.put(a, dir_name, {}) catch {};
             if (st.size < opts.min_artifact_bytes) continue;
+            if (!isProgram(f.name, st.permissions)) continue;
             artifacts.append(a, .{
                 .dir = dir_name,
                 .name = a.dupe(u8, f.name) catch continue,
@@ -219,10 +244,14 @@ test "prune: a manifest naming a removed output goes with it; the others stay" {
     try std.testing.expect(exists(io, d, "h/sources"));
 }
 
+/// Writes `data` at `path` with that modification time; a name with no
+/// extension is made executable, as Zig leaves its programs.
 fn writeAged(io: Io, dir: Io.Dir, path: []const u8, data: []const u8, mtime_s: i96) !void {
     try dir.writeFile(io, .{ .sub_path = path, .data = data });
     const f = try dir.openFile(io, path, .{ .mode = .read_write });
     defer f.close(io);
+    if (std.mem.indexOfScalar(u8, std.fs.path.basename(path), '.') == null)
+        try f.setPermissions(io, .executable_file);
     try f.setTimestamps(io, .{ .modify_timestamp = .{ .new = .fromNanoseconds(mtime_s * std.time.ns_per_s) } });
 }
 
@@ -331,4 +360,35 @@ test "prune: a directory without o/ is left alone" {
     const r = prune(io, std.testing.allocator, tmp.dir, .{});
     try std.testing.expectEqual(@as(usize, 0), r.removed);
     try std.testing.expect(exists(io, tmp.dir, "notes"));
+}
+
+test "prune: libraries are never removed, even with newer copies of the same name and size" {
+    // compiler_rt of two builds (another target or mode): the same name,
+    // sizes 0.35% apart, each the current one of its build. CI keeps Zig's
+    // global cache in .zig-cache; removing one failed the next build with
+    // "failed to parse archive: FileNotFound".
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    const d = tmp.dir;
+    for ([_][]const u8{ "o/r1", "o/r2", "o/r3", "o/p1" }) |p| try d.createDirPath(io, p);
+    const big = "0123456789abcdef";
+    try writeAged(io, d, "o/r1/libcompiler_rt.a", big, 1000);
+    try writeAged(io, d, "o/r2/libcompiler_rt.a", big, 2000);
+    try writeAged(io, d, "o/r3/libcompiler_rt.a", big, 3000);
+    // A file without an extension that is not executable is not a program.
+    try d.writeFile(io, .{ .sub_path = "o/p1/data", .data = big });
+    _ = prune(io, std.testing.allocator, d, .{ .keep = 1, .min_artifact_bytes = 10, .now = .fromNanoseconds(10_000 * std.time.ns_per_s) });
+    for ([_][]const u8{ "o/r1/libcompiler_rt.a", "o/r2/libcompiler_rt.a", "o/r3/libcompiler_rt.a", "o/p1/data" }) |p|
+        try std.testing.expect(exists(io, d, p));
+}
+
+test "holdsGlobalCache: a project cache does not; one with Zig's global p/ or b/ does" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "o", "h", "z", "tmp" }) |p| try tmp.dir.createDirPath(io, p);
+    try std.testing.expect(!holdsGlobalCache(io, tmp.dir));
+    try tmp.dir.createDirPath(io, "p");
+    try std.testing.expect(holdsGlobalCache(io, tmp.dir));
 }
