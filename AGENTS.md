@@ -282,6 +282,25 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   Ctx identity API (`setUser`, `addRole`, `addOrgRole`). Apps (Orbitx) read
   `_auth_org_N_{id,name,role}` / `_auth_orgs_count` directly: keep that layout.
 
+## Performance ideas: a ticket, after research
+
+Something that would make Spider (or every app built on it) faster, or a
+missing piece apps keep writing themselves, goes on the Coyote board as a
+ticket in the Spider project's **backlog**, not into the code of the task at
+hand. Open one only after research, so the board holds what is worth doing:
+
+- **Measured**: numbers from a real app or a benchmark (before and what it
+  would be after: bytes, milliseconds, queries), and how they were taken.
+- **Looked up**: how at least two established frameworks or servers handle
+  it (Phoenix, Rails, Django, ASP.NET Core, Go, nginx, ...), with links. If
+  nobody does it, say why Spider should.
+- **Placed**: the file and function in Spider where it would go, and what
+  it costs or risks (memory, compatibility, a new API, a dependency).
+
+A hunch without a measurement or a reference is not a ticket. Search the
+board first (`coyote search`) and add to an existing ticket instead of
+opening a second one.
+
 ## Known traps in this repo
 
 - `src/cli/build.zig` is a stale template copy, not the CLI's build (the CLI is
