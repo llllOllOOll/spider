@@ -199,7 +199,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     }
 
     std.debug.print("\nDone! Next:\n", .{});
-    std.debug.print("  spider migrate   create the {s} table (until then /{s} answers 500)\n", .{ plural, plural });
+    std.debug.print(migrate_hint, .{plural});
     std.debug.print("  spider routes    check what got registered, and who may call it\n", .{});
     std.debug.print("  access: src/features/{s}/routes.zig (defaults() and each route's config)\n", .{feature});
 }
@@ -257,6 +257,16 @@ pub fn renderRoutesTest(allocator: std.mem.Allocator, api: bool, feature: []cons
     const with_rows = try std.mem.replaceOwned(u8, allocator, routes_test_tmpl, "{{rows}}", rows.items);
     defer allocator.free(with_rows);
     return template_engine.renderTemplate(allocator, with_rows, feature, plural);
+}
+
+/// The next step about the new migration: main() applies the pending
+/// migrations as the app starts (PostgreSQL and SQLite alike), so a restart
+/// creates the table; `spider dev` restarts on save.
+const migrate_hint = "  restart the app  it creates the {s} table as it starts (spider dev restarts on save; spider migrate only migrates)\n";
+
+test "migrate_hint: a restart applies the migration" {
+    try std.testing.expect(std.mem.indexOf(u8, migrate_hint, "restart the app") != null);
+    try std.testing.expect(std.mem.indexOf(u8, migrate_hint, "answers 500") == null);
 }
 
 test "renderRoutesTest: one row per generated route, access matching defaults()" {

@@ -202,7 +202,7 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\      CRUD feature: src/features/<name>/ (controller, model, repository,
         \\      views, routes.zig), a migration. --api for JSON. The routes are
         \\      mounted by mountFeatures in src/main.zig; nothing to edit there.
-        \\      Apply the migration with `spider migrate` before using it.
+        \\      The app applies the migration when it starts (or `spider migrate`).
         \\  auth [--api] [--provider=keycloak]
         \\      Login with the app's own users: a users table, sign in, sign up
         \\      and sign out (src/features/auth/), and their tests. Passwords

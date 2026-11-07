@@ -215,6 +215,7 @@ fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: 
         .{ "{{app_name}}", app_name },
         .{ "{{variant}}", variant },
         .{ "{{feature_api_flag}}", if (api_only) " --api" else "" },
+        .{ "{{migrate_command}}", if (no_db) "" else "| Apply migrations | `spider migrate` |\n" },
         .{ "{{extra_commands}}", if (!no_db and use_pg) "| First-time setup | `docker compose up -d db` |\n" else "" },
         .{ "{{core_db_line}}", if (no_db) "" else if (use_pg) "\n  db/migrations/          SQL files, built into the binary (build.zig: spider.addMigrations)" else "\n  db/migrations.zig       migration list (+ SQL files in db/migrations/)" },
         .{ "{{views_layout}}", if (api_only) agents_views_api_tmpl else agents_views_html_tmpl },
@@ -229,6 +230,21 @@ fn renderAgentsMd(allocator: std.mem.Allocator, app_name: []const u8, api_only: 
         out = next;
     }
     return out;
+}
+
+test "renderAgentsMd: spider migrate only for a project with a database" {
+    const a = std.testing.allocator;
+    const has = std.mem.indexOf;
+    const none = try renderAgentsMd(a, "blog", false, true, false);
+    defer a.free(none);
+    try std.testing.expect(has(u8, none, "spider migrate") == null);
+    try std.testing.expect(has(u8, none, "{{") == null);
+    inline for (.{ false, true }) |use_pg| {
+        const with_db = try renderAgentsMd(a, "blog", false, false, use_pg);
+        defer a.free(with_db);
+        try std.testing.expect(has(u8, with_db, "| Apply migrations | `spider migrate` |\n") != null);
+        try std.testing.expect(has(u8, with_db, "{{") == null);
+    }
 }
 
 /// src/app_test.zig for the new project: `run` (what main() does to serve,
@@ -366,11 +382,16 @@ test "new --api --pg: a PostgreSQL main.zig and build.zig, not the SQLite ones" 
 test "generated main.zig: spider check and spider routes never migrate" {
     const has = std.mem.indexOf;
     inline for (.{ main_zig_pg_tmpl, main_zig_api_pg_tmpl, main_zig_sqlite_tmpl, main_zig_api_sqlite_tmpl }) |tmpl| {
-        try std.testing.expect(has(u8, tmpl, "if (!spider.inspecting())") != null);
+        try std.testing.expect(has(u8, tmpl, "if (!inspecting())") != null);
+    }
+    // Only what Spider 0.11.0 has (spider.env), so a project of this CLI
+    // builds on the release it pins.
+    inline for (.{ main_zig_pg_tmpl, main_zig_api_pg_tmpl, main_zig_sqlite_tmpl, main_zig_api_sqlite_tmpl }) |tmpl| {
+        try std.testing.expect(has(u8, tmpl, "spider.inspecting") == null);
     }
     // PostgreSQL: the check report lists the app's migrations.
     inline for (.{ main_zig_pg_tmpl, main_zig_api_pg_tmpl }) |tmpl| {
-        try std.testing.expect(has(u8, tmpl, "if (spider.inspecting()) _ = server.migrations(migrations);") != null);
+        try std.testing.expect(has(u8, tmpl, "if (inspecting()) _ = server.migrations(migrations);") != null);
     }
 }
 

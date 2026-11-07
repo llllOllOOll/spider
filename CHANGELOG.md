@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The check report names the app's migrations apart from the
+  modules**: `spider: the app's migrations are not ready, refusing to
+  start` (or `N module(s) and the app's migrations ...`) instead of
+  counting the app as a module. `ModuleReport.checked` counts modules only;
+  `ModuleReport.app_migrations` says the app's were checked.
 - **`spider.auth.jwtVerify` allocates every string of the claims with the
   allocator it is given.** Pass an arena (`c.arena`, as the `Auth`
   middleware does). With a general-purpose allocator the caller frees
@@ -68,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`spider new` on a CLI whose release is not tagged yet** saved the
   main branch under the missing tag's name (`?ref=v0.11.0#<main>`). It
   checks the tag first (`git ls-remote`) and says it uses main.
+- **`spider g feature` said "until spider migrate, /notes answers 500"**:
+  the app applies the new migration as it starts, so it says to restart
+  it. The help of `spider g` and the AGENTS.md of SQLite projects say the
+  same; a project without a database no longer lists `spider migrate`.
 - Docs: path parameters (`c.params`, `spider.Path`) are percent-decoded;
   `listen()` reads `PORT`; the PostgreSQL defaults are `spider` /
   `spider` / `spider_db` with a pool of 10.
