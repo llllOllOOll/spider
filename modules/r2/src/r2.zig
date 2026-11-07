@@ -135,7 +135,7 @@ pub const R2 = struct {
 
         if (res.status != .ok and res.status != .no_content) {
             const res_body = res.text();
-            logFailure("r2 put failed status={d} url={s} body={s}", .{ @intFromEnum(res.status), path, res_body });
+            logFailure("r2 put failed status={d} url={s} body={s}", .{ @backingInt(res.status), path, res_body });
             return error.R2PutFailed;
         }
     }
@@ -185,7 +185,7 @@ pub const R2 = struct {
 
         if (res.status != .ok) {
             const res_body = res.text();
-            logFailure("r2 copyObject failed status={d} dest={s} source={s} body={s}", .{ @intFromEnum(res.status), dest_path, copy_source, res_body });
+            logFailure("r2 copyObject failed status={d} dest={s} source={s} body={s}", .{ @backingInt(res.status), dest_path, copy_source, res_body });
             return error.R2CopyFailed;
         }
     }
@@ -219,7 +219,7 @@ pub const R2 = struct {
 
         if (res.status == .not_found) return error.NotFound;
         if (res.status != .ok) {
-            logFailure("r2 get: status={d} path={s}", .{ @intFromEnum(res.status), path });
+            logFailure("r2 get: status={d} path={s}", .{ @backingInt(res.status), path });
             return error.R2GetFailed;
         }
         return c.arena.dupe(u8, res.text());
@@ -254,7 +254,7 @@ pub const R2 = struct {
 
         if (res.status == .not_found) return error.NotFound;
         if (res.status != .ok and res.status != .no_content) {
-            logFailure("r2 delete failed status={d} path={s}", .{ @intFromEnum(res.status), path });
+            logFailure("r2 delete failed status={d} path={s}", .{ @backingInt(res.status), path });
             return error.R2DeleteFailed;
         }
     }

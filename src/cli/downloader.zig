@@ -26,7 +26,7 @@ pub fn fetch(io: std.Io, allocator: std.mem.Allocator, url: []const u8) ![]u8 {
     var response = try req.receiveHead(aux_buf[0..]);
 
     if (response.head.status != .ok) {
-        std.debug.print("error: HTTP {d} for {s}\n", .{ @intFromEnum(response.head.status), url });
+        std.debug.print("error: HTTP {d} for {s}\n", .{ @backingInt(response.head.status), url });
         return error.HttpError;
     }
 

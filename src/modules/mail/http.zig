@@ -44,7 +44,7 @@ pub const StatusError = error{ MailUnauthorized, MailRejected, MailDeliveryFaile
 /// 5xx: worth retrying later (MailDeliveryFailed). Any other 4xx: the
 /// provider refused this message, retrying it unchanged won't help.
 pub fn classify(status: std.http.Status) ?StatusError {
-    const code = @intFromEnum(status);
+    const code = @backingInt(status);
     if (code >= 200 and code < 300) return null;
     if (code == 401 or code == 403) return error.MailUnauthorized;
     if (code == 408 or code == 429) return error.MailDeliveryFailed;
@@ -58,7 +58,7 @@ pub fn check(provider: []const u8, reply: Reply) StatusError!void {
     const err = classify(reply.status) orelse return;
     log("mail: {s} answered {d}: {s}", .{
         provider,
-        @intFromEnum(reply.status),
+        @backingInt(reply.status),
         reply.body[0..@min(reply.body.len, 500)],
     });
     return err;

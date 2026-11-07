@@ -34,6 +34,9 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
+      # zig-pkg/ (fetched dependencies) is other people's code: left out.
+      - name: Formatting
+        run: zig fmt --check build.zig src e2e e2e_test.zig zio_backend_test.zig modules/*/src modules/*/build.zig modules/pacman/local_test.zig
       - name: Build (library and CLI)
         run: zig build
       - name: Unit tests (with the doc and version rules)

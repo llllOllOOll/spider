@@ -90,7 +90,7 @@ pub fn errorHandler(comptime opts: Options) ErrorHandler {
                 .not_found
             else
                 statusForError(err);
-            const code = @intFromEnum(status);
+            const code = @backingInt(status);
             if (code >= 500) {
                 const user = c.params.get("_auth_sub") orelse "-";
                 const org = c.activeOrgId() orelse "-";
@@ -131,14 +131,14 @@ pub fn errorHandler(comptime opts: Options) ErrorHandler {
 
         fn userMessage(c: *Ctx, err: anyerror, status: std.http.Status) ![]const u8 {
             const m = opts.messages;
-            return switch (@intFromEnum(status)) {
+            return switch (@backingInt(status)) {
                 403 => m.forbidden,
                 404 => m.not_found,
                 409 => m.conflict,
                 422 => m.unprocessable,
                 503 => m.busy,
                 400 => c.errorDetail() orelse m.bad_request,
-                else => if (@intFromEnum(status) >= 500)
+                else => if (@backingInt(status) >= 500)
                     try std.fmt.allocPrint(c.arena, m.internal, .{c.requestId()})
                 else
                     @errorName(err),

@@ -24,8 +24,8 @@ pub fn utc(buf: *[24]u8, ns: i128) []const u8 {
     const md = yd.calculateMonthDay();
     const ds = es.getDaySeconds();
     return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
-        yd.year,                 md.month.numeric(),        md.day_index + 1,
-        ds.getHoursIntoDay(),    ds.getMinutesIntoHour(),   ds.getSecondsIntoMinute(),
+        yd.year,              md.month.numeric(),      md.day_index + 1,
+        ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
         ms,
     }) catch "????-??-??T??:??:??.???Z";
 }

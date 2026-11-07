@@ -30,7 +30,7 @@ All from the repo root.
 | R2 module tests | `zig build test-r2` | — (signing, addresses, config; no network) |
 | xlsx module tests | `zig build test-xlsx` | — (`cd modules/xlsx && zig build test-libreoffice` needs LibreOffice) |
 | QR code module tests | `zig build test-qrcode` | — |
-| Format | `zig fmt <the files you touched>` | never `zig fmt src` (reformats unrelated files) |
+| Format | `zig fmt <the files you touched>` | CI fails on an unformatted file (`zig fmt --check`) |
 
 Disposable Postgres for `test-pg`: `docker compose -f docker-compose.test.yml up -d`
 (postgres/postgres on 5435, tmpfs). Without the `PG_*` vars the tests target
@@ -287,9 +287,10 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
 - `src/cli/build.zig` is a stale template copy, not the CLI's build (the CLI is
   built by the root `build.zig`); generated-project templates are
   `src/cli/templates/*.template`.
-- `zig fmt` is not a no-op on about ten files (it rewrites `@enumFromInt` /
-  `@intFromEnum` into `@fromBackingInt` / `@backingInt`): after formatting
-  a file you only meant to touch lightly, look at the diff.
+- `zig fmt` rewrites `@enumFromInt` / `@intFromEnum` into `@fromBackingInt`
+  / `@backingInt`. The tree is formatted and CI runs `zig fmt --check` on
+  it (the paths are in `.github/workflows/ci.yml`; `zig-pkg/` holds other
+  people's code and is left out).
 - `test-mysql*.zig` are leftovers; don't treat them as current tests.
 - htmx: a project is on htmx 2 or 4 (`spider new --htmx=4`), and says which
   by the script its layouts load (`/js/htmx.min.js` or `/js/htmx4.min.js`;

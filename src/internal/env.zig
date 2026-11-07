@@ -266,13 +266,13 @@ test "env files: a later file replaces an earlier file's value, never a variable
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "base.env", .data = 
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "base.env", .data =
         \\SPIDER_ENVTEST_FILE=from_base
         \\SPIDER_ENVTEST_REAL=from_base
         \\SPIDER_ENVTEST_ONLY_BASE=from_base
         \\
     });
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "local.env", .data = 
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "local.env", .data =
         \\SPIDER_ENVTEST_FILE=from_local
         \\SPIDER_ENVTEST_REAL=from_local
         \\SPIDER_ENVTEST_ONLY_LOCAL=from_local

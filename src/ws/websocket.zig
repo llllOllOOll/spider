@@ -182,7 +182,7 @@ pub const Server = struct {
     pub fn writeFrame(self: *Server, opcode: Frame.Opcode, payload: []const u8) !void {
         var header: [10]u8 = undefined;
         var header_len: usize = 2;
-        header[0] = 0x80 | @as(u8, @intFromEnum(opcode));
+        header[0] = 0x80 | @as(u8, @backingInt(opcode));
 
         if (payload.len < 126) {
             header[1] = @intCast(payload.len);

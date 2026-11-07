@@ -155,7 +155,7 @@ pub const WebPush = struct {
         if (res.status != .ok and res.status != .no_content and res.status != .created) {
             // The service only: the rest of the endpoint is what lets
             // anyone holding it push to that device.
-            std.log.warn("push refused status={d} service={s}", .{ @intFromEnum(res.status), audience });
+            std.log.warn("push refused status={d} service={s}", .{ @backingInt(res.status), audience });
             return switch (res.status) {
                 .gone => error.PushSubscriptionExpired, // 410: the subscription is gone for good
                 .forbidden => error.PushForbidden, // 403: not the VAPID keys it was made with

@@ -12,7 +12,7 @@ const Response = @import("../core/context.zig").Response;
 pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
     const resp = try next(c);
 
-    const status_int: u16 = @intFromEnum(resp.status);
+    const status_int: u16 = @backingInt(resp.status);
     const status_text = resp.status.phrase() orelse "";
     const ok = status_int >= 200 and status_int < 300;
 

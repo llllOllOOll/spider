@@ -133,7 +133,7 @@ fn run(comptime opts: Options, c: *Ctx, next: NextFn) anyerror!Response {
         // The final status is decided by onError after the chain returns;
         // show the default mapping (what it is unless the app overrides it)
         // so a routine 403/404 doesn't read like a crash.
-        const status: u16 = @intFromEnum(statusForError(err));
+        const status: u16 = @backingInt(statusForError(err));
         std.debug.print("{s} {s}[{d}]{s} {s: <6} {s}  {s}  rid={s} user={s} org={s}  error={s}{s}{s}\n", .{
             logfmt.utc(&ts_buf, logfmt.nowNs()), statusColor(status),                             status,                    resetColor(), method,
             path,                                formatMs(lat_ns, &lat_buf),                      c.requestId(),             userOf(c),    orgOf(c),
@@ -142,7 +142,7 @@ fn run(comptime opts: Options, c: *Ctx, next: NextFn) anyerror!Response {
         return err;
     };
 
-    const status_int: u16 = @intFromEnum(resp.status);
+    const status_int: u16 = @backingInt(resp.status);
     if (!shouldLog(opts, c.route().quiet_log, path, status_int)) return resp;
     if (resp.raw and !opts.log_stream_open) return resp;
 

@@ -1164,7 +1164,7 @@ fn writeSheetPart(w: *Writer, sheet: *const Sheet, selected: bool, style_records
     );
     if (sheet.page_setup) |setup| {
         try w.writeAll("<pageSetup");
-        if (setup.paper) |paper| try w.print(" paperSize=\"{d}\"", .{@intFromEnum(paper)});
+        if (setup.paper) |paper| try w.print(" paperSize=\"{d}\"", .{@backingInt(paper)});
         if (setup.scale) |scale| try w.print(" scale=\"{d}\"", .{scale});
         try w.print(" orientation=\"{t}\"", .{setup.orientation});
         if (setup.fitsToPage()) {

@@ -64,7 +64,7 @@ pub fn detectMode(text: []const u8) tables.ModeIndicator {
 /// string if a future caller ever mixes modes; single-segment callers
 /// should just pass detectMode(text).
 pub fn encode(writer: *bitbuf.BitWriter, text: []const u8, mode: tables.ModeIndicator, version: u8) void {
-    writer.appendBits(@intFromEnum(mode), 4);
+    writer.appendBits(@backingInt(mode), 4);
     writer.appendBits(@intCast(text.len), tables.countIndicatorBits(mode, version));
 
     switch (mode) {

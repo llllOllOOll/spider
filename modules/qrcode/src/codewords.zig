@@ -32,7 +32,7 @@ const max_blocks = 128;
 const max_ecc_len = 30;
 
 pub fn blockLayout(version: u8, ecc: tables.Ecc) BlockLayout {
-    const ei = @intFromEnum(ecc);
+    const ei = @backingInt(ecc);
     const num_blocks = tables.num_error_correction_blocks[ei][version];
     const ecc_len: u8 = @intCast(tables.ecc_codewords_per_block[ei][version]);
     const total_codewords: u16 = tables.numRawDataModules(version) / 8;

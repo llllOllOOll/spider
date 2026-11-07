@@ -206,7 +206,7 @@ pub fn request(
     const body_in_arena = try Io.Dir.cwd().readFileAlloc(io, out_path, arena, .limited(64 * 1024 * 1024));
     const body = try gpa.dupe(u8, body_in_arena);
 
-    return .{ .status = @enumFromInt(status_code), .body = body };
+    return .{ .status = @fromBackingInt(@intCast(status_code)), .body = body };
 }
 
 /// A path in /tmp for one request's file: `kind`, then 16 random bytes.
@@ -254,9 +254,12 @@ fn buildArgv(arena: std.mem.Allocator, o: BuildArgvOptions) ![]const []const u8 
     try argv.appendSlice(arena, &.{
         "curl",
         "-sS",
-        "-o", o.out_path,
-        "-w", "%{http_code}",
-        "-X", @tagName(o.opts.method),
+        "-o",
+        o.out_path,
+        "-w",
+        "%{http_code}",
+        "-X",
+        @tagName(o.opts.method),
     });
 
     const max_time = try formatMaxTime(arena, o.opts.timeout_ms);
