@@ -401,7 +401,9 @@ fn stmtName(sql: []const u8) StmtName {
 /// Whether a statement may be kept prepared. Not one with an optional
 /// filter or a switch on a parameter (`($1 = '' OR col = $1)`, `$2 = 0 OR`,
 /// `$3 IS NULL OR`, `($4 = 'all' OR ...)`, `$5 = true OR`, `OR $1 IS NULL`,
-/// `COALESCE($1, col)`): after a few runs of a named
+/// `COALESCE($1, col)`, `NULLIF($1, '') IS NULL OR`, a boolean parameter
+/// alone on one side of OR (`($2 OR NOT x)`, `(x OR $2::boolean)`),
+/// `CASE WHEN $1 THEN ...`): after a few runs of a named
 /// statement Postgres may switch to a generic plan, which cannot drop the
 /// unused branch and so serves every combination of filters, often by
 /// reading the whole table (measured: 293 ms against 2 ms for a page of a
@@ -420,9 +422,26 @@ fn cacheable(sql: []const u8) bool {
         const before = std.mem.trimEnd(u8, sql[0..at], " \t\r\n(");
         if (endsWithWord(before, "or") and optionalTest(sql, skipCasts(sql, j)) != null) return false;
         if (endsWithWord(before, "coalesce")) return false;
+        // `CASE WHEN $1 THEN a = $2 ELSE b = $2 END`: which filter runs.
+        if (endsWithWord(before, "when") and caseSwitchesFilter(sql, skipCasts(sql, j))) return false;
+        // `NULLIF($1, '') IS NULL OR`, `(NULLIF($2, '') IS NOT NULL AND ...)`.
+        if (endsWithWord(before, "nullif")) {
+            if (nullIfTested(sql, skipCasts(sql, j))) |end| {
+                const outside = std.mem.trimEnd(u8, before[0 .. before.len - "nullif".len], " \t\r\n(");
+                const next = sql[skipSpace(sql, end)..];
+                if (startsWithWord(next, "or") or startsWithWord(next, "and") or endsWithWord(outside, "or")) return false;
+            }
+        }
+        // A boolean parameter alone on one side of OR: `($2 OR NOT x)`,
+        // `(x.active OR $2::boolean)`, `(NOT $1 OR x)`.
+        const after = sql[skipSpace(sql, skipCasts(sql, j))..];
+        const operand_start = endsWithWord(before, "and") or endsWithWord(before, "or") or
+            endsWithWord(before, "where") or endsWithWord(before, "not");
+        if (operand_start and startsWithWord(after, "or")) return false;
+        if (endsWithWord(before, "or") and (after.len == 0 or after[0] == ')' or startsWithWord(after, "and") or startsWithWord(after, "or"))) return false;
         // `$N = '' OR`, `$N = 0 OR`, `$N IS NULL OR`.
-        if (optionalTest(sql, skipCasts(sql, j))) |after| {
-            if (startsWithWord(sql[skipSpace(sql, after)..], "or")) return false;
+        if (optionalTest(sql, skipCasts(sql, j))) |test_end| {
+            if (startsWithWord(sql[skipSpace(sql, test_end)..], "or")) return false;
         }
     }
     return true;
@@ -470,6 +489,59 @@ fn optionalTest(sql: []const u8, from: usize) ?usize {
     return j + 4;
 }
 
+/// After `WHEN $N` at `from`: `THEN` and a comparison before the next
+/// `WHEN`, `ELSE` or `END` (the CASE picks a filter, not a value). Only
+/// outside parentheses, and not past a nested CASE (both are values).
+fn caseSwitchesFilter(sql: []const u8, from: usize) bool {
+    var j = skipSpace(sql, from);
+    if (!startsWithWord(sql[j..], "then")) return false;
+    j += 4;
+    var depth: usize = 0;
+    while (j < sql.len) : (j += 1) {
+        const c = sql[j];
+        if (c == '(') {
+            depth += 1;
+            continue;
+        }
+        if (c == ')') {
+            if (depth == 0) return false;
+            depth -= 1;
+            continue;
+        }
+        if (depth > 0) continue;
+        if (c == '=' or c == '<' or c == '>') return true;
+        if (j > 0 and (std.ascii.isAlphanumeric(sql[j - 1]) or sql[j - 1] == '_')) continue;
+        const rest = sql[j..];
+        if (startsWithWord(rest, "when") or startsWithWord(rest, "else") or startsWithWord(rest, "end") or startsWithWord(rest, "case")) return false;
+        if (startsWithWord(rest, "like") or startsWithWord(rest, "ilike") or startsWithWord(rest, "in")) return true;
+    }
+    return false;
+}
+
+/// After `NULLIF($N` at `from`: `, <literal>)`, casts, then `IS NULL` or
+/// `IS NOT NULL`. Where that ends, or null.
+fn nullIfTested(sql: []const u8, from: usize) ?usize {
+    var j = skipSpace(sql, from);
+    if (j >= sql.len or sql[j] != ',') return null;
+    j = skipSpace(sql, j + 1);
+    if (j < sql.len and sql[j] == '\'') {
+        j = (std.mem.indexOfScalarPos(u8, sql, j + 1, '\'') orelse return null) + 1;
+    } else {
+        if (j < sql.len and sql[j] == '-') j += 1;
+        const digits = j;
+        while (j < sql.len and std.ascii.isDigit(sql[j])) j += 1;
+        if (j == digits) return null;
+    }
+    j = skipSpace(sql, skipCasts(sql, j));
+    if (j >= sql.len or sql[j] != ')') return null;
+    j = skipSpace(sql, skipCasts(sql, j + 1));
+    if (!startsWithWord(sql[j..], "is")) return null;
+    j = skipSpace(sql, j + 2);
+    if (startsWithWord(sql[j..], "not")) j = skipSpace(sql, j + 3);
+    if (!startsWithWord(sql[j..], "null")) return null;
+    return j + 4;
+}
+
 fn skipSpace(sql: []const u8, from: usize) usize {
     var j = from;
     while (j < sql.len and std.ascii.isWhitespace(sql[j])) j += 1;
@@ -504,6 +576,17 @@ test "statement cache: optional filters stay out of it (a generic plan would rea
         "SELECT * FROM t WHERE ($1 = -1 OR t.n = $1)",
         "SELECT * FROM t WHERE ($3::text != 'restricted' OR m.role = 'admin')",
         "SELECT * FROM t WHERE ($3 <> '' OR t.x)",
+        // NULLIF($N, '') tested for null: the same switch, spelled another way.
+        "SELECT * FROM r WHERE r.x < now() AND (NULLIF($1, '') IS NULL OR a.condominium_id = NULLIF($1, '')::uuid)",
+        "SELECT u.id FROM users u WHERE ((NULLIF($2, '') IS NOT NULL AND u.keycloak_id = $2) OR u.id::text = NULLIF($3, ''))",
+        "SELECT * FROM t WHERE t.k = $1 OR NULLIF($2::text, '')::uuid IS NULL",
+        // A boolean parameter alone on one side of OR: "include the inactive ones".
+        "SELECT * FROM v WHERE v.k = $1 AND ($2 OR NOT r.by_residence)",
+        "SELECT * FROM c WHERE c.k = $1 AND (c.active OR $2::boolean)",
+        "SELECT * FROM a WHERE a.k = $1 AND ($7::boolean OR (c.active AND NOT c.x))",
+        "SELECT * FROM t WHERE (NOT $1 OR t.public)",
+        // CASE WHEN on a parameter: which column the filter reads.
+        "SELECT u.id FROM users u WHERE (CASE WHEN $1 THEN u.keycloak_id = $2 ELSE u.id::text = $2 END)",
     };
     for (no) |sql| {
         if (cacheable(sql)) {
@@ -522,6 +605,18 @@ test "statement cache: optional filters stay out of it (a generic plan would rea
         "SELECT * FROM t WHERE $1 <> '' AND t.k = $1",
         "SELECT * FROM t WHERE t.k = $1 AND t.flag = true OR t.j = 2",
         "SELECT bool_or($2::text IS NOT NULL AND x.status::text = $2) FROM x",
+        // NULLIF($N, '') as a value, not tested for null.
+        "UPDATE t SET folder_id = NULLIF($3, '')::uuid WHERE id = $1",
+        "SELECT * FROM p WHERE p.k = $1 AND (p.recipient_sub = $2 OR p.co_recipient_user_id = NULLIF($3, '')::uuid)",
+        "SELECT NULLIF($1, '') IS NULL AS vazio",
+        // A parameter compared with something is not a boolean operand.
+        "SELECT * FROM t WHERE t.a = $1 OR t.b = $2 AND t.c",
+        "SELECT * FROM t WHERE t.on = $1::boolean OR t.k = $2",
+        // CASE WHEN on a parameter that picks a value, not a filter.
+        "INSERT INTO t (a, b) VALUES ($1, CASE WHEN $2 THEN now() ELSE NULL END)",
+        "UPDATE t SET p = CASE WHEN $4 THEN '0'::uuid ELSE $5::uuid END WHERE id = $1",
+        "UPDATE t SET s = CASE WHEN $2::text = 'done' THEN now() ELSE s END WHERE id = $1",
+        "INSERT INTO t (e) VALUES (CASE WHEN $1 THEN (CASE WHEN $2::timestamptz > now() THEN $2 END) ELSE $3 END)",
     };
     for (yes) |sql| {
         if (!cacheable(sql)) {

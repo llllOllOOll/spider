@@ -36,7 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A query with an optional filter on a parameter is no longer kept in
   `spider.pg`'s statement cache** (`($1 = '' OR col = $1)`, `$2 = 0 OR`,
   `$3 IS NULL OR`, `($4 = 'all' OR ...)`, `$5 = true OR`, `$6 <> 'x' OR`,
-  `OR $1 IS NULL`, `COALESCE($1, col)`). After a few runs
+  `OR $1 IS NULL`, `COALESCE($1, col)`, `NULLIF($1, '') IS NULL OR`, a
+  boolean parameter alone in `OR`/`AND` such as `($2 OR NOT x)` or
+  `(x.active OR $2::boolean)`, and `CASE WHEN $1 THEN a = $2 ELSE b = $2
+  END`; a `CASE WHEN $1` that picks a value stays cached). After a few runs
   of a named statement Postgres may switch to a generic plan, which cannot
   drop the unused branch and serves every combination of filters, often
   by reading the whole table: a 20 000-row list page went from 2 ms to
