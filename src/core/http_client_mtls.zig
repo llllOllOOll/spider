@@ -11,6 +11,7 @@
 //! (including PKCS#12) for years. Needed for integrations that require
 //! mTLS with an ICP-Brasil certificate (e.g. Sicoob's Open Finance API).
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 
 /// A client certificate, in one of the two formats real-world mTLS
@@ -215,8 +216,20 @@ pub fn request(
 fn tempPath(arena: std.mem.Allocator, io: Io, kind: []const u8, extension: []const u8) ![]const u8 {
     var random: [16]u8 = undefined;
     io.random(&random);
-    return std.fmt.allocPrint(arena, "/tmp/spider-mtls-{s}-{s}{s}", .{ kind, &std.fmt.bytesToHex(random, .lower), extension });
+    const path = try std.fmt.allocPrint(arena, "/tmp/spider-mtls-{s}-{s}{s}", .{ kind, &std.fmt.bytesToHex(random, .lower), extension });
+    if (builtin.is_test and test_issued_count < test_issued.len and path.len < test_issued[0].len) {
+        test_issued[test_issued_count] = @splat(0);
+        @memcpy(test_issued[test_issued_count][0..path.len], path);
+        test_issued_count += 1;
+    }
+    return path;
 }
+
+// Under test, the paths tempPath handed out: a test checks that its own
+// files are gone, not that /tmp has no spider-mtls-* file at all (another
+// process running the tests at the same time has its own there).
+var test_issued: [8][96]u8 = undefined;
+var test_issued_count: usize = 0;
 
 fn writeTempFile(io: Io, path: []const u8, data: []const u8) !void {
     // Exclusive: a file or a link someone left at this name is an error,
@@ -454,6 +467,18 @@ test "parseStatusCode rejects non-numeric curl output" {
 test "request: connection refused maps to MtlsTransportFailed and leaves no temp files, requires curl" {
     const gpa = std.testing.allocator;
 
+    // Another process running these tests at the same time has its own
+    // spider-mtls-* files in /tmp while its request runs: they are not
+    // ours to count.
+    var threaded = Io.Threaded.init_single_threaded;
+    const io = threaded.io();
+    var decoy_arena = std.heap.ArenaAllocator.init(gpa);
+    defer decoy_arena.deinit();
+    const decoy = try tempPath(decoy_arena.allocator(), io, "key", ".pem");
+    try writeTempFile(io, decoy, "another process's key");
+    defer Io.Dir.deleteFileAbsolute(io, decoy) catch {};
+    test_issued_count = 0;
+
     // Port 1 is a reserved/unassigned port — nothing should ever be
     // listening on it locally, so this fails fast and deterministically
     // without needing a real server or valid certs (the TLS handshake
@@ -476,16 +501,14 @@ test "request: connection refused maps to MtlsTransportFailed and leaves no temp
         else => return err,
     }
 
-    var threaded = Io.Threaded.init_single_threaded;
-    const io = threaded.io();
-    var dir = try Io.Dir.cwd().openDir(io, "/tmp", .{ .iterate = true });
-    defer dir.close(io);
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        if (std.mem.startsWith(u8, entry.name, "spider-mtls-")) {
-            std.debug.print("leftover temp file: {s}\n", .{entry.name});
+    // The files this request made (out, cert, key) are all gone.
+    try std.testing.expectEqual(@as(usize, 3), test_issued_count);
+    for (test_issued[0..test_issued_count]) |*slot| {
+        const path = std.mem.sliceTo(slot, 0);
+        if (Io.Dir.cwd().access(io, path, .{})) |_| {
+            std.debug.print("leftover temp file: {s}\n", .{path});
             return error.LeftoverTempFile;
-        }
+        } else |_| {}
     }
 }
 
