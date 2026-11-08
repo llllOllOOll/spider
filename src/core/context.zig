@@ -456,7 +456,7 @@ pub const Ctx = struct {
 
         if (try self.docResponse(content, opts)) |resp| return .{ .done = resp };
 
-        var tmpl = try Template.init(self.arena, content);
+        var tmpl = try Template.initNamed(self.arena, content, name);
         tmpl.base_components = map;
         tmpl.globals = try self.viewGlobals();
         return .{ .template = tmpl };
@@ -507,7 +507,7 @@ pub const Ctx = struct {
             }
         }
 
-        var tmpl = try Template.init(self.arena, view_content);
+        var tmpl = try Template.initNamed(self.arena, view_content, name);
         tmpl.components = components;
         tmpl.globals = try self.viewGlobals();
         return .{ .template = tmpl };

@@ -1600,3 +1600,97 @@ test "{ \"class\" if (cond) }: conditional class, with comparisons" {
     defer alc.free(off);
     try std.testing.expectEqualStrings("<a class=\"ui-btn \">x</a>", off);
 }
+
+// ── Syntax errors: where, what, and the form that works ─────────────────
+
+const parser = @import("parser.zig");
+
+/// Parses `src` without logging and returns what `parser.failure` says.
+fn syntaxFailure(alc: std.mem.Allocator, src: []const u8, expected: anyerror) !parser.Failure {
+    var p = parser.Parser.init(alc, src);
+    p.log_failure = false;
+    try std.testing.expectError(expected, p.parse());
+    return (try parser.failure(alc, src)) orelse error.NoFailureRecorded;
+}
+
+test "syntax error: { if (cond) \"x\" } inside a for names the line, the text and the form that works" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const f = try syntaxFailure(arena.allocator(),
+        \\<table>
+        \\  for (rows) |r| {
+        \\  <tr><td>
+        \\    <button class="badge { if (r.effect == "allow") "badge-success" } badge-sm">x</button>
+        \\  </td></tr>
+        \\  }
+        \\</table>
+    , error.ExpectedBrace);
+    try std.testing.expectEqual(@as(usize, 4), f.line);
+    try std.testing.expectEqualStrings("{ if (r.effect == \"allow\") \"badge-success\" }", f.snippet);
+    try std.testing.expectEqualStrings("an `if` inside { } needs its body in braces", f.message);
+    try std.testing.expectEqualStrings("{ \"badge-success\" if (r.effect == \"allow\") } (a class or an attribute), or if (r.effect == \"allow\") { ... }", f.fix);
+}
+
+test "syntax error: { if (cond) \"a\" else \"b\" } suggests the if/else block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const f = try syntaxFailure(arena.allocator(),
+        \\for (rules) |r| {
+        \\<button class="badge { if (r.effect == "allow") "badge-success" else "badge-error" }">x</button>
+        \\}
+    , error.ExpectedBrace);
+    try std.testing.expectEqual(@as(usize, 2), f.line);
+    try std.testing.expectEqualStrings("an `if` inside { } needs its body in braces", f.message);
+    try std.testing.expectEqualStrings("if (r.effect == \"allow\") { badge-success } else { badge-error }", f.fix);
+}
+
+test "syntax error: the forms suggested render as meant inside a for" {
+    const alc = std.testing.allocator;
+    const Rule = struct { effect: []const u8 };
+    const rules = [_]Rule{ .{ .effect = "allow" }, .{ .effect = "deny" } };
+    var tmpl = try Template.init(alc,
+        \\for (rules) |r| {<b class="{ "ok" if (r.effect == "allow") }|if (r.effect == "allow") { yes } else { no }"></b>}
+    );
+    defer tmpl.deinit();
+    const html = try tmpl.render(.{ .rules = &rules }, alc);
+    defer alc.free(html);
+    try std.testing.expectEqualStrings("<b class=\"ok|yes\"></b><b class=\"|no\"></b>", html);
+}
+
+test "syntax error: block if, for and an unclosed { each say where and how" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const no_body = try syntaxFailure(a, "<p>\nif (ready) <b>go</b>\n</p>", error.ExpectedBrace);
+    try std.testing.expectEqual(@as(usize, 2), no_body.line);
+    try std.testing.expectEqualStrings("if (ready) <b>go</b>", no_body.snippet);
+    try std.testing.expectEqualStrings("`if (...)` needs its body in braces right after the condition", no_body.message);
+
+    const no_capture = try syntaxFailure(a, "<ul>\n\n  for (items) { <li>x</li> }\n</ul>", error.ExpectedCapture);
+    try std.testing.expectEqual(@as(usize, 3), no_capture.line);
+    try std.testing.expectEqualStrings("for (items) |item| { ... }", no_capture.fix);
+
+    const open_block = try syntaxFailure(a, "<ul>\nfor (items) |it| {\n<li>{ it }</li>\n</ul>", error.UnclosedBrace);
+    try std.testing.expectEqual(@as(usize, 2), open_block.line);
+
+    const open_expr = try syntaxFailure(a, "<p>\nHello { name</p>", error.UnclosedInterpolation);
+    try std.testing.expectEqual(@as(usize, 2), open_expr.line);
+    try std.testing.expectEqualStrings("{ name</p>", open_expr.snippet);
+
+    // Inside a for body too, at its line in the file: `{ it.name}` (no
+    // space before the brace) keeps the block balanced but never closes.
+    const in_body = try syntaxFailure(a, "for (items) |it| {\n<li>\n{ it.name}</li>\n}", error.UnclosedInterpolation);
+    try std.testing.expectEqual(@as(usize, 3), in_body.line);
+    try std.testing.expectEqualStrings("{ it.name}</li>", in_body.snippet);
+}
+
+test "syntax error: no failure is reported for a template that parsed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    _ = try syntaxFailure(arena.allocator(), "{ if (x) \"y\" }", error.ExpectedBrace);
+    const good = "<p>{ x }</p>";
+    var p = parser.Parser.init(arena.allocator(), good);
+    _ = try p.parse();
+    try std.testing.expectEqual(@as(?parser.Failure, null), try parser.failure(arena.allocator(), good));
+}

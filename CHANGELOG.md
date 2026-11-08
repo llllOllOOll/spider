@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A template syntax error says where and how to fix it.** A view that
+  does not parse still answers 500, but the log line now names the
+  template, the line, the text that failed and the form that works,
+  instead of only `ExpectedBrace`:
+
+  ```text
+  template "home/rules", line 5: { if (r.effect == "allow") "badge-success" }: an `if` inside { } needs its body in braces
+      fix: { "badge-success" if (r.effect == "allow") } (a class or an attribute), or if (r.effect == "allow") { ... }
+  ```
+
+  The same for an unclosed `{ `, block or `(`, and a `for` without
+  `|item|` or braces; components, slots and layouts say their name.
+  `spider check` (and `spider.testing.expectConventions()`, which
+  generated apps run in `zig build test`) parses every template and
+  reports the error as `template-syntax`, so it no longer waits for
+  someone to open the page. `Template.initNamed` is `Template.init` with
+  the name in that log line.
+- `{ if (cond) "x" }` (no braces around the body) was never a form of
+  Spider's templates: at the top of a template it failed, and inside a
+  `for` it printed nothing. Since 0.12.0 it fails everywhere; write
+  `{ "x" if (cond) }` or `if (cond) { x } else { y }`.
+
 ### Fixed
 
 - **A query with an optional filter on a parameter is no longer kept in

@@ -685,7 +685,10 @@ if (users.len > 0) {
 
 The word or string is printed only when the condition holds. Don't write
 `disabled="{ locked }"`: the attribute is present — so on — even when the value
-is `false`; `spider check` flags it (`bool-attr`).
+is `false`; `spider check` flags it (`bool-attr`). `{ if (cond) "x" }` is not a
+form: an `if` inside `{ }` needs its body in braces, so write `{ "x" if (cond) }`.
+A template that does not parse answers 500 and the log names the template, the
+line and the fix; `spider check` reports it first (`template-syntax`).
 
 ### Components
 

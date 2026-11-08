@@ -86,8 +86,27 @@ pub const Template = struct {
     /// the parser's error on a malformed template (`error.UnclosedInterpolation`,
     /// `error.UnclosedBrace`, `error.UnclosedParen`, `error.ExpectedBrace`,
     /// `error.ExpectedCapture`, `error.UnclosedCapture`) or `error.OutOfMemory`.
+    /// A syntax error is also logged with its line, the text that failed and
+    /// the form that works:
+    ///
+    /// ```text
+    /// template, line 4: { if (r.on) "x" }: an `if` inside { } needs its body in braces
+    ///     fix: { "x" if (r.on) } (a class or an attribute), or if (r.on) { ... }
+    /// ```
     pub fn init(alc: std.mem.Allocator, template_str: []const u8) !Template {
+        return initWithName(alc, template_str, null);
+    }
+
+    /// `init`, with `name` in the log line of a syntax error
+    /// (`template "posts/index", line 4: ...`). `Ctx.view` passes the
+    /// view's name.
+    pub fn initNamed(alc: std.mem.Allocator, template_str: []const u8, name: []const u8) !Template {
+        return initWithName(alc, template_str, name);
+    }
+
+    fn initWithName(alc: std.mem.Allocator, template_str: []const u8, name: ?[]const u8) !Template {
         var parser = Parser.init(alc, template_str);
+        parser.name = name;
         const result = try parser.parse();
 
         const is_root = isRootTemplate(template_str);
@@ -272,6 +291,7 @@ pub const Template = struct {
                 }
 
                 var layout_parser = Parser.init(alc, layout_template);
+                layout_parser.name = layout_name;
                 const layout_result = try layout_parser.parse();
                 defer {
                     for (layout_result.nodes) |n| freeNode(n, alc);
@@ -336,6 +356,7 @@ pub const Template = struct {
         const comp_template = self.findComponent(component_name) orelse return error.ComponentNotFound;
 
         var comp_parser = Parser.init(alc, comp_template);
+        comp_parser.name = component_name;
         const comp_nodes = try comp_parser.parse();
         defer {
             for (comp_nodes.nodes) |n| freeNode(n, alc);

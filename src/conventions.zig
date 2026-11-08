@@ -12,6 +12,7 @@
 //!   icon-set               an icon class from a set src/styles.css doesn't load
 //!   bool-attr              disabled/checked/selected/... given "{ expr }" (on even when false)
 //!   feature-not-registered a feature folder missing from src/features/mod.zig
+//!   template-syntax        a template that does not parse (the page answers 500)
 //!   route-access           with auth, a route that declares no access (roles /
 //!                          org_roles / public / authenticated / policy, itself or
 //!                          through its group's defaults())
@@ -21,6 +22,7 @@
 //!   routes-test            a feature with routes.zig but no routes_test.zig
 
 const std = @import("std");
+const template_parser = @import("render/parser.zig");
 
 /// How serious an issue is. `err` fails `spider check` and
 /// `spider.testing.expectConventions()`; `warn` is only listed, and fails
@@ -364,6 +366,9 @@ const bool_attrs = [_][]const u8{ "disabled", "checked", "selected", "required",
 /// loads); `has_ui_layer` says whether the app has a `src/ui.css`, without
 /// which the `kit-class` rule and the `ti` icon rule do not apply.
 pub fn checkTemplate(report: *Report, path: []const u8, text: []const u8, styles: []const u8, has_ui_layer: bool) !void {
+    // A `-- doc` view is Markdown, not a template.
+    if (std.mem.startsWith(u8, text, "-- doc")) return;
+    try checkTemplateSyntax(report, path, text);
     var line_no: usize = 0;
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
@@ -404,6 +409,18 @@ pub fn checkTemplate(report: *Report, path: []const u8, text: []const u8, styles
             try report.add(.warn, path, line_no, "inline-svg", "SVG markup pasted in the template", .{}, "use an icon class (<span class=\"hero-NAME size-5\"></span>); for charts/illustrations, ignore");
         }
     }
+}
+
+/// The `template-syntax` rule: parses the template as a request would,
+/// and reports the first syntax error with its line and the fix.
+fn checkTemplateSyntax(report: *Report, path: []const u8, text: []const u8) !void {
+    var parser = template_parser.Parser.init(report.arena, text);
+    parser.log_failure = false;
+    _ = parser.parse() catch |err| {
+        if (err == error.OutOfMemory) return err;
+        const f = (try template_parser.failure(report.arena, text)) orelse return;
+        try report.add(.err, path, @max(f.line, 1), "template-syntax", "`{s}`: {s}", .{ f.snippet, f.message }, try report.arena.dupe(u8, f.fix));
+    };
 }
 
 const t = std.testing;
@@ -561,4 +578,31 @@ test "check: a whole tree (feature not registered, missing routes_test, auth)" {
     try t.expectEqual(@as(usize, 3), r.issues.items.len);
     try t.expectEqual(@as(usize, 2), r.count(.err)); // tags not registered; posts route without access
     try t.expectEqual(@as(usize, 1), r.count(.warn)); // posts has no routes_test.zig
+}
+
+test "checkTemplate: template-syntax — a template that does not parse, with the line and the form that works" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var r = testReport(&arena);
+    try checkTemplate(&r, "src/features/home/views/rules.html",
+        \\<table>
+        \\  for (rows) |r| {
+        \\  <tr><td>
+        \\    <button class="ui-btn { if (r.effect == "allow") "ui-btn-active" }">x</button>
+        \\  </td></tr>
+        \\  }
+        \\</table>
+    , "", true);
+    try t.expectEqual(@as(usize, 1), r.issues.items.len);
+    const i = r.issues.items[0];
+    try t.expectEqual(Severity.err, i.severity);
+    try t.expectEqualStrings("template-syntax", i.rule);
+    try t.expectEqual(@as(usize, 4), i.line);
+    try t.expectEqualStrings("`{ if (r.effect == \"allow\") \"ui-btn-active\" }`: an `if` inside { } needs its body in braces", i.message);
+    try t.expectEqualStrings("{ \"ui-btn-active\" if (r.effect == \"allow\") } (a class or an attribute), or if (r.effect == \"allow\") { ... }", i.fix);
+
+    // A Markdown view (`-- doc`) is not a template.
+    var r2 = testReport(&arena);
+    try checkTemplate(&r2, "src/x.html", "-- doc\n# Title { not closed", "", true);
+    try t.expectEqual(@as(usize, 0), r2.issues.items.len);
 }

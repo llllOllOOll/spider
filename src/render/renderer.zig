@@ -84,6 +84,7 @@ pub const RenderState = struct {
         } orelse return null;
 
         var comp_parser = Parser.init(alc, template_str);
+        comp_parser.name = name;
         const parsed = try comp_parser.parse();
         errdefer {
             for (parsed.nodes) |n| freeNode(n, alc);
@@ -202,6 +203,7 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
 
             if (comp.slot_content) |sc| {
                 var slot_parser = Parser.init(alc, sc);
+                slot_parser.name = comp.name;
                 const slot_result = try slot_parser.parse();
                 defer {
                     for (slot_result.nodes) |n| freeNode(n, alc);

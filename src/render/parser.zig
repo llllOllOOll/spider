@@ -3,6 +3,7 @@
 //! inline.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ast = @import("ast.zig");
 const Node = ast.Node;
 const Prop = ast.Prop;
@@ -123,12 +124,29 @@ pub const Parser = struct {
     // the opening tag's attributes — a later parseText call must remember
     // it's still inside that tag to correctly skip the body afterward.
     raw_skip_close: ?[]const u8 = null,
+    /// The template's name in the log line of a syntax error, when known.
+    name: ?[]const u8 = null,
+    /// Log a syntax error with its line and the fix (spider check reports
+    /// it itself and turns this off).
+    log_failure: bool = true,
 
     pub fn init(alc: std.mem.Allocator, template: []const u8) Parser {
         return Parser{ .alc = alc, .template = template, .pos = 0 };
     }
 
-    pub fn parse(p: *Parser) !struct { nodes: []Node, layout: ?[]const u8, inline_components: std.StringHashMapUnmanaged([]const u8) } {
+    pub const Parsed = struct { nodes: []Node, layout: ?[]const u8, inline_components: std.StringHashMapUnmanaged([]const u8) };
+
+    /// Parses the whole template. On a syntax error, `failure()` says where
+    /// and why, and the error is logged (unless `log_failure` is off).
+    pub fn parse(p: *Parser) !Parsed {
+        last_kind = null;
+        return p.parseAll() catch |err| {
+            if (p.log_failure) logFailure(p.template, p.name);
+            return err;
+        };
+    }
+
+    fn parseAll(p: *Parser) !Parsed {
         var nodes: std.ArrayList(Node) = .empty;
         errdefer nodes.deinit(p.alc);
 
@@ -192,6 +210,7 @@ pub const Parser = struct {
     }
 
     fn parseFor(p: *Parser) !Node {
+        const at = p.template[p.pos..];
         p.pos += 5;
 
         const iter_start = p.pos;
@@ -202,27 +221,27 @@ pub const Parser = struct {
             if (p.template[p.pos] == ')') paren_depth -= 1;
             p.pos += 1;
         }
-        if (p.pos >= p.template.len) return error.UnclosedParen;
+        if (p.pos >= p.template.len) return fail(.unclosed_paren, at);
         const iterable = try p.alc.dupe(u8, p.template[iter_start..p.pos]);
         p.pos += 1;
 
         while (p.pos < p.template.len and p.template[p.pos] == ' ') p.pos += 1;
 
-        if (p.pos >= p.template.len or p.template[p.pos] != '|') return error.ExpectedCapture;
+        if (p.pos >= p.template.len or p.template[p.pos] != '|') return fail(.expected_capture, at);
         p.pos += 1;
         const cap_start = p.pos;
         while (p.pos < p.template.len and p.template[p.pos] != '|') p.pos += 1;
-        if (p.pos >= p.template.len) return error.UnclosedCapture;
+        if (p.pos >= p.template.len) return fail(.unclosed_capture, at);
         const capture = try p.alc.dupe(u8, p.template[cap_start..p.pos]);
         p.pos += 1;
 
         while (p.pos < p.template.len and p.template[p.pos] == ' ') p.pos += 1;
 
-        if (p.pos >= p.template.len or p.template[p.pos] != '{') return error.ExpectedBrace;
+        if (p.pos >= p.template.len or p.template[p.pos] != '{') return fail(.for_brace, at);
         p.pos += 1;
 
         const body_start = p.pos;
-        p.pos = findBlockEnd(p.template, body_start) orelse return error.UnclosedBrace;
+        p.pos = findBlockEnd(p.template, body_start) orelse return fail(.unclosed_block, at);
 
         const body_str = trimWhitespace(p.template[body_start..p.pos]);
         p.pos += 1;
@@ -233,6 +252,7 @@ pub const Parser = struct {
     }
 
     fn parseInterpolation(p: *Parser) !Node {
+        const at = p.template[p.pos..];
         p.pos += 2;
 
         const expr_start = p.pos;
@@ -249,7 +269,7 @@ pub const Parser = struct {
                 p.pos += 1;
             }
         }
-        if (p.pos >= p.template.len) return error.UnclosedInterpolation;
+        if (p.pos >= p.template.len) return fail(.unclosed_interpolation, at);
         const expr_raw = p.template[expr_start..p.pos];
         p.pos += 2;
 
@@ -414,6 +434,7 @@ pub fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *us
 const ParseError = error{ UnclosedParen, ExpectedBrace, UnclosedBrace, UnclosedInterpolation, UnclosedCapture, ExpectedCapture } || std.mem.Allocator.Error;
 
 pub fn parseIfNode(alc: std.mem.Allocator, str: []const u8, pos: *usize) ParseError!Node {
+    const at = str[pos.*..];
     pos.* += 4; // skip "if ("
 
     const cond_start = pos.*;
@@ -424,16 +445,16 @@ pub fn parseIfNode(alc: std.mem.Allocator, str: []const u8, pos: *usize) ParseEr
         if (str[pos.*] == ')') paren_depth -= 1;
         pos.* += 1;
     }
-    if (pos.* >= str.len) return error.UnclosedParen;
+    if (pos.* >= str.len) return fail(.unclosed_paren, at);
     const condition = try alc.dupe(u8, str[cond_start..pos.*]);
     pos.* += 1; // skip ')'
 
     while (pos.* < str.len and str[pos.*] == ' ') pos.* += 1;
-    if (pos.* >= str.len or str[pos.*] != '{') return error.ExpectedBrace;
+    if (pos.* >= str.len or str[pos.*] != '{') return fail(.if_brace, at);
     pos.* += 1; // skip '{'
 
     const then_start = pos.*;
-    pos.* = findBlockEnd(str, then_start) orelse return error.UnclosedBrace;
+    pos.* = findBlockEnd(str, then_start) orelse return fail(.unclosed_block, at);
     const then_body = try parseTextNodes(alc, trimWhitespace(str[then_start..pos.*]));
     pos.* += 1; // skip '}'
 
@@ -447,9 +468,10 @@ pub fn parseIfNode(alc: std.mem.Allocator, str: []const u8, pos: *usize) ParseEr
         nested_nodes[0] = nested;
         else_body = nested_nodes;
     } else if (pos.* + 6 <= str.len and std.mem.eql(u8, str[pos.* .. pos.* + 6], "else {")) {
+        const else_at = str[pos.*..];
         pos.* += 6; // skip "else {"
         const else_start = pos.*;
-        pos.* = findBlockEnd(str, else_start) orelse return error.UnclosedBrace;
+        pos.* = findBlockEnd(str, else_start) orelse return fail(.unclosed_block, else_at);
         const else_str = trimWhitespace(str[else_start..pos.*]);
         pos.* += 1; // skip '}'
         else_body = try parseTextNodes(alc, else_str);
@@ -475,6 +497,12 @@ fn exprNode(alc: std.mem.Allocator, expr_raw: []const u8) ParseError!Node {
     }
     // If the expression is an if/else block, parse and return it directly.
     if (std.mem.startsWith(u8, trimmed_expr, "if (")) {
+        // `{ if (cond) "x" }`: no braces around the body, a form Spider
+        // never had (inside a for it once printed nothing, silently).
+        if (closeParen(trimmed_expr, 4)) |close| {
+            const rest = std.mem.trimStart(u8, trimmed_expr[close + 1 ..], " \t\r\n");
+            if (rest.len == 0 or rest[0] != '{') return fail(.inline_if, trimmed_expr);
+        }
         var sub_pos: usize = 0;
         return parseIfNode(alc, trimmed_expr, &sub_pos);
     }
@@ -569,7 +597,7 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
                 if (std.mem.startsWith(u8, str[pos..], " }")) break;
                 pos += 1;
             }
-            if (pos >= str.len) return error.UnclosedInterpolation;
+            if (pos >= str.len) return fail(.unclosed_interpolation, remaining);
             const expr_raw = str[expr_start..pos];
             pos += 2;
             try nodes.append(alc, try exprNode(alc, expr_raw));
@@ -579,6 +607,7 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
         } else if (std.mem.startsWith(u8, remaining, "if (")) {
             try nodes.append(alc, try parseIfNode(alc, str, &pos));
         } else if (std.mem.startsWith(u8, remaining, "for (")) {
+            const at = remaining;
             pos += 5;
             const iter_start = pos;
             var paren_depth: usize = 0;
@@ -588,22 +617,22 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
                 if (str[pos] == ')') paren_depth -= 1;
                 pos += 1;
             }
-            if (pos >= str.len) return error.UnclosedParen;
+            if (pos >= str.len) return fail(.unclosed_paren, at);
             const iterable = try alc.dupe(u8, str[iter_start..pos]);
             pos += 1;
             while (pos < str.len and str[pos] == ' ') pos += 1;
-            if (pos >= str.len or str[pos] != '|') return error.ExpectedCapture;
+            if (pos >= str.len or str[pos] != '|') return fail(.expected_capture, at);
             pos += 1;
             const cap_start = pos;
             while (pos < str.len and str[pos] != '|') pos += 1;
-            if (pos >= str.len) return error.UnclosedCapture;
+            if (pos >= str.len) return fail(.unclosed_capture, at);
             const capture = try alc.dupe(u8, str[cap_start..pos]);
             pos += 1;
             while (pos < str.len and str[pos] == ' ') pos += 1;
-            if (pos >= str.len or str[pos] != '{') return error.ExpectedBrace;
+            if (pos >= str.len or str[pos] != '{') return fail(.for_brace, at);
             pos += 1;
             const body_start = pos;
-            pos = findBlockEnd(str, body_start) orelse return error.UnclosedBrace;
+            pos = findBlockEnd(str, body_start) orelse return fail(.unclosed_block, at);
             const body_str = str[body_start..pos];
             pos += 1;
             const body = try parseTextNodes(alc, body_str);
@@ -668,4 +697,146 @@ fn suffixIf(expr: []const u8) ?struct { text: []const u8, cond: []const u8 } {
         if (!(std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch == ':' or ch == '@' or ch == '.')) return null;
     }
     return .{ .text = head, .cond = cond };
+}
+
+// ── Syntax errors: where, what, and the form that works ─────────────────
+
+/// What a syntax error was, for its message.
+const Kind = enum {
+    inline_if,
+    if_brace,
+    for_brace,
+    unclosed_block,
+    unclosed_interpolation,
+    unclosed_paren,
+    expected_capture,
+    unclosed_capture,
+};
+
+// The last syntax error on this thread: what, and the text from where the
+// construct starts (a slice of the source being parsed). Set just before
+// the error is returned, read right after by failure(): parsing never
+// yields, so nothing else runs on this thread in between.
+threadlocal var last_kind: ?Kind = null;
+threadlocal var last_at: []const u8 = "";
+
+fn fail(kind: Kind, at: []const u8) ParseError {
+    last_kind = kind;
+    last_at = at;
+    return switch (kind) {
+        .inline_if, .if_brace, .for_brace => error.ExpectedBrace,
+        .unclosed_block => error.UnclosedBrace,
+        .unclosed_interpolation => error.UnclosedInterpolation,
+        .unclosed_paren => error.UnclosedParen,
+        .expected_capture => error.ExpectedCapture,
+        .unclosed_capture => error.UnclosedCapture,
+    };
+}
+
+/// The index of the `)` closing the `(` just before `from`, or null.
+fn closeParen(str: []const u8, from: usize) ?usize {
+    var depth: usize = 0;
+    var i = from;
+    while (i < str.len) : (i += 1) {
+        switch (str[i]) {
+            '(' => depth += 1,
+            ')' => {
+                if (depth == 0) return i;
+                depth -= 1;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+/// A syntax error explained: `line` in the source (1-based; 0 when the
+/// failing text is not in it), the text that failed, what is wrong, and
+/// the form that works.
+pub const Failure = struct {
+    line: usize,
+    snippet: []const u8,
+    message: []const u8,
+    fix: []const u8,
+};
+
+/// Explains the syntax error of the last `Parser.parse` of `source` on
+/// this thread, or null when that parse succeeded (or failed only for
+/// memory). Strings are allocated with `alc` or point into `source`.
+pub fn failure(alc: std.mem.Allocator, source: []const u8) !?Failure {
+    const kind = last_kind orelse return null;
+    const src_start = @intFromPtr(source.ptr);
+    const at_start = @intFromPtr(last_at.ptr);
+    // Text the parser built itself (the `{ x if (c) }` sugar) is not in
+    // the source: no line and no snippet, but still what is wrong.
+    const in_source = at_start >= src_start and at_start + last_at.len <= src_start + source.len;
+    const offset = at_start -% src_start;
+    const line = if (in_source) 1 + std.mem.count(u8, source[0..offset], "\n") else 0;
+    const rest = if (in_source) restOfLine(source[offset..]) else "";
+    return switch (kind) {
+        .inline_if => .{
+            .line = line,
+            .snippet = if (in_source) try std.fmt.allocPrint(alc, "{{ {s} }}", .{last_at}) else "",
+            .message = "an `if` inside { } needs its body in braces",
+            .fix = if (in_source) try inlineIfFix(alc, last_at) else "{ \"text\" if (cond) }, or if (cond) { ... } else { ... }",
+        },
+        .if_brace => .{ .line = line, .snippet = rest, .message = "`if (...)` needs its body in braces right after the condition", .fix = "if (cond) { ... } else { ... }" },
+        .for_brace => .{ .line = line, .snippet = rest, .message = "`for (...) |item|` needs its body in braces", .fix = "for (items) |item| { ... }" },
+        .unclosed_block => .{ .line = line, .snippet = rest, .message = "the `{` of this block is never closed", .fix = "close the block with `}`" },
+        .unclosed_interpolation => .{ .line = line, .snippet = rest, .message = "`{ ` is never closed with ` }`", .fix = "close it with ` }` (a space, then the brace); to print braces, write {{ ... }}" },
+        .unclosed_paren => .{ .line = line, .snippet = rest, .message = "the `(` of this `if` or `for` is never closed", .fix = "close the condition with `)`" },
+        .expected_capture => .{ .line = line, .snippet = rest, .message = "`for (...)` needs a name for each item", .fix = "for (items) |item| { ... }" },
+        .unclosed_capture => .{ .line = line, .snippet = rest, .message = "the item name of this `for` is not closed with `|`", .fix = "for (items) |item| { ... }" },
+    };
+}
+
+/// The text up to the end of its line, at most 120 bytes.
+fn restOfLine(text: []const u8) []const u8 {
+    const end = std.mem.indexOfAny(u8, text, "\r\n") orelse text.len;
+    return std.mem.trimEnd(u8, text[0..@min(end, 120)], " \t");
+}
+
+/// The form that works for `if (COND) BODY` written inside `{ }`:
+/// `"x"` -> `{ "x" if (COND) }`; `"a" else "b"` -> the if/else block.
+fn inlineIfFix(alc: std.mem.Allocator, expr: []const u8) ![]const u8 {
+    const close = closeParen(expr, 4) orelse return "if (cond) { ... } else { ... }";
+    const cond = expr[4..close];
+    const body = std.mem.trim(u8, expr[close + 1 ..], " \t\r\n");
+    if (quoted(body)) |text| {
+        return std.fmt.allocPrint(alc, "{{ \"{s}\" if ({s}) }} (a class or an attribute), or if ({s}) {{ ... }}", .{ text, cond, cond });
+    }
+    if (std.mem.indexOf(u8, body, " else ")) |e| {
+        if (quoted(std.mem.trim(u8, body[0..e], " "))) |a| {
+            if (quoted(std.mem.trim(u8, body[e + " else ".len ..], " "))) |b| {
+                return std.fmt.allocPrint(alc, "if ({s}) {{ {s} }} else {{ {s} }}", .{ cond, a, b });
+            }
+        }
+    }
+    return std.fmt.allocPrint(alc, "if ({s}) {{ ... }} else {{ ... }}", .{cond});
+}
+
+/// The text of a `"..."` literal with no quote inside, or null.
+fn quoted(s: []const u8) ?[]const u8 {
+    if (s.len < 2 or s[0] != '"' or s[s.len - 1] != '"') return null;
+    const inner = s[1 .. s.len - 1];
+    if (std.mem.indexOfScalar(u8, inner, '"') != null) return null;
+    return inner;
+}
+
+/// Logs the last syntax error of `source`, with `name` when known:
+/// `template "posts/index", line 5: { ... }: what is wrong` and the fix.
+fn logFailure(source: []const u8, name: ?[]const u8) void {
+    var buf: [2048]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const f = (failure(fba.allocator(), source) catch return) orelse return;
+    // warn under `zig test`: the test runner fails any test that logs at err.
+    const log = if (builtin.is_test) std.log.warn else std.log.err;
+    var where_buf: [160]u8 = undefined;
+    const where = if (name) |n|
+        (if (f.line > 0) std.fmt.bufPrint(&where_buf, "template \"{s}\", line {d}", .{ n, f.line }) else std.fmt.bufPrint(&where_buf, "template \"{s}\"", .{n})) catch "template"
+    else if (f.line > 0)
+        std.fmt.bufPrint(&where_buf, "template, line {d}", .{f.line}) catch "template"
+    else
+        "template";
+    log("{s}: {s}: {s}\n    fix: {s}", .{ where, f.snippet, f.message, f.fix });
 }
