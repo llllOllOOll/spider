@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`spider dev` sees a migration file added while it runs.**
+  `addMigrations` lists the `.sql` files when build.zig is configured, and
+  the `zig build --watch` that `spider dev` runs never configures again:
+  a migration added (or removed) during a session never reached the
+  binary, so the app ran the new code against the old schema without
+  seeing the migration as pending. `spider dev` now checks the set of
+  `.sql` files under `src/` every second and starts the build again when
+  it changes (editing a file is still the watch's job). A new migration is
+  in the running app within a few seconds.
+
 - **A query with an optional filter on a parameter is no longer kept in
   `spider.pg`'s statement cache** (`($1 = '' OR col = $1)`, `$2 = 0 OR`,
   `$3 IS NULL OR`, `($4 = 'all' OR ...)`, `$5 = true OR`, `$6 <> 'x' OR`,

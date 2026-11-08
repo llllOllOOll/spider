@@ -110,6 +110,11 @@ pub const Options = struct {
     /// No progress lines (tests).
     quiet: bool = false,
     poll_ms: u32 = 30,
+    /// How often the set of `*.sql` files under `src/` is checked. When a
+    /// file is added, removed or renamed the build is started again:
+    /// `addMigrations` lists them when build.zig is configured, and a
+    /// running `zig build --watch` never configures again (COY-626).
+    sql_check_ms: u32 = 1000,
     /// How long the build gets to exit after being asked to, before it is
     /// killed.
     grace_ms: u32 = 2000,
@@ -395,7 +400,7 @@ pub fn supervise(
 
     const build_argv = opts.build_argv orelse default_build_argv;
     say(opts, "building ({s})", .{if (opts.build_argv == null and incremental_supported) "incremental" else "watch"});
-    const build = Proc.start(io, gpa, .{
+    var build = Proc.start(io, gpa, .{
         .argv = build_argv,
         .cwd = .{ .dir = root },
         .environ_map = &build_env,
@@ -404,6 +409,8 @@ pub fn supervise(
         return err;
     };
     defer build.stop(io, gpa, opts.grace_ms);
+    var sql_files = sqlFilesSignature(io, gpa, root);
+    var sql_checked = Io.Timestamp.now(io, .awake);
 
     var summary: Summary = .{};
     var app: ?*Proc = null;
@@ -532,10 +539,47 @@ pub fn supervise(
             }
         }
 
+        if (sql_checked.durationTo(Io.Timestamp.now(io, .awake)).toMilliseconds() >= opts.sql_check_ms) {
+            sql_checked = Io.Timestamp.now(io, .awake);
+            const now_sql = sqlFilesSignature(io, gpa, root);
+            if (now_sql != sql_files) {
+                sql_files = now_sql;
+                say(opts, "a .sql file was added or removed: starting the build again (it lists the migrations when configured)", .{});
+                build.stop(io, gpa, opts.grace_ms);
+                build = Proc.start(io, gpa, .{
+                    .argv = build_argv,
+                    .cwd = .{ .dir = root },
+                    .environ_map = &build_env,
+                }) catch |err| {
+                    std.debug.print("error: could not start `{s}`: {s}\n", .{ build_argv[0], @errorName(err) });
+                    return err;
+                };
+            }
+        }
+
         Io.sleep(io, .fromMilliseconds(opts.poll_ms), .awake) catch break;
     }
 
     return summary;
+}
+
+/// Which `*.sql` files there are under `src/` (paths only, in any order):
+/// a value that changes when one is added, removed or renamed, and not when
+/// one is edited. 0 when there is no `src/`.
+fn sqlFilesSignature(io: Io, gpa: std.mem.Allocator, root: Io.Dir) u64 {
+    var src = root.openDir(io, "src", .{ .iterate = true }) catch return 0;
+    defer src.close(io);
+    var walker = src.walk(gpa) catch return 0;
+    defer walker.deinit();
+    var sum: u64 = 0;
+    var count: u64 = 0;
+    while (walker.next(io) catch null) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.basename, ".sql")) continue;
+        // Order-independent: the walk order is the file system's.
+        sum +%= std.hash.Wyhash.hash(0, entry.path);
+        count += 1;
+    }
+    return sum ^ (count *% 0x9E3779B97F4A7C15);
 }
 
 // ── tests ───────────────────────────────────────────────────────────────
@@ -625,6 +669,7 @@ const Fixture = struct {
             .stop = &self.stop,
             .quiet = true,
             .poll_ms = 5,
+            .sql_check_ms = 20,
             .grace_ms = 1000,
             .port = self.port,
         });
@@ -964,4 +1009,38 @@ test "supervise: a lock left by a dead process is taken over" {
     try fx.expectFile("runs.log", "one\n");
     const summary = try fx.finish();
     try testing.expectEqual(@as(u32, 1), summary.starts);
+}
+
+test "supervise: a migration file added or removed under src restarts the build, so its list is fresh (COY-626)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    // addMigrations lists the .sql files when build.zig is configured, and a
+    // running `zig build --watch` never configures again: the build is
+    // started again when the set of files changes. Each start logs a line.
+    const fx = try Fixture.init(script_prelude ++
+        \\echo b >> builds.log
+        \\app one; notify one 1
+        \\exec sleep 30
+        \\
+    );
+    defer fx.deinit();
+    try fx.tmp.dir.createDirPath(testing.io, "src/core/db/migrations");
+    try fs_utils.writeFile(testing.io, fx.tmp.dir, "src/core/db/migrations/0001_a.sql", "SELECT 1;\n");
+    try fx.start();
+    try fx.expectFile("builds.log", "b\n");
+
+    try fs_utils.writeFile(testing.io, fx.tmp.dir, "src/core/db/migrations/0002_b.sql", "SELECT 2;\n");
+    try fx.expectFile("builds.log", "b\nb\n");
+
+    // Editing a file the build already has is the watch's job: no restart.
+    // Nor does a .sql outside src (a cache, a dump).
+    try fs_utils.writeFile(testing.io, fx.tmp.dir, "src/core/db/migrations/0002_b.sql", "SELECT 22;\n");
+    try fx.tmp.dir.createDirPath(testing.io, ".zig-cache");
+    try fs_utils.writeFile(testing.io, fx.tmp.dir, ".zig-cache/x.sql", "SELECT 3;\n");
+    Io.sleep(testing.io, .fromMilliseconds(200), .awake) catch {};
+    try fx.expectFile("builds.log", "b\nb\n");
+
+    try fx.tmp.dir.deleteFile(testing.io, "src/core/db/migrations/0002_b.sql");
+    try fx.expectFile("builds.log", "b\nb\nb\n");
+
+    _ = try fx.finish();
 }
