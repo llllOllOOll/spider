@@ -20,30 +20,31 @@
 //! never hit a descriptor number that was already recycled.
 
 const std = @import("std");
+const socket = @import("../internal/socket.zig");
 
 pub const Watchdog = struct {
     lock: std.atomic.Mutex = .unlocked,
     head: ?*Entry = null,
 
     pub const Entry = struct {
-        fd: std.posix.fd_t,
+        fd: std.Io.net.Socket.Handle,
         /// Monotonic ns after which the socket is shut down; 0 = no deadline.
         deadline: std.atomic.Value(i64) = .init(0),
-        /// shutdown() `how` for the armed deadline (SHUT.RD or SHUT.RDWR).
-        how: std.atomic.Value(i32) = .init(std.c.SHUT.RD),
+        /// shutdown() `how` for the armed deadline (a socket.How).
+        how: std.atomic.Value(u8) = .init(@backingInt(socket.How.read)),
         prev: ?*Entry = null,
         next: ?*Entry = null,
 
         /// Shut the connection down if it is still in this phase `ms` from
         /// now. 0 disarms.
         pub fn arm(e: *Entry, ms: u32) void {
-            e.how.store(std.c.SHUT.RD, .release);
+            e.how.store(@backingInt(socket.How.read), .release);
             e.deadline.store(if (ms == 0) 0 else monotonicNs() + @as(i64, ms) * std.time.ns_per_ms, .release);
         }
 
         /// Like arm(), for a write: on expiry both directions are shut down.
         pub fn armWrite(e: *Entry, ms: u32) void {
-            e.how.store(std.c.SHUT.RDWR, .release);
+            e.how.store(@backingInt(socket.How.both), .release);
             e.deadline.store(if (ms == 0) 0 else monotonicNs() + @as(i64, ms) * std.time.ns_per_ms, .release);
         }
 
@@ -76,7 +77,7 @@ pub const Watchdog = struct {
     }
 
     /// Shuts down every connection past its deadline; returns how many.
-    pub fn sweep(self: *Watchdog, now: i64) usize {
+    pub fn sweep(self: *Watchdog, io: std.Io, now: i64) usize {
         self.acquire();
         defer self.lock.unlock();
         var n: usize = 0;
@@ -85,7 +86,7 @@ pub const Watchdog = struct {
             const d = e.deadline.load(.acquire);
             if (d == 0 or now < d) continue;
             e.deadline.store(0, .release);
-            _ = std.c.shutdown(e.fd, e.how.load(.acquire));
+            socket.shutdown(io, e.fd, @fromBackingInt(@intCast(e.how.load(.acquire))));
             n += 1;
         }
         return n;
@@ -96,7 +97,7 @@ pub const Watchdog = struct {
     pub fn run(self: *Watchdog, io: std.Io, tick_ms: u32) void {
         while (true) {
             std.Io.sleep(io, .fromMilliseconds(tick_ms), .real) catch {};
-            _ = self.sweep(monotonicNs());
+            _ = self.sweep(io, monotonicNs());
         }
     }
 };
@@ -113,9 +114,7 @@ pub fn tickFor(timeouts_ms: []const u32) u32 {
 }
 
 pub fn monotonicNs() i64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
-    return @as(i64, ts.sec) * std.time.ns_per_s + ts.nsec;
+    return @import("../internal/clock.zig").monotonicNs();
 }
 
 test "tickFor" {
@@ -143,9 +142,9 @@ test "sweep shuts down only expired, armed entries" {
 
     expired.deadline.store(1, .release); // long past
     alive.arm(60_000);
-    try std.testing.expectEqual(@as(usize, 1), wd.sweep(monotonicNs()));
+    try std.testing.expectEqual(@as(usize, 1), wd.sweep(std.testing.io, monotonicNs()));
     try std.testing.expectEqual(@as(i64, 0), expired.deadline.load(.acquire)); // fires once
-    try std.testing.expectEqual(@as(usize, 0), wd.sweep(monotonicNs()));
+    try std.testing.expectEqual(@as(usize, 0), wd.sweep(std.testing.io, monotonicNs()));
 
     // The shut-down end now reads EOF; the other one is untouched.
     var b: [1]u8 = undefined;

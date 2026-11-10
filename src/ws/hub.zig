@@ -388,7 +388,7 @@ pub const Hub = struct {
         };
         defer self.releaseSlot(slot);
         if (slot.io_mutex.lock(self.io)) |_| {
-            if (!slot.closed.load(.acquire)) _ = std.c.shutdown(slot.conn.stream.socket.handle, std.c.SHUT.RDWR);
+            if (!slot.closed.load(.acquire)) @import("../internal/socket.zig").shutdown(self.io, slot.conn.stream.socket.handle, .both);
             slot.io_mutex.unlock(self.io);
         } else |_| {}
         self.remove(conn_id);

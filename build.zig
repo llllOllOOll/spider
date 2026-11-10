@@ -395,7 +395,10 @@ pub fn build(b: *std.Build) void {
         .name = "generate-templates",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/generate_templates.zig"),
-            .target = target,
+            // Apps run it while they build: it runs on the machine that
+            // builds, whatever the app's target (a Windows build from Linux
+            // ran it under Wine, or not at all).
+            .target = b.graph.host,
         }),
     });
     b.installArtifact(gen_exe);

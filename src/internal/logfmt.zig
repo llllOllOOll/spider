@@ -3,13 +3,10 @@
 
 const std = @import("std");
 
-/// Wall clock in nanoseconds since the Unix epoch (libc clock_gettime —
-/// usable from std.log, which has no Io at hand). 0 when the clock cannot
-/// be read.
+/// Wall clock in nanoseconds since the Unix epoch (usable from std.log,
+/// which has no Io at hand). 0 when the clock cannot be read.
 pub fn nowNs() i128 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
-    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+    return @import("clock.zig").realtimeNs();
 }
 
 /// Formats `ns` (nanoseconds since the Unix epoch) as UTC with
@@ -39,7 +36,8 @@ pub fn colorEnabled() bool {
         1 => return true,
         2 => return false,
         else => {
-            const on = std.c.isatty(2) == 1;
+            // The Windows console takes no escape codes unless asked to: plain text there.
+            const on = @import("builtin").os.tag != .windows and std.c.isatty(2) == 1;
             color_state.store(if (on) 1 else 2, .monotonic);
             return on;
         },

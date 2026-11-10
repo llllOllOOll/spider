@@ -335,6 +335,8 @@ test {
     _ = @import("modules/mail/postmark.zig");
     _ = @import("modules/mail/memory.zig");
     _ = @import("modules/mail/log.zig");
+    _ = @import("generate_templates.zig");
+    _ = @import("internal/clock.zig");
 }
 
 test "every file with tests is part of the unit test binary" {

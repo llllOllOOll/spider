@@ -38,8 +38,11 @@ pub fn main(init: std.process.Init) !void {
             !std.mem.endsWith(u8, entry.path, ".md")) continue;
         var field_name_buf: [256]u8 = undefined;
         var alias_buf: [256]u8 = undefined;
-        const names = try generateFieldName(entry.path, &field_name_buf, &alias_buf);
-        const embed_path = entry.path;
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        // On Windows the walker gives `features\home\...`: a backslash
+        // would end up in a field name and in a Zig string.
+        const embed_path = forwardSlashes(entry.path, &path_buf);
+        const names = try generateFieldName(embed_path, &field_name_buf, &alias_buf);
         const line = try std.fmt.allocPrint(allocator, "    {s}: []const u8 = @embedFile(\"{s}\"),\n", .{ names.primary, embed_path });
         defer allocator.free(line);
         try output.appendSlice(allocator, line);
@@ -70,6 +73,14 @@ const FieldNames = struct {
     // (i.e. the PascalCase rule actually dropped a directory prefix).
     alias: ?[]const u8 = null,
 };
+
+/// `path` with every `\\` turned into `/` (which @embedFile takes on
+/// every OS), in `buf`.
+fn forwardSlashes(path: []const u8, buf: []u8) []const u8 {
+    const out = buf[0..path.len];
+    for (path, out) |c, *o| o.* = if (c == '\\') '/' else c;
+    return out;
+}
 
 fn generateFieldName(path: []const u8, buffer: []u8, alias_buffer: []u8) !FieldNames {
     const no_ext = if (std.mem.endsWith(u8, path, ".html"))
@@ -137,4 +148,13 @@ fn generateFieldName(path: []const u8, buffer: []u8, alias_buffer: []u8) !FieldN
         j += 1;
     }
     return .{ .primary = buffer[0..j] };
+}
+
+test "a Windows path is written with forward slashes" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("features/home/views/index.html", forwardSlashes("features\\home\\views\\index.html", &buf));
+    var field: [256]u8 = undefined;
+    var alias: [256]u8 = undefined;
+    const names = try generateFieldName(forwardSlashes("features\\home\\views\\index.html", &buf), &field, &alias);
+    try std.testing.expectEqualStrings("home_index", names.primary);
 }
