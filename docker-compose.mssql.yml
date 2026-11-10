@@ -1,0 +1,10 @@
+# Disposable SQL Server for `zig build test-mssql` (see AGENTS.md).
+services:
+  mssql-spider-test:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: Spider_Test_1
+      MSSQL_PID: Developer
+    ports:
+      - "1435:1433"

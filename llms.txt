@@ -120,6 +120,13 @@ Needs `.pg = true` on the dependency. `init(allocator, io, .{ .host, .port, .dat
 
 Needs `.sqlite = true` on the dependency. `init(allocator, io, .{ .path = ?[]const u8 (null → env SQLITE_PATH, else "db.sqlite"), .size = 5 })`, `deinit()`, `query(T, arena, sql, params)`, `queryOne`, `queryExecute`, `begin()` → transaction (`commit`/`rollback`; a second call does nothing, so `defer tx.rollback()` is safe). Params are `?`. Mapping a row to a struct follows `spider.pg`: a field with no column of its name is `error.ColumnMissing`, a NULL column is `error.UnexpectedNull`, unless the field is optional (null) or has a default (the default). `query(i64, ...)`: first column of the first row, 0 with no row, the statement's error when it fails.
 
+## SQL Server — `spider.mssql`
+
+Needs `.mssql = true` on the dependency. Native TDS 7.4 driver (SQL Server 2012 and later, Azure SQL), TLS from Zig's std, no C library. `init(allocator, io, .{ .host, .port, .database, .user, .password, .pool_size, .encrypt, .trust_server_certificate, .certificate_host, .mapping = .fail|.warn })` (unset fields read `MSSQL_HOST` (localhost), `MSSQL_PORT` (1433), `MSSQL_DB` (master), `MSSQL_USER` (sa), `MSSQL_PASSWORD`, `MSSQL_POOL_SIZE` (10), `MSSQL_ENCRYPT` (true), `MSSQL_TRUST_SERVER_CERTIFICATE` (false: the certificate must chain to a system root and name the host; a self-signed one, as in the Docker image and most on-premises installs, needs true), `MSSQL_CERTIFICATE_HOST`), `deinit()`.
+- The same calls as `spider.pg`: `query(T, arena, sql, params)`, `queryOne`, `queryExecute`, `queryOneExecute`, `begin()`/`transaction(...)`, `lastError() ?ErrorInfo` (`number`, `class`, `message`, ...). Params are `@p1..@pn` (sent through `sp_executesql`, never interpolated; `$1` is a money literal in T-SQL). Struct fields map to column names, exactly or else ignoring case. A `[]const u8` field takes any column (dates in ISO 8601).
+- `queryExecute(void, ...)` cuts the script at lines holding only `GO`, as sqlcmd does. Sessions run with `XACT_ABORT ON`: an error inside a transaction rolls it all back.
+- Errors carry the `spider.pg` names (`UniqueViolation` for 2627/2601, `ForeignKeyViolation`/`CheckViolation` for 547, `NotNullViolation` for 515, `StringDataRightTruncation`, `DivisionByZero`, `UndefinedTable`, `RaisedException` for THROW/RAISERROR 50000+, ...; `error.MSSQL` otherwise), so `statusForError` answers 409/400/422 for them as for Postgres.
+
 ## SSE / WebSocket
 
 - `Sse`: `join(channel) !void`, `joinWithReplay(channel)`, `subscribe(channel)`, `subscribeWithReplay(channels)`, `joinUser(u64)`, `send(event, data_anytype) !void` (JSON), `setRetry(ms)`, `lastEventId() ?u64`, `param(key)`, `header(name)`, `cookie(name)`, `wait()` (block until the client disconnects).

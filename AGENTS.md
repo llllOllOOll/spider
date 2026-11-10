@@ -24,6 +24,7 @@ All from the repo root.
 | Same, zio backend | `zig build test-e2e -Dio_backend=zio` | — |
 | zio integration test | `zig build test-zio-backend -Dio_backend=zio` | step only exists with that flag |
 | Postgres wrapper tests | `PG_HOST=127.0.0.1 PG_PORT=5435 PG_USER=postgres PG_PASSWORD=postgres PG_DB=postgres zig build test-pg` | a **disposable** Postgres (see below) |
+| SQL Server module tests | `MSSQL_HOST=127.0.0.1 MSSQL_PORT=1435 MSSQL_PASSWORD='Spider_Test_1' MSSQL_TRUST_SERVER_CERTIFICATE=true zig build test-mssql` | a **disposable** SQL Server: `docker compose -f docker-compose.mssql.yml up -d` (takes ~15 s to accept logins) |
 | HTTP client tests | `zig build test-pacman` | network access (most tests call httpbingo.org) |
 | Same, scripted local servers | `zig build test-pacman-local` (also with `-Dio_backend=zio`) | — |
 | SQLite tests | `zig build test-sqlite` | — (the tests get an env stub as their `spider` module) |

@@ -43,6 +43,15 @@
         .zqlite = .{
             .path = "modules/sqlite/sqlite_driver_impl",
         },
+        .spider_mssql = .{
+            .path = "modules/mssql",
+            .lazy = true,
+        },
+        // The SQL Server driver alone, for `zig build test-mssql`.
+        .mssql = .{
+            .path = "modules/mssql/mssql_driver_impl",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

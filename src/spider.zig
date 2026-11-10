@@ -84,6 +84,8 @@ pub const Sse = @import("ws/sse.zig").Sse;
 pub const pg = @import("spider_pg");
 /// SQLite: `init`, `query`, `queryOne`, `queryExecute`, `begin`. Opt-in with `-Dsqlite=true`.
 pub const sqlite = @import("spider_sqlite");
+/// Microsoft SQL Server: `init`, `query`, `queryOne`, `queryExecute`, `begin`. Opt-in with `-Dmssql=true`.
+pub const mssql = @import("spider_mssql");
 /// Tokens signed with a secret of the app (HS256) and the cookie helpers
 /// around them. For a login with the app's own users, `spider.session` is
 /// the ready-made one.

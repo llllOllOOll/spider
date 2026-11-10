@@ -226,6 +226,7 @@ pub fn build(b: *std.Build) void {
     const with_pg = b.option(bool, "pg", "Enable PostgreSQL support") orelse false;
     const with_r2 = b.option(bool, "r2", "Enable Cloudflare R2 support") orelse false;
     const with_sqlite = b.option(bool, "sqlite", "Enable SQLite support") orelse false;
+    const with_mssql = b.option(bool, "mssql", "Enable Microsoft SQL Server support") orelse false;
     const with_qrcode = b.option(bool, "qrcode", "Enable QR code generation") orelse false;
     const with_xlsx = b.option(bool, "xlsx", "Enable Excel .xlsx export") orelse false;
     const io_backend = b.option(
@@ -305,6 +306,14 @@ pub fn build(b: *std.Build) void {
             const spider_sqlite = dep.module("spider_sqlite");
             spider_sqlite.addImport("spider", mod);
             mod.addImport("spider_sqlite", spider_sqlite);
+        }
+    }
+
+    if (with_mssql) {
+        if (b.lazyDependency("spider_mssql", .{ .target = target, .optimize = optimize })) |dep| {
+            const spider_mssql = dep.module("spider_mssql");
+            spider_mssql.addImport("spider", mod);
+            mod.addImport("spider_mssql", spider_mssql);
         }
     }
 
@@ -434,10 +443,10 @@ pub fn build(b: *std.Build) void {
     run_doc_check.has_side_effects = true;
     run_doc_check.addDirectoryArg(b.path("."));
     run_doc_check.addArgs(&.{
-        "src",              "modules/pg/src",     "modules/sqlite/src", "modules/pacman/src",
-        "modules/r2/src",   "modules/qrcode/src", "modules/xlsx/src",   "--skip",
-        "src/cli/",         "--skip",             "/std_http/",         "--skip",
-        "/pg_driver_impl/", "--skip",             "/templates/",
+        "src",            "modules/pg/src",     "modules/sqlite/src", "modules/pacman/src",
+        "modules/r2/src", "modules/qrcode/src", "modules/xlsx/src",   "modules/mssql/src",
+        "--skip",         "src/cli/",           "--skip",             "/std_http/",
+        "--skip",         "/pg_driver_impl/",   "--skip",             "/templates/",
     });
     test_step.dependOn(&run_doc_check.step);
     // spider.version (src/version.zig) says the version of build.zig.zon.
@@ -618,6 +627,34 @@ pub fn build(b: *std.Build) void {
     const run_sqlite_tests = b.addRunArtifact(sqlite_test);
     const test_sqlite_step = b.step("test-sqlite", "Run sqlite tests");
     test_sqlite_step.dependOn(&run_sqlite_tests.step);
+
+    // test-mssql — the SQL Server module's tests: unit tests, then the ones
+    // that need a server, found through the MSSQL_* variables (a disposable
+    // one: `docker compose -f docker-compose.mssql.yml up -d`). The driver's
+    // own unit tests run too.
+    const test_mssql_step = b.step("test-mssql", "Run the SQL Server module tests (requires SQL Server)");
+    if (b.lazyDependency("mssql", .{ .target = target, .optimize = optimize })) |mssql_dep| {
+        const mssql_driver = mssql_dep.module("mssql");
+        const mssql_test = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("modules/mssql/src/mssql.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "mssql", .module = mssql_driver },
+                    // Only spider.env is used: the pg tests' core shim has it.
+                    .{ .name = "spider", .module = spider_core_mod },
+                },
+            }),
+            .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+        });
+        const run_mssql_tests = b.addRunArtifact(mssql_test);
+        run_mssql_tests.has_side_effects = true;
+        test_mssql_step.dependOn(&run_mssql_tests.step);
+        const run_driver_tests = b.addRunArtifact(b.addTest(.{ .root_module = mssql_driver }));
+        test_mssql_step.dependOn(&run_driver_tests.step);
+    }
 
     // test-r2 — the R2 module's unit tests (signing, addresses, config;
     // nothing reaches the network). The module takes `*spider.Ctx` in its
