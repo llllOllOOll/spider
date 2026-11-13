@@ -56,15 +56,25 @@ pub fn buildAutoWrapper(comptime handler: anytype) Handler {
                     args[i] = ctx;
                 } else if (comptime isExtractor(PT)) {
                     if (PT.spider_kind == .path) {
-                        // Errors (not canned 400 responses) so they reach the
-                        // app's onError like any other handler error; the
-                        // default mapping (statusForError) still gives 400.
+                        // Errors (not canned responses) so they reach the
+                        // app's onError like any other handler error. The
+                        // default mapping (statusForError): a value that is
+                        // not a T is a 404 (no such resource); a name the
+                        // route does not capture is the app's bug, a 500
+                        // (and refused when the route is registered, see
+                        // pathParamNames).
                         const raw = ctx.params.get(PT.param_name) orelse {
                             ctx.setErrorDetail("missing path param: " ++ PT.param_name);
                             return error.MissingPathParam;
                         };
                         if (comptime PT.Inner == []const u8) {
                             args[i] = .{ .value = raw };
+                        } else if (comptime @typeInfo(PT.Inner) == .@"enum") {
+                            const parsed = std.meta.stringToEnum(PT.Inner, raw) orelse {
+                                ctx.setErrorDetail("invalid path param: " ++ PT.param_name);
+                                return error.InvalidPathParam;
+                            };
+                            args[i] = .{ .value = parsed };
                         } else {
                             const parsed = std.fmt.parseInt(PT.Inner, raw, 10) catch {
                                 ctx.setErrorDetail("invalid path param: " ++ PT.param_name);
@@ -100,6 +110,21 @@ pub fn buildAutoWrapper(comptime handler: anytype) Handler {
         }
     };
     return W.call;
+}
+
+// internal: the `:names` a handler reads through spider.Path, in parameter
+// order; empty for a ready Handler or a handler without Path parameters.
+// The router refuses a route whose path does not capture one of them.
+pub fn pathParamNames(comptime H: type) []const []const u8 {
+    comptime {
+        if (H == Handler or @typeInfo(H) != .@"fn") return &.{};
+        var names: []const []const u8 = &.{};
+        for (@typeInfo(H).@"fn".param_types) |maybe_pt| {
+            const PT = maybe_pt orelse continue;
+            if (PT != *Ctx and isExtractor(PT) and PT.spider_kind == .path) names = names ++ .{PT.param_name};
+        }
+        return names;
+    }
 }
 
 /// Handler for a Group route: a plain `fn (*Ctx) !Response`, or one taking

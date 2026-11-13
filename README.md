@@ -300,7 +300,7 @@ matching doesn't depend on registration order.
 
 ```zig
 fn getPost(id: spider.Path(i64, "id"), c: *spider.Ctx) !spider.Response {
-    return c.json(.{ .id = id.value }, .{}); // "/posts/abc" → 400
+    return c.json(.{ .id = id.value }, .{}); // "/posts/abc" → 404
 }
 
 const PostForm = struct { title: []const u8, body: []const u8 };

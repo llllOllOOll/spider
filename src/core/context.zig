@@ -1191,13 +1191,14 @@ pub const Ctx = struct {
 /// extractor. Used when the app has no `onError`, and exposed so an app's
 /// own handler can fall back to it for errors it doesn't special-case.
 ///
-/// - 404: `error.NotFound`.
+/// - 404: `error.NotFound`; `error.InvalidPathParam` (a path segment that
+///   is not a value of its `spider.Path` type).
 /// - 403: `error.Forbidden`.
 /// - 401: `error.Unauthorized`; a token that fails verification
 ///   (`error.Expired`, `error.InvalidSignature`, `error.InvalidFormat`);
 ///   `error.OAuthCodeRejected`.
 /// - 400: `error.BadRequest`; input that cannot be bound
-///   (`error.MissingPathParam`, `error.InvalidPathParam`, `error.BodyEmpty`,
+///   (`error.BodyEmpty`,
 ///   `error.BodyUnreadable`, `error.MissingField`, `error.MissingFieldName`,
 ///   `error.MissingContentType`, `error.InvalidBoundary`,
 ///   `error.BoundaryTooLong`, `error.InvalidMultipartEncoding`, and the JSON
@@ -1217,10 +1218,14 @@ pub const Ctx = struct {
 /// - 502: `error.OAuthProfileFailed`.
 /// - 503: `error.SerializationFailure`, `error.DeadlockDetected`,
 ///   `error.LockNotAvailable`, `error.QueryCanceled`.
-/// - 500: every other error.
+/// - 500: every other error, `error.MissingPathParam` among them (a
+///   `spider.Path` the route does not capture: the app's bug, refused when
+///   the route is registered).
 pub fn statusForError(err: anyerror) std.http.Status {
     return switch (err) {
-        error.NotFound => .not_found,
+        // A path segment that is not a value of its spider.Path type
+        // (`/books/banana` for an integer id) names no resource: 404.
+        error.NotFound, error.InvalidPathParam => .not_found,
         error.Forbidden => .forbidden,
         error.Unauthorized => .unauthorized,
         // A token that fails verification (spider.auth.jwtVerify, JWKS):
@@ -1229,8 +1234,6 @@ pub fn statusForError(err: anyerror) std.http.Status {
         // Client input: path/form/multipart/JSON that can't be bound, or that
         // app code rejected itself (error.BadRequest + c.setErrorDetail).
         error.BadRequest,
-        error.MissingPathParam,
-        error.InvalidPathParam,
         error.BodyEmpty,
         error.BodyUnreadable,
         error.MissingField,

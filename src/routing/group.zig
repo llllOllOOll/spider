@@ -98,32 +98,32 @@ pub const Group = struct {
     /// with `spider.Path`, `spider.Form` and `spider.Loaded` parameters if it
     /// wants them.
     pub fn get(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.GET, path, toHandler(handler), config);
+        return self.route(.GET, path, toHandler(handler), comptime handler_mod.pathParamNames(@TypeOf(handler)), config);
     }
 
     /// Adds a POST route under the group's prefix. Path, handler and config as in `get`.
     pub fn post(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.POST, path, toHandler(handler), config);
+        return self.route(.POST, path, toHandler(handler), comptime handler_mod.pathParamNames(@TypeOf(handler)), config);
     }
 
     /// Adds a PUT route under the group's prefix. Path, handler and config as in `get`.
     pub fn put(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.PUT, path, toHandler(handler), config);
+        return self.route(.PUT, path, toHandler(handler), comptime handler_mod.pathParamNames(@TypeOf(handler)), config);
     }
 
     /// Adds a DELETE route under the group's prefix. Path, handler and config as in `get`.
     pub fn delete(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.DELETE, path, toHandler(handler), config);
+        return self.route(.DELETE, path, toHandler(handler), comptime handler_mod.pathParamNames(@TypeOf(handler)), config);
     }
 
     /// Adds a PATCH route under the group's prefix. Path, handler and config as in `get`.
     pub fn patch(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.PATCH, path, toHandler(handler), config);
+        return self.route(.PATCH, path, toHandler(handler), comptime handler_mod.pathParamNames(@TypeOf(handler)), config);
     }
 
     /// Adds a HEAD route under the group's prefix. Path, handler and config as in `get`.
     pub fn head(self: *Group, path: []const u8, handler: anytype, comptime config: anytype) *Group {
-        return self.route(.HEAD, path, toHandler(handler), config);
+        return self.route(.HEAD, path, toHandler(handler), comptime handler_mod.pathParamNames(@TypeOf(handler)), config);
     }
 
     /// A ready `Handler` value (possibly only known at runtime, e.g.
@@ -134,7 +134,7 @@ pub const Group = struct {
         return comptime handler_mod.forGroup(handler);
     }
 
-    fn route(self: *Group, method: std.http.Method, path: []const u8, h: Handler, comptime config: anytype) *Group {
+    fn route(self: *Group, method: std.http.Method, path: []const u8, h: Handler, reads_params: []const []const u8, comptime config: anytype) *Group {
         comptime route_config.validate(config);
         const own = comptime route_config.metaOf(config);
         const T = @TypeOf(config);
@@ -152,7 +152,7 @@ pub const Group = struct {
         if (comptime @hasField(T, "allow_http")) meta.allow_http = own.allow_http;
 
         const full = self.join(path) catch unreachable;
-        self.router.addRoute(method, full, .{ .handler = h, .middlewares = mws, .meta = meta }) catch unreachable;
+        self.router.addRouteOrPanic(method, full, .{ .handler = h, .middlewares = mws, .meta = meta, .reads_params = reads_params });
         self.freeJoined(path, full);
         self.route_count += 1;
         return self;
@@ -176,7 +176,7 @@ pub const Group = struct {
     /// unless the config declares its own access. (sse() takes neither.)
     pub fn sseWith(self: *Group, path: []const u8, comptime handler: fn (*Sse) anyerror!void, comptime config: anytype) *Group {
         self.has_sse = true;
-        return self.route(.GET, path, sse_mod.buildHandler(handler), config);
+        return self.route(.GET, path, sse_mod.buildHandler(handler), &.{}, config);
     }
 
     /// Adds a middleware for the group's prefix followed by `path_suffix`,

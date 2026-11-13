@@ -1066,11 +1066,12 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.addRoute(.GET, path, .{
+            self.router.addRouteOrPanic(.GET, path, .{
                 .handler = H,
                 .middlewares = comptime route_config.middlewares(config),
                 .meta = comptime route_config.metaOf(config),
-            }) catch unreachable;
+                .reads_params = comptime handler_mod.pathParamNames(@TypeOf(handler)),
+            });
             return self;
         }
 
@@ -1082,11 +1083,12 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.addRoute(.POST, path, .{
+            self.router.addRouteOrPanic(.POST, path, .{
                 .handler = H,
                 .middlewares = comptime route_config.middlewares(config),
                 .meta = comptime route_config.metaOf(config),
-            }) catch unreachable;
+                .reads_params = comptime handler_mod.pathParamNames(@TypeOf(handler)),
+            });
             return self;
         }
 
@@ -1098,11 +1100,12 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.addRoute(.PUT, path, .{
+            self.router.addRouteOrPanic(.PUT, path, .{
                 .handler = H,
                 .middlewares = comptime route_config.middlewares(config),
                 .meta = comptime route_config.metaOf(config),
-            }) catch unreachable;
+                .reads_params = comptime handler_mod.pathParamNames(@TypeOf(handler)),
+            });
             return self;
         }
 
@@ -1114,11 +1117,12 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.addRoute(.DELETE, path, .{
+            self.router.addRouteOrPanic(.DELETE, path, .{
                 .handler = H,
                 .middlewares = comptime route_config.middlewares(config),
                 .meta = comptime route_config.metaOf(config),
-            }) catch unreachable;
+                .reads_params = comptime handler_mod.pathParamNames(@TypeOf(handler)),
+            });
             return self;
         }
 
@@ -1130,11 +1134,12 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.addRoute(.PATCH, path, .{
+            self.router.addRouteOrPanic(.PATCH, path, .{
                 .handler = H,
                 .middlewares = comptime route_config.middlewares(config),
                 .meta = comptime route_config.metaOf(config),
-            }) catch unreachable;
+                .reads_params = comptime handler_mod.pathParamNames(@TypeOf(handler)),
+            });
             return self;
         }
 
@@ -1146,11 +1151,12 @@ pub fn Server(comptime T: type) type {
                 buildAutoWrapper(handler)
             else
                 buildWrapper(handler, T);
-            self.router.addRoute(.HEAD, path, .{
+            self.router.addRouteOrPanic(.HEAD, path, .{
                 .handler = H,
                 .middlewares = comptime route_config.middlewares(config),
                 .meta = comptime route_config.metaOf(config),
-            }) catch unreachable;
+                .reads_params = comptime handler_mod.pathParamNames(@TypeOf(handler)),
+            });
             return self;
         }
 

@@ -265,3 +265,14 @@ test "router: forEach lists each route with its own param names" {
     r.forEach(std.testing.allocator, &paths, Paths.cb);
     for (paths.seen) |seen| try std.testing.expect(seen);
 }
+
+test "a route that does not capture a spider.Path the handler reads is refused" {
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+    try std.testing.expectError(error.PathParamNotInRoute, r.addRoute(.GET, "/books/:book", .{ .handler = h1, .reads_params = &.{"id"} }));
+    try std.testing.expectError(error.PathParamNotInRoute, r.addRoute(.GET, "/books", .{ .handler = h1, .reads_params = &.{"id"} }));
+    try std.testing.expectError(error.PathParamNotInRoute, r.addRoute(.GET, "/orgs/:org/books", .{ .handler = h1, .reads_params = &.{ "org", "id" } }));
+    // Captured: accepted. A name only as a prefix (`:identity` for `id`) is not a capture.
+    try r.addRoute(.GET, "/orgs/:org/books/:id", .{ .handler = h1, .reads_params = &.{ "org", "id" } });
+    try std.testing.expectError(error.PathParamNotInRoute, r.addRoute(.GET, "/people/:identity", .{ .handler = h1, .reads_params = &.{"id"} }));
+}

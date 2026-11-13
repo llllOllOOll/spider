@@ -25,6 +25,10 @@ pub const Route = struct {
     /// and owned by the router: two routes may name the same position
     /// differently (`GET /posts/:author`, `POST /posts/:id`).
     param_names: []const []const u8 = &.{},
+    /// The `:names` the handler reads through `spider.Path` (static
+    /// strings, known at compile time). Router.addRoute refuses the route
+    /// when its path does not capture one of them.
+    reads_params: []const []const u8 = &.{},
 };
 
 /// What a route declares about itself, from its config
@@ -129,6 +133,18 @@ pub const MatchResult = struct {
     meta: RouteMeta = .{},
 };
 
+/// The first of `names` that `path` does not capture as a `:name` segment.
+fn missingParam(path: []const u8, names: []const []const u8) ?[]const u8 {
+    outer: for (names) |name| {
+        var it = std.mem.splitScalar(u8, path, '/');
+        while (it.next()) |segment| {
+            if (segment.len > 1 and segment[0] == ':' and std.mem.eql(u8, segment[1..], name)) continue :outer;
+        }
+        return name;
+    }
+    return null;
+}
+
 fn isDynamic(path: []const u8) bool {
     return std.mem.indexOfScalar(u8, path, ':') != null or
         std.mem.indexOfScalar(u8, path, '*') != null;
@@ -189,6 +205,7 @@ pub const Router = struct {
     }
 
     pub fn addRoute(self: *Router, method: std.http.Method, path: []const u8, route: Route) !void {
+        if (missingParam(path, route.reads_params) != null) return error.PathParamNotInRoute;
         if (!isDynamic(path)) {
             const method_str = @tagName(method);
             const path_stripped = if (path.len > 0 and path[0] == '/') path[1..] else path;
@@ -245,6 +262,20 @@ pub const Router = struct {
         var stored = route;
         stored.param_names = try names.toOwnedSlice(self.allocator);
         node.handlers.set(method, stored);
+    }
+
+    // internal: addRoute for the registration methods (Server.get, Group.get,
+    // ...), which have no error to return. A route that reads a spider.Path
+    // its path does not capture stops the server at startup, with the route
+    // and the name; until now it answered every request with an error.
+    pub fn addRouteOrPanic(self: *Router, method: std.http.Method, path: []const u8, route: Route) void {
+        self.addRoute(method, path, route) catch |err| switch (err) {
+            error.PathParamNotInRoute => std.debug.panic(
+                "route {s} {s}: the handler reads spider.Path(_, \"{s}\"), but the path has no `:{s}` segment",
+                .{ @tagName(method), path, missingParam(path, route.reads_params).?, missingParam(path, route.reads_params).? },
+            ),
+            else => std.debug.panic("route {s} {s} not registered: {s}", .{ @tagName(method), path, @errorName(err) }),
+        };
     }
 
     fn freeParamNames(self: *Router, route: Route) void {

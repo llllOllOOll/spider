@@ -723,12 +723,12 @@ test "unknown route goes through onError as NotFound (404)" {
     try std.testing.expectEqualStrings("onError:NotFound:", res.body);
 }
 
-test "extractor failure reaches onError with its detail (400)" {
+test "extractor failure reaches onError with its detail (404 for a value that is not a T)" {
     var env = TestEnv.init();
     defer env.deinit();
     const port = try appPort(env.io());
     const res = try request(env.io(), env.arena.allocator(), port, "/typed/abc", .{});
-    try std.testing.expectEqual(@as(u16, 400), res.status);
+    try std.testing.expectEqual(@as(u16, 404), res.status);
     try std.testing.expectEqualStrings("onError:InvalidPathParam:invalid path param: id", res.body);
     const good = try request(env.io(), env.arena.allocator(), port, "/typed/7", .{});
     try std.testing.expectEqualStrings("typed:7", good.body);
@@ -1253,7 +1253,7 @@ test "group: extractor handlers work (and inherit the defaults)" {
     try expectStatus(401, &env, "/g2/typed/5", .{});
     const res = try request(env.io(), env.arena.allocator(), port, "/g2/typed/5", .{ .headers = &.{org_admin} });
     try std.testing.expectEqualStrings("typed:5", res.body);
-    try expectStatus(400, &env, "/g2/typed/abc", .{ .headers = &.{org_admin} });
+    try expectStatus(404, &env, "/g2/typed/abc", .{ .headers = &.{org_admin} });
 }
 
 test "group: patch and head" {
@@ -1453,6 +1453,57 @@ test "errorHandler: pages get text; 400 uses the error detail; Unauthorized redi
         try std.testing.expectEqual(@as(u16, 302), u.status);
         try std.testing.expectEqualStrings("/login", u.header("Location").?);
     }
+}
+
+fn book(id: spider.Path(u32, "id"), c: *spider.Ctx) !spider.Response {
+    if (id.value > 3) return error.NotFound;
+    return c.text(try std.fmt.allocPrint(c.arena, "book:{d}", .{id.value}), .{});
+}
+
+fn runNotFoundApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = "views", .static_dir = null });
+    s.get("/books/:id", book, .{})
+        .onError(spider.errorHandler(.{ .not_found_view = "not_found", .messages = .{ .not_found = "Livro não existe." } }))
+        .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("not-found app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+var not_found_port: ?u16 = null;
+fn notFoundAppPort(io: std.Io) !u16 {
+    try app_once_mutex.lock(io);
+    defer app_once_mutex.unlock(io);
+    if (not_found_port) |p| return p;
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runNotFoundApp, .{port})).detach();
+    try waitForPort(io, port);
+    not_found_port = port;
+    return port;
+}
+
+test "errorHandler: not_found_view renders the 404 page for a bad id, a missing record and an unknown route" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try notFoundAppPort(io);
+    const a = env.arena.allocator();
+
+    const good = try request(io, a, port, "/books/2", .{});
+    try std.testing.expectEqual(@as(u16, 200), good.status);
+    try std.testing.expectEqualStrings("book:2", good.body);
+
+    for ([_][]const u8{ "/books/banana", "/books/99", "/nowhere" }) |path| {
+        const r = try request(io, a, port, path, .{});
+        try std.testing.expectEqual(@as(u16, 404), r.status);
+        try std.testing.expect(std.mem.indexOf(u8, r.body, "<h1>Página não encontrada</h1>") != null);
+        try std.testing.expect(std.mem.indexOf(u8, r.body, "Livro não existe.") != null);
+        try std.testing.expect(std.mem.indexOf(u8, r.body, try std.fmt.allocPrint(a, "<p class=\"path\">{s}</p>", .{path})) != null);
+    }
+
+    // JSON callers keep their JSON answer.
+    const j = try request(io, a, port, "/books/banana", .{ .headers = &.{json_accept} });
+    try std.testing.expectEqual(@as(u16, 404), j.status);
+    try std.testing.expectEqualStrings("application/json", j.header("Content-Type").?);
 }
 
 fn runJsonApp(port: u16) void {

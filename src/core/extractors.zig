@@ -6,7 +6,7 @@
 const std = @import("std");
 
 /// A handler parameter filled from a `:name` segment of the route, already
-/// converted: an integer type or `[]const u8`.
+/// converted: an integer type, an enum or `[]const u8`.
 ///
 /// ```zig
 /// fn show(c: *spider.Ctx, id: spider.Path(i64, "id")) !spider.Response {
@@ -14,18 +14,21 @@ const std = @import("std");
 /// }
 /// ```
 ///
-/// A value that is not a `T` (`/posts/abc` for an integer, or a number
-/// that does not fit in `T`) never reaches the handler: the request fails
-/// with `error.InvalidPathParam`, a 400. A route without a `:name` segment
-/// of that name fails with `error.MissingPathParam`. Integers are read in
-/// base 10; a `[]const u8` is the segment percent-decoded (`Ana%20Ribeiro`
-/// is "Ana Ribeiro").
+/// A value that is not a `T` (`/posts/abc` for an integer, a number that
+/// does not fit in `T`, or a name that is not a tag of the enum) never
+/// reaches the handler: the request fails with `error.InvalidPathParam`,
+/// a 404 (there is no such resource). A route whose path has no `:name`
+/// segment of that name is refused when it is registered (the server
+/// panics at startup, naming the route and the parameter). Integers are
+/// read in base 10; an enum by its tag name (`/reports/weekly` for
+/// `enum { daily, weekly }`); a `[]const u8` is the segment
+/// percent-decoded (`Ana%20Ribeiro` is "Ana Ribeiro").
 pub fn Path(comptime T: type, comptime name: []const u8) type {
     switch (@typeInfo(T)) {
-        .int => {},
+        .int, .@"enum" => {},
         else => if (T != []const u8) @compileError(
             "spider.Path: unsupported type `" ++ @typeName(T) ++
-                "` — only integer types and []const u8 are supported",
+                "` — only integer types, enums and []const u8 are supported",
         ),
     }
 

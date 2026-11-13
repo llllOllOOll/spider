@@ -6,8 +6,8 @@
 //!   - htmx requests: the status is kept, nothing is swapped (HX-Reswap:
 //!     none) and an HX-Trigger event (`toast_event`) carries
 //!     { message, type: "warning" | "error" } for the page to show;
-//!   - full-page navigation: the `forbidden_view` for 403 (when set),
-//!     otherwise a plain-text message.
+//!   - full-page navigation: the `forbidden_view` for 403 and the
+//!     `not_found_view` for 404 (when set), otherwise a plain-text message.
 //!
 //! The status comes from spider.statusForError(). 5xx is logged at err level
 //! with request id, method, path, user and org; 4xx is left to the request
@@ -56,6 +56,12 @@ pub const Options = struct {
     /// View rendered for a full-page 403, with `.user_name` (the auth name
     /// claim). null: plain text.
     forbidden_view: ?[]const u8 = null,
+    /// View rendered for a full-page 404 (a route that does not exist,
+    /// error.NotFound, a path segment that is not a value of its
+    /// spider.Path type), with `.message` (the 404 text of `messages`) and
+    /// `.path` (the path asked for). null: plain text. JSON and htmx
+    /// callers get their usual answer.
+    not_found_view: ?[]const u8 = null,
     /// error.TemplateNotFound answers 404 instead of 500.
     template_not_found_is_404: bool = false,
     /// The message shown for each status.
@@ -124,6 +130,11 @@ pub fn errorHandler(comptime opts: Options) ErrorHandler {
             if (opts.forbidden_view) |view| {
                 if (err == error.Forbidden) {
                     return c.view(view, .{ .user_name = c.params.get("_auth_name") orelse "" }, .{ .status = .forbidden });
+                }
+            }
+            if (opts.not_found_view) |view| {
+                if (status == .not_found) {
+                    return c.view(view, .{ .message = message, .path = c.getPath() }, .{ .status = .not_found });
                 }
             }
             return c.text(message, .{ .status = status });

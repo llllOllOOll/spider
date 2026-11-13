@@ -7,6 +7,7 @@ const Server = app_mod.Server;
 const extractors = @import("extractors.zig");
 const Path = extractors.Path;
 const Form = extractors.Form;
+const handler_mod = @import("handler.zig");
 
 const NoDeco = struct {};
 
@@ -99,7 +100,7 @@ test "Path extractor: success" {
     try std.testing.expectEqualStrings("42", resp.body.?);
 }
 
-test "Path extractor: invalid int -> error.InvalidPathParam (400) with detail" {
+test "Path extractor: invalid int -> error.InvalidPathParam (404) with detail" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alc = arena.allocator();
@@ -111,24 +112,64 @@ test "Path extractor: invalid int -> error.InvalidPathParam (400) with detail" {
     const r = try dispatchErr(NoDeco, &s, .GET, "/items/abc", alc, null);
     try std.testing.expectEqual(error.InvalidPathParam, r.err);
     try std.testing.expectEqualStrings("invalid path param: id", r.detail.?);
-    try std.testing.expectEqual(std.http.Status.bad_request, context_mod.statusForError(r.err));
+    try std.testing.expectEqual(std.http.Status.not_found, context_mod.statusForError(r.err));
 }
 
-test "Path extractor: missing param -> error.MissingPathParam (400) with detail" {
+test "Path extractor: missing param -> error.MissingPathParam (500) with detail" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alc = arena.allocator();
 
     var s = Server(NoDeco).init();
     defer s.deinit();
-    // Route deliberately has no `:id` segment, so ctx.params won't have it —
-    // exercises the extractor's own "missing" branch.
-    _ = s.get("/items", getById, .{});
+    // A ready Handler carries no list of the params it reads, so the
+    // registration check cannot refuse it: this reaches the extractor's own
+    // "missing" branch. (A function handler on this path is refused when
+    // registered: see the router test "a route that does not capture ...".)
+    _ = s.get("/items", handler_mod.buildAutoWrapper(getById), .{});
 
     const r = try dispatchErr(NoDeco, &s, .GET, "/items", alc, null);
     try std.testing.expectEqual(error.MissingPathParam, r.err);
     try std.testing.expectEqualStrings("missing path param: id", r.detail.?);
-    try std.testing.expectEqual(std.http.Status.bad_request, context_mod.statusForError(r.err));
+    try std.testing.expectEqual(std.http.Status.internal_server_error, context_mod.statusForError(r.err));
+}
+
+const Period = enum { daily, weekly };
+
+fn report(p: Path(Period, "period"), c: *Ctx) !Response {
+    return c.text(@tagName(p.value), .{});
+}
+
+test "Path extractor: an enum is read by its tag name; another name is a 404" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alc = arena.allocator();
+
+    var s = Server(NoDeco).init();
+    defer s.deinit();
+    _ = s.get("/reports/:period", report, .{});
+
+    const ok = try dispatch(NoDeco, &s, .GET, "/reports/weekly", alc, null);
+    try std.testing.expectEqualStrings("weekly", ok.body.?);
+
+    const r = try dispatchErr(NoDeco, &s, .GET, "/reports/yearly", alc, null);
+    try std.testing.expectEqual(error.InvalidPathParam, r.err);
+    try std.testing.expectEqualStrings("invalid path param: period", r.detail.?);
+    try std.testing.expectEqual(std.http.Status.not_found, context_mod.statusForError(r.err));
+}
+
+fn twoParams(org: Path([]const u8, "org"), id: Path(u32, "id"), c: *Ctx) !Response {
+    _ = org;
+    _ = id;
+    return c.text("", .{});
+}
+
+test "pathParamNames: the spider.Path names a handler reads" {
+    const names = comptime handler_mod.pathParamNames(@TypeOf(twoParams));
+    try std.testing.expectEqual(@as(usize, 2), names.len);
+    try std.testing.expectEqualStrings("org", names[0]);
+    try std.testing.expectEqualStrings("id", names[1]);
+    try std.testing.expectEqual(@as(usize, 0), (comptime handler_mod.pathParamNames(@TypeOf(handler_mod.buildAutoWrapper(getById)))).len);
 }
 
 test "Form extractor: success" {

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **A path value that is not of its `spider.Path` type is a 404, not a
+  400.** `/books/banana` for `spider.Path(u32, "id")` names no book:
+  `error.InvalidPathParam` now maps to 404 in `spider.statusForError` (and
+  so in `spider.errorHandler`). An app whose own `onError` matched the
+  error name is unchanged; one that relied on the 400 status changes.
+- **A route that does not capture a `spider.Path` its handler reads is
+  refused at startup.** `server.get("/books/:book", show, …)` with
+  `show(id: spider.Path(u32, "id"), …)` used to answer every request with
+  `error.MissingPathParam` (400); now the server panics while the route is
+  registered: `route GET /books/:book: the handler reads spider.Path(_,
+  "id"), but the path has no ':id' segment`. The error itself, still
+  reachable through a ready `Handler`, maps to 500 (the app's bug, not the
+  client's).
+
+### Added
+
+- **`spider.Path` reads enums**, by tag name:
+  `spider.Path(enum { daily, weekly }, "period")` takes `/reports/weekly`;
+  any other name is a 404.
+- **`spider.errorHandler(.{ .not_found_view = "not_found" })`** renders that
+  view for a full-page 404 (an unknown route, `error.NotFound`, a path value
+  that is not of its type), with `.message` (the 404 text of `messages`) and
+  `.path`. JSON and htmx callers keep their usual answers.
+
 ### Security
 
 - **`spider install` checks the SHA-256 of everything it downloads.**
