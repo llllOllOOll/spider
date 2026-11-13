@@ -1,11 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const downloader = @import("downloader.zig");
+const checksums = @import("checksums.zig");
 const chmod = @import("chmod.zig");
 const fs_utils = @import("fs_utils.zig");
 const icons = @import("icons.zig");
 
-// Asset versions — update when creating a new Spider release
+// Asset versions — update when creating a new Spider release. Every URL
+// they produce needs its SHA-256 in src/cli/checksums.zig (how to get it is
+// written there); a download without one is refused.
 const TAILWIND_VERSION = "4.3.0";
 const DAISYUI_VERSION = "5.5.23";
 const ALPINE_VERSION = "3.14.8";
@@ -14,9 +17,20 @@ const HTMX4_VERSION = "4.0.0";
 const htmx = @import("htmx.zig");
 const TABLER_VERSION = "3.31.0";
 
+const daisyui_url = "https://github.com/saadeghi/daisyui/releases/download/v" ++ DAISYUI_VERSION ++ "/daisyui.mjs";
+const daisyui_theme_url = "https://github.com/saadeghi/daisyui/releases/download/v" ++ DAISYUI_VERSION ++ "/daisyui-theme.mjs";
+const alpine_url = "https://cdn.jsdelivr.net/npm/alpinejs@" ++ ALPINE_VERSION ++ "/dist/cdn.min.js";
+const htmx_url = "https://unpkg.com/htmx.org@" ++ HTMX_VERSION ++ "/dist/htmx.min.js";
+const htmx4_url = "https://unpkg.com/htmx.org@" ++ HTMX4_VERSION ++ "/dist/htmx.min.js";
+const htmx4_sse_url = "https://unpkg.com/htmx.org@" ++ HTMX4_VERSION ++ "/dist/ext/hx-sse.min.js";
+const tabler_css_url = "https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@" ++ TABLER_VERSION ++ "/dist/tabler-icons.min.css";
+const tabler_woff2_url = "https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@" ++ TABLER_VERSION ++ "/dist/fonts/tabler-icons.woff2";
+
 fn getTailwindUrl() []const u8 {
-    const os = builtin.os.tag;
-    const arch = builtin.cpu.arch;
+    return tailwindUrl(builtin.os.tag, builtin.cpu.arch);
+}
+
+fn tailwindUrl(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) []const u8 {
     const base = "https://github.com/tailwindlabs/tailwindcss/releases/download/v" ++ TAILWIND_VERSION ++ "/tailwindcss-";
     if (os == .windows) return base ++ "windows-x64.exe";
     if (os == .macos and arch == .aarch64) return base ++ "macos-arm64";
@@ -92,9 +106,20 @@ fn downloadWithCache(
         std.debug.print("  from cache: {s}\n", .{dest});
     }
 
-    // Copy from cache to project
-    const content = try cache_dir.readFileAlloc(io, cache_name, allocator, .limited(200 * 1024 * 1024));
+    // Copy from cache to project. The cache is checked too: it may hold a
+    // file from before checksums, or one changed since.
+    var content = try cache_dir.readFileAlloc(io, cache_name, allocator, .limited(200 * 1024 * 1024));
     defer allocator.free(content);
+    if (from_cache) {
+        checksums.verify(url, content) catch |err| {
+            if (err == error.ChecksumUnknown) return err;
+            std.debug.print("  cached {s} failed the SHA-256 check; downloading it again\n", .{cache_name});
+            allocator.free(content);
+            content = &.{};
+            try downloader.download(io, allocator, url, cache_dir, cache_name);
+            content = try cache_dir.readFileAlloc(io, cache_name, allocator, .limited(200 * 1024 * 1024));
+        };
+    }
 
     if (std.fs.path.dirname(dest)) |dir_path| {
         project_dir.createDirPath(io, dir_path) catch {};
@@ -125,7 +150,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !v
     // URLs use pinned versions for reproducible builds and caching.
     try assets.appendSlice(allocator, &.{
         .{ .url = getTailwindUrl(), .dest = "bin/tailwindcss", .cache_name = "tailwindcss-" ++ TAILWIND_VERSION },
-        .{ .url = "https://cdn.jsdelivr.net/npm/alpinejs@" ++ ALPINE_VERSION ++ "/dist/cdn.min.js", .dest = "public/js/alpine.min.js", .cache_name = "alpine-" ++ ALPINE_VERSION ++ ".min.js" },
+        .{ .url = alpine_url, .dest = "public/js/alpine.min.js", .cache_name = "alpine-" ++ ALPINE_VERSION ++ ".min.js" },
     });
 
     // htmx: the one the layouts load (htmx.zig). htmx 4 goes to a file of
@@ -134,12 +159,12 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !v
     defer if (read_layouts) |list| htmx.freeLayouts(allocator, list);
     const layouts: []const []const u8 = read_layouts orelse &.{};
     if (htmx.ofLayouts(layouts) == .four) {
-        try assets.append(allocator, .{ .url = "https://unpkg.com/htmx.org@" ++ HTMX4_VERSION ++ "/dist/htmx.min.js", .dest = "public/js/" ++ htmx.file_four, .cache_name = "htmx-" ++ HTMX4_VERSION ++ ".min.js" });
+        try assets.append(allocator, .{ .url = htmx4_url, .dest = "public/js/" ++ htmx.file_four, .cache_name = "htmx-" ++ HTMX4_VERSION ++ ".min.js" });
         if (htmx.wantsSse(layouts)) {
-            try assets.append(allocator, .{ .url = "https://unpkg.com/htmx.org@" ++ HTMX4_VERSION ++ "/dist/ext/hx-sse.min.js", .dest = "public/js/" ++ htmx.file_four_sse, .cache_name = "htmx-sse-" ++ HTMX4_VERSION ++ ".min.js" });
+            try assets.append(allocator, .{ .url = htmx4_sse_url, .dest = "public/js/" ++ htmx.file_four_sse, .cache_name = "htmx-sse-" ++ HTMX4_VERSION ++ ".min.js" });
         }
     } else {
-        try assets.append(allocator, .{ .url = "https://unpkg.com/htmx.org@" ++ HTMX_VERSION ++ "/dist/htmx.min.js", .dest = "public/js/" ++ htmx.file_two, .cache_name = "htmx-" ++ HTMX_VERSION ++ ".min.js" });
+        try assets.append(allocator, .{ .url = htmx_url, .dest = "public/js/" ++ htmx.file_two, .cache_name = "htmx-" ++ HTMX_VERSION ++ ".min.js" });
     }
 
     const styles = project_dir.readFileAlloc(io, "src/styles.css", allocator, .limited(1024 * 1024)) catch "";
@@ -151,8 +176,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !v
     // before UI kits) loads it.
     if (std.mem.indexOf(u8, ui_css, "daisyui.mjs") != null or std.mem.indexOf(u8, styles, "daisyui.mjs") != null) {
         try assets.appendSlice(allocator, &.{
-            .{ .url = "https://github.com/saadeghi/daisyui/releases/download/v" ++ DAISYUI_VERSION ++ "/daisyui.mjs", .dest = "bin/daisyui.mjs", .cache_name = "daisyui-" ++ DAISYUI_VERSION ++ ".mjs" },
-            .{ .url = "https://github.com/saadeghi/daisyui/releases/download/v" ++ DAISYUI_VERSION ++ "/daisyui-theme.mjs", .dest = "bin/daisyui-theme.mjs", .cache_name = "daisyui-theme-" ++ DAISYUI_VERSION ++ ".mjs" },
+            .{ .url = daisyui_url, .dest = "bin/daisyui.mjs", .cache_name = "daisyui-" ++ DAISYUI_VERSION ++ ".mjs" },
+            .{ .url = daisyui_theme_url, .dest = "bin/daisyui-theme.mjs", .cache_name = "daisyui-theme-" ++ DAISYUI_VERSION ++ ".mjs" },
         });
     }
 
@@ -161,8 +186,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !v
     // ./fonts/ next to it: public/css/fonts/.
     if (usesTablerWebfont(io, allocator, project_dir)) {
         try assets.appendSlice(allocator, &.{
-            .{ .url = "https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@" ++ TABLER_VERSION ++ "/dist/tabler-icons.min.css", .dest = "public/css/tabler-icons.min.css", .cache_name = "tabler-icons-" ++ TABLER_VERSION ++ ".css" },
-            .{ .url = "https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@" ++ TABLER_VERSION ++ "/dist/fonts/tabler-icons.woff2", .dest = "public/css/fonts/tabler-icons.woff2", .cache_name = "tabler-icons-" ++ TABLER_VERSION ++ ".woff2" },
+            .{ .url = tabler_css_url, .dest = "public/css/tabler-icons.min.css", .cache_name = "tabler-icons-" ++ TABLER_VERSION ++ ".css" },
+            .{ .url = tabler_woff2_url, .dest = "public/css/fonts/tabler-icons.woff2", .cache_name = "tabler-icons-" ++ TABLER_VERSION ++ ".woff2" },
         });
     }
 
@@ -218,5 +243,22 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir) !v
             std.debug.print("  warning: chmod tailwindcss failed: {s}\n", .{@errorName(err)});
         };
         std.debug.print("Done. {d} asset(s) downloaded.\n", .{downloaded});
+    }
+}
+
+test "every URL spider install can download has a checksum" {
+    const os_tags = [_]std.Target.Os.Tag{ .linux, .macos, .windows };
+    const arches = [_]std.Target.Cpu.Arch{ .x86_64, .aarch64 };
+    for (os_tags) |os| for (arches) |arch| {
+        try std.testing.expect(checksums.expected(tailwindUrl(os, arch)) != null);
+    };
+    const fixed = [_][]const u8{ daisyui_url, daisyui_theme_url, alpine_url, htmx_url, htmx4_url, htmx4_sse_url, tabler_css_url, tabler_woff2_url };
+    for (fixed) |url| {
+        if (checksums.expected(url) == null) std.debug.print("no checksum for {s}\n", .{url});
+        try std.testing.expect(checksums.expected(url) != null);
+    }
+    for (icons.sets) |set| {
+        if (checksums.expected(set.url) == null) std.debug.print("no checksum for {s}\n", .{set.url});
+        try std.testing.expect(checksums.expected(set.url) != null);
     }
 }

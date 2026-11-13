@@ -1,13 +1,33 @@
 const std = @import("std");
 const http = std.http;
 const fs_utils = @import("fs_utils.zig");
+const checksums = @import("checksums.zig");
 
+/// Downloads `url` into `dir/filename`, after checking its SHA-256 against
+/// src/cli/checksums.zig. A file that does not match is not written.
 pub fn download(io: std.Io, allocator: std.mem.Allocator, url: []const u8, dir: std.Io.Dir, filename: []const u8) !void {
     std.debug.print("  Downloading {s}...\n", .{filename});
     const body = try fetch(io, allocator, url);
     defer allocator.free(body);
+    try writeChecked(io, dir, filename, url, body, checksums.expected(url));
+    std.debug.print("  Downloaded {s} ({d} bytes, SHA-256 ok)\n", .{ filename, body.len });
+}
+
+/// `fetch`, with the body checked against src/cli/checksums.zig.
+pub fn fetchVerified(io: std.Io, allocator: std.mem.Allocator, url: []const u8) ![]u8 {
+    const body = try fetch(io, allocator, url);
+    errdefer allocator.free(body);
+    try checksums.verify(url, body);
+    return body;
+}
+
+/// Writes `body` only when its SHA-256 is `expected_hex`.
+fn writeChecked(io: std.Io, dir: std.Io.Dir, filename: []const u8, url: []const u8, body: []const u8, expected_hex: ?[]const u8) !void {
+    checksums.verifyHex(expected_hex, url, body) catch |err| {
+        std.debug.print("  {s} was not written\n", .{filename});
+        return err;
+    };
     try fs_utils.writeFile(io, dir, filename, body);
-    std.debug.print("  Downloaded {s} ({d} bytes)\n", .{ filename, body.len });
 }
 
 /// The body of `url` (redirects followed), owned by the caller.
@@ -45,4 +65,21 @@ pub fn fetch(io: std.Io, allocator: std.mem.Allocator, url: []const u8) ![]u8 {
         try body.appendSlice(allocator, chunk[0..n]);
     }
     return body.toOwnedSlice(allocator);
+}
+
+test "writeChecked: a matching body is written, a wrong one is refused and nothing is written" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const abc_hex = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    try writeChecked(io, tmp.dir, "bin/good", "https://example.test/good", "abc", abc_hex);
+    var buf: [8]u8 = undefined;
+    try std.testing.expectEqualStrings("abc", try tmp.dir.readFile(io, "bin/good", &buf));
+
+    try std.testing.expectError(error.ChecksumMismatch, writeChecked(io, tmp.dir, "bin/bad", "https://example.test/bad", "tampered", abc_hex));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "bin/bad", .{}));
+
+    try std.testing.expectError(error.ChecksumUnknown, writeChecked(io, tmp.dir, "bin/unknown", "https://example.test/unknown", "abc", null));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "bin/unknown", .{}));
 }

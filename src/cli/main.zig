@@ -179,6 +179,9 @@ test {
     _ = @import("migration_updater.zig");
     _ = @import("htmx.zig");
     _ = @import("dev.zig");
+    _ = @import("checksums.zig");
+    _ = @import("downloader.zig");
+    _ = @import("install.zig");
     _ = ui_mod;
     _ = icons_mod;
     _ = pwa_mod;

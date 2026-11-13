@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`spider install` checks the SHA-256 of everything it downloads.**
+  Tailwind (every platform), daisyUI, Alpine, htmx 2 and 4 (and the SSE
+  extension), the Tabler webfont and the icon-set tarballs are compared
+  with the hashes pinned in `src/cli/checksums.zig` before anything is
+  written or made executable. A file that does not match, or a URL with no
+  pinned hash, is refused and nothing is written. A cached file that fails
+  the check (one cached before this, or changed since) is downloaded again.
+  Bumping a version means adding its hashes there; the file says where to
+  get each one from two sources, and a test fails when a URL has none.
+
 ## [0.12.1] - 2026-11-08
 
 ### Added

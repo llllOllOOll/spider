@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const downloader = @import("downloader.zig");
+const checksums = @import("checksums.zig");
 const fs_utils = @import("fs_utils.zig");
 
 pub const Variant = struct {
@@ -184,10 +185,17 @@ pub fn install(io: std.Io, allocator: std.mem.Allocator, project_dir: std.Io.Dir
     if (!up_to_date) {
         const cache_name = try std.fmt.allocPrint(allocator, "icons-{s}-{s}.tgz", .{ set.name, set.version });
         defer allocator.free(cache_name);
-        const cached: ?[]u8 = if (cache_dir) |cd| cd.readFileAlloc(io, cache_name, allocator, .limited(64 * 1024 * 1024)) catch null else null;
+        var cached: ?[]u8 = if (cache_dir) |cd| cd.readFileAlloc(io, cache_name, allocator, .limited(64 * 1024 * 1024)) catch null else null;
+        // A cached tarball from before checksums, or changed since, is
+        // downloaded again.
+        if (cached) |c| checksums.verify(set.url, c) catch {
+            std.debug.print("  cached icons {s} {s} failed the SHA-256 check; downloading it again\n", .{ set.name, set.version });
+            allocator.free(c);
+            cached = null;
+        };
         const tgz = cached orelse blk: {
             std.debug.print("  downloading: icons {s} {s}\n", .{ set.name, set.version });
-            const body = try downloader.fetch(io, allocator, set.url);
+            const body = try downloader.fetchVerified(io, allocator, set.url);
             if (cache_dir) |cd| fs_utils.writeFile(io, cd, cache_name, body) catch {};
             break :blk body;
         };
