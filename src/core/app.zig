@@ -45,6 +45,7 @@ const sse_mod = @import("../ws/sse.zig");
 const Sse = sse_mod.Sse;
 const websocket = @import("../ws/websocket.zig");
 const Watchdog = @import("watchdog.zig").Watchdog;
+const ArenaRecycler = @import("arena_recycler.zig").ArenaRecycler;
 const handler_mod = @import("handler.zig");
 const route_config = @import("../routing/route_config.zig");
 const origin_mod = @import("origin.zig");
@@ -129,6 +130,7 @@ const WorkerCtx = struct {
     global_middlewares: []const MiddlewareFn,
     path_middlewares: []const PathMiddlewareEntry,
     watchdog: *Watchdog,
+    arenas: *ArenaRecycler,
 };
 
 const ConnCtx = struct {
@@ -147,6 +149,7 @@ const ConnCtx = struct {
     global_middlewares: []const MiddlewareFn,
     path_middlewares: []const PathMiddlewareEntry,
     watchdog: *Watchdog,
+    arenas: *ArenaRecycler,
 };
 
 fn workerLoop(wctx: WorkerCtx) void {
@@ -195,6 +198,7 @@ fn workerLoop(wctx: WorkerCtx) void {
             .global_middlewares = wctx.global_middlewares,
             .path_middlewares = wctx.path_middlewares,
             .watchdog = wctx.watchdog,
+            .arenas = wctx.arenas,
         }}) catch |err| {
             std.log.err("worker concurrent error: {s}", .{@errorName(err)});
             stream.close(wctx.io);
@@ -321,8 +325,10 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
     ctx.watchdog.add(&watch);
     defer ctx.watchdog.remove(&watch);
 
-    var req_arena = std.heap.ArenaAllocator.init(ctx.gpa);
-    defer req_arena.deinit();
+    // A warm arena from a connection that closed, when there is one; it
+    // goes back for the next connection when this one closes.
+    var req_arena = ctx.arenas.take(ctx.gpa);
+    defer ctx.arenas.give(req_arena, ctx.config.request_memory_retain);
 
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
@@ -336,7 +342,10 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
     );
 
     while (true) {
-        _ = req_arena.reset(.{ .retain_with_limit = 8192 });
+        // What a request used stays with the connection for the next one,
+        // up to Config.request_memory_retain: the memory is not handed back
+        // to the system and asked for again on every request.
+        _ = req_arena.reset(.{ .retain_with_limit = ctx.config.request_memory_retain });
         const arena = req_arena.allocator();
 
         // Idle until the next request starts (keep-alive, or the first one),
@@ -1937,6 +1946,8 @@ pub fn Server(comptime T: type) type {
             }
 
             const cpu_count = @max(1, self.config.workers orelse (std.Thread.getCpuCount() catch 2));
+            var arenas: ArenaRecycler = .init(cpu_count);
+            defer arenas.deinit();
 
             const threads = try gpa.alloc(std.Thread, cpu_count);
             defer gpa.free(threads);
@@ -1959,6 +1970,7 @@ pub fn Server(comptime T: type) type {
                 .global_middlewares = self.global_middlewares.items,
                 .path_middlewares = self.path_middlewares[0..self.path_middleware_count],
                 .watchdog = &watchdog,
+                .arenas = &arenas,
             };
 
             for (threads) |*t| {
@@ -2006,6 +2018,9 @@ pub fn Server(comptime T: type) type {
 
             std.log.info("Server listening on http://{s}:{d} (io_backend=zio)", .{ host, port });
 
+            var arenas: ArenaRecycler = .init(std.Thread.getCpuCount() catch 2);
+            defer arenas.deinit();
+
             var watchdog: Watchdog = .{};
             self.startWatchdog(&watchdog, io);
             self.bindHubs(io);
@@ -2034,6 +2049,7 @@ pub fn Server(comptime T: type) type {
                 .global_middlewares = self.global_middlewares.items,
                 .path_middlewares = self.path_middlewares[0..self.path_middleware_count],
                 .watchdog = &watchdog,
+                .arenas = &arenas,
             };
 
             workerLoop(worker_ctx);

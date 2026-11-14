@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A page of a few hundred KB no longer asks the system for its memory on
+  every request.** A connection kept only 8 KiB of its request memory
+  between requests; the rest went back to the system and was asked for
+  again on the next one (the arena's blocks grow past the size the
+  allocator hands straight to the system). It now keeps up to
+  `Config.request_memory_retain` (1 MiB by default), never more than it
+  used, and the arenas of closed connections are kept warm for the next
+  connections (up to three quarters of the CPU count). On a catalog page
+  of 80 KB of HTML: about 3x the requests per second with keep-alive,
+  about 2x without.
 - **JavaScript in an attribute keeps its `if` and its braces.**
   `hx-on::after-request="if (event.detail.successful) { … }"` came out as
   `hx-on::after-request=""`: the template took the script's `if` for its
@@ -57,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `spider.Template` is unchanged for templates an app makes itself.
 
 ### Added
+
+- **`Config.request_memory_retain`**: how much request memory a
+  connection keeps for its next request (default 1 MiB). Lower it for
+  many idle keep-alive connections and little memory.
 
 - **`c.viewChecked(name, data, opts)`: the view and its data checked when
   the app compiles.** The build reads every template (with the components

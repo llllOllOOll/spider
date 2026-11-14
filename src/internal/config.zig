@@ -109,6 +109,15 @@ pub const Config = struct {
     /// straight to object storage (presigned URLs) never reach it; raise it
     /// for apps that take files through the app. Default: 10 MiB.
     max_body_bytes: u64 = 10 * 1024 * 1024,
+    /// Memory a connection keeps between its requests, in bytes. Each
+    /// request allocates from its connection's arena and frees it all at
+    /// the end; up to this much of what it used stays for the next request
+    /// instead of going back to the system and being asked for again (a
+    /// page that renders a few hundred KB of HTML used to pay for that on
+    /// every request). A connection never keeps more than it used. Lower it
+    /// for many idle keep-alive connections and little memory. Default:
+    /// 1 MiB.
+    request_memory_retain: usize = 1024 * 1024,
     /// Cross-site request check, on by default: a state-changing request a
     /// browser sends from another site (CSRF) or a cross-site WebSocket
     /// upgrade gets 403 before routing. Non-browser clients (webhooks,
