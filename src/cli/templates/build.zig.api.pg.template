@@ -68,7 +68,8 @@ pub fn build(b: *std.Build) void {
     // applies them.
     exe.root_module.addImport("migrations", @import("spider").addMigrations(b, spider_dep, "src/core/db/migrations"));
 
-    b.installArtifact(exe);
+    // Release: the binary without its debug info, and <app>.debug next to it.
+    @import("spider").installApp(b, exe);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

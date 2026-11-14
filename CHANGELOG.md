@@ -72,6 +72,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`installApp(b, exe)` in build.zig, and apps from `spider new` use
+  it: a release binary without its debug info, `<app>.debug` next to it.**
+  The binary that ships is small and still names the functions in a
+  crash's stack trace; with `<app>.debug` beside it (keep it with each
+  release) the trace has files and lines. A release build keeps its debug
+  info for this: `-Doptimize=ReleaseSmall`, which the generated Dockerfile
+  uses, used to drop it, and a crash printed no stack trace at all. The
+  split uses `llvm-objcopy`, else the system `objcopy` (native target);
+  with neither, or with `-Ddebug-info=true`, the debug info stays inside
+  the binary. The generated Dockerfile installs binutils. An app made
+  before this keeps `b.installArtifact(exe)` until it switches.
+
 - **`Config.request_memory_retain`**: how much request memory a
   connection keeps for its next request (default 1 MiB). Lower it for
   many idle keep-alive connections and little memory.

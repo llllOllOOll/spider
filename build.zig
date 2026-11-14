@@ -216,6 +216,48 @@ fn pruneBeforeCompiles(
     if (step.tag == .compile) step.dependOn(prune);
 }
 
+/// Installs the app's executable in zig-out/bin. In a release build its
+/// debug info goes to a separate file next to it, `<name>.debug`, which the
+/// binary is linked to (.gnu_debuglink): the binary that ships is small and
+/// still names the functions in a crash's stack trace; with `<name>.debug`
+/// beside it the trace has files and lines again, so keep that file with
+/// each release. A release build keeps its debug info for this (ReleaseSmall
+/// would drop it, and a crash would print no stack trace at all).
+///
+/// The split uses `llvm-objcopy` (any target), else the system `objcopy`
+/// (same architecture as the build machine only). With neither, the debug
+/// info stays inside the binary. `-Ddebug-info=true` keeps it inside too.
+/// In a Debug build the executable is installed as it is.
+pub fn installApp(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    const keep = b.option(bool, "debug-info", "Keep the debug info inside the release binary (default: a separate <app>.debug file)") orelse false;
+    const mode = exe.root_module.optimize orelse .debug;
+    if (mode == .debug) {
+        b.installArtifact(exe);
+        return;
+    }
+    exe.root_module.strip = false;
+    if (keep) {
+        b.installArtifact(exe);
+        return;
+    }
+    const native = exe.rootModuleTarget().cpu.arch == b.graph.host.result.cpu.arch;
+    const tool = b.findProgram(.{ .names = &.{"llvm-objcopy"} }) orelse
+        (if (native) b.findProgram(.{ .names = &.{"objcopy"} }) else null) orelse {
+        b.installArtifact(exe);
+        return;
+    };
+    const debug_name = b.fmt("{s}.debug", .{exe.name});
+    const keep_debug = b.addSystemCommand(&.{ tool, "--only-keep-debug" });
+    keep_debug.addArtifactArg(exe);
+    const debug_file = keep_debug.addOutputFileArg(debug_name);
+    const strip = b.addSystemCommand(&.{ tool, "--strip-debug" });
+    strip.addPrefixedFileArg("--add-gnu-debuglink=", debug_file);
+    strip.addArtifactArg(exe);
+    const bin = strip.addOutputFileArg(exe.name);
+    b.getInstallStep().dependOn(&b.addInstallBinFile(bin, exe.name).step);
+    b.getInstallStep().dependOn(&b.addInstallBinFile(debug_file, debug_name).step);
+}
+
 pub fn build(b: *std.Build) void {
     // Spider's own build prunes its .zig-cache from a step of its own that
     // every top-level step runs (end of this function): its test steps do

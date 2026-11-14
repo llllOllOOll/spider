@@ -66,7 +66,8 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("core", core_mod);
     exe.root_module.addImport("features", features_mod);
 
-    b.installArtifact(exe);
+    // Release: the binary without its debug info, and <app>.debug next to it.
+    @import("spider").installApp(b, exe);
 
     const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));
     gen.addArg("src/");

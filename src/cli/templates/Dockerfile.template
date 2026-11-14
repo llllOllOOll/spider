@@ -9,8 +9,11 @@ FROM debian:bookworm-slim AS builder
 
 ARG ZIG_VERSION=0.17.0
 
+# binutils: objcopy splits the release binary's debug info into
+# zig-out/bin/<app>.debug (spider's installApp in build.zig). Keep that file
+# with each release to read a crash's stack trace with files and lines.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl xz-utils ca-certificates \
+    curl xz-utils ca-certificates binutils \
     && rm -rf /var/lib/apt/lists/*
 
 # The official Zig release, checked against its published SHA-256
