@@ -50,6 +50,8 @@ pub const ViewsConfig = struct {
     strict: template_mod.Strictness = .off,
     /// Config.default_layout.
     default_layout: ?[]const u8 = null,
+    /// Config.compiled_templates.
+    compiled: bool = true,
     io: std.Io,
     arena: std.mem.Allocator,
     mode: ViewsMode = .runtime,
@@ -462,7 +464,40 @@ pub const Ctx = struct {
                 @compileError("c.viewChecked: no template named \"" ++ name ++ "\"");
             check_view.check(@TypeOf(data), name, @field(T.spider_manifest, &k));
         }
+        if (comptime elroyKey(name)) |k| {
+            if (self.elroyFits(k, name)) {
+                self._last_template = name;
+                var out = try std.Io.Writer.Allocating.initCapacity(self.arena, 16 * 1024);
+                try @field(root.spider_templates.elroy, k)(&out.writer, data, self.arena);
+                return htmlResponse(out.written(), opts);
+            }
+        }
         return self.view(name, data, opts);
+    }
+
+    /// The name of the function Elroy generated for template `name`, when
+    /// the build embeds the templates and Elroy compiled this one.
+    fn elroyKey(comptime name: []const u8) ?[]const u8 {
+        if (!has_embed or !@hasDecl(root.spider_templates, "elroy")) return null;
+        const k = comptime blk: {
+            var key: [name.len]u8 = undefined;
+            for (name, 0..) |ch, i| key[i] = if (ch == '/' or ch == '-') '_' else ch;
+            const final = key;
+            break :blk &final;
+        };
+        return if (@hasDecl(root.spider_templates.elroy, k)) k else null;
+    }
+
+    /// Whether the compiled template renders what `view` would: the app
+    /// keeps them on, no template diagnostics to log, and no default layout
+    /// to put the page in (decided per request: route, htmx).
+    fn elroyFits(self: *Ctx, key: []const u8, name: []const u8) bool {
+        const vc = self._views orelse return false;
+        if (!vc.compiled or vc.strict != .off) return false;
+        const content = embedded_templates.get(key) orelse return false;
+        const page = parsed_cache.page(content) orelse return false;
+        const tmpl = Template.fromCache(self.arena, page, name);
+        return self.defaultLayout(&tmpl) == null;
     }
 
     /// The layout a page goes inside when its template has no `extends`:

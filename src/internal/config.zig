@@ -61,6 +61,13 @@ pub const Config = struct {
     ///     (a 500) after the same line; for an app's tests.
     /// null (the default): `.warn` in a Debug build, `.off` otherwise.
     templates_strict: ?TemplateStrictness = null,
+    /// Render with the templates compiled at build time (Elroy) when a
+    /// view can: a release build (templates embedded), `c.viewChecked`
+    /// (a literal name), a template Elroy compiled, `templates_strict`
+    /// `.off`, and no default layout to add (a page with `extends`, or a
+    /// route and an app without one). Every other view renders with the
+    /// interpreter, the same HTML. `false`: always the interpreter.
+    compiled_templates: bool = true,
     /// The layout a page rendered with `c.view` goes inside when its
     /// template has no `extends` and its route (or the route's group, via
     /// `defaults(.{ .layout = ... })`) names none. null (the default): no
