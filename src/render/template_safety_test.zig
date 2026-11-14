@@ -443,3 +443,30 @@ test "js attribute: an if in class is still the template's" {
         \\<li class="step ">a</li>
     );
 }
+
+// ── Default layout ──────────────────────────────────────────────────────
+
+test "default layout: wraps a template without extends; extends wins" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("lay_main", "<main>{ slot }</main>");
+    try comps.add("lay_other", "<aside>{ slot }</aside>");
+    {
+        var tmpl = try Template.init(t.allocator, "<p>x</p>");
+        defer tmpl.deinit();
+        tmpl.components = comps.map;
+        tmpl.default_layout = "lay_main";
+        const out = try tmpl.render(.{}, t.allocator);
+        defer t.allocator.free(out);
+        try t.expectEqualStrings("<main><p>x</p></main>", out);
+    }
+    {
+        var tmpl = try Template.init(t.allocator, "extends \"lay_other\"\n<p>x</p>");
+        defer tmpl.deinit();
+        tmpl.components = comps.map;
+        tmpl.default_layout = "lay_main";
+        const out = try tmpl.render(.{}, t.allocator);
+        defer t.allocator.free(out);
+        try t.expectEqualStrings("<aside><p>x</p></aside>", out);
+    }
+}

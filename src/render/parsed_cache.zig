@@ -27,6 +27,8 @@ const Parser = parser_mod.Parser;
 pub const Page = struct {
     nodes: []Node,
     layout: ?[]const u8,
+    /// The source contains `<html` (a whole document).
+    is_root: bool,
     inline_components: std.StringHashMapUnmanaged([]const u8),
 };
 
@@ -114,6 +116,7 @@ fn addPage(alc: std.mem.Allocator, map: *const embedded.Map, name: []const u8, s
     gop.value_ptr.* = .{
         .nodes = try kept.toOwnedSlice(alc),
         .layout = parsed.layout,
+        .is_root = std.mem.indexOf(u8, src, "<html") != null,
         .inline_components = inline_components,
     };
 

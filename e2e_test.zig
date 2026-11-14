@@ -1506,6 +1506,66 @@ test "errorHandler: not_found_view renders the 404 page for a bad id, a missing 
     try std.testing.expectEqualStrings("application/json", j.header("Content-Type").?);
 }
 
+fn layPage(c: *spider.Ctx) !spider.Response {
+    return c.view("lay_page", .{}, .{});
+}
+fn layExtends(c: *spider.Ctx) !spider.Response {
+    return c.view("lay_extends", .{}, .{});
+}
+fn layFull(c: *spider.Ctx) !spider.Response {
+    return c.view("lay_full", .{}, .{});
+}
+
+fn runLayoutApp(port: u16) void {
+    var s = spider.appWithConfig(.{ .views_dir = "views", .static_dir = null, .default_layout = "lay_main" });
+    var admin_group = spider.Group.init("/admin");
+    _ = admin_group.defaults(.{ .layout = "lay_admin" })
+        .get("/plain", layPage, .{})
+        .get("/bare", layPage, .{ .layout = "" })
+        .get("/own", layExtends, .{});
+    s.get("/l/plain", layPage, .{})
+        .get("/l/full", layFull, .{})
+        .mount(admin_group)
+        .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
+        std.log.err("layout app listen() failed: {s}", .{@errorName(err)});
+    };
+}
+
+var layout_port: ?u16 = null;
+fn layoutAppPort(io: std.Io) !u16 {
+    try app_once_mutex.lock(io);
+    defer app_once_mutex.unlock(io);
+    if (layout_port) |p| return p;
+    const port = try reserveEphemeralPort(io);
+    (try std.Thread.spawn(.{}, runLayoutApp, .{port})).detach();
+    try waitForPort(io, port);
+    layout_port = port;
+    return port;
+}
+
+test "default layout: the app's, the group's, a route's opt-out, extends, a whole document, htmx" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const port = try layoutAppPort(io);
+    const a = env.arena.allocator();
+    const Case = struct { path: []const u8, headers: []const []const u8 = &.{}, body: []const u8 };
+    const cases = [_]Case{
+        .{ .path = "/l/plain", .body = "<main-layout><p>page</p></main-layout>" },
+        .{ .path = "/admin/plain", .body = "<admin-layout><p>page</p></admin-layout>" },
+        .{ .path = "/admin/bare", .body = "<p>page</p>" },
+        .{ .path = "/admin/own", .body = "<main-layout><p>own</p></main-layout>" },
+        .{ .path = "/l/full", .body = "<html><body>full</body></html>" },
+        .{ .path = "/l/plain", .headers = &.{"HX-Request: true"}, .body = "<p>page</p>" },
+        .{ .path = "/l/plain", .headers = &.{ "HX-Request: true", "HX-Boosted: true" }, .body = "<main-layout><p>page</p></main-layout>" },
+    };
+    for (cases) |cs| {
+        const r = try request(io, a, port, cs.path, .{ .headers = cs.headers });
+        try std.testing.expectEqual(@as(u16, 200), r.status);
+        try std.testing.expectEqualStrings(cs.body, r.body);
+    }
+}
+
 fn runJsonApp(port: u16) void {
     var s = spider.appWithConfig(.{ .views_dir = null, .static_dir = null });
     s.get("/e/forbidden", eForbidden, .{})

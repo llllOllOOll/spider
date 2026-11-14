@@ -61,6 +61,13 @@ pub const Config = struct {
     ///     (a 500) after the same line; for an app's tests.
     /// null (the default): `.warn` in a Debug build, `.off` otherwise.
     templates_strict: ?TemplateStrictness = null,
+    /// The layout a page rendered with `c.view` goes inside when its
+    /// template has no `extends` and its route (or the route's group, via
+    /// `defaults(.{ .layout = ... })`) names none. null (the default): no
+    /// layout, as before. Never applied to a template that is a whole
+    /// document (it has `<html`), to an htmx request that is not a boosted
+    /// navigation, to `viewFragment`, or to a `-- doc` view.
+    default_layout: ?[]const u8 = null,
     /// Directory served as static files at "/" (before routing and before
     /// any middleware: always public). null: no static files.
     /// `server.staticDir()` / `staticAt()` override it. Default "./public".

@@ -8,6 +8,7 @@
 //!                                   any other rule, as a function -> 403 (401 anonymous)
 //!   .quiet_log = true               successful requests not logged
 //!   .allow_http = true              exempt from spider.forceHttps
+//!   .layout = "admin"               the layout of pages without `extends` ("" none)
 //!
 //! Checked at compile time: an unknown key (a typo like `.org_role` would
 //! otherwise silently leave a route unprotected), or `.public` together with
@@ -18,7 +19,7 @@ const RouteMeta = @import("router.zig").RouteMeta;
 const MiddlewareFn = @import("../core/context.zig").MiddlewareFn;
 const rbac = @import("../modules/rbac.zig");
 
-const known = [_][]const u8{ "roles", "org_roles", "public", "authenticated", "policy", "quiet_log", "allow_http" };
+const known = [_][]const u8{ "roles", "org_roles", "public", "authenticated", "policy", "quiet_log", "allow_http", "layout" };
 
 pub fn validate(comptime config: anytype) void {
     const T = @TypeOf(config);
@@ -28,7 +29,7 @@ pub fn validate(comptime config: anytype) void {
         inline for (known) |k| {
             if (comptime std.mem.eql(u8, name, k)) ok = true;
         }
-        if (!ok) @compileError("unknown route option `." ++ name ++ "` (known: .roles, .org_roles, .public, .authenticated, .policy, .quiet_log, .allow_http)");
+        if (!ok) @compileError("unknown route option `." ++ name ++ "` (known: .roles, .org_roles, .public, .authenticated, .policy, .quiet_log, .allow_http, .layout)");
     }
     if (@hasField(T, "policy") and @TypeOf(config.policy) != rbac.Policy)
         @compileError("`.policy` takes spider.policy(\"name\", check), e.g. .policy = spider.policy(\"post_owner\", isPostOwner)");
@@ -56,6 +57,7 @@ pub fn metaOf(comptime config: anytype) RouteMeta {
     if (@hasField(T, "roles")) m.roles = config.roles;
     if (@hasField(T, "org_roles")) m.org_roles = config.org_roles;
     if (@hasField(T, "policy")) m.policy = config.policy.name;
+    if (@hasField(T, "layout")) m.layout = config.layout;
     return m;
 }
 

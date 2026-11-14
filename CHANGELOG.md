@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A default layout for pages, per group or for the app.**
+  `group.defaults(.{ .layout = "admin" })` puts every page of the group
+  whose template has no `extends` inside the `admin` layout; a route can
+  name its own (`.layout = "auth"`) or none (`.layout = ""`), and
+  `Config.default_layout` covers the rest of the app. Off by default: a page
+  with `extends` keeps its own, and a whole document (`<html`), an htmx
+  request that is not a boosted navigation, `viewFragment` and `-- doc`
+  views are never wrapped. `Config.layout` is still unread (deprecated);
+  an app that sets it does not get a default layout from it.
 - **A component can declare its props** on its first line:
   `-- props: title!, year: int, finished: bool = false, size = "md"`
   (`!` required; `string`, `int` or `bool`; a default). Opt-in: a component

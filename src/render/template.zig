@@ -56,8 +56,13 @@ pub const Template = struct {
     /// The name given by `extends "name"` at the very start of the source,
     /// or null. `render` looks it up among the components.
     layout: ?[]const u8 = null,
-    /// True when the source contains `<html`. Nothing in Spider reads it.
+    /// True when the source contains `<html`: a whole document, which
+    /// `Ctx.view` never wraps in a default layout.
     is_root: bool = false,
+    /// The layout to use when the template has no `extends` (`Ctx.view`
+    /// sets it from the route's `.layout` or `Config.default_layout`). Not
+    /// owned: never freed here.
+    default_layout: ?[]const u8 = null,
     /// What `render` does with a name it cannot find (a variable, a field,
     /// a prop, a component, a layout): `.off` (render empty, the default
     /// for a Template an app makes itself), `.warn` (also log it) or
@@ -144,6 +149,7 @@ pub const Template = struct {
             .nodes = page.nodes,
             .allocator = alc,
             .layout = page.layout,
+            .is_root = page.is_root,
             .components = page.inline_components,
             .name = name,
             .borrowed = true,
@@ -283,7 +289,7 @@ pub const Template = struct {
         state.view_name = self.name;
         defer state.deinit(alc);
 
-        if (self.layout) |layout_name| {
+        if (self.layout orelse self.default_layout) |layout_name| {
             if (self.findComponent(layout_name)) |layout_template| {
                 var slot_bufs = std.StringHashMapUnmanaged(std.ArrayList(u8)){};
                 defer {

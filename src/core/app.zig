@@ -544,6 +544,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             .views_dir = vd,
             .layout = ctx.config.layout,
             .strict = ctx.config.templates_strict orelse if (@import("builtin").mode == .debug) .warn else .off,
+            .default_layout = ctx.config.default_layout,
             .io = ctx.io,
             .arena = arena,
             .mode = .runtime,

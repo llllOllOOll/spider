@@ -56,6 +56,11 @@ pub const RouteMeta = struct {
     /// The name of the route's `.policy` (spider.policy,
     /// spider.resourcePolicy, a policySet's route), if any.
     policy: ?[]const u8 = null,
+    /// `.layout = "name"`: the layout a page this route renders with
+    /// `c.view` goes inside when the template has no `extends` ("" for
+    /// none, overriding the group's or the app's default). null: the
+    /// app's `Config.default_layout`.
+    layout: ?[]const u8 = null,
 
     /// The route says who may call it: `.public`, `.authenticated`,
     /// `.roles` / `.org_roles`, or `.policy`.

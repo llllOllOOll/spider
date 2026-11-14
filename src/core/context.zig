@@ -47,6 +47,8 @@ pub const ViewsConfig = struct {
     layout: ?[]const u8 = "layout",
     /// Config.templates_strict, resolved (see there).
     strict: template_mod.Strictness = .off,
+    /// Config.default_layout.
+    default_layout: ?[]const u8 = null,
     io: std.Io,
     arena: std.mem.Allocator,
     mode: ViewsMode = .runtime,
@@ -418,9 +420,22 @@ pub const Ctx = struct {
             .template => |t| {
                 var tmpl = t;
                 defer tmpl.deinit();
+                tmpl.default_layout = self.defaultLayout(&tmpl);
                 return htmlResponse(try tmpl.render(data, self.arena), opts);
             },
         }
+    }
+
+    /// The layout a page goes inside when its template has no `extends`:
+    /// the route's `.layout` (its group's `defaults` included; "" is none),
+    /// else `Config.default_layout`. None for a whole document (`<html`)
+    /// and for an htmx request that is not a boosted navigation (it swaps a
+    /// part of the page).
+    fn defaultLayout(self: *Ctx, tmpl: *const Template) ?[]const u8 {
+        if (tmpl.layout != null or tmpl.is_root) return null;
+        if (self.isHtmx() and !self.isBoosted()) return null;
+        const name = self.route().layout orelse (self._views orelse return null).default_layout orelse return null;
+        return if (name.len == 0) null else name;
     }
 
     /// Renders one component of a template, without the layout or the rest of

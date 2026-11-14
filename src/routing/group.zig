@@ -68,8 +68,9 @@ pub const Group = struct {
     /// Access rules and flags every route of the group inherits unless the
     /// route declares its own `.roles` / `.org_roles` / `.public` /
     /// `.authenticated` / `.policy`: any one of them replaces all the access
-    /// rules of the defaults (`.quiet_log` / `.allow_http` are overridden one
-    /// by one). Must come before the group's routes: after one, it panics.
+    /// rules of the defaults (`.quiet_log` / `.allow_http` / `.layout` are
+    /// overridden one by one). `.layout = "admin"` here is the layout of
+    /// every page of the group whose template has no `extends`. Must come before the group's routes: after one, it panics.
     /// A second call replaces the first. Plain `sse()` routes do not get
     /// the defaults.
     pub fn defaults(self: *Group, comptime config: anytype) *Group {
@@ -150,6 +151,7 @@ pub const Group = struct {
         }
         if (comptime @hasField(T, "quiet_log")) meta.quiet_log = own.quiet_log;
         if (comptime @hasField(T, "allow_http")) meta.allow_http = own.allow_http;
+        if (comptime @hasField(T, "layout")) meta.layout = own.layout;
 
         const full = self.join(path) catch unreachable;
         self.router.addRouteOrPanic(method, full, .{ .handler = h, .middlewares = mws, .meta = meta, .reads_params = reads_params });
