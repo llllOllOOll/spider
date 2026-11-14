@@ -29,9 +29,6 @@ const Error = Unsupported || std.mem.Allocator.Error;
 /// The app's templates by name (the embedded map's keys).
 pub const Sources = std.StringHashMapUnmanaged([]const u8);
 
-/// The interpreter stops at this depth (renderer.max_component_depth).
-const max_depth = 32;
-
 const Binding = struct {
     name: []const u8,
     kind: union(enum) {
@@ -61,21 +58,88 @@ const Frame = struct {
     /// While a component's own slot content compiles, its `slot` binding is
     /// not there yet (the content sees the caller's `slot`).
     hide_slot: bool = false,
+    /// The bottom frame of a component or layout function: every name not
+    /// found above it is a field of the function's `scope` argument.
+    fields: ?*std.ArrayList([]const u8) = null,
+};
+
+/// A component or layout compiled once as a function `__f<id>(w, alc,
+/// scope)`, `scope` of type `__S<id>(types...)` with one field per name the
+/// body reads from outside it. The type function makes the scope of two
+/// calls with the same field types the same type, so Zig makes one copy of
+/// the function for them (an anonymous struct literal would be a new type
+/// at each call site).
+const FnInfo = struct {
+    id: usize,
+    fields: []const []const u8,
+};
+
+/// What every template of an app shares: the component and layout
+/// functions, generated once.
+pub const Unit = struct {
+    alc: std.mem.Allocator,
+    sources: *const Sources,
+    fns: std.StringHashMapUnmanaged(*FnInfo) = .{},
+    failed: std.StringHashMapUnmanaged(void) = .{},
+    compiling: std.StringHashMapUnmanaged(void) = .{},
+    /// The functions' code, to put next to the templates' functions.
+    code: std.ArrayList(u8) = .empty,
+    next: usize = 0,
+
+    pub fn init(alc: std.mem.Allocator, sources: *const Sources) Unit {
+        return .{ .alc = alc, .sources = sources };
+    }
+
+    /// The function for `nodes` (memoized by `key`).
+    fn function(u: *Unit, key: []const u8, list: []const Node, inline_components: *const Sources) Error!*FnInfo {
+        if (u.fns.get(key)) |f| return f;
+        if (u.failed.contains(key) or u.compiling.contains(key)) return error.Unsupported;
+        try u.compiling.put(u.alc, key, {});
+        defer _ = u.compiling.remove(key);
+
+        var fields: std.ArrayList([]const u8) = .empty;
+        var sub: Gen = .{ .alc = u.alc, .unit = u, .sources = u.sources, .inline_components = try inline_components.clone(u.alc) };
+        const bottom = try u.alc.create(Frame);
+        bottom.* = .{ .id = 0, .fields = &fields };
+        try sub.frames.append(u.alc, bottom);
+        var body: std.ArrayList(u8) = .empty;
+        sub.nodes(&body, list) catch |err| {
+            if (err == error.Unsupported) try u.failed.put(u.alc, key, {});
+            return err;
+        };
+
+        const info = try u.alc.create(FnInfo);
+        u.next += 1;
+        info.* = .{ .id = u.next, .fields = fields.items };
+        try u.code.print(u.alc, "fn __S{d}(", .{info.id});
+        for (fields.items, 0..) |_, i| try u.code.print(u.alc, "{s}comptime T{d}: type", .{ if (i == 0) "" else ", ", i });
+        try u.code.appendSlice(u.alc, ") type {\nreturn struct {");
+        for (fields.items, 0..) |f, i| try u.code.print(u.alc, " {f}: T{d},", .{ std.zig.fmtId(f), i });
+        try u.code.appendSlice(u.alc, " };\n}\n");
+        try u.code.print(u.alc, "fn __f{d}(w: *std.Io.Writer, alc: std.mem.Allocator, scope: anytype) !void {{\n", .{info.id});
+        if (fields.items.len == 0) try u.code.appendSlice(u.alc, "_ = scope;\n");
+        if (!sub.alc_used) try u.code.appendSlice(u.alc, "_ = alc;\n");
+        if (!sub.w_used) try u.code.appendSlice(u.alc, "_ = w;\n");
+        try u.code.appendSlice(u.alc, body.items);
+        try u.code.appendSlice(u.alc, "}\n");
+        try u.fns.put(u.alc, key, info);
+        return info;
+    }
 };
 
 const Gen = struct {
     alc: std.mem.Allocator,
+    unit: *Unit,
     sources: *const Sources,
     frames: std.ArrayList(*Frame) = .empty,
-    /// Components being expanded (a component that includes itself stays
-    /// with the interpreter).
-    expanding: std.ArrayList([]const u8) = .empty,
     /// The page's inline components.
     inline_components: Sources = .{},
     parsed: std.StringHashMapUnmanaged([]const Node) = .{},
     next_id: usize = 0,
     data_used: bool = false,
     alc_used: bool = false,
+    /// The template being compiled (keys its inline components).
+    page_name: []const u8 = "",
     /// The writer the code being emitted writes to, and whether it did.
     w: []const u8 = "w",
     w_used: bool = false,
@@ -119,6 +183,13 @@ const Gen = struct {
                 if (f.hide_slot and std.mem.eql(u8, name, "slot")) continue;
                 try g.use(b);
                 return .{ .handle = b.ident, .path = rest };
+            }
+            if (f.fields) |fields| {
+                const known = for (fields.items) |x| {
+                    if (std.mem.eql(u8, x, name)) break true;
+                } else false;
+                if (!known) try fields.append(g.alc, name);
+                return .{ .handle = try std.fmt.allocPrint(g.alc, "scope.{f}", .{std.zig.fmtId(name)}), .path = rest };
             }
         }
         g.data_used = true;
@@ -261,13 +332,15 @@ const Gen = struct {
     fn component(g: *Gen, out: *std.ArrayList(u8), c: anytype) Error!void {
         // Not found: the renderer writes nothing.
         const src = g.findComponent(c.name) orelse return;
-        for (g.expanding.items) |e| if (std.mem.eql(u8, e, c.name)) return error.Unsupported;
-        if (g.expanding.items.len + 1 >= max_depth) return error.Unsupported;
         const body_nodes = try g.parse(c.name, src);
         const decl: ?props_decl.Decl = if (props_decl.headerLine(src) != null)
             (props_decl.parse(g.alc, src) catch return error.Unsupported)
         else
             null;
+        // An inline component is the page's: its function is too.
+        const is_inline = g.inline_components.get(c.name) != null;
+        const key = try std.fmt.allocPrint(g.unit.alc, "c:{s}:{x}", .{ if (is_inline) g.page_name else "", std.hash.Wyhash.hash(0, src) });
+        const info = try g.unit.function(key, body_nodes, &g.inline_components);
 
         const caller_depth = g.frames.items.len;
         const frame = try g.alc.create(Frame);
@@ -304,10 +377,15 @@ const Gen = struct {
         } else null;
 
         try g.frames.append(g.alc, frame);
-        try g.expanding.append(g.alc, c.name);
-        var body: std.ArrayList(u8) = .empty;
-        try g.nodes(&body, body_nodes);
-
+        // The names the function reads, as the call sees them.
+        var args: std.ArrayList(u8) = .empty;
+        for (info.fields, 0..) |f, i| {
+            const r = try g.root(f);
+            if (r.path.len == 0)
+                try args.print(g.alc, "const __v{d}_{d} = {s};\n", .{ frame.id, i, r.handle })
+            else
+                try args.print(g.alc, "const __v{d}_{d} = E.bind(E.lookup({s}, \"{f}\"));\n", .{ frame.id, i, r.handle, std.zig.fmtString(r.path) });
+        }
         // The slot content, rendered first (in the component's scope, with
         // the caller's `slot`), only when the component reads it.
         var slot_code: std.ArrayList(u8) = .empty;
@@ -317,14 +395,25 @@ const Gen = struct {
             try g.buffered(&slot_code, try std.fmt.allocPrint(g.alc, "__s{d}", .{frame.id}), slot_nodes);
             frame.hide_slot = false;
         };
-        _ = g.expanding.pop();
         _ = g.frames.pop();
 
         try out.appendSlice(g.alc, "{\n");
         try out.appendSlice(g.alc, slot_code.items);
         for (frame.bindings.items) |b| if (b.used) try out.print(g.alc, "const {s} = {s};\n", .{ b.ident, b.def });
-        try out.appendSlice(g.alc, body.items);
+        try out.appendSlice(g.alc, args.items);
+        try g.callFunction(out, info, frame.id);
         try out.appendSlice(g.alc, "}\n");
+    }
+
+    /// `try __f<id>(w, alc, __S<id>(@TypeOf(__v...), ...){ .name = __v..., ... });`
+    fn callFunction(g: *Gen, out: *std.ArrayList(u8), info: *const FnInfo, vid: usize) Error!void {
+        g.w_used = true;
+        g.alc_used = true;
+        try out.print(g.alc, "try __f{d}({s}, alc, __S{d}(", .{ info.id, g.w, info.id });
+        for (info.fields, 0..) |_, i| try out.print(g.alc, "{s}@TypeOf(__v{d}_{d})", .{ if (i == 0) "" else ", ", vid, i });
+        try out.appendSlice(g.alc, "){");
+        for (info.fields, 0..) |f, i| try out.print(g.alc, " .{f} = __v{d}_{d},", .{ std.zig.fmtId(f), vid, i });
+        try out.appendSlice(g.alc, " });\n");
     }
 
     /// Emits `list` rendered into a buffer `name` (std.Io.Writer.Allocating
@@ -373,9 +462,17 @@ const Gen = struct {
             try frame.bindings.append(g.alc, .{ .name = k, .kind = .{ .expr = try std.fmt.allocPrint(g.alc, "E.html(__s{d}_{d}.written())", .{ frame.id, i }) } });
         }
         const layout_nodes = try g.parse(layout_name, layout_src);
+        const key = try std.fmt.allocPrint(g.unit.alc, "l:{x}", .{std.hash.Wyhash.hash(0, layout_src)});
+        const info = try g.unit.function(key, layout_nodes, &g.inline_components);
         try g.frames.append(g.alc, frame);
-        var body: std.ArrayList(u8) = .empty;
-        try g.nodes(&body, layout_nodes);
+        var args: std.ArrayList(u8) = .empty;
+        for (info.fields, 0..) |f, i| {
+            const r = try g.root(f);
+            if (r.path.len == 0)
+                try args.print(g.alc, "const __v{d}_{d} = {s};\n", .{ frame.id, i, r.handle })
+            else
+                try args.print(g.alc, "const __v{d}_{d} = E.bind(E.lookup({s}, \"{f}\"));\n", .{ frame.id, i, r.handle, std.zig.fmtString(r.path) });
+        }
         _ = g.frames.pop();
 
         // The sections the layout reads, rendered in the page's scope.
@@ -384,7 +481,8 @@ const Gen = struct {
             try g.buffered(out, try std.fmt.allocPrint(g.alc, "__s{d}_{d}", .{ frame.id, i }), sections.items[i].items);
         }
         for (frame.bindings.items) |b| if (b.used) try out.print(g.alc, "const {s} = {s};\n", .{ b.ident, b.def });
-        try out.appendSlice(g.alc, body.items);
+        try out.appendSlice(g.alc, args.items);
+        try g.callFunction(out, info, frame.id);
     }
 
     fn keepSection(alc: std.mem.Allocator, keys: *std.ArrayList([]const u8), sections: *std.ArrayList(std.ArrayList(Node)), key: []const u8, list: std.ArrayList(Node)) !void {
@@ -497,11 +595,13 @@ fn isPath(expr: []const u8) bool {
 }
 
 /// Appends to `out` a function `pub fn @"<name>"(w, data, alc) !void`
-/// that renders template `src` (with the app's other templates in
-/// `sources` as its components and layouts), and returns true; returns
-/// false (and appends nothing) when the template uses what Elroy does not
-/// compile.
-pub fn generate(alc: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, src: []const u8, sources: *const Sources) std.mem.Allocator.Error!bool {
+/// that renders template `src` (the app's other templates, in `unit`, are
+/// its components and layouts; their functions go to `unit.code`), and
+/// returns true; returns false (and appends nothing) when the template
+/// uses what Elroy does not compile.
+pub fn generate(unit: *Unit, out: *std.ArrayList(u8), name: []const u8, src: []const u8) std.mem.Allocator.Error!bool {
+    const alc = unit.alc;
+    const sources = unit.sources;
     if (std.mem.startsWith(u8, std.mem.trimStart(u8, src, " \t\r\n"), "-- doc")) return false;
     var arena = std.heap.ArenaAllocator.init(alc);
     defer arena.deinit();
@@ -512,7 +612,7 @@ pub fn generate(alc: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u
         error.OutOfMemory => return error.OutOfMemory,
         else => return false,
     };
-    var g: Gen = .{ .alc = a, .sources = sources };
+    var g: Gen = .{ .alc = a, .unit = unit, .sources = sources, .page_name = name };
 
     // Inline components (what parsed_cache/collectInline do): a root-level
     // `<Name>...</Name>` with content, under a name nothing has, defines

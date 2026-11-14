@@ -118,6 +118,7 @@ fn segments(comptime path: []const u8) []const Seg {
 /// The type `lookup` returns: Missing when the path cannot exist for these
 /// types, else `?H` (null: an index past the end).
 fn Result(comptime Root: type, comptime segs: []const Seg) type {
+    if (Root == Missing) return Missing;
     var H: type = Root;
     for (segs) |s| {
         H = Step(H, s) orelse return Missing;
@@ -472,4 +473,15 @@ fn hasDecl(comptime T: type, comptime name: []const u8) bool {
         if (std.mem.eql(u8, d, name)) return true;
     }
     return false;
+}
+
+/// A name passed to a component or layout function: its handle, or
+/// Missing (a bare name has no index, so a lookup is never null).
+pub fn bind(r: anytype) Bind(@TypeOf(r)) {
+    if (@TypeOf(r) == Missing) return .{};
+    return r.?;
+}
+
+fn Bind(comptime R: type) type {
+    return if (R == Missing) Missing else @typeInfo(R).optional.child;
 }

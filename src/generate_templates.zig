@@ -77,10 +77,13 @@ pub fn main(init: std.process.Init) !void {
     try output.appendSlice(allocator, "\n    pub const elroy = struct {\n        const std = @import(\"std\");\n        const E = @import(\"spider\").elroy;\n\n");
     var by_name: elroy.Sources = .{};
     for (sources.items) |src| try by_name.put(allocator, src.name, src.text);
+    var unit = elroy.Unit.init(allocator, &by_name);
     var compiled: usize = 0;
     for (sources.items) |src| {
-        if (try elroy.generate(allocator, &output, src.name, src.text, &by_name)) compiled += 1;
+        if (try elroy.generate(&unit, &output, src.name, src.text)) compiled += 1;
     }
+    // The component and layout functions the templates call.
+    try output.appendSlice(allocator, unit.code.items);
     try output.appendSlice(allocator, "    };\n");
     try output.appendSlice(allocator, "};\n");
     // zig fmt the whole file: the generated code is emitted unindented.
