@@ -35,11 +35,42 @@ pub const cases = [_]Case{
     .{ .name = "if_loop", .src = "for (books) |b| { if (b.year > 2015) { new:{ b.title } } else { old:{ b.title } }if (loop.index == 0) { first } }" },
     .{ .name = "props_header_page", .src = "-- props: title\n<h1>{ title }</h1>" },
     .{ .name = "unicode", .src = "<p>{ uni } — ✓ ação</p>" },
-    // Left to the interpreter (for now).
-    .{ .name = "has_layout", .src = "extends \"layout\"\n<p>{ title }</p>", .compiles = false },
-    .{ .name = "has_component", .src = "<Card title=\"{ title }\" />", .compiles = false },
-    .{ .name = "has_slot", .src = "<main>{ slot }</main>", .compiles = false },
+    // Components and layouts (`components` below).
+    .{ .name = "layout_missing", .src = "extends \"layout\"\n<p>{ title }</p>" },
+    .{ .name = "page_slot", .src = "<main>{ slot }</main>" },
+    .{ .name = "comp_props", .src = "<Card title=\"{ title }\" year=\"{ year }\" finished=\"true\" size=\"lg\" />|<Card title=\"Lit\" />|<Card />|<Card year=\"x\" finished=\"yes\" title=\"{ nope }\" extra=\"e\" />" },
+    .{ .name = "comp_caller_scope", .src = "for (books) |item| { <LoopItem /> }" },
+    .{ .name = "comp_expr_props", .src = "for (books) |b| { <Tag label=\"{ b.title }\" n=\"{ loop.index }\" obj=\"{ b }\" /> }<Tag label=\"{ book.author.name }\" />" },
+    .{ .name = "comp_slot", .src = "<Box><p>{ title }</p></Box>|<Box />|<Box></Box>" },
+    .{ .name = "comp_nested_slot", .src = "<Wrap>hello { title }</Wrap>|<Wrap />" },
+    .{ .name = "comp_slot_call", .src = "<div><Box><p>{ title }</p></Box>|<Box />|<Box></Box></div>" },
+    .{ .name = "comp_nested_slot_call", .src = "<div><Wrap>hello { title }</Wrap>|<Wrap /></div>" },
+    .{ .name = "comp_slot_in_loop", .src = "<ul>for (books) |b| { <Box><li>{ b.title } { loop.index }</li></Box> }</ul>" },
+    .{ .name = "comp_nested_slot_in_if", .src = "if (done) { <Wrap>hello { title }</Wrap>|<Wrap />|<Wrap>{ slot }</Wrap> }" },
+    .{ .name = "comp_pascal_slot", .src = "<Panel>panel body { title }</Panel>|<Panel kind=\"warn\"><b>{ year }</b></Panel>" },
+    .{ .name = "comp_in_component", .src = "<Outer label=\"{ title }\" />" },
+    .{ .name = "comp_unknown", .src = "<Nope title=\"x\" />after" },
+    .{ .name = "comp_snake", .src = "<card_plain />" },
+    .{ .name = "layout_page", .src = "extends \"layout_main\"\n<p>body { title }</p>{ slot_head }<meta name=\"x\">{ slot_foot }f1{ slot_foot }f2" },
+    .{ .name = "layout_no_head", .src = "extends \"layout_main\"\n<p>only body</p>" },
+    .{ .name = "inline_def", .src = "<Local><em>{ title }</em></Local>\n<Local /><Local />" },
+    // Left to the interpreter.
+    .{ .name = "has_recursion", .src = "<Rec />", .compiles = false },
     .{ .name = "has_current_user", .src = "if (current_user) { hi }", .compiles = false },
     .{ .name = "has_call_in_condition", .src = "if (len(books) > 1) { x }", .compiles = false },
     .{ .name = "has_expression", .src = "<p>{ \"lit\" }</p>", .compiles = false },
+};
+
+/// Components and layouts the cases call.
+pub const components = [_]Case{
+    .{ .name = "card", .src = "-- props: title!, year: int, finished: bool = false, size = \"md\"\n<b class=\"{ size }\">{ title } ({ year ?? \"?\" })if (finished) { ✓ }[{ finished }][{ outer ?? \"no-outer\" }]</b>" },
+    .{ .name = "card_plain", .src = "<u>{ title }</u>" },
+    .{ .name = "loop_item", .src = "<li>{ item.title } #{ loop.index } { title }</li>" },
+    .{ .name = "tag", .src = "<s>{ label }|{ n }|{ obj }|if (obj) { O }{ label.len }</s>" },
+    .{ .name = "box", .src = "<div class=\"box\">{ slot }</div>if (slot) { has } else { none }" },
+    .{ .name = "wrap", .src = "<section>if (slot) { [{ slot }] } else { empty }<Box>inner:{ slot }</Box></section>" },
+    .{ .name = "outer", .src = "<o><Card title=\"{ label }\" /><CardPlain /></o>" },
+    .{ .name = "layout_main", .src = "<html><head>if (slot_head) { H:{ slot_head } } else { no-head }</head><body>{ slot }|{ slot_foot ?? \"nf\" }|{ title }</body></html>" },
+    .{ .name = "rec", .src = "<i><Rec /></i>" },
+    .{ .name = "Panel", .src = "<aside class=\"{ kind ?? \"info\" }\">{ slot }</aside>" },
 };

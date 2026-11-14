@@ -414,3 +414,35 @@ fn ItemsOf(comptime R: type) type {
 pub fn item(p: anytype) Item(@typeInfo(@TypeOf(p)).pointer.child) {
     return itemHandle(@typeInfo(@TypeOf(p)).pointer.child, p);
 }
+
+// ── Components ───────────────────────────────────────────────────────────
+
+/// Markup that goes out verbatim: a literal prop, a slot, a default.
+pub fn html(s: []const u8) RawHtml {
+    return .{ .html = s };
+}
+
+/// A declared prop nobody gives and with no default: there, without a value.
+pub const none: ?[]const u8 = null;
+
+/// A prop written `name="{ path }"`: the value at the path in the caller's
+/// scope, or "" when there is none (`resolveValue` failed).
+pub fn propExpr(r: anytype) PropExpr(@TypeOf(r)) {
+    if (@TypeOf(r) == Missing) return "";
+    return r.?;
+}
+
+fn PropExpr(comptime R: type) type {
+    return if (R == Missing) []const u8 else @typeInfo(R).optional.child;
+}
+
+/// A declared prop the call leaves out: the caller's value when it has
+/// one, else `d` (the default, or `none`).
+pub fn orDefault(r: anytype, d: anytype) OrDefault(@TypeOf(r), @TypeOf(d)) {
+    if (@TypeOf(r) == Missing) return d;
+    return r.?;
+}
+
+fn OrDefault(comptime R: type, comptime D: type) type {
+    return if (R == Missing) D else @typeInfo(R).optional.child;
+}

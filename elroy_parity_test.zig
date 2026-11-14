@@ -58,7 +58,14 @@ const Data = struct {
     arr: [2]Book = books,
     raws: []const RawHtml = &.{ .{ .html = "<b>1</b>" }, .{ .html = "<b>2</b>" } },
     uni: []const u8 = "çãé 日本",
+    outer: []const u8 = "from-page",
 };
+
+fn componentMap(alc: std.mem.Allocator) !std.StringHashMapUnmanaged([]const u8) {
+    var map: std.StringHashMapUnmanaged([]const u8) = .{};
+    for (fixtures.components) |c| try map.put(alc, c.name, c.src);
+    return map;
+}
 
 fn compiledName(name: []const u8) bool {
     for (gen.compiled) |c| if (std.mem.eql(u8, c, name)) return true;
@@ -75,10 +82,11 @@ test "Elroy: each fixture renders the same HTML as the interpreter" {
         try t.expectEqual(c.compiles, compiledName(c.name));
         if (c.compiles) {
             var tmpl = try spider.Template.initNamed(alc, c.src, c.name);
+            tmpl.components = try componentMap(alc);
             const want = try tmpl.render(data, alc);
 
             var aw: std.Io.Writer.Allocating = .init(alc);
-            try @field(gen, c.name)(&aw.writer, data);
+            try @field(gen, c.name)(&aw.writer, data, alc);
             const got = aw.written();
             if (!std.mem.eql(u8, want, got)) {
                 std.debug.print("\nElroy parity, template \"{s}\":\n  interpreter: {s}\n  elroy:       {s}\n", .{ c.name, want, got });
@@ -97,6 +105,6 @@ test "Elroy: anonymous struct data with comptime fields" {
     var tmpl = try spider.Template.init(alc, fixtures.cases[1].src);
     const want = try tmpl.render(data, alc);
     var aw: std.Io.Writer.Allocating = .init(alc);
-    try gen.scalars(&aw.writer, data);
+    try gen.scalars(&aw.writer, data, alc);
     try t.expectEqualStrings(want, aw.written());
 }
