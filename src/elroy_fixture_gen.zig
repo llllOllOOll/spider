@@ -18,6 +18,10 @@ pub fn main(init: std.process.Init) !void {
     var sources: codegen.Sources = .{};
     for (fixtures.components) |c| try sources.put(alc, c.name, c.src);
     var unit = codegen.Unit.init(alc, &sources);
+    // The fixtures' texts as string constants: Elroy writes slices of them.
+    for (fixtures.cases) |c| try unit.addSource(c.src, try std.fmt.allocPrint(alc, "\"{f}\"", .{std.zig.fmtString(c.src)}));
+    var it = sources.valueIterator();
+    while (it.next()) |v| try unit.addSource(v.*, try std.fmt.allocPrint(alc, "\"{f}\"", .{std.zig.fmtString(v.*)}));
     var compiled: std.ArrayList(u8) = .empty;
     for (fixtures.cases) |c| {
         if (try codegen.generate(&unit, &out, c.name, c.src)) {

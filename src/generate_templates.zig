@@ -38,6 +38,8 @@ pub fn main(init: std.process.Init) !void {
     defer walker.deinit();
     var template_count: usize = 0;
     var sources: std.ArrayList(manifest.Source) = .empty;
+    // Each template's text and file, for Elroy to write slices of it.
+    var embeds: std.ArrayList(struct { text: []const u8, path: []const u8 }) = .empty;
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.path, ".html") and
@@ -50,6 +52,7 @@ pub fn main(init: std.process.Init) !void {
             const text = try dir.readFileAlloc(io, entry.path, allocator, .limited(8 * 1024 * 1024));
             try sources.append(allocator, .{ .name = try allocator.dupe(u8, names.primary), .text = text });
             if (names.alias) |alias| try sources.append(allocator, .{ .name = try allocator.dupe(u8, alias), .text = text });
+            try embeds.append(allocator, .{ .text = text, .path = try allocator.dupe(u8, embed_path) });
         }
         const line = try std.fmt.allocPrint(allocator, "    {s}: []const u8 = @embedFile(\"{s}\"),\n", .{ names.primary, embed_path });
         defer allocator.free(line);
@@ -78,6 +81,7 @@ pub fn main(init: std.process.Init) !void {
     var by_name: elroy.Sources = .{};
     for (sources.items) |src| try by_name.put(allocator, src.name, src.text);
     var unit = elroy.Unit.init(allocator, &by_name);
+    for (embeds.items) |e| try unit.addSource(e.text, try std.fmt.allocPrint(allocator, "@embedFile(\"{s}\")", .{e.path}));
     var compiled: usize = 0;
     for (sources.items) |src| {
         if (try elroy.generate(&unit, &output, src.name, src.text)) compiled += 1;

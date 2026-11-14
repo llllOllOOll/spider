@@ -85,20 +85,41 @@ pub const Unit = struct {
     /// The functions' code, to put next to the templates' functions.
     code: std.ArrayList(u8) = .empty,
     next: usize = 0,
+    /// A template's text (by address) -> the constant that holds it in the
+    /// generated file (`const __t<n> = @embedFile(...)`), so the code writes
+    /// slices of it instead of a second copy of the same markup.
+    embeds: std.AutoHashMapUnmanaged(usize, []const u8) = .{},
 
     pub fn init(alc: std.mem.Allocator, sources: *const Sources) Unit {
         return .{ .alc = alc, .sources = sources };
     }
 
+    /// Registers `text` (a template's whole source, as in `sources`) as
+    /// held by the Zig expression `decl` (`@embedFile("...")` or a string
+    /// literal).
+    pub fn addSource(u: *Unit, text: []const u8, decl: []const u8) !void {
+        const gop = try u.embeds.getOrPut(u.alc, @intFromPtr(text.ptr));
+        if (gop.found_existing) return;
+        gop.value_ptr.* = try std.fmt.allocPrint(u.alc, "__t{d}", .{u.embeds.count()});
+        try u.code.print(u.alc, "const {s} = {s};\n", .{ gop.value_ptr.*, decl });
+    }
+
+    /// `text` as a slice of the constant holding `origin`, when it is in it.
+    fn slice(u: *Unit, alc: std.mem.Allocator, origin: []const u8, text: []const u8) !?[]const u8 {
+        const ident = u.embeds.get(@intFromPtr(origin.ptr)) orelse return null;
+        const at = std.mem.indexOf(u8, origin, text) orelse return null;
+        return try std.fmt.allocPrint(alc, "{s}[{d}..{d}]", .{ ident, at, at + text.len });
+    }
+
     /// The function for `nodes` (memoized by `key`).
-    fn function(u: *Unit, key: []const u8, list: []const Node, inline_components: *const Sources) Error!*FnInfo {
+    fn function(u: *Unit, key: []const u8, list: []const Node, inline_components: *const Sources, origin: []const u8) Error!*FnInfo {
         if (u.fns.get(key)) |f| return f;
         if (u.failed.contains(key) or u.compiling.contains(key)) return error.Unsupported;
         try u.compiling.put(u.alc, key, {});
         defer _ = u.compiling.remove(key);
 
         var fields: std.ArrayList([]const u8) = .empty;
-        var sub: Gen = .{ .alc = u.alc, .unit = u, .sources = u.sources, .inline_components = try inline_components.clone(u.alc) };
+        var sub: Gen = .{ .alc = u.alc, .unit = u, .sources = u.sources, .inline_components = try inline_components.clone(u.alc), .origin = origin };
         const bottom = try u.alc.create(Frame);
         bottom.* = .{ .id = 0, .fields = &fields };
         try sub.frames.append(u.alc, bottom);
@@ -140,6 +161,9 @@ const Gen = struct {
     alc_used: bool = false,
     /// The template being compiled (keys its inline components).
     page_name: []const u8 = "",
+    /// The source the nodes being compiled come from (text is written as
+    /// slices of it).
+    origin: []const u8 = "",
     /// The writer the code being emitted writes to, and whether it did.
     w: []const u8 = "w",
     w_used: bool = false,
@@ -236,7 +260,10 @@ const Gen = struct {
         switch (n) {
             .text => |t| if (t.len > 0) {
                 g.w_used = true;
-                try out.print(g.alc, "try {s}.writeAll(\"{f}\");\n", .{ g.w, std.zig.fmtString(t) });
+                if (try g.unit.slice(g.alc, g.origin, t)) |ref|
+                    try out.print(g.alc, "try {s}.writeAll({s});\n", .{ g.w, ref })
+                else
+                    try out.print(g.alc, "try {s}.writeAll(\"{f}\");\n", .{ g.w, std.zig.fmtString(t) });
             },
             .interpolation => |e| {
                 const r = try g.root(trimWhitespace(e));
@@ -340,7 +367,7 @@ const Gen = struct {
         // An inline component is the page's: its function is too.
         const is_inline = g.inline_components.get(c.name) != null;
         const key = try std.fmt.allocPrint(g.unit.alc, "c:{s}:{x}", .{ if (is_inline) g.page_name else "", std.hash.Wyhash.hash(0, src) });
-        const info = try g.unit.function(key, body_nodes, &g.inline_components);
+        const info = try g.unit.function(key, body_nodes, &g.inline_components, if (is_inline) g.origin else src);
 
         const caller_depth = g.frames.items.len;
         const frame = try g.alc.create(Frame);
@@ -463,7 +490,7 @@ const Gen = struct {
         }
         const layout_nodes = try g.parse(layout_name, layout_src);
         const key = try std.fmt.allocPrint(g.unit.alc, "l:{x}", .{std.hash.Wyhash.hash(0, layout_src)});
-        const info = try g.unit.function(key, layout_nodes, &g.inline_components);
+        const info = try g.unit.function(key, layout_nodes, &g.inline_components, layout_src);
         try g.frames.append(g.alc, frame);
         var args: std.ArrayList(u8) = .empty;
         for (info.fields, 0..) |f, i| {
@@ -612,7 +639,7 @@ pub fn generate(unit: *Unit, out: *std.ArrayList(u8), name: []const u8, src: []c
         error.OutOfMemory => return error.OutOfMemory,
         else => return false,
     };
-    var g: Gen = .{ .alc = a, .unit = unit, .sources = sources, .page_name = name };
+    var g: Gen = .{ .alc = a, .unit = unit, .sources = sources, .page_name = name, .origin = src };
 
     // Inline components (what parsed_cache/collectInline do): a root-level
     // `<Name>...</Name>` with content, under a name nothing has, defines
