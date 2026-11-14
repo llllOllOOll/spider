@@ -298,6 +298,8 @@ test {
     _ = @import("render/template_safety_test.zig");
     _ = @import("render/template_strict_test.zig");
     _ = @import("render/parsed_cache_test.zig");
+    _ = @import("render/template_props_test.zig");
+    _ = @import("render/props_decl.zig");
     _ = @import("render/embedded_test.zig");
     _ = @import("core/watchdog.zig");
     _ = @import("core/context_test.zig");

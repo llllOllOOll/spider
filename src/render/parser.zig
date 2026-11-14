@@ -3,6 +3,7 @@
 //! inline.
 
 const std = @import("std");
+const props_decl = @import("props_decl.zig");
 const builtin = @import("builtin");
 const ast = @import("ast.zig");
 const Node = ast.Node;
@@ -161,6 +162,15 @@ pub const Parser = struct {
         }
 
         var layout_name: ?[]const u8 = null;
+
+        // A component's `-- props: ...` line (render/props_decl.zig) is a
+        // declaration, not markup: checked here, then skipped.
+        if (props_decl.headerLine(p.template) != null) {
+            var buf: [16 * 1024]u8 = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(&buf);
+            _ = props_decl.parse(fba.allocator(), p.template) catch return fail(.props_header, props_decl.headerLine(p.template).?);
+            p.pos = props_decl.bodyStart(p.template);
+        }
 
         if (std.mem.startsWith(u8, p.template[p.pos..], "extends ")) {
             p.pos += 8;
@@ -526,7 +536,7 @@ pub fn parseComponentNode(alc: std.mem.Allocator, template: []const u8, pos: *us
 // Parses one complete if/else-if*/else? chain from str[pos.*..].
 // On entry pos.* points at "if (". On return pos.* is past the chain.
 // Handles arbitrary-depth else if chains via recursion.
-const ParseError = error{ UnclosedParen, ExpectedBrace, UnclosedBrace, UnclosedInterpolation, UnclosedCapture, ExpectedCapture } || std.mem.Allocator.Error;
+const ParseError = error{ UnclosedParen, ExpectedBrace, UnclosedBrace, UnclosedInterpolation, UnclosedCapture, ExpectedCapture, InvalidPropsHeader } || std.mem.Allocator.Error;
 
 pub fn parseIfNode(alc: std.mem.Allocator, str: []const u8, pos: *usize) ParseError!Node {
     const at = str[pos.*..];
@@ -806,6 +816,7 @@ const Kind = enum {
     unclosed_paren,
     expected_capture,
     unclosed_capture,
+    props_header,
 };
 
 // The last syntax error on this thread: what, and the text from where the
@@ -825,6 +836,7 @@ fn fail(kind: Kind, at: []const u8) ParseError {
         .unclosed_paren => error.UnclosedParen,
         .expected_capture => error.ExpectedCapture,
         .unclosed_capture => error.UnclosedCapture,
+        .props_header => error.InvalidPropsHeader,
     };
 }
 
@@ -882,6 +894,7 @@ pub fn failure(alc: std.mem.Allocator, source: []const u8) !?Failure {
         .unclosed_paren => .{ .line = line, .snippet = rest, .message = "the `(` of this `if` or `for` is never closed", .fix = "close the condition with `)`" },
         .expected_capture => .{ .line = line, .snippet = rest, .message = "`for (...)` needs a name for each item", .fix = "for (items) |item| { ... }" },
         .unclosed_capture => .{ .line = line, .snippet = rest, .message = "the item name of this `for` is not closed with `|`", .fix = "for (items) |item| { ... }" },
+        .props_header => .{ .line = line, .snippet = rest, .message = "this `-- props:` line does not declare props the way Spider reads them", .fix = "-- props: name!, title, year: int, done: bool = false, size = \"md\"  (`!` required; types string, int, bool; a default must fit its type)" },
     };
 }
 

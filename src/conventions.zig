@@ -13,16 +13,23 @@
 //!   bool-attr              disabled/checked/selected/... given "{ expr }" (on even when false)
 //!   feature-not-registered a feature folder missing from src/features/mod.zig
 //!   template-syntax        a template that does not parse (the page answers 500)
+//!   component-props        a call to a component that declares its props
+//!                          (`-- props:`) with a prop it does not declare, or a
+//!                          literal of the wrong type (`year="x"` for `year: int`)
 //!   route-access           with auth, a route that declares no access (roles /
 //!                          org_roles / public / authenticated / policy, itself or
 //!                          through its group's defaults())
 //! Warnings:
 //!   inline-style           style="..." in a template (display:none for Alpine is fine)
+//!   component-required     a call that does not give a required prop (fine only
+//!                          when the caller's scope has a value of that name)
 //!   inline-svg             <svg> pasted in a template instead of an icon class
 //!   routes-test            a feature with routes.zig but no routes_test.zig
 
 const std = @import("std");
 const template_parser = @import("render/parser.zig");
+const props_decl = @import("render/props_decl.zig");
+const ast = @import("render/ast.zig");
 
 /// How serious an issue is. `err` fails `spider check` and
 /// `spider.testing.expectConventions()`; `warn` is only listed, and fails
@@ -111,6 +118,7 @@ pub fn check(io: std.Io, arena: std.mem.Allocator, root: std.Io.Dir, report: *Re
     defer src.close(io);
     var walker = try src.walk(arena);
     defer walker.deinit();
+    var templates: std.ArrayList(Source) = .empty;
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         const path = try std.fmt.allocPrint(arena, "src/{s}", .{entry.path});
@@ -124,9 +132,100 @@ pub fn check(io: std.Io, arena: std.mem.Allocator, root: std.Io.Dir, report: *Re
             }
         } else if (std.mem.endsWith(u8, path, ".html")) {
             try checkTemplate(report, path, text, styles, has_ui_layer);
+            try templates.append(arena, .{ .path = path, .text = text });
         }
     }
+    try checkComponentProps(report, templates.items);
     try checkFeatures(io, arena, root, report);
+}
+
+/// A template file: its path from the project root and its text.
+pub const Source = struct { path: []const u8, text: []const u8 };
+
+/// `UserCard`, `user_card` and `UserCard.html` all name the same component.
+fn componentKey(alc: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (name, 0..) |c, i| {
+        if (std.ascii.isUpper(c)) {
+            if (i > 0) try out.append(alc, '_');
+            try out.append(alc, std.ascii.toLower(c));
+        } else try out.append(alc, c);
+    }
+    return out.toOwnedSlice(alc);
+}
+
+/// The `component-props` / `component-required` rules: every call to a
+/// component that declares its props, in every template, against the
+/// declaration. A component's file is found by name as Spider finds it
+/// (`<BookCard />` is BookCard.html or book_card.html).
+pub fn checkComponentProps(report: *Report, templates: []const Source) !void {
+    const alc = report.arena;
+    var decls: std.StringHashMapUnmanaged(props_decl.Decl) = .{};
+    for (templates) |tpl| {
+        const d = (props_decl.parse(alc, tpl.text) catch continue) orelse continue; // a bad header is a template-syntax error
+        const base = std.fs.path.stem(tpl.path);
+        try decls.put(alc, try componentKey(alc, base), d);
+    }
+    if (decls.count() == 0) return;
+    for (templates) |tpl| {
+        if (std.mem.startsWith(u8, tpl.text, "-- doc")) continue;
+        var parser = template_parser.Parser.init(alc, tpl.text);
+        parser.log_failure = false;
+        const parsed = parser.parse() catch continue; // reported by template-syntax
+        var cursor: std.StringHashMapUnmanaged(usize) = .{};
+        try checkCalls(report, &decls, &cursor, tpl, parsed.nodes);
+    }
+}
+
+fn checkCalls(report: *Report, decls: *const std.StringHashMapUnmanaged(props_decl.Decl), cursor: *std.StringHashMapUnmanaged(usize), tpl: Source, nodes: []const ast.Node) anyerror!void {
+    const alc = report.arena;
+    for (nodes) |node| switch (node) {
+        .if_node => |n| {
+            try checkCalls(report, decls, cursor, tpl, n.then_body);
+            if (n.else_body) |eb| try checkCalls(report, decls, cursor, tpl, eb);
+        },
+        .for_node => |n| try checkCalls(report, decls, cursor, tpl, n.body),
+        .component => |c| {
+            if (decls.get(try componentKey(alc, c.name))) |decl| {
+                const line = try callLine(alc, cursor, tpl.text, c.name);
+                for (c.props) |prop| {
+                    const declared = decl.get(prop.name) orelse {
+                        try report.add(.err, tpl.path, line, "component-props", "<{s}> has no prop `{s}` (it declares: {s})", .{ c.name, prop.name, try decl.names(alc) }, "use a declared prop, or declare it in the component's `-- props:` line");
+                        continue;
+                    };
+                    if (!prop.is_expr and !declared.accepts(prop.value)) {
+                        try report.add(.err, tpl.path, line, "component-props", "prop `{s}` of <{s}> is {s}; \"{s}\" is not", .{ prop.name, c.name, @tagName(declared.kind), prop.value }, "pass a value of that type, or \"{ expr }\"");
+                    }
+                }
+                for (decl.props) |declared| {
+                    if (!declared.required) continue;
+                    var given = false;
+                    for (c.props) |prop| {
+                        if (std.mem.eql(u8, prop.name, declared.name)) given = true;
+                    }
+                    if (!given) {
+                        try report.add(.warn, tpl.path, line, "component-required", "<{s}> needs prop `{s}` and this call does not give it (fine only if this template's data has a value named `{s}`)", .{ c.name, declared.name, declared.name }, "pass it: <Name prop=\"{ value }\" />");
+                    }
+                }
+            }
+            if (c.slot_content) |sc| {
+                var sp = template_parser.Parser.init(alc, sc);
+                sp.log_failure = false;
+                const inner = sp.parse() catch continue;
+                try checkCalls(report, decls, cursor, tpl, inner.nodes);
+            }
+        },
+        else => {},
+    };
+}
+
+/// The line of the next `<Name` call in `text` (calls are met in order).
+fn callLine(alc: std.mem.Allocator, cursor: *std.StringHashMapUnmanaged(usize), text: []const u8, name: []const u8) !usize {
+    const needle = try std.fmt.allocPrint(alc, "<{s}", .{name});
+    const from = cursor.get(name) orelse 0;
+    const at = std.mem.indexOfPos(u8, text, from, needle) orelse return 1;
+    try cursor.put(alc, name, at + needle.len);
+    return 1 + std.mem.count(u8, text[0..at], "\n");
 }
 
 fn readOrEmpty(io: std.Io, arena: std.mem.Allocator, root: std.Io.Dir, path: []const u8) []const u8 {
@@ -605,4 +704,25 @@ test "checkTemplate: template-syntax — a template that does not parse, with th
     var r2 = testReport(&arena);
     try checkTemplate(&r2, "src/x.html", "-- doc\n# Title { not closed", "", true);
     try t.expectEqual(@as(usize, 0), r2.issues.items.len);
+}
+
+test "checkComponentProps: unknown prop and bad literal are errors, a required prop not given is a warning" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var r = testReport(&arena);
+    const templates = [_]Source{
+        .{ .path = "src/shared/templates/BookCard.html", .text = "-- props: title!, year: int\n<b>{ title }</b>" },
+        .{ .path = "src/features/books/views/index.html", .text =
+        \\<h1>Shelf</h1>
+        \\<BookCard title="A" year="1969" />
+        \\<BookCard colour="red" year="x" />
+        \\if (on) { <BookCard title="B" /> }
+        },
+        .{ .path = "src/shared/templates/Plain.html", .text = "<u>{ anything }</u>" },
+        .{ .path = "src/features/books/views/other.html", .text = "<Plain whatever=\"ok\" />" },
+    };
+    try checkComponentProps(&r, &templates);
+    try t.expectEqual(@as(usize, 2), r.count(.err));
+    try t.expectEqual(@as(usize, 1), r.count(.warn));
+    for (r.issues.items) |i| try t.expectEqual(@as(usize, 3), i.line);
 }

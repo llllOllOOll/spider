@@ -16,6 +16,7 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const embedded = @import("embedded.zig");
+const props_decl = @import("props_decl.zig");
 
 const Node = ast.Node;
 const Parser = parser_mod.Parser;
@@ -40,6 +41,8 @@ var arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 var raw_nodes: std.AutoHashMapUnmanaged(Key, []Node) = .{};
 /// Source -> the page form of it.
 var pages: std.AutoHashMapUnmanaged(Key, Page) = .{};
+/// Source -> its `-- props:` declaration (only sources that have one).
+var decls: std.AutoHashMapUnmanaged(Key, props_decl.Decl) = .{};
 var ready = std.atomic.Value(bool).init(false);
 
 /// The nodes of `src` as the parser gives them, or null (not built, or not
@@ -47,6 +50,12 @@ var ready = std.atomic.Value(bool).init(false);
 pub fn raw(src: []const u8) ?[]Node {
     if (!ready.load(.acquire)) return null;
     return raw_nodes.get(keyOf(src));
+}
+
+/// The `-- props:` declaration of `src`, or null (none, or not cached).
+pub fn decl(src: []const u8) ?props_decl.Decl {
+    if (!ready.load(.acquire)) return null;
+    return decls.get(keyOf(src));
 }
 
 /// The page form of `src`, or null.
@@ -126,6 +135,9 @@ fn addRaw(alc: std.mem.Allocator, name: []const u8, src: []const u8) !void {
         return err;
     };
     gop.value_ptr.* = parsed.nodes;
+    if (props_decl.headerLine(src) != null) {
+        if (try props_decl.parse(alc, src)) |d| try decls.put(alc, keyOf(src), d);
+    }
     try addSlots(alc, name, parsed.nodes);
 }
 
@@ -148,5 +160,6 @@ pub fn resetForTest() void {
     ready.store(false, .release);
     raw_nodes = .{};
     pages = .{};
+    decls = .{};
     _ = arena_state.reset(.free_all);
 }

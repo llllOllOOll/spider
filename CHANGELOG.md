@@ -52,6 +52,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A component can declare its props** on its first line:
+  `-- props: title!, year: int, finished: bool = false, size = "md"`
+  (`!` required; `string`, `int` or `bool`; a default). Opt-in: a component
+  without the line works as before. When it renders, a prop the call
+  leaves out takes its default; a required one may also come from the
+  caller's names (a component sees them), and is reported when neither
+  gives it; a prop the component does not declare and a literal of the
+  wrong type (`year="1969x"`) are reported; `bool` literals become true or
+  false. Reports follow `Config.templates_strict` (`.error` fails the view
+  with `error.TemplatePropInvalid`). `spider check` and
+  `expectConventions()` check every call against the declaration before
+  anything runs: an undeclared prop or a literal of the wrong type is an
+  error (`component-props`), a required prop the call does not give is a
+  warning (`component-required`). A `-- props:` line that does not parse is
+  a syntax error of the component.
 - **Templates say when they read a name that is not there.** A variable or
   a field the handler did not pass (a typo, a field left out), a prop the
   component reads and nobody gives it, a component or a layout that does

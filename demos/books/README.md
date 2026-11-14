@@ -42,5 +42,7 @@ conventions (`spider check`). It needs no download.
 - `src/features/books/`: `model.zig` (the data), `controller.zig` (the
   handlers), `routes.zig` (the routes), `views/` (the pages).
 - `src/shared/templates/`: `layout.html` (the page shell and the nav every
-  page extends), `book_card.html` (the `<BookCard />` component),
+  page extends), `book_card.html` (the `<BookCard />` component, whose
+  first line declares its props: `-- props: id!, title!, author!, year:
+  int, finished: bool = false`),
   `not_found.html`.

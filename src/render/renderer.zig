@@ -10,6 +10,7 @@ const ctx_mod = @import("context.zig");
 const parser_mod = @import("parser.zig");
 const embedded = @import("embedded.zig");
 const parsed_cache = @import("parsed_cache.zig");
+const props_decl = @import("props_decl.zig");
 
 const Node = ast.Node;
 const freeNode = ast.freeNode;
@@ -57,6 +58,9 @@ pub const RenderState = struct {
     view_name: ?[]const u8 = null,
     /// Names already reported in this render (one line per name).
     warned: std.StringHashMapUnmanaged(void) = .{},
+    /// Component name -> its `-- props:` declaration (null: none), read
+    /// once per render when the parsed-template cache does not have it.
+    decls: std.StringHashMapUnmanaged(?props_decl.Decl) = .{},
 
     pub fn init(components: ?std.StringHashMapUnmanaged([]const u8), base: ?*const embedded.Map) RenderState {
         return .{ .components = components, .base = base };
@@ -81,6 +85,46 @@ pub const RenderState = struct {
         var wit = self.warned.keyIterator();
         while (wit.next()) |k| alc.free(k.*);
         self.warned.deinit(alc);
+        var dit = self.decls.iterator();
+        while (dit.next()) |e| {
+            alc.free(e.key_ptr.*);
+            if (e.value_ptr.*) |d| alc.free(d.props);
+        }
+        self.decls.deinit(alc);
+    }
+
+    /// A problem with a component's props (see props_decl.zig): logged once
+    /// per render like `notFound`, and in `.error` mode the render fails
+    /// with `error.TemplatePropInvalid`.
+    fn propProblem(self: *RenderState, alc: std.mem.Allocator, comptime fmt: []const u8, args: anytype) !void {
+        if (self.strict == .off) return;
+        const msg = try std.fmt.allocPrint(alc, fmt, args);
+        const gop = try self.warned.getOrPut(alc, msg);
+        if (gop.found_existing) {
+            alc.free(msg);
+        } else {
+            var buf: [512]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            for (self.stack[0..self.depth]) |n| w.print(" in <{s}>", .{n}) catch break;
+            const tail = "[spider] template \"{s}\"{s}: {s}; {s}";
+            const targs = .{ self.view_name orelse "?", w.buffered(), msg, if (self.strict == .@"error") "the render fails" else "it renders anyway" };
+            if (builtin.is_test or self.strict == .warn) std.log.warn(tail, targs) else std.log.err(tail, targs);
+        }
+        if (self.strict == .@"error") return error.TemplatePropInvalid;
+    }
+
+    /// The `-- props:` declaration of component `name` (source `src`), or null.
+    fn componentDecl(self: *RenderState, alc: std.mem.Allocator, name: []const u8, src: []const u8) !?props_decl.Decl {
+        if (props_decl.headerLine(src) == null) return null;
+        if (parsed_cache.decl(src)) |d| return d;
+        if (self.decls.get(name)) |d| return d;
+        const d = props_decl.parse(alc, src) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            // The parser already refused the template (a syntax error).
+            error.InvalidPropsHeader => null,
+        };
+        try self.decls.put(alc, try alc.dupe(u8, name), d);
+        return d;
     }
 
     /// A name the template reads that is not there: says so (once per name
@@ -105,11 +149,10 @@ pub const RenderState = struct {
         if (self.strict == .@"error") return error.TemplateNameNotFound;
     }
 
-    /// Parsed body of component `name`, or null when it isn't registered.
-    fn componentNodes(self: *RenderState, alc: std.mem.Allocator, name: []const u8) !?[]Node {
-        if (self.parsed.get(name)) |nodes| return nodes;
+    /// The source of component `name`: as written, or its snake_case file.
+    fn componentSource(self: *const RenderState, name: []const u8) ?[]const u8 {
         if (self.components == null and self.base == null) return null;
-        const template_str = self.lookup(name) orelse blk: {
+        return self.lookup(name) orelse blk: {
             // PascalCase -> snake_case fallback ("UserCard" -> "user_card").
             var field_buf: [256]u8 = undefined;
             var field_len: usize = 0;
@@ -127,7 +170,13 @@ pub const RenderState = struct {
                 field_len += 1;
             }
             break :blk self.lookup(field_buf[0..field_len]);
-        } orelse return null;
+        };
+    }
+
+    /// Parsed body of component `name`, or null when it isn't registered.
+    fn componentNodes(self: *RenderState, alc: std.mem.Allocator, name: []const u8) !?[]Node {
+        if (self.parsed.get(name)) |nodes| return nodes;
+        const template_str = self.componentSource(name) orelse return null;
 
         // An embedded source is parsed once for the whole process.
         if (parsed_cache.raw(template_str)) |nodes| return nodes;
@@ -255,6 +304,12 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 }
             }
 
+            if (state.componentSource(comp.name)) |src| {
+                if (try state.componentDecl(alc, comp.name, src)) |decl| {
+                    try applyPropsDecl(state, alc, comp.name, comp.props, decl, ctx, &comp_ctx);
+                }
+            }
+
             state.stack[state.depth] = comp.name;
             state.depth += 1;
             defer state.depth -= 1;
@@ -307,6 +362,52 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 try result.appendSlice(alc, v);
             }
         },
+    }
+}
+
+/// A component that declares its props (`-- props:`): checks the call
+/// against the declaration and fills what the call leaves out. Reports, in
+/// the caller: a prop the component does not declare, a literal of the
+/// wrong type (`year="1969x"` for `year: int`), and a required prop that
+/// is neither given nor in the caller's scope. A prop left out takes its
+/// default; one with no default takes the caller's value of that name when
+/// there is one (a component sees its caller's names), else it is declared
+/// with no value. A `bool` literal becomes true/false.
+fn applyPropsDecl(state: *RenderState, alc: std.mem.Allocator, comp_name: []const u8, given: []const ast.Prop, decl: props_decl.Decl, caller: *Context, comp_ctx: *Context) !void {
+    for (given) |prop| {
+        const declared = decl.get(prop.name) orelse {
+            const names = try decl.names(alc);
+            defer alc.free(names);
+            try state.propProblem(alc, "<{s}> has no prop `{s}` (it declares: {s})", .{ comp_name, prop.name, names });
+            continue;
+        };
+        if (prop.is_expr) continue; // typed expressions: checked at build time (COY-1060)
+        if (!declared.accepts(prop.value)) {
+            try state.propProblem(alc, "prop `{s}` of <{s}> is {s}; \"{s}\" is not", .{ prop.name, comp_name, @tagName(declared.kind), prop.value });
+        } else if (declared.kind == .bool) {
+            try comp_ctx.set(alc, prop.name, Value{ .boolean = std.mem.eql(u8, prop.value, "true") });
+        }
+    }
+    for (decl.props) |declared| {
+        var passed = false;
+        for (given) |prop| {
+            if (std.mem.eql(u8, prop.name, declared.name)) passed = true;
+        }
+        if (passed) continue;
+        if (declared.default) |def| {
+            const v: Value = switch (declared.kind) {
+                .bool => .{ .boolean = std.mem.eql(u8, def, "true") },
+                else => .{ .html = try alc.dupe(u8, def) },
+            };
+            try comp_ctx.set(alc, declared.name, v);
+        } else if (!undeclared(caller, declared.name)) {
+            // The caller has a value of that name: the component sees it.
+        } else {
+            if (declared.required) {
+                try state.propProblem(alc, "<{s}> needs prop `{s}`, and the call does not give it", .{ comp_name, declared.name });
+            }
+            try comp_ctx.set(alc, declared.name, .none);
+        }
     }
 }
 
