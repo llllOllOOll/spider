@@ -219,6 +219,8 @@ pub const template_max_component_depth = @import("render/renderer.zig").max_comp
 pub const ast = @import("render/ast.zig");
 /// Markdown to HTML: `spider.zmd.parse(arena, text, .{})`. What the author typed is escaped.
 pub const zmd = @import("render/zmd/zmd.zig");
+// internal: the template engine benchmark behind `zig build bench-render`.
+pub const render_bench = @import("render/render_bench.zig");
 // internal: form parsing; handlers use `c.parseForm` or `spider.Form`.
 pub const form = @import("binding/form.zig");
 // internal: see form.

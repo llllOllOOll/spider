@@ -523,6 +523,21 @@ pub fn build(b: *std.Build) void {
         run_e2e_test.has_side_effects = true;
         const test_e2e_step = b.step("test-e2e", "Run end-to-end tests against a real listening Server");
         test_e2e_step.dependOn(&run_e2e_test.step);
+
+        // bench-render — the template engine on a catalog page, single
+        // thread (src/render/render_bench.zig). Use -Doptimize=ReleaseFast.
+        const bench_render = b.addExecutable(.{
+            .name = "spider-bench-render",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("render_bench_main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "spider", .module = mod }},
+            }),
+        });
+        const run_bench_render = b.addRunArtifact(bench_render);
+        run_bench_render.has_side_effects = true;
+        b.step("bench-render", "Benchmark the template engine (use -Doptimize=ReleaseFast)").dependOn(&run_bench_render.step);
     }
 
     // test-pacman — the HTTP client's own tests (modules/pacman). Most of
