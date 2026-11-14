@@ -54,6 +54,9 @@ pub const cases = [_]Case{
     .{ .name = "layout_page", .src = "extends \"layout_main\"\n<p>body { title }</p>{ slot_head }<meta name=\"x\">{ slot_foot }f1{ slot_foot }f2" },
     .{ .name = "layout_no_head", .src = "extends \"layout_main\"\n<p>only body</p>" },
     .{ .name = "inline_def", .src = "<Local><em>{ title }</em></Local>\n<Local /><Local />" },
+    .{ .name = "helper_calls", .src = "<link href=\"{ asset_url(\"/css/app.css\") }\">{ asset_url(\"a\", \"b\") }{ no_such_helper(\"x\") }<p>{ title }</p>" },
+    .{ .name = "conditional_attr", .src = "<input { disabled if (done) }{ \"on\" if (off) } class=\"{ \"active\" if (title == \"Piranesi\") }\">" },
+    .{ .name = "layout_with_helper", .src = "extends \"layout_assets\"\n<p>{ title }</p>" },
     // Left to the interpreter.
     .{ .name = "has_recursion", .src = "<Rec />", .compiles = false },
     .{ .name = "has_current_user", .src = "if (current_user) { hi }", .compiles = false },
@@ -72,5 +75,6 @@ pub const components = [_]Case{
     .{ .name = "outer", .src = "<o><Card title=\"{ label }\" /><CardPlain /></o>" },
     .{ .name = "layout_main", .src = "<html><head>if (slot_head) { H:{ slot_head } } else { no-head }</head><body>{ slot }|{ slot_foot ?? \"nf\" }|{ title }</body></html>" },
     .{ .name = "rec", .src = "<i><Rec /></i>" },
+    .{ .name = "layout_assets", .src = "<html><link rel=\"stylesheet\" href=\"{ asset_url(\"/css/app.css\") }\"><body>{ slot }</body></html>" },
     .{ .name = "Panel", .src = "<aside class=\"{ kind ?? \"info\" }\">{ slot }</aside>" },
 };

@@ -446,3 +446,30 @@ pub fn orDefault(r: anytype, d: anytype) OrDefault(@TypeOf(r), @TypeOf(d)) {
 fn OrDefault(comptime R: type, comptime D: type) type {
     return if (R == Missing) D else @typeInfo(R).optional.child;
 }
+
+// ── Helper calls ─────────────────────────────────────────────────────────
+
+const assets = @import("../assets.zig");
+
+/// `{ name("a", "b") }`: the app's helper of that name (module
+/// `template_helpers`), picked when the app compiles; else the built-in
+/// `asset_url(path)`; else nothing. What it returns goes out as it is; an
+/// error writes nothing, as in the interpreter.
+pub fn call(w: *std.Io.Writer, alc: std.mem.Allocator, comptime name: []const u8, args: []const []const u8) !void {
+    const helpers = @import("template_helpers");
+    if (comptime hasDecl(helpers, name)) {
+        const v = @field(helpers, name)(alc, args) catch return;
+        return w.writeAll(v);
+    }
+    if (comptime std.mem.eql(u8, name, "asset_url")) {
+        if (args.len != 1) return;
+        return w.writeAll(try assets.url(alc, args[0]));
+    }
+}
+
+fn hasDecl(comptime T: type, comptime name: []const u8) bool {
+    for (@typeInfo(T).@"struct".decl_names) |d| {
+        if (std.mem.eql(u8, d, name)) return true;
+    }
+    return false;
+}

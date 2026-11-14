@@ -11,9 +11,9 @@
 //! (`slot`, `slot_<name>`), each rendered to a buffer first. Conditions are
 //! translated the way `evalBool` reads them, step by step.
 //!
-//! A template that uses what Elroy does not compile (helper calls,
-//! `current_user`, a condition that calls a function, a component that
-//! includes itself, ...) gets no function: it keeps the interpreter.
+//! A template that uses what Elroy does not compile (`current_user`, a
+//! condition that calls a function, a component that includes itself, ...)
+//! gets no function: it keeps the interpreter.
 
 const std = @import("std");
 const ast = @import("../ast.zig");
@@ -191,7 +191,13 @@ const Gen = struct {
             .component => |c| try g.component(out, c),
             // The renderer writes nothing for it.
             .slot => {},
-            .call => return error.Unsupported,
+            .call => |c| {
+                g.w_used = true;
+                g.alc_used = true;
+                var args: std.ArrayList(u8) = .empty;
+                for (c.args, 0..) |a, i| try args.print(g.alc, "{s}\"{f}\"", .{ if (i == 0) "" else ", ", std.zig.fmtString(a) });
+                try out.print(g.alc, "try E.call({s}, alc, \"{f}\", &[_][]const u8{{{s}}});\n", .{ g.w, std.zig.fmtString(c.name), args.items });
+            },
         }
     }
 
