@@ -36,7 +36,7 @@ jobs:
           version: 0.17.0
       # zig-pkg/ (fetched dependencies) is other people's code: left out.
       - name: Formatting
-        run: zig fmt --check build.zig src e2e e2e_test.zig zio_backend_test.zig modules/*/src modules/*/build.zig modules/pacman/local_test.zig
+        run: zig fmt --check build.zig src e2e e2e_test.zig zio_backend_test.zig modules/*/src modules/*/build.zig modules/pacman/local_test.zig demos/*/src demos/*/build.zig
       - name: Build (library and CLI)
         run: zig build
       - name: Unit tests (with the doc and version rules)
@@ -49,6 +49,11 @@ jobs:
         run: zig build test-r2 test-xlsx test-qrcode
       - name: HTTP client against local servers
         run: zig build test-pacman-local
+      # The demos (demos/README.md) build against this Spider; their tests
+      # need no download (Tailwind runs only in `zig build`, not in test).
+      - name: Demo books
+        working-directory: demos/books
+        run: zig build test
 
   e2e:
     name: End to end (${{ matrix.io_backend }})

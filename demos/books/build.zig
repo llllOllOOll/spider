@@ -1,0 +1,141 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const spider_dep = b.dependency("spider", .{
+        .target = target,
+        // Spider and what it builds (its drivers, the bundled SQLite) follow
+        // the app's mode. Without this they stay in Debug in a release build.
+        // Templates follow it too: read from disk in a Debug build (an edit
+        // needs no rebuild), embedded in the binary in a release build.
+        // `.templates = .embedded` (or `.disk`) forces one in every build.
+        .optimize = optimize,
+        // I/O backend: comment one line and uncomment the other.
+        .io_backend = .threaded, // OS threads, blocking sockets (default)
+        // .io_backend = .zio, // fibers on an event loop (epoll)
+    });
+    const spider_mod = spider_dep.module("spider");
+
+    // Register spider.config.zig
+    const config_exists = blk: {
+        std.Io.Dir.cwd().access(b.graph.io, "spider.config.zig", .{}) catch break :blk false;
+        break :blk true;
+    };
+    if (config_exists) {
+        const spider_config_mod = b.createModule(.{
+            .root_source_file = b.path("spider.config.zig"),
+            .imports = &.{
+                .{ .name = "spider", .module = spider_mod },
+            },
+        });
+        spider_mod.addImport("spider_config", spider_config_mod);
+    }
+
+    // ── core ──────────────────────────────────────────────────────────
+    const core_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/mod.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "spider", .module = spider_mod },
+        },
+    });
+
+    // ── features ──────────────────────────────────────────────────────
+    const features_mod = b.createModule(.{
+        .root_source_file = b.path("src/features/mod.zig"),
+        .target = target,
+        .imports = &.{
+            .{ .name = "spider", .module = spider_mod },
+            .{ .name = "core", .module = core_mod },
+        },
+    });
+
+    // ── Executable ────────────────────────────────────────────────────
+    const exe = b.addExecutable(.{
+        .name = "books",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    exe.root_module.addImport("spider", spider_mod);
+    exe.root_module.addImport("core", core_mod);
+    exe.root_module.addImport("features", features_mod);
+
+    b.installArtifact(exe);
+
+    const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));
+    gen.addArg("src/");
+    gen.addArg("src/embedded_templates.zig");
+    exe.step.dependOn(&gen.step);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
+
+    const unit_tests = b.addTest(.{ .root_module = exe.root_module });
+    // src/main.zig imports the generated template index: a fresh clone runs
+    // `zig build test` before anything else built it.
+    unit_tests.step.dependOn(&gen.step);
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
+    // core and features are separate modules: addTest only runs the tests of
+    // its own root module's files, so each one gets its own test binary.
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = core_mod })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = features_mod })).step);
+    // Files with tests per module, for the discovery test at each module's
+    // root (it fails if a file's tests were left out of the binary).
+    const spider_build = @import("spider");
+    const manifest_tool = spider_dep.artifact("spider-test-manifest");
+    exe.root_module.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src", &.{ "core/", "features/", "shared/" }));
+    core_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/core", &.{}));
+    features_mod.addImport("test_manifest", spider_build.testManifest(b, manifest_tool, "src/features", &.{}));
+
+    // `spider dev` runs `zig build dev --watch`: build the app, then tell the
+    // supervisor where the new binary is and whether the page's files (the
+    // stylesheet, the templates) changed.
+    const dev = spider_build.devStep(b, spider_dep.artifact("spider-dev-notify"), exe, .{
+        .assets = &.{"public/css/app.css"},
+        .templates = "src",
+    });
+
+    // Check if frontend assets are installed
+    const has_assets = blk: {
+        std.Io.Dir.cwd().access(b.graph.io, "bin/tailwindcss", .{}) catch break :blk false;
+        break :blk true;
+    };
+
+    const css = b.addSystemCommand(&.{
+        "./bin/tailwindcss",
+        "-i",
+        "src/styles.css",
+        "-o",
+        "public/css/app.css",
+        "--minify",
+    });
+
+    if (!has_assets) {
+        const install_cmd = b.addSystemCommand(&.{ "spider", "install" });
+        css.step.dependOn(&install_cmd.step);
+    }
+
+    // Tailwind reads the stylesheets and looks for class names in the
+    // templates: under `zig build --watch` it reruns when one of them
+    // changes. Not on a `.zig` edit, to keep those fast: add ".zig" here if
+    // you write class names in Zig strings.
+    spider_build.watchSources(b, css, "src", &.{ ".css", ".html", ".js" });
+
+    const css_step = b.step("css", "Build CSS with Tailwind");
+    css_step.dependOn(&css.step);
+    // The stylesheet is served from disk, so it is built alongside the
+    // binary rather than before it, and is ready before the browser reloads.
+    b.getInstallStep().dependOn(&css.step);
+    dev.step.dependOn(&css.step);
+}

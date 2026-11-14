@@ -1,0 +1,10 @@
+extends "layout"
+
+<a href="/" class="text-sm text-stone-500 hover:underline">← Back to the shelf</a>
+<h1 class="text-3xl font-semibold mt-4">{ book.title }</h1>
+<p class="text-stone-600 mt-1">{ book.author } · { book.year }</p>
+if (book.finished) {
+    <p class="mt-6">You've finished this book!</p>
+} else {
+    <p class="mt-6">You're still reading this one.</p>
+}

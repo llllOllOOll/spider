@@ -1,0 +1,8 @@
+extends "layout"
+
+<h1 class="text-2xl font-semibold mb-6">My shelf <span class="text-stone-400">({ books.len })</span></h1>
+<div class="grid gap-4 sm:grid-cols-2">
+    for (books) |b| {
+        <BookCard id="{ b.id }" title="{ b.title }" author="{ b.author }" year="{ b.year }" finished="{ b.finished }" />
+    }
+</div>

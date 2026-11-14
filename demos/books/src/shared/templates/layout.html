@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{ title ?? "Shelf" }</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="stylesheet" href="{ asset_url("/css/app.css") }">
+    <script src="{ asset_url("/js/htmx.min.js") }"></script>
+    <script defer src="{ asset_url("/js/stores.js") }"></script>
+    <script defer src="{ asset_url("/js/alpine.min.js") }"></script>
+    <style>[x-cloak] { display: none !important; }</style>
+</head>
+<body class="bg-stone-50 text-stone-900 min-h-screen">
+    <Toast />
+    <nav class="border-b border-stone-200 bg-white px-6 py-4 flex gap-6">
+        <a href="/" class="font-semibold">Shelf</a>
+        <a href="/about" class="text-stone-600 hover:text-stone-900">About</a>
+    </nav>
+    <main class="max-w-2xl mx-auto px-6 py-10">
+        { slot }
+    </main>
+</body>
+</html>

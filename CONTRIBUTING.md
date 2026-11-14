@@ -221,13 +221,8 @@ spider/
 │   ├── features/               — built-in features (demos)
 │   ├── generate_templates.zig  — CLI tool: scans src/, generates embed file
 │   └── main.zig                — Spider's own test server
-├── examples/
-│   └── spiderstack/            — full production starter kit
-│       ├── src/
-│       │   ├── main.zig
-│       │   ├── features/       — auth, games, movies, todo, home
-│       │   └── core/           — middleware, i18n, db migrations
-│       └── build.zig
+├── demos/
+│   └── books/                  — a complete small app, built and tested by CI
 └── build.zig
 ```
 
@@ -280,9 +275,9 @@ zig build test
 # Template engine tests only (83 tests, no database required)
 zig test src/render/template.zig
 
-# Run SpiderStack (requires PostgreSQL)
-cd examples/spiderstack
-zig build run
+# The demos (no database required)
+cd demos/books
+zig build test
 ```
 
 ---

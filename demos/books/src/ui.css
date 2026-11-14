@@ -1,0 +1,49 @@
+/* spider-ui: daisyui
+ *
+ * The UI kit. Templates use the ui-* classes below — never the kit's own
+ * classes (btn, card, ...) — so `spider ui use <kit>` only has to rewrite
+ * this file. Colors (bg-base-200, text-primary, text-base-content/50, ...)
+ * come from the kit's theme and work the same in every kit.
+ *
+ * Add your own ui-* classes here, built from the kit (@apply btn ...) or
+ * from plain Tailwind utilities.
+ */
+@plugin "../bin/daisyui.mjs";
+
+@layer components {
+  /* Buttons */
+  .ui-btn { @apply btn; }
+  .ui-btn-primary { @apply btn-primary; }
+  .ui-btn-ghost { @apply btn-ghost; }
+  .ui-btn-error { @apply btn-error; }
+  .ui-btn-sm { @apply btn-sm; }
+  .ui-btn-square { @apply btn-square; }
+
+  /* Forms: <label class="ui-field"><span class="ui-label">Name</span><input class="ui-input"></label> */
+  .ui-field { @apply flex flex-col gap-1.5; }
+  .ui-label { @apply text-sm font-medium opacity-80; }
+  .ui-input { @apply input w-full; }
+  .ui-textarea { @apply textarea w-full; }
+  .ui-select { @apply select w-full; }
+
+  /* Surfaces */
+  .ui-card { @apply card bg-base-200; }
+  .ui-navbar { @apply navbar min-h-0; }
+
+  /* Badges */
+  .ui-badge { @apply badge; }
+  .ui-badge-primary { @apply badge-primary; }
+  .ui-badge-sm { @apply badge-sm; }
+  .ui-badge-xs { @apply badge-xs; }
+
+  /* Menus: <ul class="ui-menu"><li class="ui-menu-title">..</li><li><a>..</a></li></ul> */
+  .ui-menu { @apply menu w-full; }
+  .ui-menu-sm { @apply menu-sm; }
+  .ui-menu-title { @apply menu-title; }
+
+  /* Feedback */
+  .ui-alert { @apply alert; }
+  .ui-alert-success { @apply alert-success; }
+  .ui-alert-error { @apply alert-error; }
+  .ui-toast { @apply toast toast-top toast-end; }
+}

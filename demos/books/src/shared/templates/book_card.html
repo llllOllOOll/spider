@@ -1,0 +1,10 @@
+<!-- <BookCard id="…" title="…" author="…" year="…" finished="…" />: one book on the shelf. -->
+<article class="border border-stone-200 rounded-lg p-4 bg-white">
+    <h2 class="font-semibold"><a href="/books/{ id }" class="hover:underline">{ title }</a></h2>
+    <p class="text-sm text-stone-600 mt-1">{ author } · { year }</p>
+    if (finished) {
+        <span class="inline-block mt-3 text-xs px-2 py-1 rounded bg-green-100 text-green-800">Finished</span>
+    } else {
+        <span class="inline-block mt-3 text-xs px-2 py-1 rounded bg-stone-100 text-stone-600">Unread</span>
+    }
+</article>

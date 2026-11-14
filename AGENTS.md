@@ -51,7 +51,7 @@ Before calling a change done: `zig build test`, and for anything under
   file), commit messages, and everything the CLI generates (code, pages,
   messages). Spider is used worldwide. The same holds for the projects
   built with it here: the docs site (`../spiderme-site`) and its example
-  app (`examples/posts`). If a request seems to ask for another language
+  app (`../spiderme-site/examples/posts`), and the demos in `demos/`. If a request seems to ask for another language
   in the repository, ask before writing it.
 - No `Co-authored-by` trailers, and no mention of tools, in commits.
 - **Every `pub` name says which side it is on**, right above it: `///` when

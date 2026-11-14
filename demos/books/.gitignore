@@ -1,0 +1,24 @@
+zig-out/
+zig-cache/
+.zig-cache/
+zig-pkg/
+.env
+.env.local
+.env.development
+.env.production
+
+# Written by every build: the list of templates a release build embeds
+src/embedded_templates.zig
+
+# The SQLite database (spider migrate creates it)
+db.sqlite
+db.sqlite-*
+
+# Spider generated assets (run: spider install): tailwind, daisyUI and icon
+# sets under bin/, compiled CSS and JS libraries under public/
+bin/
+public/css/app.css
+public/js/alpine.min.js
+public/js/htmx.min.js
+public/js/htmx4.min.js
+public/js/htmx4-sse.min.js
