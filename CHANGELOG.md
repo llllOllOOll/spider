@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reachable through a ready `Handler`, maps to 500 (the app's bug, not the
   client's).
 
+### Changed
+
+- **Embedded templates are parsed once, when the server starts.** A build
+  that embeds its templates (a release build, or `.templates = .embedded`)
+  used to parse the page, its layout, each component and the content
+  between a component's tags on every request. `listen()` now parses them
+  all before the first request and renders from that shared, read-only
+  tree. A template that does not parse stops the server at startup,
+  naming the template and the line, instead of answering 500 to the one
+  request that reached it. Templates read from disk (a Debug build) are
+  still read and parsed on every request, so an edit shows at once.
+  `spider.Template` is unchanged for templates an app makes itself.
+
 ### Added
 
 - **Templates say when they read a name that is not there.** A variable or

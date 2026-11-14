@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const template_mod = @import("../render/template.zig");
+const parsed_cache = @import("../render/parsed_cache.zig");
 const Template = template_mod.Template;
 const views_mod = @import("../render/views.zig");
 const Database = @import("database.zig").Database;
@@ -25,6 +26,15 @@ pub const templates_from_disk = @import("spider_build_options").templates_from_d
 pub const has_embed = !templates_from_disk and @hasDecl(root, "spider_templates");
 // internal: the app has templates to embed and this build reads them from disk.
 pub const embed_skipped = templates_from_disk and @hasDecl(root, "spider_templates");
+// internal: parses the app's embedded templates once, before the server
+// takes requests (render/parsed_cache.zig). Nothing to do when the app
+// reads its templates from disk. Fails, after the parser logged which
+// template and where, when one does not parse.
+pub fn warmTemplates() !usize {
+    if (!has_embed) return 0;
+    return parsed_cache.build(&embedded_templates);
+}
+
 /// The app's embedded templates as one map (see render/embedded.zig).
 const embedded_templates: embedded.Map = if (has_embed) embedded.buildMap(root.spider_templates) else .initComptime(.{});
 
@@ -459,7 +469,12 @@ pub const Ctx = struct {
 
         if (try self.docResponse(content, opts)) |resp| return .{ .done = resp };
 
-        var tmpl = try Template.initNamed(self.arena, content, name);
+        // Parsed once at startup (render/parsed_cache.zig); parsed here
+        // only when the cache was not built (tests, before listen()).
+        var tmpl = if (parsed_cache.page(content)) |cached|
+            Template.fromCache(self.arena, cached, name)
+        else
+            try Template.initNamed(self.arena, content, name);
         tmpl.strict = vc_strict: {
             const vc = self._views orelse break :vc_strict .off;
             break :vc_strict vc.strict;

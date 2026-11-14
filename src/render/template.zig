@@ -19,6 +19,7 @@ const dupeValue = ctx_mod.dupeValue;
 const Parser = parser_mod.Parser;
 const renderNode = renderer_mod.renderNode;
 const RenderState = renderer_mod.RenderState;
+const parsed_cache = @import("parsed_cache.zig");
 /// What a template does with a name it cannot find (see `Template.strict`).
 pub const Strictness = renderer_mod.Strictness;
 
@@ -65,6 +66,10 @@ pub const Template = struct {
     strict: Strictness = .off,
     /// The view's name for the diagnostics; set by `initNamed`.
     name: ?[]const u8 = null,
+    /// Read-only: true when `nodes`, `layout` and `components` belong to
+    /// the parsed-template cache (a template of a build that embeds its
+    /// templates): shared by every request, never changed or freed here.
+    borrowed: bool = false,
     // Set when collectInline() creates `components` itself (no caller-supplied
     // map existed yet), so deinit() knows it must free that map. When a caller
     // (e.g. Ctx.view()) supplies `components` up front, ownership stays with
@@ -131,9 +136,24 @@ pub const Template = struct {
         };
     }
 
+    // internal: a template over the cache's parsed form of an embedded
+    // source (see render/parsed_cache.zig). Its inline components are
+    // already collected; nothing of it is freed by `deinit`.
+    pub fn fromCache(alc: std.mem.Allocator, page: *const parsed_cache.Page, name: []const u8) Template {
+        return .{
+            .nodes = page.nodes,
+            .allocator = alc,
+            .layout = page.layout,
+            .components = page.inline_components,
+            .name = name,
+            .borrowed = true,
+        };
+    }
+
     /// Frees the parsed tree, and `components` when the template created the
     /// map itself. Strings returned by `render` are not freed here.
     pub fn deinit(self: *Template) void {
+        if (self.borrowed) return;
         for (self.nodes) |node| freeNode(node, self.allocator);
         self.allocator.free(self.nodes);
         if (self.layout) |l| self.allocator.free(l);
@@ -172,6 +192,9 @@ pub const Template = struct {
     // `<Name>...</Name>` root-level definition nodes whose name is not yet
     // registered (phase 2). Idempotent — safe to call multiple times.
     pub fn collectInline(self: *Template, alc: std.mem.Allocator) !void {
+        // A cached template was collected once, when the cache was built;
+        // its nodes and map are shared and must not change.
+        if (self.borrowed) return;
         // Phase 1: Merge inline_components from parser into the main components map.
         if (self.inline_components) |inline_comps| {
             if (self.components) |*comps| {
@@ -303,18 +326,21 @@ pub const Template = struct {
                     try layout_ctx.set(alc, entry.key_ptr.*, Value{ .html = html });
                 }
 
-                var layout_parser = Parser.init(alc, layout_template);
-                layout_parser.name = layout_name;
-                const layout_result = try layout_parser.parse();
-                defer {
-                    for (layout_result.nodes) |n| freeNode(n, alc);
-                    alc.free(layout_result.nodes);
-                }
+                const cached_layout = parsed_cache.raw(layout_template);
+                const layout_nodes: []Node = cached_layout orelse blk: {
+                    var layout_parser = Parser.init(alc, layout_template);
+                    layout_parser.name = layout_name;
+                    break :blk (try layout_parser.parse()).nodes;
+                };
+                defer if (cached_layout == null) {
+                    for (layout_nodes) |n| freeNode(n, alc);
+                    alc.free(layout_nodes);
+                };
 
                 var layout_result_bytes: std.ArrayList(u8) = .empty;
                 defer layout_result_bytes.deinit(alc);
 
-                for (layout_result.nodes) |n| {
+                for (layout_nodes) |n| {
                     try renderNode(n, &layout_ctx, alc, &layout_result_bytes, &state);
                 }
 
@@ -372,13 +398,16 @@ pub const Template = struct {
 
         const comp_template = self.findComponent(component_name) orelse return error.ComponentNotFound;
 
-        var comp_parser = Parser.init(alc, comp_template);
-        comp_parser.name = component_name;
-        const comp_nodes = try comp_parser.parse();
-        defer {
-            for (comp_nodes.nodes) |n| freeNode(n, alc);
-            alc.free(comp_nodes.nodes);
-        }
+        const cached = parsed_cache.raw(comp_template);
+        const comp_nodes: []Node = cached orelse blk: {
+            var comp_parser = Parser.init(alc, comp_template);
+            comp_parser.name = component_name;
+            break :blk (try comp_parser.parse()).nodes;
+        };
+        defer if (cached == null) {
+            for (comp_nodes) |n| freeNode(n, alc);
+            alc.free(comp_nodes);
+        };
 
         try self.addGlobals(comp_ctx, alc);
 
@@ -390,7 +419,7 @@ pub const Template = struct {
         var result: std.ArrayList(u8) = .empty;
         errdefer result.deinit(alc);
 
-        for (comp_nodes.nodes) |n| {
+        for (comp_nodes) |n| {
             try renderNode(n, comp_ctx, alc, &result, &state);
         }
 

@@ -9,6 +9,7 @@ const ast = @import("ast.zig");
 const ctx_mod = @import("context.zig");
 const parser_mod = @import("parser.zig");
 const embedded = @import("embedded.zig");
+const parsed_cache = @import("parsed_cache.zig");
 
 const Node = ast.Node;
 const freeNode = ast.freeNode;
@@ -127,6 +128,9 @@ pub const RenderState = struct {
             }
             break :blk self.lookup(field_buf[0..field_len]);
         } orelse return null;
+
+        // An embedded source is parsed once for the whole process.
+        if (parsed_cache.raw(template_str)) |nodes| return nodes;
 
         var comp_parser = Parser.init(alc, template_str);
         comp_parser.name = name;
@@ -256,15 +260,18 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             defer state.depth -= 1;
 
             if (comp.slot_content) |sc| {
-                var slot_parser = Parser.init(alc, sc);
-                slot_parser.name = comp.name;
-                const slot_result = try slot_parser.parse();
-                defer {
-                    for (slot_result.nodes) |n| freeNode(n, alc);
-                    alc.free(slot_result.nodes);
-                }
+                const cached_slot = parsed_cache.raw(sc);
+                const slot_nodes: []Node = cached_slot orelse blk: {
+                    var slot_parser = Parser.init(alc, sc);
+                    slot_parser.name = comp.name;
+                    break :blk (try slot_parser.parse()).nodes;
+                };
+                defer if (cached_slot == null) {
+                    for (slot_nodes) |n| freeNode(n, alc);
+                    alc.free(slot_nodes);
+                };
                 var slot_buf = std.ArrayList(u8).empty;
-                for (slot_result.nodes) |n| {
+                for (slot_nodes) |n| {
                     try renderNode(n, &comp_ctx, alc, &slot_buf, state);
                 }
                 try comp_ctx.set(alc, "slot", Value{ .html = try slot_buf.toOwnedSlice(alc) });

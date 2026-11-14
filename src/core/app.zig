@@ -1865,6 +1865,13 @@ pub fn Server(comptime T: type) type {
             if (env.get("SPIDER_MIGRATE") != null) return self.printMigrate();
             try self.checkRouteAccess();
             try self.requireReady();
+            // Embedded templates are parsed once, here: a syntax error stops
+            // the server now instead of answering 500 to a request later.
+            const warmed = ctx_mod.warmTemplates() catch |err| {
+                std.log.err("spider: a template does not parse ({s}), see the line above; refusing to start", .{@errorName(err)});
+                return err;
+            };
+            if (warmed > 0) std.log.info("spider: {d} templates parsed once at startup", .{warmed});
             self.config.dev_reload = dev_reload.resolve(self.config.dev_reload);
             if (comptime build_options.io_backend == .zio) {
                 return self.listenZio(options);
