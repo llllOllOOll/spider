@@ -35,6 +35,8 @@ pub const ViewsMode = enum { runtime, embed };
 pub const ViewsConfig = struct {
     views_dir: []const u8 = "./views",
     layout: ?[]const u8 = "layout",
+    /// Config.templates_strict, resolved (see there).
+    strict: template_mod.Strictness = .off,
     io: std.Io,
     arena: std.mem.Allocator,
     mode: ViewsMode = .runtime,
@@ -374,6 +376,7 @@ pub const Ctx = struct {
     pub fn render(self: *Ctx, tmpl: []const u8, data: anytype, opts: ResponseOptions) !Response {
         var tmpl_instance = try Template.init(self.arena, tmpl);
         defer tmpl_instance.deinit();
+        if (self._views) |vc| tmpl_instance.strict = vc.strict;
 
         const html_body = try tmpl_instance.render(data, self.arena);
         return Response{
@@ -457,6 +460,10 @@ pub const Ctx = struct {
         if (try self.docResponse(content, opts)) |resp| return .{ .done = resp };
 
         var tmpl = try Template.initNamed(self.arena, content, name);
+        tmpl.strict = vc_strict: {
+            const vc = self._views orelse break :vc_strict .off;
+            break :vc_strict vc.strict;
+        };
         tmpl.base_components = map;
         tmpl.globals = try self.viewGlobals();
         return .{ .template = tmpl };
@@ -508,6 +515,7 @@ pub const Ctx = struct {
         }
 
         var tmpl = try Template.initNamed(self.arena, view_content, name);
+        tmpl.strict = vc.strict;
         tmpl.components = components;
         tmpl.globals = try self.viewGlobals();
         return .{ .template = tmpl };
@@ -518,7 +526,14 @@ pub const Ctx = struct {
     /// who is signed in without each handler passing it. Without a user
     /// the name is not there: `if (current_user) { ... } else { ... }`.
     fn viewGlobals(self: *Ctx) ![]const Template.Global {
-        const id = self.userId() orelse return &.{};
+        // No user: `current_user` is declared and has no value, like a null
+        // optional (`if (current_user)` is false, and the template
+        // diagnostics know the name).
+        const id = self.userId() orelse {
+            const globals = try self.arena.alloc(Template.Global, 1);
+            globals[0] = .{ .name = "current_user", .value = .none };
+            return globals;
+        };
         var user: std.StringHashMapUnmanaged(template_mod.Value) = .empty;
         try user.put(self.arena, "id", .{ .string = id });
         try user.put(self.arena, "email", .{ .string = self.params.get("_auth_email") orelse "" });

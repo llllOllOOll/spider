@@ -46,6 +46,8 @@ pub const DatabaseCtx = @import("core/context.zig").DatabaseCtx;
 /// The app's settings: what `spider.config.zig` declares (port, host,
 /// directories, timeouts, limits).
 pub const Config = @import("internal/config.zig").Config;
+/// The values of `Config.templates_strict`: `.off`, `.warn` or `.error`.
+pub const TemplateStrictness = @import("internal/config.zig").TemplateStrictness;
 /// The value of `Config.env`: `.development`, `.production` or `.testing`.
 /// Nothing in Spider reads it today.
 pub const Env = @import("internal/config.zig").Env;
@@ -294,6 +296,7 @@ test {
     _ = @import("render/template_test.zig");
     _ = @import("render/assets.zig");
     _ = @import("render/template_safety_test.zig");
+    _ = @import("render/template_strict_test.zig");
     _ = @import("render/embedded_test.zig");
     _ = @import("core/watchdog.zig");
     _ = @import("core/context_test.zig");

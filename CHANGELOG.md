@@ -25,6 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Templates say when they read a name that is not there.** A variable or
+  a field the handler did not pass (a typo, a field left out), a prop the
+  component reads and nobody gives it, a component or a layout that does
+  not exist: until now each one rendered empty without a word. With
+  `Config.templates_strict` (`spider.TemplateStrictness`):
+  - `.warn`, the default in a Debug build, renders as before and logs one
+    line per name and view: `[spider] template "posts/show" in <Card>: name
+    `titel` not found; it renders empty`;
+  - `.error` fails the view with `error.TemplateNameNotFound` (a 500),
+    for an app's tests;
+  - `.off`, the default in a release build, is the old silence.
+  A null optional field is declared, not missing: it renders empty, is
+  false, takes the `??` default and is `== null`, and is never reported;
+  neither are `x == null` checks, `{ x ?? "default" }`, `slot`, `loop`,
+  `.len` and a list index past the end. A component still sees its
+  caller's names. A `spider.Template` made by the app itself keeps
+  `.strict = .off` unless it sets it. `current_user` is always declared
+  (with no value when nobody is signed in).
 - **`spider.Path` reads enums**, by tag name:
   `spider.Path(enum { daily, weekly }, "period")` takes `/reports/weekly`;
   any other name is a 404.

@@ -3,6 +3,9 @@
 //! an app sets only what it changes.
 const std = @import("std");
 
+/// The values of `Config.templates_strict`.
+pub const TemplateStrictness = @import("../render/renderer.zig").Strictness;
+
 /// The value of `Config.env`.
 pub const Env = enum {
     development,
@@ -46,6 +49,18 @@ pub const Config = struct {
     /// release. A template names its layout itself, with `extends
     /// "layout"`. Remove the line from `spider.config.zig`.
     layout: ?[]const u8 = "layout",
+    /// What a view does with a name its templates read that is not there:
+    /// a variable or a field the handler does not pass (a typo, a field
+    /// left out), a prop, a component or a layout that does not exist.
+    /// A null optional field is not "not there": it is declared, and
+    /// renders empty without a word.
+    ///   - `.off`: renders empty, silently;
+    ///   - `.warn`: renders empty and logs one line per name and view
+    ///     (the view, the components it was in, the name);
+    ///   - `.error`: the view fails with `error.TemplateNameNotFound`
+    ///     (a 500) after the same line; for an app's tests.
+    /// null (the default): `.warn` in a Debug build, `.off` otherwise.
+    templates_strict: ?TemplateStrictness = null,
     /// Directory served as static files at "/" (before routing and before
     /// any middleware: always public). null: no static files.
     /// `server.staticDir()` / `staticAt()` override it. Default "./public".

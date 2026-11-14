@@ -543,6 +543,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         const views_cfg: ?ViewsConfig = if (ctx.config.views_dir) |vd| ViewsConfig{
             .views_dir = vd,
             .layout = ctx.config.layout,
+            .strict = ctx.config.templates_strict orelse if (@import("builtin").mode == .debug) .warn else .off,
             .io = ctx.io,
             .arena = arena,
             .mode = .runtime,

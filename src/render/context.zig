@@ -21,6 +21,11 @@ pub const Value = union(enum) {
     boolean: bool,
     list: []const Value,
     object: std.StringHashMapUnmanaged(Value),
+    /// A name that is declared but has no value: a null optional field.
+    /// It renders like a missing name (empty, false, `??` takes the
+    /// default, `== null` is true), but it is not "undefined": the
+    /// template diagnostics (`templates_strict`) stay quiet about it.
+    none,
 };
 
 // internal: the names a template can read, built from the data of a view.
@@ -155,8 +160,8 @@ fn Fields(comptime T: type) type {
     };
 }
 
-/// The template value of one field, or null for a null optional or a type
-/// templates do not read. Generic on the field's type only.
+/// The template value of one field: `.none` for a null optional, null for
+/// a type templates do not read. Generic on the field's type only.
 fn fieldValue(alc: std.mem.Allocator, value: anytype) std.mem.Allocator.Error!?Value {
     const field_info = @typeInfo(@TypeOf(value));
 
@@ -164,6 +169,7 @@ fn fieldValue(alc: std.mem.Allocator, value: anytype) std.mem.Allocator.Error!?V
         return Value{ .html = try alc.dupe(u8, value.html) };
     } else if (@TypeOf(value) == ?RawHtml) {
         if (value) |v| return Value{ .html = try alc.dupe(u8, v.html) };
+        return .none;
     } else if (field_info == .pointer) {
         const ptr = field_info.pointer;
         if (ptr.child == u8 and ptr.size == .slice) {
@@ -218,7 +224,7 @@ fn fieldValue(alc: std.mem.Allocator, value: anytype) std.mem.Allocator.Error!?V
                 const str = try std.fmt.allocPrint(alc, "{d}", .{unwrapped});
                 return Value{ .string = str };
             }
-        }
+        } else return .none;
     } else if (field_info == .bool) {
         return Value{ .boolean = value };
     } else if (field_info == .int or field_info == .comptime_int) {
@@ -335,6 +341,7 @@ pub fn dupeValue(alc: std.mem.Allocator, value: Value) !Value {
         .string => |s| Value{ .string = try alc.dupe(u8, s) },
         .html => |s| Value{ .html = try alc.dupe(u8, s) },
         .boolean => |b| Value{ .boolean = b },
+        .none => .none,
         .list => |list| {
             const new_list = try alc.alloc(Value, list.len);
             var done: usize = 0;

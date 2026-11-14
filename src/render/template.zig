@@ -19,6 +19,8 @@ const dupeValue = ctx_mod.dupeValue;
 const Parser = parser_mod.Parser;
 const renderNode = renderer_mod.renderNode;
 const RenderState = renderer_mod.RenderState;
+/// What a template does with a name it cannot find (see `Template.strict`).
+pub const Strictness = renderer_mod.Strictness;
 
 fn isRootTemplate(template_str: []const u8) bool {
     return std.mem.indexOf(u8, template_str, "<html") != null;
@@ -55,6 +57,14 @@ pub const Template = struct {
     layout: ?[]const u8 = null,
     /// True when the source contains `<html`. Nothing in Spider reads it.
     is_root: bool = false,
+    /// What `render` does with a name it cannot find (a variable, a field,
+    /// a prop, a component, a layout): `.off` (render empty, the default
+    /// for a Template an app makes itself), `.warn` (also log it) or
+    /// `.error` (fail with `error.TemplateNameNotFound`). `Ctx.view` sets
+    /// it from `Config.templates_strict`.
+    strict: Strictness = .off,
+    /// The view's name for the diagnostics; set by `initNamed`.
+    name: ?[]const u8 = null,
     // Set when collectInline() creates `components` itself (no caller-supplied
     // map existed yet), so deinit() knows it must free that map. When a caller
     // (e.g. Ctx.view()) supplies `components` up front, ownership stays with
@@ -117,6 +127,7 @@ pub const Template = struct {
             .layout = result.layout,
             .is_root = is_root,
             .inline_components = result.inline_components,
+            .name = name,
         };
     }
 
@@ -245,6 +256,8 @@ pub const Template = struct {
         try self.addGlobals(ctx, alc);
 
         var state = RenderState.init(self.components, self.base_components);
+        state.strict = self.strict;
+        state.view_name = self.name;
         defer state.deinit(alc);
 
         if (self.layout) |layout_name| {
@@ -310,7 +323,11 @@ pub const Template = struct {
             // Not an error (the page still renders), but never what the
             // author meant: a typo in the name, or a layout file that is
             // not where the views are.
-            std.log.warn("template: extends \"{s}\", but no layout of that name was found; rendered without a layout", .{layout_name});
+            if (self.strict == .off) {
+                std.log.warn("template: extends \"{s}\", but no layout of that name was found; rendered without a layout", .{layout_name});
+            } else {
+                try state.notFound(alc, "layout", layout_name);
+            }
         }
 
         var result: std.ArrayList(u8) = .empty;
@@ -366,6 +383,8 @@ pub const Template = struct {
         try self.addGlobals(comp_ctx, alc);
 
         var state = RenderState.init(self.components, self.base_components);
+        state.strict = self.strict;
+        state.view_name = self.name;
         defer state.deinit(alc);
 
         var result: std.ArrayList(u8) = .empty;

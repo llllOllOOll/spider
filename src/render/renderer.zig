@@ -25,6 +25,20 @@ const trimWhitespace = parser_mod.trimWhitespace;
 /// that fast).
 pub const max_component_depth: usize = 32;
 
+/// What a template does with a name it cannot find: a variable, a field,
+/// a loop item, a prop, a component or a layout that does not exist. A name
+/// that is declared with no value (a null optional) is not "not found".
+pub const Strictness = enum {
+    /// Render empty, say nothing (what templates always did).
+    off,
+    /// Render empty and log a warning, once per name and render, naming the
+    /// view, the components it was inside, and the name.
+    warn,
+    /// Fail the render with `error.TemplateNameNotFound` (a 500), after
+    /// the same log line.
+    @"error",
+};
+
 /// Per-render state threaded through renderNode.
 pub const RenderState = struct {
     components: ?std.StringHashMapUnmanaged([]const u8),
@@ -36,6 +50,12 @@ pub const RenderState = struct {
     /// Components currently being rendered, outermost first (for the error log).
     stack: [max_component_depth][]const u8 = undefined,
     depth: usize = 0,
+    /// What to do with a name that is not found (see Strictness).
+    strict: Strictness = .off,
+    /// The view being rendered, for the diagnostics.
+    view_name: ?[]const u8 = null,
+    /// Names already reported in this render (one line per name).
+    warned: std.StringHashMapUnmanaged(void) = .{},
 
     pub fn init(components: ?std.StringHashMapUnmanaged([]const u8), base: ?*const embedded.Map) RenderState {
         return .{ .components = components, .base = base };
@@ -57,6 +77,31 @@ pub const RenderState = struct {
             alc.free(entry.key_ptr.*);
         }
         self.parsed.deinit(alc);
+        var wit = self.warned.keyIterator();
+        while (wit.next()) |k| alc.free(k.*);
+        self.warned.deinit(alc);
+    }
+
+    /// A name the template reads that is not there: says so (once per name
+    /// and render) and, in `.error` mode, fails the render.
+    pub fn notFound(self: *RenderState, alc: std.mem.Allocator, comptime what: []const u8, name: []const u8) !void {
+        if (self.strict == .off) return;
+        const key = try std.fmt.allocPrint(alc, what ++ ":{s}", .{name});
+        const gop = try self.warned.getOrPut(alc, key);
+        if (gop.found_existing) {
+            alc.free(key);
+        } else {
+            var buf: [512]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            for (self.stack[0..self.depth]) |n| w.print(" in <{s}>", .{n}) catch break;
+            const consequence = if (self.strict == .@"error") "the render fails" else "it renders empty";
+            const fmt = "[spider] template \"{s}\"{s}: " ++ what ++ " `{s}` not found; {s}";
+            const args = .{ self.view_name orelse "?", w.buffered(), name, consequence };
+            // err only when the render fails (and never under `zig test`:
+            // the test runner fails a test that logs at err).
+            if (builtin.is_test or self.strict == .warn) std.log.warn(fmt, args) else std.log.err(fmt, args);
+        }
+        if (self.strict == .@"error") return error.TemplateNameNotFound;
     }
 
     /// Parsed body of component `name`, or null when it isn't registered.
@@ -121,6 +166,8 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 try appendValue(alc, result, v);
             } else if (lenOf(ctx, expr)) |n| {
                 try result.print(alc, "{d}", .{n});
+            } else if (undeclared(ctx, expr)) {
+                try state.notFound(alc, "name", expr);
             }
         },
         .interpolation_with_default => |iwd| {
@@ -138,7 +185,7 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
             }
         },
         .if_node => |ifn| {
-            const cond = try evalBool(ctx, ifn.condition, alc);
+            const cond = try evalBool(ctx, ifn.condition, alc, state);
             if (cond) {
                 for (ifn.then_body) |n| try renderNode(n, ctx, alc, result, state);
             } else if (ifn.else_body) |eb| {
@@ -172,20 +219,22 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                         for (fnn.body) |n| try renderNode(n, &loop_ctx, alc, result, state);
                     }
                 }
+            } else if (undeclared(ctx, fnn.iterable)) {
+                try state.notFound(alc, "name", fnn.iterable);
             }
         },
         .component => |comp| {
-            const comp_nodes = (try state.componentNodes(alc, comp.name)) orelse return;
+            const comp_nodes = (try state.componentNodes(alc, comp.name)) orelse {
+                try state.notFound(alc, "component", comp.name);
+                return;
+            };
 
             if (state.depth >= max_component_depth) {
                 state.logDepthExceeded(comp.name);
                 return error.ComponentDepthExceeded;
             }
-            state.stack[state.depth] = comp.name;
-            state.depth += 1;
-            defer state.depth -= 1;
-
-            // The component sees what its caller sees, plus its props.
+            // The component sees what its caller sees, plus its props. The
+            // props are read in the caller: a missing one is reported there.
             var comp_ctx = ctx.child();
             defer comp_ctx.deinit(alc);
 
@@ -197,9 +246,14 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                     try comp_ctx.set(alc, prop.name, try dupeValue(alc, val));
                 } else {
                     // Nothing by that name: empty, as `{ expr }` is.
+                    if (undeclared(ctx, prop.value)) try state.notFound(alc, "name", prop.value);
                     try comp_ctx.set(alc, prop.name, Value{ .string = try alc.dupe(u8, "") });
                 }
             }
+
+            state.stack[state.depth] = comp.name;
+            state.depth += 1;
+            defer state.depth -= 1;
 
             if (comp.slot_content) |sc| {
                 var slot_parser = Parser.init(alc, sc);
@@ -287,6 +341,36 @@ fn lenOf(ctx: *const Context, expr: []const u8) ?usize {
     };
 }
 
+/// True when `expr` names something that is not there: its first name is
+/// in no scope, or a field after it is missing from an object that is
+/// there. False when the path stops at a declared null (`.none`), at a
+/// list index past the end (that is data, not a typo), at `.len` of a list
+/// or a string, or at a name every template has (`slot`, `slot_<name>`,
+/// `loop`).
+fn undeclared(ctx: *const Context, expr: []const u8) bool {
+    var it = std.mem.splitScalar(u8, expr, '.');
+    const first_seg = it.next() orelse return false;
+    const root = if (std.mem.indexOfScalar(u8, first_seg, '[')) |b| first_seg[0..b] else first_seg;
+    if (std.mem.eql(u8, root, "slot") or std.mem.startsWith(u8, root, "slot_") or std.mem.eql(u8, root, "loop")) return false;
+    var current: Value = ctx.get(root) orelse return true;
+    if (std.mem.indexOfScalar(u8, first_seg, '[') != null) {
+        current = resolveSegment(current, first_seg[root.len..]) orelse return false;
+    }
+    while (it.next()) |seg| {
+        switch (current) {
+            .none => return false,
+            .list, .string, .html => return !std.mem.eql(u8, seg, "len"),
+            .object => |obj| {
+                const name = if (std.mem.indexOfScalar(u8, seg, '[')) |b| seg[0..b] else seg;
+                if (!obj.contains(name)) return true;
+                current = resolveSegment(current, seg) orelse return false;
+            },
+            .boolean => return true,
+        }
+    }
+    return false;
+}
+
 fn resolveValue(ctx: *const Context, expr: []const u8) ?Value {
     var it = std.mem.splitScalar(u8, expr, '.');
     const first_seg = it.next() orelse return null;
@@ -303,45 +387,45 @@ fn resolveValue(ctx: *const Context, expr: []const u8) ?Value {
     return current;
 }
 
-const EvalError = error{ UnsupportedCondition, OutOfMemory };
+const EvalError = error{ UnsupportedCondition, OutOfMemory, TemplateNameNotFound };
 
-fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) EvalError!bool {
+fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator, state: *RenderState) EvalError!bool {
     // or binds looser than and — check first so each side may contain "and"
     if (std.mem.indexOf(u8, expr, " or ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right = trimWhitespace(expr[idx + 4 ..]);
-        return try evalBool(ctx, left, alc) or try evalBool(ctx, right, alc);
+        return try evalBool(ctx, left, alc, state) or try evalBool(ctx, right, alc, state);
     }
     if (std.mem.indexOf(u8, expr, " and ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right = trimWhitespace(expr[idx + 5 ..]);
-        return try evalBool(ctx, left, alc) and try evalBool(ctx, right, alc);
+        return try evalBool(ctx, left, alc, state) and try evalBool(ctx, right, alc, state);
     }
     if (std.mem.indexOf(u8, expr, " != ")) |idx| {
-        return !try evalCompare(ctx, trimWhitespace(expr[0..idx]), trimWhitespace(expr[idx + 4 ..]), alc);
+        return !try evalCompare(ctx, trimWhitespace(expr[0..idx]), trimWhitespace(expr[idx + 4 ..]), alc, state);
     }
     if (std.mem.indexOf(u8, expr, " == ")) |idx| {
-        return evalCompare(ctx, trimWhitespace(expr[0..idx]), trimWhitespace(expr[idx + 4 ..]), alc);
+        return evalCompare(ctx, trimWhitespace(expr[0..idx]), trimWhitespace(expr[idx + 4 ..]), alc, state);
     }
     if (std.mem.indexOf(u8, expr, " <= ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right = trimWhitespace(expr[idx + 4 ..]);
-        return evalNumCompare(ctx, left, right, .lte, alc);
+        return evalNumCompare(ctx, left, right, .lte, alc, state);
     }
     if (std.mem.indexOf(u8, expr, " >= ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right = trimWhitespace(expr[idx + 4 ..]);
-        return evalNumCompare(ctx, left, right, .gte, alc);
+        return evalNumCompare(ctx, left, right, .gte, alc, state);
     }
     if (std.mem.indexOf(u8, expr, " < ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right = trimWhitespace(expr[idx + 2 ..]);
-        return evalNumCompare(ctx, left, right, .lt, alc);
+        return evalNumCompare(ctx, left, right, .lt, alc, state);
     }
     if (std.mem.indexOf(u8, expr, " > ")) |idx| {
         const left = trimWhitespace(expr[0..idx]);
         const right = trimWhitespace(expr[idx + 2 ..]);
-        return evalNumCompare(ctx, left, right, .gt, alc);
+        return evalNumCompare(ctx, left, right, .gt, alc, state);
     }
 
     // Unary "!" negation — checked after and/or/comparison so a genuine
@@ -356,7 +440,7 @@ fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) EvalError!b
     // group). Only a plain "!identifier" or "!left op right" is supported.
     const trimmed = trimWhitespace(expr);
     if (trimmed.len > 0 and trimmed[0] == '!') {
-        return !try evalBool(ctx, trimmed[1..], alc);
+        return !try evalBool(ctx, trimmed[1..], alc, state);
     }
 
     try refuseCall(expr);
@@ -366,6 +450,8 @@ fn evalBool(ctx: *Context, expr: []const u8, alc: std.mem.Allocator) EvalError!b
         if (value == .html) return value.html.len > 0 and !std.mem.eql(u8, value.html, "false");
         // An object that is there is true: `if (current_user) { ... }`.
         if (value == .object) return true;
+    } else if (undeclared(ctx, trimmed)) {
+        try state.notFound(alc, "name", trimmed);
     }
     return false;
 }
@@ -387,11 +473,12 @@ fn refuseCall(operand: []const u8) EvalError!void {
 /// quoted literal without its quotes; a number, `true` or `false` as
 /// written; anything else is a name, read from the context (`list.len`
 /// included), and "" when there is no such name.
-fn operandText(ctx: *const Context, operand: []const u8, alc: std.mem.Allocator) EvalError![]const u8 {
+fn operandText(ctx: *const Context, operand: []const u8, alc: std.mem.Allocator, state: *RenderState) EvalError![]const u8 {
     if (isQuoted(operand)) return alc.dupe(u8, operand[1 .. operand.len - 1]);
     if (std.mem.eql(u8, operand, "true") or std.mem.eql(u8, operand, "false") or isNumber(operand))
         return alc.dupe(u8, operand);
     try refuseCall(operand);
+    if (undeclared(ctx, operand)) try state.notFound(alc, "name", operand);
     return resolveLen(ctx, operand, alc);
 }
 
@@ -400,25 +487,28 @@ fn isNumber(text: []const u8) bool {
     return digits.len > 0 and std.ascii.isDigit(digits[0]);
 }
 
-fn evalCompare(ctx: *Context, left: []const u8, right: []const u8, alc: std.mem.Allocator) EvalError!bool {
-    // A null optional is not in the context: null is "no such name".
+fn evalCompare(ctx: *Context, left: []const u8, right: []const u8, alc: std.mem.Allocator, state: *RenderState) EvalError!bool {
+    // `x == null`: no value, a null optional (declared, `.none`) or no such
+    // name at all. It asks whether the name is there, so it is never a
+    // diagnostic.
     if (std.mem.eql(u8, right, "null")) {
         try refuseCall(left);
-        return resolveValue(ctx, left) == null;
+        const v = resolveValue(ctx, left) orelse return true;
+        return v == .none;
     }
-    const l = try operandText(ctx, left, alc);
+    const l = try operandText(ctx, left, alc, state);
     defer alc.free(l);
-    const r = try operandText(ctx, right, alc);
+    const r = try operandText(ctx, right, alc, state);
     defer alc.free(r);
     return std.mem.eql(u8, l, r);
 }
 
 const Cmp = enum { lt, lte, gt, gte };
 
-fn evalNumCompare(ctx: *Context, left: []const u8, right: []const u8, cmp: Cmp, alc: std.mem.Allocator) EvalError!bool {
-    const l = try operandText(ctx, left, alc);
+fn evalNumCompare(ctx: *Context, left: []const u8, right: []const u8, cmp: Cmp, alc: std.mem.Allocator, state: *RenderState) EvalError!bool {
+    const l = try operandText(ctx, left, alc, state);
     defer alc.free(l);
-    const r = try operandText(ctx, right, alc);
+    const r = try operandText(ctx, right, alc, state);
     defer alc.free(r);
 
     const lv = std.fmt.parseInt(i64, l, 10) catch return false;
