@@ -538,6 +538,35 @@ pub fn build(b: *std.Build) void {
         const run_bench_render = b.addRunArtifact(bench_render);
         run_bench_render.has_side_effects = true;
         b.step("bench-render", "Benchmark the template engine (use -Doptimize=ReleaseFast)").dependOn(&run_bench_render.step);
+
+        // Elroy parity: the templates of src/render/elroy/fixtures.zig are
+        // compiled by Elroy at build time and rendered both ways in
+        // elroy_parity_test.zig (part of `zig build test`).
+        const elroy_fixture_gen = b.addExecutable(.{
+            .name = "spider-elroy-fixture-gen",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/elroy_fixture_gen.zig"),
+                .target = b.graph.host,
+                .optimize = .Debug,
+            }),
+        });
+        const run_elroy_gen = b.addRunArtifact(elroy_fixture_gen);
+        const elroy_fixtures_src = run_elroy_gen.addOutputFileArg("elroy_fixtures.zig");
+        const elroy_parity = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("elroy_parity_test.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "spider", .module = mod },
+                    .{ .name = "elroy_fixtures", .module = b.createModule(.{
+                        .root_source_file = elroy_fixtures_src,
+                        .imports = &.{.{ .name = "spider", .module = mod }},
+                    }) },
+                },
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(elroy_parity).step);
     }
 
     // test-pacman — the HTTP client's own tests (modules/pacman). Most of

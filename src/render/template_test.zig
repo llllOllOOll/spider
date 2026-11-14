@@ -1694,3 +1694,13 @@ test "syntax error: no failure is reported for a template that parsed" {
     _ = try p.parse();
     try std.testing.expectEqual(@as(?parser.Failure, null), try parser.failure(arena.allocator(), good));
 }
+
+test "a field that points to a struct renders the struct's fields" {
+    const Book = struct { title: []const u8, year: u32 };
+    const book: Book = .{ .title = "Piranesi", .year = 2020 };
+    var tmpl = try Template.init(std.testing.allocator, "<p>{ b.title } { b.year }</p>");
+    defer tmpl.deinit();
+    const out = try tmpl.render(.{ .b = &book }, std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("<p>Piranesi 2020</p>", out);
+}

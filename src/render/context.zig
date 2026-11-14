@@ -194,7 +194,8 @@ fn fieldValue(alc: std.mem.Allocator, value: anytype) std.mem.Allocator.Error!?V
                     }
                 }
             } else if (child_info == .@"struct") {
-                return Value{ .object = try structToObject(alc, value) };
+                // The struct it points to (structToObject takes a struct).
+                return Value{ .object = try structToObject(alc, value.*) };
             }
         } else if (ptr.size == .slice) {
             const elem_info = @typeInfo(ptr.child);

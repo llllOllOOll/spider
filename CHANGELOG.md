@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A field that points to a struct renders the struct's fields.**
+  `c.view("x", .{ .book = &book }, .{})` rendered `{ book.title }` empty:
+  the pointer was read as an object with no fields. It now reads the struct
+  it points to, as a struct field does.
 - **A page of a few hundred KB no longer asks the system for its memory on
   every request.** A connection kept only 8 KiB of its request memory
   between requests; the rest went back to the system and was asked for

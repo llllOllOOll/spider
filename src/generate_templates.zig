@@ -3,10 +3,12 @@
 //! `source_dir` and writes a Zig file declaring `EmbeddedTemplates`, a
 //! struct with one `@embedFile` field per .html and .md file found, and
 //! `spider_manifest`: what each template reads from a view's data
-//! (render/manifest.zig), for `Ctx.viewChecked`.
+//! (render/manifest.zig), for `Ctx.viewChecked`; and `elroy`: the
+//! templates Elroy compiles to Zig functions (render/elroy/codegen.zig).
 
 const std = @import("std");
 const manifest = @import("render/manifest.zig");
+const elroy = @import("render/elroy/codegen.zig");
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.arena.allocator();
@@ -71,14 +73,28 @@ pub fn main(init: std.process.Init) !void {
         try manifest.writeZig(&output, allocator, src.name, uses);
     }
     try output.appendSlice(allocator, "    };\n");
+    // The templates Elroy compiles; the others render with the interpreter.
+    try output.appendSlice(allocator, "\n    pub const elroy = struct {\n        const std = @import(\"std\");\n        const E = @import(\"spider\").elroy;\n\n");
+    var compiled: usize = 0;
+    for (sources.items) |src| {
+        if (try elroy.generate(allocator, &output, src.name, src.text)) compiled += 1;
+    }
+    try output.appendSlice(allocator, "    };\n");
     try output.appendSlice(allocator, "};\n");
+    // zig fmt the whole file: the generated code is emitted unindented.
+    const formatted = blk: {
+        const z = try allocator.dupeSentinel(u8, output.items, 0);
+        var tree = try std.zig.Ast.parse(allocator, z, .{});
+        if (tree.errors.len > 0) break :blk output.items; // shows where it is wrong
+        break :blk try tree.renderAlloc(allocator);
+    };
     const out_file = try cwd.createFile(io, output_file, .{});
     defer out_file.close(io);
     var buffer: [4096]u8 = undefined;
     var writer: std.Io.File.Writer = .init(out_file, io, &buffer);
-    try writer.interface.writeAll(output.items);
+    try writer.interface.writeAll(formatted);
     try writer.interface.flush();
-    std.debug.print("Ride the lightning — {d} templates forged in {s}\n", .{ template_count, output_file });
+    std.debug.print("Ride the lightning — {d} templates forged in {s} ({d} compiled by Elroy)\n", .{ template_count, output_file, compiled });
 }
 
 const FieldNames = struct {
