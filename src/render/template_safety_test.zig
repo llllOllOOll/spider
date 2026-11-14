@@ -385,3 +385,61 @@ test "loops: an iteration costs what it uses, not a copy of everything the page 
         return error.TooManyAllocations;
     }
 }
+
+// ── JavaScript in attributes ────────────────────────────────────────────
+// An `if (...) { ... }` inside an attribute that holds JavaScript is the
+// script's: it used to be taken for a template `if` and the code vanished.
+
+test "js attribute: an if in hx-on stays JavaScript" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps,
+        \\<form hx-on::after-request="if (event.detail.successful) { document.getElementById('m').close(); }">x</form>
+    , .{},
+        \\<form hx-on::after-request="if (event.detail.successful) { document.getElementById('m').close(); }">x</form>
+    );
+}
+
+test "js attribute: @event, x-on:, onclick and x-init keep their if and for" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    const src =
+        \\<button @click="if (open) { open = false }" x-on:keyup="if (e.key) { go() }" onclick="if (a) { b() }" x-init="for (const i of xs) { n++ }">b</button>
+    ;
+    try expectRender(&comps, src, .{}, src);
+}
+
+test "js attribute: { expr } is still interpolated inside the script" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps,
+        \\<a hx-on:click="if (ok) { go('{ id }') }">x</a>
+    , .{ .id = "42" },
+        \\<a hx-on:click="if (ok) { go('42') }">x</a>
+    );
+}
+
+test "js attribute: also inside a template if body" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps,
+        \\if (show) { <form @submit="if (valid) { send() }">f</form> }
+    , .{ .show = true },
+        \\<form @submit="if (valid) { send() }">f</form>
+    );
+}
+
+test "js attribute: an if in class is still the template's" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try expectRender(&comps,
+        \\<li class="step if (current == "a") { step-primary }">a</li>
+    , .{ .current = "a" },
+        \\<li class="step step-primary">a</li>
+    );
+    try expectRender(&comps,
+        \\<li class="step if (current == "a") { step-primary }">a</li>
+    , .{ .current = "b" },
+        \\<li class="step ">a</li>
+    );
+}

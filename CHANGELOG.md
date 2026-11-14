@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reachable through a ready `Handler`, maps to 500 (the app's bug, not the
   client's).
 
+### Fixed
+
+- **JavaScript in an attribute keeps its `if` and its braces.**
+  `hx-on::after-request="if (event.detail.successful) { … }"` came out as
+  `hx-on::after-request=""`: the template took the script's `if` for its
+  own, found no `event` on the server and dropped the code. In the value
+  of an attribute that holds JavaScript (`on…`, `hx-on…`, `@event`,
+  Alpine's `x-…`, `:bind`) `if (` and `for (` are now the script's, and a
+  `{ … }` is the script's block unless it is a plain name or path
+  (`{ id }`, `{ user.name }`, `{ title ?? "x" }`), which is still
+  interpolated. Every other attribute (`class="step if (on) { active }"`)
+  and the text of the page work as before. Writing such JavaScript inside
+  `{{ … }}` still works too.
+
 ### Changed
 
 - **Embedded templates are parsed once, when the server starts.** A build

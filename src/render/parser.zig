@@ -180,13 +180,14 @@ pub const Parser = struct {
         }
 
         while (p.pos < p.template.len) {
-            if (std.mem.startsWith(u8, p.template[p.pos..], "if (")) {
+            const in_js = inJsAttribute(p.template, p.pos);
+            if (!in_js and std.mem.startsWith(u8, p.template[p.pos..], "if (")) {
                 const node = try p.parseIf();
                 try nodes.append(p.alc, node);
-            } else if (std.mem.startsWith(u8, p.template[p.pos..], "for (")) {
+            } else if (!in_js and std.mem.startsWith(u8, p.template[p.pos..], "for (")) {
                 const node = try p.parseFor();
                 try nodes.append(p.alc, node);
-            } else if (std.mem.startsWith(u8, p.template[p.pos..], "{ ")) {
+            } else if (opensInterpolation(p.template, p.pos)) {
                 const node = try p.parseInterpolation();
                 try nodes.append(p.alc, node);
             } else if (p.template[p.pos] == '<' and p.pos + 1 < p.template.len and isUpperCase(p.template[p.pos + 1])) {
@@ -324,9 +325,9 @@ pub const Parser = struct {
                 return Node{ .text = literal };
             }
             const remaining = p.template[p.pos..];
-            if (std.mem.startsWith(u8, remaining, "if (")) break;
-            if (std.mem.startsWith(u8, remaining, "for (")) break;
-            if (std.mem.startsWith(u8, remaining, "{ ")) break;
+            if ((std.mem.startsWith(u8, remaining, "if (") or std.mem.startsWith(u8, remaining, "for (")) and
+                !inJsAttribute(p.template, p.pos)) break;
+            if (opensInterpolation(p.template, p.pos)) break;
             if (p.template[p.pos] == '<' and p.pos + 1 < p.template.len and isUpperCase(p.template[p.pos + 1])) break;
             p.pos += 1;
         }
@@ -334,6 +335,100 @@ pub const Parser = struct {
         return Node{ .text = text };
     }
 };
+
+/// True when `pos` is inside the quoted value of an attribute that holds
+/// JavaScript: `on…` (onclick), `hx-on…`, `@event`, Alpine's `x-…` and
+/// `:bind`. There `if (` and `for (` are the script's, not the template's:
+/// `hx-on::after-request="if (event.detail.successful) { … }"` used to lose
+/// its code. `{ expr }` is still a template interpolation there. In any
+/// other attribute (`class="step if (current) { active }"`) and in text,
+/// `if` / `for` are the template's, as always. Scans from the start of
+/// `str`, skipping `{ … }` and `{{ … }}` so the quotes inside an
+/// interpolation are not taken for the attribute's.
+pub fn inJsAttribute(str: []const u8, pos: usize) bool {
+    var i: usize = 0;
+    var in_tag = false;
+    var quote: u8 = 0;
+    var js = false;
+    while (i < pos and i < str.len) {
+        const rest = str[i..];
+        if (std.mem.startsWith(u8, rest, "{{")) {
+            const close = std.mem.indexOfPos(u8, str, i + 2, "}}") orelse return false;
+            i = close + 2;
+            continue;
+        }
+        if (std.mem.startsWith(u8, rest, "{ ")) {
+            const close = std.mem.indexOfPos(u8, str, i + 2, " }") orelse return false;
+            if (close + 2 > pos) return quote != 0 and js; // pos is inside the interpolation
+            i = close + 2;
+            continue;
+        }
+        const ch = str[i];
+        if (quote != 0) {
+            if (ch == quote) {
+                quote = 0;
+                js = false;
+            }
+        } else if (!in_tag) {
+            if (ch == '<' and i + 1 < str.len and std.ascii.isAlphabetic(str[i + 1])) in_tag = true;
+        } else if (ch == '>') {
+            in_tag = false;
+        } else if (ch == '"' or ch == '\'') {
+            quote = ch;
+            js = isJsAttributeName(attributeNameBefore(str, i));
+        }
+        i += 1;
+    }
+    return quote != 0 and js;
+}
+
+/// The attribute name before the `=` that precedes the quote at `quote_at`.
+fn attributeNameBefore(str: []const u8, quote_at: usize) []const u8 {
+    var j = quote_at;
+    while (j > 0 and str[j - 1] == ' ') j -= 1;
+    if (j == 0 or str[j - 1] != '=') return "";
+    j -= 1;
+    while (j > 0 and str[j - 1] == ' ') j -= 1;
+    const end = j;
+    while (j > 0) : (j -= 1) {
+        const c = str[j - 1];
+        if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == ':' or c == '@' or c == '.')) break;
+    }
+    return str[j..end];
+}
+
+/// `{ ` at `pos` starts a template interpolation. Inside a JavaScript
+/// attribute only a plain one does (`{ id }`, `{ user.name }`,
+/// `{ title ?? "x" }`); any other `{ ... }` there is the script's own block
+/// (`if (open) { open = false }`) and stays text.
+fn opensInterpolation(str: []const u8, pos: usize) bool {
+    if (!std.mem.startsWith(u8, str[pos..], "{ ")) return false;
+    if (!inJsAttribute(str, pos)) return true;
+    const close = std.mem.indexOfPos(u8, str, pos + 2, " }") orelse return false;
+    return isPlainExpr(str[pos + 2 .. close]);
+}
+
+/// A name or a path (`a`, `a.b`, `a[0].b`), with an optional `?? "default"`.
+fn isPlainExpr(expr_raw: []const u8) bool {
+    var expr = std.mem.trim(u8, expr_raw, " ");
+    if (std.mem.indexOf(u8, expr, " ?? ")) |i| {
+        const def = std.mem.trim(u8, expr[i + 4 ..], " ");
+        if (def.len < 2 or def[0] != '"' or def[def.len - 1] != '"') return false;
+        expr = expr[0..i];
+    }
+    if (expr.len == 0 or !(std.ascii.isAlphabetic(expr[0]) or expr[0] == '_')) return false;
+    for (expr) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '[' or c == ']')) return false;
+    }
+    return true;
+}
+
+fn isJsAttributeName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (name[0] == '@' or name[0] == ':') return true;
+    if (std.mem.startsWith(u8, name, "x-") or std.mem.startsWith(u8, name, "hx-on")) return true;
+    return name.len > 2 and std.ascii.startsWithIgnoreCase(name, "on");
+}
 
 pub fn skipWhitespace(template: []const u8, pos: *usize) void {
     while (pos.* < template.len and (template[pos.*] == ' ' or template[pos.*] == '\n' or template[pos.*] == '\r' or template[pos.*] == '\t')) pos.* += 1;
@@ -590,7 +685,7 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
             try nodes.append(alc, Node{ .text = literal });
             continue;
         }
-        if (std.mem.startsWith(u8, remaining, "{ ")) {
+        if (opensInterpolation(str, pos)) {
             pos += 2;
             const expr_start = pos;
             while (pos < str.len) {
@@ -604,9 +699,9 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
         } else if (std.mem.startsWith(u8, remaining, "{ slot }")) {
             try nodes.append(alc, Node{ .interpolation = try alc.dupe(u8, "slot") });
             pos += "{ slot }".len;
-        } else if (std.mem.startsWith(u8, remaining, "if (")) {
+        } else if (std.mem.startsWith(u8, remaining, "if (") and !inJsAttribute(str, pos)) {
             try nodes.append(alc, try parseIfNode(alc, str, &pos));
-        } else if (std.mem.startsWith(u8, remaining, "for (")) {
+        } else if (std.mem.startsWith(u8, remaining, "for (") and !inJsAttribute(str, pos)) {
             const at = remaining;
             pos += 5;
             const iter_start = pos;
@@ -661,10 +756,10 @@ pub fn parseTextNodes(alc: std.mem.Allocator, str: []const u8) ![]Node {
                     (std.mem.startsWith(u8, r, "<script") or std.mem.startsWith(u8, r, "<style") or
                         std.mem.startsWith(u8, r, "<!--"))) break;
                 if (std.mem.startsWith(u8, r, "{{")) break;
-                if (std.mem.startsWith(u8, r, "{ ")) break;
+                if (opensInterpolation(str, pos)) break;
                 if (std.mem.startsWith(u8, r, "{ slot }")) break;
-                if (std.mem.startsWith(u8, r, "if (")) break;
-                if (std.mem.startsWith(u8, r, "for (")) break;
+                if ((std.mem.startsWith(u8, r, "if (") or std.mem.startsWith(u8, r, "for (")) and
+                    !inJsAttribute(str, pos)) break;
                 if (pos < str.len and str[pos] == '<' and pos + 1 < str.len and isUpperCase(str[pos + 1])) break;
                 pos += 1;
             }
