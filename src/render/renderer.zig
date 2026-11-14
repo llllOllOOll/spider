@@ -381,7 +381,7 @@ fn applyPropsDecl(state: *RenderState, alc: std.mem.Allocator, comp_name: []cons
             try state.propProblem(alc, "<{s}> has no prop `{s}` (it declares: {s})", .{ comp_name, prop.name, names });
             continue;
         };
-        if (prop.is_expr) continue; // typed expressions: checked at build time (COY-1060)
+        if (prop.is_expr) continue; // an expression's type: checked at build time by c.viewChecked
         if (!declared.accepts(prop.value)) {
             try state.propProblem(alc, "prop `{s}` of <{s}> is {s}; \"{s}\" is not", .{ prop.name, comp_name, @tagName(declared.kind), prop.value });
         } else if (declared.kind == .bool) {
@@ -394,14 +394,16 @@ fn applyPropsDecl(state: *RenderState, alc: std.mem.Allocator, comp_name: []cons
             if (std.mem.eql(u8, prop.name, declared.name)) passed = true;
         }
         if (passed) continue;
-        if (declared.default) |def| {
+        if (!undeclared(caller, declared.name)) {
+            // The caller has a value of that name: the component sees it
+            // (as it would without the declaration). The default is for
+            // when nobody gives one.
+        } else if (declared.default) |def| {
             const v: Value = switch (declared.kind) {
                 .bool => .{ .boolean = std.mem.eql(u8, def, "true") },
                 else => .{ .html = try alc.dupe(u8, def) },
             };
             try comp_ctx.set(alc, declared.name, v);
-        } else if (!undeclared(caller, declared.name)) {
-            // The caller has a value of that name: the component sees it.
         } else {
             if (declared.required) {
                 try state.propProblem(alc, "<{s}> needs prop `{s}`, and the call does not give it", .{ comp_name, declared.name });

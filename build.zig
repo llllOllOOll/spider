@@ -387,6 +387,10 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/generate_templates.zig"),
             .target = target,
+            // It runs on every build of an app and parses every template
+            // (render/manifest.zig): unoptimized it took ~10 s on 561
+            // templates, ReleaseSafe 0.3 s. Built once, then cached.
+            .optimize = .ReleaseSafe,
         }),
     });
     b.installArtifact(gen_exe);

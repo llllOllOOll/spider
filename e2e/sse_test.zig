@@ -155,10 +155,6 @@ const SseClient = struct {
     }
 };
 
-fn waitForCount(io: std.Io, arena: std.mem.Allocator, want: usize) !void {
-    return waitForCountAt(io, arena, "/sse-count", want);
-}
-
 fn waitForCountAt(io: std.Io, arena: std.mem.Allocator, target: []const u8, want: usize) !void {
     var tries: usize = 0;
     while (tries < 250) : (tries += 1) {
@@ -247,12 +243,16 @@ test "sse: closed clients leave the hub" {
     defer arena.deinit();
     try ensureStarted(io);
 
-    const before = try std.fmt.parseInt(usize, (try h.request(io, arena.allocator(), port, "/sse-count", .{})).body, 10);
+    // The room's own count: the hub's total also moves with the clients of
+    // other tests that are still leaving.
     var c: SseClient = undefined;
     try c.open(io, "leave");
-    try waitForCount(io, arena.allocator(), before + 1);
+    {
+        errdefer c.close(io);
+        try waitForCountAt(io, arena.allocator(), "/sse-count/leave", 1);
+    }
     c.close(io);
-    try waitForCount(io, arena.allocator(), before);
+    try waitForCountAt(io, arena.allocator(), "/sse-count/leave", 0);
 }
 
 fn emitNamed(io: std.Io, arena: std.mem.Allocator, room: []const u8, event_tag: []const u8) !void {

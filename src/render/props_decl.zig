@@ -3,7 +3,8 @@
 //!     -- props: id!, title!, year: int, finished: bool = false, size = "md"
 //!
 //! `!` marks a required prop; `: string|int|bool` a type; `= value` a
-//! default (a quoted string, a number, true or false). A component without
+//! default (a quoted string, a number, true or false), used when neither the
+//! call nor the caller's scope gives the value. A component without
 //! the line declares nothing and works as before. The parser skips the line;
 //! the renderer and `spider check` read it here.
 

@@ -1,0 +1,459 @@
+//! Internal (build tool): what each template reads from the data of a view,
+//! for `Ctx.viewChecked`, which compares it with the data's type at compile
+//! time.
+//!
+//! `generate-templates` parses every template and writes, next to the
+//! embedded sources, one list per template of the paths it reads:
+//! `title`, `book.title`, `books[].title` (a field of each item of the list
+//! `books`, read through a `for (books) |b|` as `b.title`). What a component
+//! reads from its caller's names counts as the caller's, minus the props the
+//! call gives and the props the component declares; a layout counts for the
+//! page that extends it. Names every template has (`slot`, `loop`,
+//! `current_user`) and helper calls are left out.
+
+const std = @import("std");
+const ast = @import("ast.zig");
+const parser_mod = @import("parser.zig");
+const props_decl = @import("props_decl.zig");
+const Node = ast.Node;
+
+// internal: how a template reads a path.
+pub const Kind = enum {
+    /// Printed: `{ x }`, `{ x ?? "d" }`.
+    text,
+    /// Read in a condition or passed on as is: only needs to be there.
+    cond,
+    /// Looped over: `for (x) |item|`.
+    iter,
+    /// Passed as a prop the component declares as int / bool / string.
+    prop_int,
+    prop_bool,
+    prop_string,
+};
+
+// internal: one path a template reads.
+pub const Use = struct {
+    path: []const u8,
+    /// 1-based line in the template the use was written in (0: unknown).
+    line: usize,
+    kind: Kind,
+    /// May be missing: `{ x ?? "d" }`, `x == null`.
+    optional: bool,
+    /// The components it was read through, outermost first: "Card>Badge".
+    via: []const u8,
+};
+
+/// A template: the name `c.view` knows it by (the generated field name) and
+/// its source.
+/// A template: the name `c.view` knows it by (the generated field name) and
+/// its source.
+pub const Source = struct { name: []const u8, text: []const u8 };
+
+// internal: works out what each template reads (generate-templates).
+pub const Analyzer = struct {
+    alc: std.mem.Allocator,
+    by_name: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// Source name -> what it reads from outside (memoized: each template,
+    /// component or layout is summarized once).
+    summaries: std.StringHashMapUnmanaged([]const Use) = .{},
+    /// Names being summarized (a component that includes itself).
+    in_progress: std.StringHashMapUnmanaged(void) = .{},
+
+    // internal: an analyzer over every template of the app.
+    pub fn init(alc: std.mem.Allocator, sources: []const Source) !Analyzer {
+        var a: Analyzer = .{ .alc = alc };
+        for (sources) |s| try a.by_name.put(alc, s.name, s.text);
+        return a;
+    }
+
+    /// What a template (source `text`) reads from a view's data: its own
+    /// names, and those its components and its layout read from it.
+    pub fn analyze(a: *Analyzer, text: []const u8) ![]const Use {
+        var out: Collect = .{ .alc = a.alc };
+        for (try a.summarize("", text)) |u| try out.add(u);
+        if (layoutOf(text)) |layout| {
+            if (a.find(layout)) |found| {
+                for (try a.summarize(found.name, found.text)) |u| {
+                    if (isSlotName(rootOf(u.path))) continue;
+                    try out.add(.{ .path = u.path, .line = 0, .kind = u.kind, .optional = u.optional, .via = try a.chain(layout, u.via) });
+                }
+            }
+        }
+        return out.list.toOwnedSlice(a.alc);
+    }
+
+    /// What the template `text` reads from outside itself, with lines in
+    /// its own text. `name` memoizes it ("" = not memoized).
+    fn summarize(a: *Analyzer, name: []const u8, text: []const u8) anyerror![]const Use {
+        return a.summarizeWith(name, text, null);
+    }
+
+    /// `summarize` for a body that sees the inline components `inherited`
+    /// (those of the file it is defined in), besides its own.
+    fn summarizeWith(a: *Analyzer, name: []const u8, text: []const u8, inherited: ?*const Locals) anyerror![]const Use {
+        if (name.len > 0) {
+            if (a.summaries.get(name)) |s| return s;
+            if (a.in_progress.contains(name)) return &.{};
+            try a.in_progress.put(a.alc, name, {});
+        }
+        defer if (name.len > 0) {
+            _ = a.in_progress.remove(name);
+        };
+        const locals = try a.alc.create(Locals);
+        locals.* = .{};
+        if (inherited) |inh| {
+            var it = inh.iterator();
+            while (it.next()) |e| try locals.put(a.alc, e.key_ptr.*, e.value_ptr.*);
+        }
+        var w: Walk = .{ .a = a, .text = text, .out = .{ .alc = a.alc }, .locals = locals };
+        if (try parse(a.alc, text)) |nodes| {
+            // What parsed_cache does: a root-level `<Name>...</Name>` with
+            // content, under a name no file has, defines an inline component
+            // (read where it is used, not here).
+            var kept: std.ArrayList(Node) = .empty;
+            for (nodes) |node| {
+                if (node == .component and !node.component.self_closing and node.component.slot_content != null) {
+                    const cname = node.component.name;
+                    if (!locals.contains(cname) and a.find(cname) == null) {
+                        try locals.put(a.alc, cname, node.component.slot_content.?);
+                        continue;
+                    }
+                }
+                try kept.append(a.alc, node);
+            }
+            var scope: Scope = .{};
+            try w.nodes(kept.items, &scope);
+        }
+        const result = try w.out.list.toOwnedSlice(a.alc);
+        if (name.len > 0) try a.summaries.put(a.alc, name, result);
+        return result;
+    }
+
+    const Found = struct { name: []const u8, text: []const u8, local: bool = false };
+
+    /// The component or layout called `name` (as written, or its snake_case
+    /// form), or null.
+    fn find(a: *Analyzer, name: []const u8) ?Found {
+        if (a.by_name.getEntry(name)) |e| return .{ .name = e.key_ptr.*, .text = e.value_ptr.* };
+        var buf: [256]u8 = undefined;
+        var n: usize = 0;
+        for (name, 0..) |c, i| {
+            if (n + 2 > buf.len) return null;
+            if (std.ascii.isUpper(c)) {
+                if (i > 0) {
+                    buf[n] = '_';
+                    n += 1;
+                }
+                buf[n] = std.ascii.toLower(c);
+            } else buf[n] = c;
+            n += 1;
+        }
+        if (a.by_name.getEntry(buf[0..n])) |e| return .{ .name = e.key_ptr.*, .text = e.value_ptr.* };
+        return null;
+    }
+
+    fn chain(a: *Analyzer, outer: []const u8, inner: []const u8) ![]const u8 {
+        return if (inner.len == 0) outer else std.fmt.allocPrint(a.alc, "{s}>{s}", .{ outer, inner });
+    }
+};
+
+/// The kind a value given to a typed prop must have; null for an untyped one.
+fn propKind(p: props_decl.Prop) ?Kind {
+    return switch (p.kind) {
+        .int => .prop_int,
+        .bool => .prop_bool,
+        .string => .prop_string,
+        .any => null,
+    };
+}
+
+/// A file's inline components: name -> body.
+const Locals = std.StringHashMapUnmanaged([]const u8);
+
+/// Uses without repeats.
+const Collect = struct {
+    alc: std.mem.Allocator,
+    list: std.ArrayList(Use) = .empty,
+    seen: std.StringHashMapUnmanaged(void) = .{},
+
+    fn add(c: *Collect, u: Use) !void {
+        const key = try std.fmt.allocPrint(c.alc, "{s}|{s}|{}|{s}", .{ u.path, @tagName(u.kind), u.optional, u.via });
+        if ((try c.seen.getOrPut(c.alc, key)).found_existing) return;
+        try c.list.append(c.alc, u);
+    }
+};
+
+fn rootOf(path: []const u8) []const u8 {
+    return path[0 .. std.mem.indexOfAny(u8, path, ".[") orelse path.len];
+}
+
+fn isSlotName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "slot") or std.mem.startsWith(u8, name, "slot_");
+}
+
+/// Loop items in sight: name -> the data path of the list's item.
+const Scope = struct {
+    bound: std.StringHashMapUnmanaged([]const u8) = .{},
+    parent: ?*const Scope = null,
+
+    fn get(s: *const Scope, name: []const u8) ?[]const u8 {
+        var cur: ?*const Scope = s;
+        while (cur) |c| : (cur = c.parent) {
+            if (c.bound.get(name)) |v| return v;
+        }
+        return null;
+    }
+};
+
+/// One template's own walk: its names, with loop items turned into the
+/// list's path, and what its components read, through their summaries.
+const Walk = struct {
+    a: *Analyzer,
+    text: []const u8,
+    out: Collect,
+    cursor: usize = 0,
+    locals: *const Locals,
+
+    fn nodes(w: *Walk, list: []const Node, scope: *const Scope) anyerror!void {
+        for (list) |node| switch (node) {
+            .interpolation => |e| _ = try w.expr(e, .text, false, scope),
+            .interpolation_with_default => |iwd| _ = try w.expr(iwd.expr, .text, true, scope),
+            .if_node => |n| {
+                try w.condition(n.condition, scope);
+                try w.nodes(n.then_body, scope);
+                if (n.else_body) |eb| try w.nodes(eb, scope);
+            },
+            .for_node => |n| {
+                var inner: Scope = .{ .parent = scope };
+                if (try w.expr(n.iterable, .iter, false, scope)) |p| {
+                    try inner.bound.put(w.a.alc, n.capture, try std.fmt.allocPrint(w.a.alc, "{s}[]", .{p}));
+                } else {
+                    // A list that is not the data's (a prop, a slot): its
+                    // items are not either.
+                    try inner.bound.put(w.a.alc, n.capture, "");
+                }
+                try w.nodes(n.body, &inner);
+            },
+            .component => |c| try w.component(c, scope),
+            else => {},
+        };
+    }
+
+    fn component(w: *Walk, c: anytype, scope: *const Scope) !void {
+        const found: ?Analyzer.Found = if (w.locals.get(c.name)) |body|
+            .{ .name = c.name, .text = body, .local = true }
+        else
+            w.a.find(c.name);
+        const decl: ?props_decl.Decl = if (found) |f| (props_decl.parse(w.a.alc, f.text) catch null) else null;
+        for (c.props) |prop| {
+            if (!prop.is_expr) continue;
+            const kind: Kind = if (decl) |d| (if (d.get(prop.name)) |pd| propKind(pd) orelse .cond else .cond) else .cond;
+            _ = try w.expr(prop.value, kind, false, scope);
+        }
+        if (c.slot_content) |sc| {
+            if (try parse(w.a.alc, sc)) |slot_nodes| try w.nodes(slot_nodes, scope);
+        }
+        const f = found orelse return; // unknown component: a runtime diagnostic
+        const summary = if (f.local)
+            // Memoized per definition: the same name may be defined inline
+            // in other files.
+            try w.a.summarizeWith(try std.fmt.allocPrint(w.a.alc, "inline:{x}", .{@intFromPtr(f.text.ptr)}), f.text, w.locals)
+        else
+            try w.a.summarize(f.name, f.text);
+        for (summary) |u| {
+            const root = rootOf(u.path);
+            if (isSlotName(root)) continue;
+            const given = for (c.props) |prop| {
+                if (std.mem.eql(u8, prop.name, root)) break true;
+            } else false;
+            if (given) continue;
+            var kind = u.kind;
+            var optional = u.optional;
+            if (decl) |d| if (d.get(root)) |pd| {
+                // A declared prop the call leaves out is the caller's name
+                // when the caller has it; without it, the default (or no
+                // value) is used, so it may be missing. A required one with
+                // no default may not.
+                if (!(pd.required and pd.default == null)) optional = true;
+                if (std.mem.eql(u8, u.path, root)) kind = propKind(pd) orelse u.kind;
+            };
+            const mapped = (try w.map(u.path, scope)) orelse continue;
+            try w.out.add(.{ .path = mapped, .line = 0, .kind = kind, .optional = optional, .via = try w.a.chain(c.name, u.via) });
+        }
+    }
+
+    fn condition(w: *Walk, cond: []const u8, scope: *const Scope) !void {
+        var rest = std.mem.trim(u8, cond, " ");
+        const seps = [_][]const u8{ " or ", " and ", " != ", " == ", " <= ", " >= ", " < ", " > " };
+        for (seps) |sep| {
+            if (std.mem.indexOf(u8, rest, sep)) |i| {
+                const left = rest[0..i];
+                const right = rest[i + sep.len ..];
+                const null_check = (std.mem.eql(u8, sep, " == ") or std.mem.eql(u8, sep, " != ")) and
+                    std.mem.eql(u8, std.mem.trim(u8, right, " "), "null");
+                if (null_check) {
+                    _ = try w.expr(left, .cond, true, scope);
+                    return;
+                }
+                try w.condition(left, scope);
+                try w.condition(right, scope);
+                return;
+            }
+        }
+        while (rest.len > 0 and rest[0] == '!') rest = std.mem.trim(u8, rest[1..], " ");
+        _ = try w.expr(rest, .cond, false, scope);
+    }
+
+    /// `path` with a loop item at its root replaced by the list's item path;
+    /// null when it is not the data's (the item of a list that is not).
+    fn map(w: *Walk, path: []const u8, scope: *const Scope) !?[]const u8 {
+        const root = rootOf(path);
+        const bound = scope.get(root) orelse return path;
+        if (bound.len == 0) return null;
+        return try std.fmt.allocPrint(w.a.alc, "{s}{s}", .{ bound, path[root.len..] });
+    }
+
+    /// Records the data path `e` reads, if any, and returns it.
+    fn expr(w: *Walk, raw: []const u8, kind: Kind, optional: bool, scope: *const Scope) !?[]const u8 {
+        const e = std.mem.trim(u8, raw, " \t\r\n");
+        if (e.len == 0 or e[0] == '"' or std.ascii.isDigit(e[0]) or e[0] == '-') return null;
+        if (std.mem.eql(u8, e, "true") or std.mem.eql(u8, e, "false") or std.mem.eql(u8, e, "null")) return null;
+        for (e) |c| if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '.' or c == '[' or c == ']')) return null;
+        const root = rootOf(e);
+        if (std.mem.eql(u8, root, "loop") or std.mem.eql(u8, root, "current_user")) return null;
+        const path = (try w.map(e, scope)) orelse return null;
+        try w.out.add(.{ .path = path, .line = w.lineOf(e), .kind = kind, .optional = optional, .via = "" });
+        return path;
+    }
+
+    /// The line of `text` in the template, searched forward (uses come in
+    /// order), then from the start; 0 when not found.
+    fn lineOf(w: *Walk, needle: []const u8) usize {
+        const at = std.mem.indexOfPos(u8, w.text, w.cursor, needle) orelse
+            std.mem.indexOf(u8, w.text, needle) orelse return 0;
+        w.cursor = at;
+        return 1 + std.mem.count(u8, w.text[0..at], "\n");
+    }
+};
+
+fn parse(alc: std.mem.Allocator, text: []const u8) !?[]const Node {
+    var p = parser_mod.Parser.init(alc, text);
+    p.log_failure = false;
+    const parsed = p.parse() catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null, // a syntax error: reported elsewhere
+    };
+    return parsed.nodes;
+}
+
+fn layoutOf(text: []const u8) ?[]const u8 {
+    const start = props_decl.bodyStart(text);
+    const rest = std.mem.trimStart(u8, text[start..], " \t\r\n");
+    if (!std.mem.startsWith(u8, rest, "extends \"")) return null;
+    const name_start = "extends \"".len;
+    const end = std.mem.indexOfScalarPos(u8, rest, name_start, '"') orelse return null;
+    return rest[name_start..end];
+}
+
+/// Writes the manifest as Zig: one `pub const <name> = .{ .{ path, line,
+/// .kind, optional, via }, ... };` per template, inside a struct the
+/// generated file names `spider_manifest`.
+pub fn writeZig(out: *std.ArrayList(u8), alc: std.mem.Allocator, name: []const u8, uses: []const Use) !void {
+    if (uses.len == 0) return out.print(alc, "        pub const {f} = .{{}};\n", .{std.zig.fmtId(name)});
+    try out.print(alc, "        pub const {f} = .{{\n", .{std.zig.fmtId(name)});
+    for (uses) |u| {
+        try out.print(alc, "            .{{ \"{s}\", {d}, .{s}, {}, \"{s}\" }},\n", .{ u.path, u.line, @tagName(u.kind), u.optional, u.via });
+    }
+    try out.appendSlice(alc, "        };\n");
+}
+
+const t = std.testing;
+
+fn analyzeOne(arena: std.mem.Allocator, sources: []const Source, name: []const u8) ![]const Use {
+    var a = try Analyzer.init(arena, sources);
+    for (sources) |s| if (std.mem.eql(u8, s.name, name)) return a.analyze(s.text);
+    return error.NotFound;
+}
+
+fn has(uses: []const Use, path: []const u8, kind: Kind) bool {
+    for (uses) |u| if (std.mem.eql(u8, u.path, path) and u.kind == kind) return true;
+    return false;
+}
+
+test "manifest: names, loops, conditions, defaults and null checks" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const uses = try analyzeOne(arena.allocator(), &.{.{ .name = "page", .text =
+        \\<h1>{ title }</h1>{ subtitle ?? "-" }
+        \\for (books) |b| { <li>{ b.title } { loop.index }</li> }
+        \\if (user.admin and count > 3) { x } if (note == null) { y }
+    }}, "page");
+    try t.expect(has(uses, "title", .text));
+    try t.expect(has(uses, "subtitle", .text));
+    try t.expect(has(uses, "books", .iter));
+    try t.expect(has(uses, "books[].title", .text));
+    try t.expect(has(uses, "user.admin", .cond));
+    try t.expect(has(uses, "count", .cond));
+    try t.expect(has(uses, "note", .cond));
+    for (uses) |u| {
+        if (std.mem.eql(u8, u.path, "subtitle") or std.mem.eql(u8, u.path, "note")) try t.expect(u.optional);
+        try t.expect(!std.mem.startsWith(u8, u.path, "loop"));
+    }
+    for (uses) |u| if (std.mem.eql(u8, u.path, "title")) try t.expectEqual(@as(usize, 1), u.line);
+}
+
+test "manifest: components read the caller's names, minus props; layouts count; typed props" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const sources = [_]Source{
+        .{ .name = "page", .text = "extends \"layout\"\nfor (books) |b| { <BookCard title=\"{ b.title }\" year=\"{ b.year }\" /> }" },
+        .{ .name = "book_card", .text = "-- props: title!, year: int\n<b>{ title } { year } { shelf_name }</b>" },
+        .{ .name = "layout", .text = "<title>{ page_title }</title>{ slot }" },
+    };
+    const uses = try analyzeOne(arena.allocator(), &sources, "page");
+    try t.expect(has(uses, "books[].year", .prop_int));
+    try t.expect(has(uses, "books[].title", .cond));
+    try t.expect(has(uses, "shelf_name", .text)); // read by the card from the caller
+    try t.expect(has(uses, "page_title", .text)); // read by the layout
+    try t.expect(!has(uses, "title", .text) and !has(uses, "year", .text)); // given by the call
+    for (uses) |u| if (std.mem.eql(u8, u.path, "shelf_name")) try t.expect(!u.optional);
+    for (uses) |u| if (std.mem.eql(u8, u.path, "shelf_name")) try t.expectEqualStrings("BookCard", u.via);
+}
+
+test "manifest: an inline component is read where it is used, not where it is defined" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const uses = try analyzeOne(arena.allocator(), &.{.{ .name = "page", .text =
+        \\for (homes) |u| { <Card /> }
+        \\<Badge label="x" />
+        \\<Card>
+        \\  <div data-id="{ u.id }">{ u.name } <Badge label="{ u.tag }" /></div>
+        \\</Card>
+        \\<Badge>
+        \\  <i>{ label } { theme }</i>
+        \\</Badge>
+    }}, "page");
+    try t.expect(has(uses, "homes", .iter));
+    try t.expect(has(uses, "homes[].id", .text)); // `u` is the caller's loop item
+    try t.expect(has(uses, "homes[].name", .text));
+    try t.expect(has(uses, "theme", .text)); // Badge, inside Card, reads the page's
+    for (uses) |u| {
+        try t.expect(!std.mem.startsWith(u8, u.path, "u.") and !std.mem.eql(u8, u.path, "label"));
+    }
+}
+
+test "manifest: a declared prop the call leaves out may come from the caller: optional, typed" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const sources = [_]Source{
+        .{ .name = "page", .text = "<Nav />" },
+        .{ .name = "nav", .text = "-- props: show_tickets: bool = false, title!, label\nif (show_tickets) { x }{ title }{ label }" },
+    };
+    const uses = try analyzeOne(arena.allocator(), &sources, "page");
+    for (uses) |u| {
+        if (std.mem.eql(u8, u.path, "show_tickets")) try t.expect(u.optional and u.kind == .prop_bool);
+        if (std.mem.eql(u8, u.path, "label")) try t.expect(u.optional);
+        if (std.mem.eql(u8, u.path, "title")) try t.expect(!u.optional); // required, no default
+    }
+    try t.expect(has(uses, "show_tickets", .prop_bool) and has(uses, "title", .text) and has(uses, "label", .text));
+}

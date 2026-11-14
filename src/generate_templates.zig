@@ -1,9 +1,12 @@
 //! Internal: build-time tool that writes the embedded templates file.
 //! Usage: generate-templates <source_dir> <output_file>. It walks
 //! `source_dir` and writes a Zig file declaring `EmbeddedTemplates`, a
-//! struct with one `@embedFile` field per .html and .md file found.
+//! struct with one `@embedFile` field per .html and .md file found, and
+//! `spider_manifest`: what each template reads from a view's data
+//! (render/manifest.zig), for `Ctx.viewChecked`.
 
 const std = @import("std");
+const manifest = @import("render/manifest.zig");
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.arena.allocator();
@@ -25,13 +28,14 @@ pub fn main(init: std.process.Init) !void {
     const source_dir_line = try std.fmt.allocPrint(allocator, "// Source directory: {s}\n\n", .{source_dir});
     defer allocator.free(source_dir_line);
     try output.appendSlice(allocator, source_dir_line);
-    try output.appendSlice(allocator, "pub const EmbeddedTemplates = struct {\n\n");
+    try output.appendSlice(allocator, "pub const EmbeddedTemplates = struct {\n");
     const cwd = std.Io.Dir.cwd();
     var dir = try cwd.openDir(io, source_dir, .{ .iterate = true });
     defer dir.close(io);
     var walker = try dir.walk(allocator);
     defer walker.deinit();
     var template_count: usize = 0;
+    var sources: std.ArrayList(manifest.Source) = .empty;
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.path, ".html") and
@@ -40,6 +44,11 @@ pub fn main(init: std.process.Init) !void {
         var alias_buf: [256]u8 = undefined;
         const names = try generateFieldName(entry.path, &field_name_buf, &alias_buf);
         const embed_path = entry.path;
+        if (std.mem.endsWith(u8, entry.path, ".html")) {
+            const text = try dir.readFileAlloc(io, entry.path, allocator, .limited(8 * 1024 * 1024));
+            try sources.append(allocator, .{ .name = try allocator.dupe(u8, names.primary), .text = text });
+            if (names.alias) |alias| try sources.append(allocator, .{ .name = try allocator.dupe(u8, alias), .text = text });
+        }
         const line = try std.fmt.allocPrint(allocator, "    {s}: []const u8 = @embedFile(\"{s}\"),\n", .{ names.primary, embed_path });
         defer allocator.free(line);
         try output.appendSlice(allocator, line);
@@ -54,7 +63,15 @@ pub fn main(init: std.process.Init) !void {
             try output.appendSlice(allocator, alias_line);
         }
     }
-    try output.appendSlice(allocator, "\n};\n");
+    // What each template reads, for c.viewChecked (render/manifest.zig).
+    try output.appendSlice(allocator, "\n    pub const spider_manifest = struct {\n");
+    var analyzer = try manifest.Analyzer.init(allocator, sources.items);
+    for (sources.items) |src| {
+        const uses = try analyzer.analyze(src.text);
+        try manifest.writeZig(&output, allocator, src.name, uses);
+    }
+    try output.appendSlice(allocator, "    };\n");
+    try output.appendSlice(allocator, "};\n");
     const out_file = try cwd.createFile(io, output_file, .{});
     defer out_file.close(io);
     var buffer: [4096]u8 = undefined;

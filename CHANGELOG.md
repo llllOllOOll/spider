@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A component prop's default is used only when nobody gives the value.**
+  With `-- props: size = "md"`, `<Card />` in a page whose data has a
+  `size` now sees the page's `size`, as a component without the
+  declaration does; the default fills in when neither the call nor the
+  caller has one. Before, the default always won over the caller's value.
+
 - **Embedded templates are parsed once, when the server starts.** A build
   that embeds its templates (a release build, or `.templates = .embedded`)
   used to parse the page, its layout, each component and the content
@@ -51,6 +57,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `spider.Template` is unchanged for templates an app makes itself.
 
 ### Added
+
+- **`c.viewChecked(name, data, opts)`: the view and its data checked when
+  the app compiles.** The build reads every template (with the components
+  and the layout it uses) and lists what it reads from the view's data;
+  `viewChecked` compares that with the type of `data`. A template that
+  does not exist, a name the template reads that the data does not have
+  (`books[].titel`), a value of a type templates do not render (an enum, a
+  list of numbers), a struct printed as text, a loop over something that
+  is not a list, or a value of the wrong type for a typed component prop
+  (`year: int` given a string) is a compile error that names the view, the
+  line or the component it was read through, and the fields the data has.
+  All the problems of a view come in one error. A name read only behind
+  `?? "default"` or `x == null`, or a declared prop the call leaves out,
+  may be missing. Needs the generated templates (`spider.addTemplates` in
+  `build.zig`); `c.view` is unchanged and still checks nothing.
 
 - **A default layout for pages, per group or for the app.**
   `group.defaults(.{ .layout = "admin" })` puts every page of the group

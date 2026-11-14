@@ -84,6 +84,14 @@ test "props: a required prop nobody gives, an unknown prop, a literal of the wro
     try expectProblem(&comps, "<Card title=\"A\" finished=\"yes\" />", .{}, "<b class=\"md\">A (?)✓</b>");
 }
 
+test "props: a default is for when nobody gives the value; the caller's scope does" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("Card", card);
+    try expectOk(&comps, "<Card />", .{ .title = "T", .size = "xl", .finished = true }, "<b class=\"xl\">T (?)✓</b>");
+    try expectOk(&comps, "<Card size=\"sm\" />", .{ .title = "T", .size = "xl" }, "<b class=\"sm\">T (?)</b>");
+}
+
 test "props: an optional prop left out is declared, not a name that is not there" {
     var comps: Comps = .{};
     defer comps.deinit();
