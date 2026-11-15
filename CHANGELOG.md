@@ -28,6 +28,11 @@ used.
 
 ### Fixed
 
+- **Apps cross-compile without an emulator.** `generate-templates`, which an
+  app runs while it builds, was built for the app's target: building for
+  another system ran a foreign binary and failed. It is built for the
+  machine that builds now, like Spider's other build tools.
+
 - **Apps with templates build on Windows.** The embedded templates file was
   written with the walk's `\` separators on Windows (field names such as
   `features\store\views\home`), which is not valid Zig. Template names

@@ -421,12 +421,14 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(cli_exe);
 
-    // generate-templates — CLI tool used by dev projects
+    // generate-templates — apps run it while they build
+    // (spider_dep.artifact("generate-templates")), so it is built for the
+    // machine that builds, not for the app's target.
     const gen_exe = b.addExecutable(.{
         .name = "generate-templates",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/generate_templates.zig"),
-            .target = target,
+            .target = b.graph.host,
             // It runs on every build of an app and parses every template
             // (render/manifest.zig): unoptimized it took ~10 s on 561
             // templates, ReleaseSafe 0.3 s. Built once, then cached.
