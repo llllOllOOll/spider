@@ -121,16 +121,16 @@ fn lsRemoteTag(io: std.Io, allocator: std.mem.Allocator, tag: []const u8) ?[]u8 
     return res.stdout;
 }
 
-/// A development build of the CLI (a version like 0.13.0-dev): new projects
+/// A development build of the CLI (a version like 0.14.0-dev): new projects
 /// start on the development branch, `develop`, the channel it comes from.
 pub fn isDevBuild(v: []const u8) bool {
     return std.mem.indexOf(u8, v, "-dev") != null;
 }
 
 test "isDevBuild: -dev versions only" {
-    try std.testing.expect(isDevBuild("0.13.0-dev"));
+    try std.testing.expect(isDevBuild("0.14.0-dev"));
     try std.testing.expect(!isDevBuild("0.12.1"));
-    try std.testing.expect(!isDevBuild("0.13.0-rc1"));
+    try std.testing.expect(!isDevBuild("0.14.0-rc1"));
 }
 
 /// Saves the Spider dependency: the release with this CLI's version (its

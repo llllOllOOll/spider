@@ -1403,13 +1403,14 @@ published version is available for good.
 | Channel | What it is | In an app's `build.zig.zon` |
 |---|---|---|
 | **Stable** | the releases, tags `vX.Y.Z` (never moved) | `zig fetch --save=spider "git+https://github.com/llllOllOOll/spider?ref=v0.12.1"` |
-| **Development** | the `develop` branch, the next release (`0.13.0-dev`) | `zig fetch --save=spider "git+https://github.com/llllOllOOll/spider#develop"` (saves the commit of that moment) |
+| **Development** | the `develop` branch, the next release (`0.14.0-dev`) | `zig fetch --save=spider "git+https://github.com/llllOllOOll/spider#develop"` (saves the commit of that moment) |
 | A commit | any commit, exactly | `...spider#<commit>` |
 
-Versions read as 0.x semver: a minor (`0.12` → `0.13`) may break an app,
+Versions read as 0.x semver: a minor (`0.12` → `0.14`) may break an app,
 and the [changelog](CHANGELOG.md) says how to move under **Breaking
 changes**; a patch (`0.12.1` → `0.12.2`) only fixes. A released line that
-needs a fix gets a patch without making its users move up.
+needs a fix gets a patch without making its users move up. There is no
+0.13: the release after 0.12 is 0.14.
 
 **Moving a project** (from its directory):
 
@@ -1431,10 +1432,10 @@ for a `-dev` CLI).
 
 | Spider | Zig |
 |---|---|
-| 0.8.0 – 0.12.1, 0.13.0-dev | 0.17.0 |
+| 0.8.0 – 0.12.1, 0.14.0-dev | 0.17.0 |
 | up to 0.7.0 | 0.17.0 development builds |
 
-### Moving from 0.12 to 0.13
+### Moving from 0.12 to 0.14
 
 The changes that may need a line in an app (all in the changelog):
 

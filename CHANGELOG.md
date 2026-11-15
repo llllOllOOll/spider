@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The next release is **0.14.0**: the number 0.13 is skipped and will not be
+used.
+
 ### Breaking changes
 
 - **A path value that is not of its `spider.Path` type is a 404, not a

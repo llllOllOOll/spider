@@ -537,8 +537,8 @@ test "manifestProblem: a good manifest passes" {
 }
 
 test "manifestProblem: the Spider version must be in the range" {
-    const p = comptime manifestProblem(good, ver("0.13.0")).?;
-    try testing.expectEqualStrings("supports Spider >=0.10.0 <0.13.0, but this is Spider 0.13.0", p);
+    const p = comptime manifestProblem(good, ver("0.14.0")).?;
+    try testing.expectEqualStrings("supports Spider >=0.10.0 <0.13.0, but this is Spider 0.14.0", p);
 }
 
 test "manifestProblem: names, versions and ranges" {

@@ -226,10 +226,10 @@ test "parseTarget: version, channels, mistakes" {
 }
 
 test "latestPatch and tagListed read git ls-remote --tags" {
-    const out = "aaa\trefs/tags/v0.11.0\nbbb\trefs/tags/v0.12.0\nccc\trefs/tags/v0.12.1\nccd\trefs/tags/v0.12.1^{}\nddd\trefs/tags/v0.12.10\neee\trefs/tags/v0.13.0\nfff\trefs/tags/v0.12.2-rc1\n";
+    const out = "aaa\trefs/tags/v0.11.0\nbbb\trefs/tags/v0.12.0\nccc\trefs/tags/v0.12.1\nccd\trefs/tags/v0.12.1^{}\nddd\trefs/tags/v0.12.10\neee\trefs/tags/v0.14.0\nfff\trefs/tags/v0.12.2-rc1\n";
     try t.expectEqualStrings("0.12.10", latestPatch(out, "0.12").?);
     try t.expectEqualStrings("0.11.0", latestPatch(out, "0.11").?);
-    try t.expect(latestPatch(out, "0.14") == null);
+    try t.expect(latestPatch(out, "0.15") == null);
     try t.expect(tagListed(out, "v0.12.1"));
     try t.expect(!tagListed(out, "v0.12.3"));
 }

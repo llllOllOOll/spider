@@ -45,7 +45,7 @@ pub fn pinOf(zon: []const u8) ?Pin {
 }
 
 /// The warning for a project pinned with `pin` and a CLI of version
-/// `cli` (like "0.12.1" or "0.13.0-dev"), or null when they match or the
+/// `cli` (like "0.12.1" or "0.14.0-dev"), or null when they match or the
 /// project's version cannot be known (a local path, a commit).
 pub fn warning(alc: std.mem.Allocator, cli: []const u8, pin: Pin) !?[]const u8 {
     const cli_dev = std.mem.indexOf(u8, cli, "-dev") != null;
@@ -100,12 +100,12 @@ test "warning: only when the project's version is known and differs" {
     defer arena.deinit();
     const a = arena.allocator();
     try t.expect((try warning(a, "0.12.1", .{ .release = "0.12.1" })) == null);
-    try t.expect((try warning(a, "0.13.0-dev", .{ .branch = "develop" })) == null);
-    try t.expect((try warning(a, "0.13.0-dev", .path)) == null);
+    try t.expect((try warning(a, "0.14.0-dev", .{ .branch = "develop" })) == null);
+    try t.expect((try warning(a, "0.14.0-dev", .path)) == null);
     try t.expect((try warning(a, "0.12.1", .{ .commit = "9b96559" })) == null);
-    const w = (try warning(a, "0.13.0", .{ .release = "0.12.1" })).?;
-    try t.expect(std.mem.indexOf(u8, w, "uses Spider v0.12.1; this spider is v0.13.0") != null);
+    const w = (try warning(a, "0.14.0", .{ .release = "0.12.1" })).?;
+    try t.expect(std.mem.indexOf(u8, w, "uses Spider v0.12.1; this spider is v0.14.0") != null);
     try t.expect(std.mem.indexOf(u8, w, "--version 0.12.1") != null);
-    try t.expect((try warning(a, "0.13.0-dev", .{ .release = "0.12.1" })) != null);
+    try t.expect((try warning(a, "0.14.0-dev", .{ .release = "0.12.1" })) != null);
     try t.expect((try warning(a, "0.12.1", .{ .branch = "develop" })) != null);
 }

@@ -336,7 +336,7 @@ version stays available for good.
   (`zig fetch --save ...?ref=vX.Y.Z`), and a moved tag would break every
   app on it. `main` holds the latest release.
 - **Development:** `develop`. Its version is the next release with `-dev`,
-  e.g. `0.13.0-dev`, in all three version files: `.version` in
+  e.g. `0.14.0-dev`, in all three version files: `.version` in
   `build.zig.zon`, `src/version.zig` and `src/cli/version.zig` (`zig build
   test` fails when the first two differ). An app
   can use it with `?ref=develop`, or pin a commit (`#<commit>`); `spider
@@ -345,7 +345,7 @@ version stays available for good.
   have to move up, a `release-X.Y` branch from the last `vX.Y.Z` tag gets
   the fix and a patch tag (`vX.Y.Z+1`).
 
-Numbers follow semver, read as 0.x: a minor (`0.12` → `0.13`) may break
+Numbers follow semver, read as 0.x: a minor (`0.12` → `0.14`) may break
 apps, and its CHANGELOG says how to move (Breaking changes); a patch
 (`0.12.1` → `0.12.2`) only fixes. To release: drop `-dev` in the three
 version files, finish the CHANGELOG section, merge `develop` into `main`,
