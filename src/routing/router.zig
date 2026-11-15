@@ -444,7 +444,11 @@ pub const Router = struct {
         defer values.deinit(allocator);
         var node = self.root;
         var it = std.mem.splitScalar(u8, path, '/');
-        while (it.next()) |segment| {
+        while (true) {
+            // Where this segment starts: a trailing wildcard takes the path
+            // from here to its end.
+            const seg_start = it.index orelse break;
+            const segment = it.next() orelse break;
             if (segment.len == 0) continue;
             if (node.children.get(segment)) |child| {
                 node = child;
@@ -462,12 +466,15 @@ pub const Router = struct {
                 try values.append(allocator, value);
                 node = child;
             } else if (node.wildcard_child) |child| {
+                // `/*` ends a route: it takes this segment and the rest of
+                // the path, as sent (`a/b%2Fc`).
                 const key = try allocator.dupe(u8, "*");
                 errdefer allocator.free(key);
-                const value = try allocator.dupe(u8, segment);
+                const value = try allocator.dupe(u8, std.mem.trimEnd(u8, path[seg_start..], "/"));
                 errdefer allocator.free(value);
                 try params.put(allocator, key, value);
                 node = child;
+                break;
             } else {
                 return null;
             }

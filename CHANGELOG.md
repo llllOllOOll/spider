@@ -28,6 +28,9 @@ used.
 
 ### Fixed
 
+- **A trailing `/*` wildcard takes the rest of the path.** `/files/*`
+  matched `/files/a` but not `/files/a/b`; it matches any depth now, and
+  `c.params.get("*")` holds the rest as sent (`a/b%2Fc.pdf`).
 - **`spider.gzip` skips formats that are compressed already.** Images
   (SVG excepted), video, audio, woff fonts, zip and gzip archives, PDF and
   the Office formats were compressed again for no gain; they go as they

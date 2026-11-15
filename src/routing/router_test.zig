@@ -66,6 +66,21 @@ test "router: wildcard route match carries its middlewares" {
     try expectMws(&mws_a, m.middlewares);
 }
 
+test "router: a trailing wildcard takes the rest of the path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var r = try Router.init(std.testing.allocator);
+    defer r.deinit();
+
+    try r.addRoute(.GET, "/files/*", .{ .handler = h1 });
+    const one = (try r.match(.GET, "/files/a.pdf", arena.allocator())).?;
+    try std.testing.expectEqualStrings("a.pdf", one.params.get("*").?);
+    const deep = (try r.match(.GET, "/files/a/b%2Fc/d.txt", arena.allocator())).?;
+    try std.testing.expectEqualStrings("a/b%2Fc/d.txt", deep.params.get("*").?);
+    try std.testing.expect((try r.match(.GET, "/files", arena.allocator())) == null);
+    try std.testing.expect((try r.match(.GET, "/other/a/b", arena.allocator())) == null);
+}
+
 test "router: middlewares are per method on the same path" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

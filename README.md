@@ -260,7 +260,9 @@ _ = server
 ```
 
 Every builder method returns `*Server`: chain calls, or write `_ = server.x(...);`
-as a statement. Paths: `/users/:id` params, a trailing `/*` wildcard.
+as a statement. Paths: `/users/:id` params, a trailing `/*` wildcard that
+takes the rest of the path (`/files/*` matches `/files/a/b.pdf`;
+`c.params.get("*")` is `a/b.pdf`, as sent).
 
 ### Route config (third argument)
 
