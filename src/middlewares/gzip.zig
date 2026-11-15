@@ -9,21 +9,49 @@ const dev_reload = @import("../modules/dev_reload.zig");
 
 const MIN_COMPRESS_BYTES: usize = 1024;
 
-/// Case-insensitive check whether the request includes Accept-Encoding: gzip.
+/// Whether the request's Accept-Encoding accepts gzip.
 fn clientAcceptsGzip(headers: std.StringHashMapUnmanaged([]const u8)) bool {
     var iter = headers.iterator();
     while (iter.next()) |entry| {
-        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "accept-encoding")) {
-            if (std.mem.indexOf(u8, entry.value_ptr.*, "gzip") != null) {
-                return true;
-            }
-        }
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "accept-encoding")) return acceptsGzip(entry.value_ptr.*);
     }
     return false;
 }
 
+/// An Accept-Encoding value read as RFC 9110 says: `gzip` (or `*` when gzip
+/// is not named) with a q-value above 0. `gzip;q=0` is a refusal.
+fn acceptsGzip(value: []const u8) bool {
+    var gzip_q: ?bool = null;
+    var star_q: ?bool = null;
+    var it = std.mem.splitScalar(u8, value, ',');
+    while (it.next()) |raw| {
+        var parts = std.mem.splitScalar(u8, raw, ';');
+        const coding = std.mem.trim(u8, parts.first(), " \t");
+        var allowed = true;
+        while (parts.next()) |param| {
+            const p = std.mem.trim(u8, param, " \t");
+            if (p.len >= 2 and (p[0] == 'q' or p[0] == 'Q') and p[1] == '=') allowed = !zeroQ(p[2..]);
+        }
+        if (std.ascii.eqlIgnoreCase(coding, "gzip") or std.ascii.eqlIgnoreCase(coding, "x-gzip")) {
+            gzip_q = allowed;
+        } else if (std.mem.eql(u8, coding, "*")) {
+            star_q = allowed;
+        }
+    }
+    return gzip_q orelse star_q orelse false;
+}
+
+/// "0", "0.", "0.0", "0.000": a q-value of zero.
+fn zeroQ(q: []const u8) bool {
+    const v = std.mem.trim(u8, q, " \t");
+    if (v.len == 0 or v[0] != '0') return false;
+    for (v[1..]) |ch| if (ch != '.' and ch != '0') return false;
+    return true;
+}
+
 /// Compresses the response body with gzip when the request's
-/// `Accept-Encoding` mentions gzip and the body has at least 1024 bytes, and
+/// `Accept-Encoding` accepts gzip (`gzip;q=0` refuses it) and the body has
+/// at least 1024 bytes, and
 /// adds `content-encoding: gzip` and `vary: accept-encoding`. Smaller bodies,
 /// responses without a body, responses that already have a
 /// `Content-Encoding` and streams (SSE, WebSocket) pass unchanged. The
@@ -147,5 +175,33 @@ test "gzip: a response that already has a Content-Encoding passes untouched" {
     }.n);
     try testing.expectEqual(@as(usize, 1), count(resp, "content-encoding"));
     try testing.expectEqualStrings("br", header(resp, "content-encoding").?);
+    try testing.expectEqualStrings(big_text, resp.body.?);
+}
+
+test "gzip: Accept-Encoding is read with its q-values" {
+    try testing.expect(acceptsGzip("gzip"));
+    try testing.expect(acceptsGzip("gzip, deflate, br"));
+    try testing.expect(acceptsGzip("GZIP"));
+    try testing.expect(acceptsGzip("deflate, gzip;q=0.5"));
+    try testing.expect(acceptsGzip("*"));
+    try testing.expect(!acceptsGzip("gzip;q=0"));
+    try testing.expect(!acceptsGzip("gzip; q=0.000"));
+    try testing.expect(!acceptsGzip("br"));
+    try testing.expect(!acceptsGzip("identity"));
+    try testing.expect(!acceptsGzip("*;q=0"));
+    try testing.expect(!acceptsGzip("*, gzip;q=0"));
+    try testing.expect(!acceptsGzip("notgzip"));
+}
+
+test "gzip: a client that refused gzip gets the body as it is" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var c = try ctxWith(arena.allocator(), "gzip;q=0, br");
+    const resp = try middleware(&c, struct {
+        fn n(_: *Ctx) anyerror!Response {
+            return .{ .status = .ok, .body = big_text, .content_type = "text/plain" };
+        }
+    }.n);
+    try testing.expect(header(resp, "content-encoding") == null);
     try testing.expectEqualStrings(big_text, resp.body.?);
 }

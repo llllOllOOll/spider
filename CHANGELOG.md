@@ -28,6 +28,9 @@ used.
 
 ### Fixed
 
+- **`spider.gzip` reads `Accept-Encoding` with its q-values.** It
+  compressed whenever the header mentioned gzip, so `gzip;q=0` (a refusal)
+  got gzip. `gzip` or `*` above q=0 accepts it now.
 - **`clientIp()` reads an `X-Forwarded-For` entry with a port or IPv6
   brackets.** Some proxies write `203.0.113.7:4242` or
   `[2001:db8::1]:443`; such an entry was not read. The port and brackets
