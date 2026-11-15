@@ -9,6 +9,22 @@ const dev_reload = @import("../modules/dev_reload.zig");
 
 const MIN_COMPRESS_BYTES: usize = 1024;
 
+/// `body` gzipped, in `arena`. The compressor state (about 230 KB) and its
+/// 64 KB window live in the arena, not on the stack: a stack frame that size
+/// would be touched on every request through the middleware, and under zio
+/// each connection's fiber keeps the pages it touched.
+fn gzipInArena(arena: std.mem.Allocator, body: []const u8) ![]u8 {
+    // Gzip usually shrinks the body; room for the pathological case.
+    const output_buf = try arena.alloc(u8, body.len + (body.len / 2) + 128);
+    var output_w = std.Io.Writer.fixed(output_buf);
+    const window = try arena.alloc(u8, std.compress.flate.max_window_len);
+    const compressor = try arena.create(std.compress.flate.Compress);
+    compressor.* = try std.compress.flate.Compress.init(&output_w, window, .gzip, .fastest);
+    try compressor.writer.writeAll(body);
+    try compressor.finish();
+    return output_buf[0..output_w.buffered().len];
+}
+
 /// False for content types that are compressed already: images (SVG is
 /// text and is compressed), video, audio, woff fonts, zip and gzip
 /// archives, PDF and the Office formats (zip inside).
@@ -109,25 +125,8 @@ pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
     // 4. Skip small payloads (diminishing returns)
     if (body.len < MIN_COMPRESS_BYTES) return resp;
 
-    // 5. Allocate output buffer (gzip typically reduces size, but we allocate
-    //    generously to handle pathological cases)
-    const out_capacity = body.len + (body.len / 2) + 128;
-    const output_buf = try c.arena.alloc(u8, out_capacity);
-    var output_w = std.Io.Writer.fixed(output_buf);
-
-    // 6. Compress using flate with gzip container
-    var win_buf: [std.compress.flate.max_window_len]u8 = undefined;
-    var compressor = try std.compress.flate.Compress.init(
-        &output_w,
-        &win_buf,
-        .gzip,
-        .fastest,
-    );
-    try compressor.writer.writeAll(body);
-    try compressor.finish();
-
-    const compressed_len = output_w.buffered().len;
-    const compressed = output_buf[0..compressed_len];
+    const compressed = try gzipInArena(c.arena, body);
+    const compressed_len = compressed.len;
     // Not smaller: the original goes.
     if (compressed_len >= body.len) return resp;
 
