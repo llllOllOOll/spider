@@ -113,7 +113,7 @@ pub const Options = struct {
     /// How often the set of `*.sql` files under `src/` is checked. When a
     /// file is added, removed or renamed the build is started again:
     /// `addMigrations` lists them when build.zig is configured, and a
-    /// running `zig build --watch` never configures again (COY-626).
+    /// running `zig build --watch` never configures again.
     sql_check_ms: u32 = 1000,
     /// How long the build gets to exit after being asked to, before it is
     /// killed.
@@ -1011,7 +1011,7 @@ test "supervise: a lock left by a dead process is taken over" {
     try testing.expectEqual(@as(u32, 1), summary.starts);
 }
 
-test "supervise: a migration file added or removed under src restarts the build, so its list is fresh (COY-626)" {
+test "supervise: a migration file added or removed under src restarts the build, so its list is fresh" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
     // addMigrations lists the .sql files when build.zig is configured, and a
     // running `zig build --watch` never configures again: the build is
