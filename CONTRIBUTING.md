@@ -15,6 +15,7 @@ If you're on Windows or macOS and want to make Spider work on your platform, tha
 - [Development Setup](#development-setup)
 - [Running Tests](#running-tests)
 - [Platform Support](#platform-support)
+- [Versions and channels](#versions-and-channels)
 - [Submitting a PR](#submitting-a-pr)
 - [Known TODOs](#known-todos)
 
@@ -324,6 +325,31 @@ Known issues:
 This is high-value work — you don't need to understand Spider's internals to help.
 
 ---
+
+## Versions and channels
+
+Whoever uses Spider picks the version; nobody has to move. A published
+version stays available for good.
+
+- **Stable:** the tags `vX.Y.Z`. A tag is never moved, deleted or made
+  again: an app pins its Spider by tag and content hash in `build.zig.zon`
+  (`zig fetch --save ...?ref=vX.Y.Z`), and a moved tag would break every
+  app on it. `main` holds the latest release.
+- **Development:** `develop`. Its version is the next release with `-dev`,
+  e.g. `0.13.0-dev`, in all three version files: `.version` in
+  `build.zig.zon`, `src/version.zig` and `src/cli/version.zig` (`zig build
+  test` fails when the first two differ). An app
+  can use it with `?ref=develop`, or pin a commit (`#<commit>`); `spider
+  new` from a `-dev` CLI starts the project on `develop`.
+- **Maintenance:** when a released line needs a fix and its users should not
+  have to move up, a `release-X.Y` branch from the last `vX.Y.Z` tag gets
+  the fix and a patch tag (`vX.Y.Z+1`).
+
+Numbers follow semver, read as 0.x: a minor (`0.12` → `0.13`) may break
+apps, and its CHANGELOG says how to move (Breaking changes); a patch
+(`0.12.1` → `0.12.2`) only fixes. To release: drop `-dev` in the three
+version files, finish the CHANGELOG section, merge `develop` into `main`,
+tag `vX.Y.Z` on `main`, then put `develop` on the next `-dev`.
 
 ## Submitting a PR
 

@@ -121,11 +121,27 @@ fn lsRemoteTag(io: std.Io, allocator: std.mem.Allocator, tag: []const u8) ?[]u8 
     return res.stdout;
 }
 
-/// Saves the Spider dependency: the release with this CLI's version. A CLI
-/// built from an unreleased tree has no such tag yet and falls back to main,
-/// saying so.
+/// A development build of the CLI (a version like 0.13.0-dev): new projects
+/// start on the development branch, `develop`, the channel it comes from.
+pub fn isDevBuild(v: []const u8) bool {
+    return std.mem.indexOf(u8, v, "-dev") != null;
+}
+
+test "isDevBuild: -dev versions only" {
+    try std.testing.expect(isDevBuild("0.13.0-dev"));
+    try std.testing.expect(!isDevBuild("0.12.1"));
+    try std.testing.expect(!isDevBuild("0.13.0-rc1"));
+}
+
+/// Saves the Spider dependency: the release with this CLI's version (its
+/// tag, which never moves). A development build uses `develop`. A release
+/// CLI whose tag is not published yet falls back to main, saying so.
 fn runZigFetch(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void {
     const repo = "git+" ++ spider_repo;
+    if (comptime isDevBuild(@import("version.zig").version)) {
+        std.debug.print("note: this spider is a development build ({s}); the project uses the develop branch\n", .{@import("version.zig").version});
+        return zigFetch(io, app_name, repo ++ "#develop");
+    }
     const answer = lsRemoteTag(io, allocator, spider_ref);
     defer if (answer) |a| allocator.free(a);
     if (fetchSource(answer, spider_ref) == .main) {
@@ -198,7 +214,9 @@ fn render(allocator: std.mem.Allocator, tmpl: []const u8, app_name: []const u8, 
     defer allocator.free(step5);
     var port_buf: [5]u8 = undefined;
     const port = std.fmt.bufPrint(&port_buf, "{d}", .{pgPort(app_name)}) catch unreachable;
-    return std.mem.replaceOwned(u8, allocator, step5, "{{pg_port}}", port);
+    const step6 = try std.mem.replaceOwned(u8, allocator, step5, "{{pg_port}}", port);
+    defer allocator.free(step6);
+    return std.mem.replaceOwned(u8, allocator, step6, "{{spider_version}}", @import("version.zig").version);
 }
 
 /// AGENTS.md for the new project: the shared template plus the sections that
