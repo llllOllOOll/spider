@@ -1,11 +1,12 @@
 const std = @import("std");
 
 /// Which `std.Io` implementation `Server.listen()` constructs.
-/// `.threaded` is the default: a bounded `Io.Threaded` pool
-/// (`cpu_count - 1` concurrent async tasks, unlimited `.concurrent()`).
-/// `.zio` is experimental: an event-driven runtime (io_uring/epoll/kqueue)
-/// with no such thread-per-task ceiling for I/O-bound work — see
-/// `zio_backend_test.zig` for a benchmark demonstrating the difference.
+/// `.zio` is the default: fibers on an event loop (epoll on Linux, kqueue
+/// on macOS and the BSDs, IOCP on Windows), a few threads for any number
+/// of connections. `.threaded` is `std.Io.Threaded`: one thread per open
+/// connection, kept by the pool after it closes; fine for a few hundred
+/// connections, but around a thousand at once new ones wait in its queue
+/// and the threads' memory stays. See `docs/adr/0001-io-backend.md`.
 const IoBackend = enum { threaded, zio };
 
 /// Where the templates of an app that declares `spider_templates` come from.
@@ -273,8 +274,8 @@ pub fn build(b: *std.Build) void {
     const io_backend = b.option(
         IoBackend,
         "io_backend",
-        "I/O backend for Server.listen(): threaded (default, stable) or zio (experimental, event-driven)",
-    ) orelse .threaded;
+        "I/O backend for Server.listen(): zio (default, fibers on an event loop) or threaded (one thread per connection)",
+    ) orelse .zio;
 
     const build_options = b.addOptions();
     build_options.addOption(IoBackend, "io_backend", io_backend);
@@ -313,21 +314,18 @@ pub fn build(b: *std.Build) void {
         // one that is not fetched yet ends this configure pass; Zig fetches
         // it and configures again, within the same `zig build`.
         //
-        // Forces epoll instead of zio's own Linux default (io_uring):
-        // io_uring_setup() came back EPERM under Docker's default seccomp
-        // profile (io_uring syscalls aren't in its allowlist — a
-        // well-known restriction, io_uring has a heavy CVE history).
-        // Confirmed via a minimal zio-only reproduction (github.com/
-        // llllOllOOll/spider tree, see zio_app scratch project) deployed
-        // to the same VPS/Docker setup as production: crashed within
-        // seconds with io_uring (default), ran clean with
-        // -Dbackend=epoll forced. epoll is supported by every Linux
+        // On Linux, forces epoll instead of zio's own default (io_uring):
+        // io_uring_setup() comes back EPERM under Docker's default seccomp
+        // profile (io_uring syscalls aren't in its allowlist). A minimal
+        // zio-only reproduction in a container crashed within seconds with
+        // io_uring and ran clean with epoll. epoll is allowed by every
         // seccomp profile in practice, at the cost of io_uring's lower
-        // per-syscall overhead — not a concern at this app's scale.
+        // per-syscall overhead.
+        // Other systems keep zio's default (kqueue, IOCP).
         const zio_dep = b.dependency("zio", .{
             .target = target,
             .optimize = optimize,
-            .backend = @as(?[]const u8, "epoll"),
+            .backend = @as(?[]const u8, if (target.result.os.tag == .linux) "epoll" else null),
         });
         mod.addImport("zio", zio_dep.module("zio"));
     }
@@ -522,7 +520,7 @@ pub fn build(b: *std.Build) void {
 
     // test-zio-backend — integration test for the zio io_backend: starts a
     // real Server.listen() and hits it with real concurrent HTTP requests.
-    // Only exists when `-Dio_backend=zio` is passed, since it can't build
+    // Only exists with the zio backend (the default), since it can't build
     // against a `mod` that doesn't have `zio` wired in. Has side effects
     // (binds a TCP listener), so it's a separate step from `test`.
     if (io_backend == .zio) {
@@ -539,7 +537,7 @@ pub fn build(b: *std.Build) void {
         });
         const run_zio_backend_test = b.addRunArtifact(zio_backend_test);
         run_zio_backend_test.has_side_effects = true;
-        const test_zio_backend_step = b.step("test-zio-backend", "Run zio io_backend integration test (requires -Dio_backend=zio)");
+        const test_zio_backend_step = b.step("test-zio-backend", "Run zio io_backend integration test (the default backend)");
         test_zio_backend_step.dependOn(&run_zio_backend_test.step);
     }
 
@@ -628,8 +626,8 @@ pub fn build(b: *std.Build) void {
 
     // test-pacman-local — the HTTP client against scripted local servers
     // (timeouts, cut bodies, oversized responses). No network needed. Runs
-    // on the backend chosen with -Dio_backend: threaded by default, zio
-    // with -Dio_backend=zio (the one production uses).
+    // on the backend chosen with -Dio_backend: zio by default, threaded
+    // with -Dio_backend=threaded.
     {
         const local_opts = b.addOptions();
         local_opts.addOption(bool, "zio", io_backend == .zio);

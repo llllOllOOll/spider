@@ -20,9 +20,9 @@ All from the repo root.
 |---|---|---|
 | Build lib + CLI | `zig build` | — (CLI lands in `zig-out/bin/spider`) |
 | Unit tests | `zig build test` | — |
-| End-to-end (real sockets) | `zig build test-e2e` | free ephemeral ports |
-| Same, zio backend | `zig build test-e2e -Dio_backend=zio` | — |
-| zio integration test | `zig build test-zio-backend -Dio_backend=zio` | step only exists with that flag |
+| End-to-end (real sockets) | `zig build test-e2e` | free ephemeral ports (zio, the default backend) |
+| Same, threaded backend | `zig build test-e2e -Dio_backend=threaded` | — |
+| zio integration test | `zig build test-zio-backend` | the step does not exist with `-Dio_backend=threaded` |
 | Postgres wrapper tests | `PG_HOST=127.0.0.1 PG_PORT=5435 PG_USER=postgres PG_PASSWORD=postgres PG_DB=postgres zig build test-pg` | a **disposable** Postgres (see below) |
 | HTTP client tests | `zig build test-pacman` | network access (most tests call httpbingo.org) |
 | Same, scripted local servers | `zig build test-pacman-local` (also with `-Dio_backend=zio`) | — |
@@ -36,13 +36,13 @@ All from the repo root.
 Disposable Postgres for `test-pg`: `docker compose -f docker-compose.test.yml up -d`
 (postgres/postgres on 5435, tmpfs). Without the `PG_*` vars the tests target
 localhost:5432 as spider/spider — don't point them at a database you care about.
-First build fetches dependencies (zio) over the network. zio is pinned to a
-commit of its `main` branch (no release tag supports Zig 0.17.0 yet).
+First build fetches dependencies (zio) over the network. zio is pinned to its
+v0.20.1 release (`?ref=v0.20.1#<commit>` in build.zig.zon).
 
 Before calling a change done: `zig build test`, and for anything under
 `src/core/`, `src/ws/`, `src/routing/` or `src/providers/` also `test-e2e` on
-**both** io backends (the default is `threaded`; apps may build with
-`-Dio_backend=zio`).
+**both** io backends (the default is `zio`; `-Dio_backend=threaded` for the
+other).
 
 ## Rules
 

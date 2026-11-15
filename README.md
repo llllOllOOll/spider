@@ -52,8 +52,8 @@ const spider_dep = b.dependency("spider", .{
     .target = target,
     .optimize = optimize,
     // I/O backend: comment one line and uncomment the other.
-    .io_backend = .threaded, // OS threads, blocking sockets (default)
-    // .io_backend = .zio, // fibers on an event loop (epoll)
+    .io_backend = .zio, // fibers on an event loop (default)
+    // .io_backend = .threaded, // one OS thread per connection
     // .pg = true, .sqlite = true, .r2 = true, .qrcode = true, .xlsx = true,
 });
 const spider_mod = spider_dep.module("spider");
@@ -1313,19 +1313,24 @@ const maybe = spider.env.get("OPTIONAL_KEY");      // ?[]const u8
 
 ### I/O backend
 
-Chosen at build time: `threaded` (default: OS threads, blocking sockets) or
-`zio` (fibers on an event loop). In the app's `build.zig` (generated apps have
-both lines, one commented):
+Chosen at build time: `zio` (default: fibers on an event loop — epoll on
+Linux, kqueue on macOS and the BSDs, IOCP on Windows — a few threads for any
+number of connections) or `threaded` (one OS thread per open connection). In
+the app's `build.zig` (generated apps have both lines, one commented):
 
 ```zig
 const spider_dep = b.dependency("spider", .{
     .target = target,
-    .io_backend = .threaded, // or .zio
+    .io_backend = .zio, // or .threaded
 });
 ```
 
+`threaded` is fine for a few hundred connections at once; around a thousand,
+new connections wait for a thread and the threads' memory stays after they
+close. Why `zio` is the default: [ADR 0001](docs/adr/0001-io-backend.md).
+
 Code that writes to sockets must use the server's Io (`c._io` in handlers).
-With `zio`, handlers run on several threads: guard shared state.
+Handlers run on several threads with either backend: guard shared state.
 
 ---
 

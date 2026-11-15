@@ -13,8 +13,8 @@
         // back without it, Zig fetches it and configures again, all within
         // one `zig build`.
         .zio = .{
-            .url = "git+https://github.com/lalinsky/zio#3bbd74d68a889e5d4da7274afdc7c7617ec614d6",
-            .hash = "zio-0.19.0-xHbVVMFBLACx1T0028HttNTseV6bDeL0AI4id51AHx57",
+            .url = "git+https://github.com/lalinsky/zio?ref=v0.20.1#c0a6b5877c9bbc71d2d2c0b3374ce7fa61a4ec12",
+            .hash = "zio-0.20.1-xHbVVI0wLwDgE2dXWDCWH0UfCQYEhnBYHs1Td12oAGeR",
             .lazy = true,
         },
         .pg = .{

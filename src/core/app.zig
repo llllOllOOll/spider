@@ -1915,7 +1915,7 @@ pub fn Server(comptime T: type) type {
             try out.interface.flush();
         }
 
-        /// Default backend. One `Io.Threaded` pool shared by every worker
+        /// The `threaded` backend (`-Dio_backend=threaded`). One `Io.Threaded` pool shared by every worker
         /// thread; each of the `cpu_count` threads below runs its own
         /// `accept()` loop directly against the listener socket.
         fn listenThreaded(self: *Self, options: ListenOptions) !void {
@@ -1984,7 +1984,7 @@ pub fn Server(comptime T: type) type {
             for (threads) |t| t.join();
         }
 
-        /// Experimental backend (`-Dio_backend=zio`). `zio.Runtime` manages
+        /// The default backend (`zio`). `zio.Runtime` manages
         /// its own N executors internally, so unlike `listenThreaded` this
         /// does not spawn cpu_count raw OS threads each doing their own
         /// accept() — a single `workerLoop` call is enough: its

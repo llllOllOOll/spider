@@ -13,8 +13,8 @@ pub fn build(b: *std.Build) void {
         // `.templates = .embedded` (or `.disk`) forces one in every build.
         .optimize = optimize,
         // I/O backend: comment one line and uncomment the other.
-        .io_backend = .threaded, // OS threads, blocking sockets (default)
-        // .io_backend = .zio, // fibers on an event loop (epoll)
+        .io_backend = .zio, // fibers on an event loop (default)
+        // .io_backend = .threaded, // one OS thread per connection
     });
     const spider_mod = spider_dep.module("spider");
 

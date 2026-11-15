@@ -44,7 +44,7 @@ spider_mod.addImport("spider_config", b.createModule(.{
 }));
 exe.root_module.addImport("spider", spider_mod);
 ```
-Without `.pg = true` etc., `spider.pg` fails with "no module named 'spider_pg'". Without the `spider_config` import, `spider.config.zig` is ignored. `-Dio_backend=zio` selects the fiber backend (default `threaded`). First build fetches deps (network). `spider new` generates all of this.
+Without `.pg = true` etc., `spider.pg` fails with "no module named 'spider_pg'". Without the `spider_config` import, `spider.config.zig` is ignored. `-Dio_backend` picks the I/O backend: `zio` (default, fibers on an event loop) or `threaded` (one OS thread per connection; around a thousand connections at once new ones wait and memory stays). First build fetches deps (network). `spider new` generates all of this.
 
 ## Server — `spider.app(decorations) / spider.appWithConfig(spider.Config)`
 

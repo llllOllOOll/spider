@@ -56,6 +56,16 @@ used.
 
 ### Changed
 
+- **`zio` is the default I/O backend** (`-Dio_backend`, and what `spider
+  new` writes). It serves any number of connections on a few threads
+  (fibers on an event loop: epoll on Linux, kqueue on macOS and the BSDs,
+  IOCP on Windows). `threaded` keeps one OS thread per open connection; at
+  around a thousand connections at once new ones waited seconds for a
+  thread and the threads' memory stayed after they closed. An app that
+  sets `.io_backend = .threaded` in its `build.zig` keeps it; one that sets
+  nothing moves to `zio`. zio is pinned to its v0.20.1 release (it fixes a
+  thread leak in its own pool), and on Linux it uses epoll, not io_uring,
+  which Docker's default seccomp profile refuses. Why: `docs/adr/0001-io-backend.md`.
 - **A component prop's default is used only when nobody gives the value.**
   With `-- props: size = "md"`, `<Card />` in a page whose data has a
   `size` now sees the page's `size`, as a component without the
