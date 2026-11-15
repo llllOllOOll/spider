@@ -44,10 +44,13 @@ pub fn main(init: std.process.Init) !void {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.path, ".html") and
             !std.mem.endsWith(u8, entry.path, ".md")) continue;
+        // Names and @embedFile paths use '/' on every system (the walk
+        // gives '\' on Windows); the file is still read by its own path.
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const embed_path = slashPath(entry.path, std.fs.path.sep, &path_buf);
         var field_name_buf: [256]u8 = undefined;
         var alias_buf: [256]u8 = undefined;
-        const names = try generateFieldName(entry.path, &field_name_buf, &alias_buf);
-        const embed_path = entry.path;
+        const names = try generateFieldName(embed_path, &field_name_buf, &alias_buf);
         if (std.mem.endsWith(u8, entry.path, ".html")) {
             const text = try dir.readFileAlloc(io, entry.path, allocator, .limited(8 * 1024 * 1024));
             try sources.append(allocator, .{ .name = try allocator.dupe(u8, names.primary), .text = text });
@@ -104,6 +107,15 @@ pub fn main(init: std.process.Init) !void {
     try writer.interface.writeAll(formatted);
     try writer.interface.flush();
     std.debug.print("Ride the lightning — {d} templates forged in {s} ({d} compiled by Elroy)\n", .{ template_count, output_file, compiled });
+}
+
+/// `path` with its separator `sep` replaced by '/', in `buffer` (as long as
+/// `path`). On systems whose separator is already '/', `path` itself.
+fn slashPath(path: []const u8, sep: u8, buffer: []u8) []const u8 {
+    if (sep == '/') return path;
+    const out = buffer[0..path.len];
+    for (path, out) |ch, *o| o.* = if (ch == sep) '/' else ch;
+    return out;
 }
 
 const FieldNames = struct {
@@ -179,4 +191,27 @@ fn generateFieldName(path: []const u8, buffer: []u8, alias_buffer: []u8) !FieldN
         j += 1;
     }
     return .{ .primary = buffer[0..j] };
+}
+
+const testing = std.testing;
+
+test "a template path with Windows separators gives the same names and embed path as one with '/'" {
+    const native = "features\\store\\views\\home.html";
+    var path_buf: [256]u8 = undefined;
+    const path = slashPath(native, '\\', &path_buf);
+    try testing.expectEqualStrings("features/store/views/home.html", path);
+
+    var a: [256]u8 = undefined;
+    var b: [256]u8 = undefined;
+    var c: [256]u8 = undefined;
+    var d: [256]u8 = undefined;
+    const from_windows = try generateFieldName(path, &a, &b);
+    const from_posix = try generateFieldName("features/store/views/home.html", &c, &d);
+    try testing.expectEqualStrings(from_posix.primary, from_windows.primary);
+    try testing.expectEqualStrings("store_home", from_windows.primary);
+}
+
+test "on a system whose separator is '/', a backslash in a file name is kept" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("odd\\name.html", slashPath("odd\\name.html", '/', &buf));
 }

@@ -28,6 +28,11 @@ used.
 
 ### Fixed
 
+- **Apps with templates build on Windows.** The embedded templates file was
+  written with the walk's `\` separators on Windows (field names such as
+  `features\store\views\home`), which is not valid Zig. Template names
+  and `@embedFile` paths now use `/` on every system.
+
 - **A WebSocket connection no longer keeps ~200 KB of stack.** Its server
   state (with a 64 KB read buffer) was built on the stack and copied twice;
   it lives in the request arena now and is set up in place, so only the

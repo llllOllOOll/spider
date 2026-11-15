@@ -455,7 +455,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(manifest_tool); // apps: spider_dep.artifact("spider-test-manifest")
-    mod.addImport("test_manifest", testManifest(b, manifest_tool, "src", &.{"cli/"}));
+    mod.addImport("test_manifest", testManifest(b, manifest_tool, "src", &.{ "cli/", "generate_templates.zig" }));
     cli_exe.root_module.addImport("test_manifest", testManifest(b, manifest_tool, "src/cli", &.{"templates/"}));
     cli_exe.root_module.addImport("spider_testing", b.createModule(.{ .root_source_file = b.path("src/testing.zig") }));
     const mod_tests = b.addTest(.{
@@ -498,6 +498,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_version_check.step);
     // CLI argument handling (src/cli/args.zig, via src/cli/main.zig's test block).
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = cli_exe.root_module })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = gen_exe.root_module })).step);
 
     // spider.xlsx is opt-in. Without -Dxlsx=true the module is not part
     // of the build at all, and that is checked here: the probe, which
