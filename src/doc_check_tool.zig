@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const doc_check = @import("doc_check.zig");
+const slashPath = @import("internal/paths.zig").slashPath;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -48,7 +49,10 @@ pub fn main(init: std.process.Init) !void {
         walk: while (try walker.next(io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
             if (std.mem.endsWith(u8, entry.path, "_test.zig")) continue;
-            const shown = try std.fs.path.join(alc, &.{ dir_path, entry.path });
+            // '/' on every system (the walk gives '\' on Windows): the
+            // `--skip` texts and the report use it.
+            var rel_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const shown = try std.fmt.allocPrint(alc, "{s}/{s}", .{ dir_path, slashPath(entry.path, std.fs.path.sep, &rel_buf) });
             for (skips.items) |s| if (std.mem.indexOf(u8, shown, s) != null) continue :walk;
 
             const source = try dir.readFileAlloc(io, entry.path, alc, .limited(16 * 1024 * 1024));

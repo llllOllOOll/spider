@@ -28,6 +28,10 @@ used.
 
 ### Fixed
 
+- **`spider clean` removes stale cache manifests on Windows.** Zig writes
+  the cache paths in its manifests with `\` there, and only `o/` was
+  recognized, so a manifest naming a removed output was never dropped.
+
 - **A new app's tests pass on Windows.** The test-file discovery check and
   `spider.testing.conventions` read paths with `\` on Windows, so every
   test file looked left out of the test binary and route files were not

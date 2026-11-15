@@ -9,7 +9,8 @@ const fixtures = @import("render/elroy/fixtures.zig");
 // internal: a build step of Spider's own tests.
 pub fn main(init: std.process.Init) !void {
     const alc = init.arena.allocator();
-    var args = init.minimal.args.iterate();
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, alc);
+    defer args.deinit();
     _ = args.skip();
     const out_path = args.next() orelse return error.MissingOutputPath;
 
