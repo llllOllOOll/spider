@@ -673,21 +673,7 @@ fn appendValue(alc: std.mem.Allocator, result: *std.ArrayList(u8), value: Value)
 /// Escapes the five characters that matter in HTML text and in quoted
 /// attribute values (single or double quotes).
 pub fn appendEscaped(alc: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
-    var start: usize = 0;
-    for (s, 0..) |ch, i| {
-        const entity: []const u8 = switch (ch) {
-            '&' => "&amp;",
-            '<' => "&lt;",
-            '>' => "&gt;",
-            '"' => "&quot;",
-            '\'' => "&#39;",
-            else => continue,
-        };
-        try result.appendSlice(alc, s[start..i]);
-        try result.appendSlice(alc, entity);
-        start = i + 1;
-    }
-    try result.appendSlice(alc, s[start..]);
+    return @import("escape.zig").append(alc, result, s);
 }
 
 fn valueToString(value: Value, alc: std.mem.Allocator) ![]const u8 {

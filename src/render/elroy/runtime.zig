@@ -220,21 +220,7 @@ fn itemHandle(comptime E: type, p: *const E) Item(E) {
 /// Text exactly as the template engine writes it: the five characters that
 /// matter in HTML text and quoted attributes escaped.
 pub fn escaped(w: *std.Io.Writer, s: []const u8) !void {
-    var start: usize = 0;
-    for (s, 0..) |ch, i| {
-        const entity: []const u8 = switch (ch) {
-            '&' => "&amp;",
-            '<' => "&lt;",
-            '>' => "&gt;",
-            '"' => "&quot;",
-            '\'' => "&#39;",
-            else => continue,
-        };
-        try w.writeAll(s[start..i]);
-        try w.writeAll(entity);
-        start = i + 1;
-    }
-    try w.writeAll(s[start..]);
+    return @import("../escape.zig").write(w, s);
 }
 
 /// A value as `appendValue` writes it.

@@ -339,6 +339,7 @@ test {
     _ = @import("core/listen_port.zig");
     _ = @import("middlewares/https.zig");
     _ = @import("middlewares/gzip.zig");
+    _ = @import("render/escape.zig");
     _ = @import("modules/mail/mail.zig");
     _ = @import("modules/mail/message.zig");
     _ = @import("modules/mail/http.zig");

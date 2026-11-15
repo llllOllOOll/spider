@@ -121,6 +121,12 @@ used.
 
 ### Changed
 
+- **HTML escaping is faster, with the same output.** The next character
+  to escape is searched 16 bytes at a time and the text before it copied in
+  one piece; consecutive specials come from a table. Text with few specials
+  renders about 4x faster, attributes about 2x, text full of them about
+  1.3x; the bytes are the same (checked against the byte-by-byte
+  replacement on every byte value and on random text).
 - **`zio` is the default I/O backend** (`-Dio_backend`, and what `spider
   new` writes). It serves any number of connections on a few threads
   (fibers on an event loop: epoll on Linux, kqueue on macOS and the BSDs,
