@@ -13,6 +13,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
+const sys = @import("../internal/sys.zig");
 
 /// A client certificate, in one of the two formats real-world mTLS
 /// deployments show up in. ICP-Brasil certificates are normally issued as
@@ -210,13 +211,15 @@ pub fn request(
     return .{ .status = @fromBackingInt(@intCast(status_code)), .body = body };
 }
 
-/// A path in /tmp for one request's file: `kind`, then 16 random bytes.
+/// A path in the temporary directory (/tmp on POSIX) for one request's
+/// file: `kind`, then 16 random bytes.
 /// (The names used to come from the clock: two requests in the same
 /// nanosecond shared their files, and anyone could tell the next name.)
 fn tempPath(arena: std.mem.Allocator, io: Io, kind: []const u8, extension: []const u8) ![]const u8 {
     var random: [16]u8 = undefined;
     io.random(&random);
-    const path = try std.fmt.allocPrint(arena, "/tmp/spider-mtls-{s}-{s}{s}", .{ kind, &std.fmt.bytesToHex(random, .lower), extension });
+    const dir = try sys.tempDir(arena);
+    const path = try std.fmt.allocPrint(arena, "{s}{c}spider-mtls-{s}-{s}{s}", .{ dir, std.fs.path.sep, kind, &std.fmt.bytesToHex(random, .lower), extension });
     if (builtin.is_test and test_issued_count < test_issued.len and path.len < test_issued[0].len) {
         test_issued[test_issued_count] = @splat(0);
         @memcpy(test_issued[test_issued_count][0..path.len], path);
@@ -228,7 +231,7 @@ fn tempPath(arena: std.mem.Allocator, io: Io, kind: []const u8, extension: []con
 // Under test, the paths tempPath handed out: a test checks that its own
 // files are gone, not that /tmp has no spider-mtls-* file at all (another
 // process running the tests at the same time has its own there).
-var test_issued: [8][96]u8 = undefined;
+var test_issued: [8][256]u8 = undefined;
 var test_issued_count: usize = 0;
 
 fn writeTempFile(io: Io, path: []const u8, data: []const u8) !void {
@@ -521,10 +524,12 @@ test "tempPath: a name nobody can guess, different on every call" {
     const arena = arena_state.allocator();
     const first = try tempPath(arena, std.testing.io, "cert", ".pem");
     const second = try tempPath(arena, std.testing.io, "cert", ".pem");
-    try std.testing.expect(std.mem.startsWith(u8, first, "/tmp/spider-mtls-cert-"));
-    try std.testing.expect(std.mem.endsWith(u8, first, ".pem"));
+    const name = std.fs.path.basename(first);
+    try std.testing.expectEqualStrings(try sys.tempDir(arena), std.fs.path.dirname(first).?);
+    try std.testing.expect(std.mem.startsWith(u8, name, "spider-mtls-cert-"));
+    try std.testing.expect(std.mem.endsWith(u8, name, ".pem"));
     // 16 random bytes in hex between the two.
-    try std.testing.expectEqual("/tmp/spider-mtls-cert-".len + 32 + ".pem".len, first.len);
+    try std.testing.expectEqual("spider-mtls-cert-".len + 32 + ".pem".len, name.len);
     try std.testing.expect(!std.mem.eql(u8, first, second));
 }
 

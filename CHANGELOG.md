@@ -28,6 +28,11 @@ used.
 
 ### Fixed
 
+- **The mTLS client works on Windows.** It wrote the request's certificate
+  and key to `/tmp`, which Windows does not have, so every call failed. It
+  uses the user's temporary directory there (what `%TEMP%` points to);
+  POSIX systems keep `/tmp`.
+
 - **`spider clean` removes stale cache manifests on Windows.** Zig writes
   the cache paths in its manifests with `\` there, and only `o/` was
   recognized, so a manifest naming a removed output was never dropped.

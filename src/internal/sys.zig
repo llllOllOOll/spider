@@ -75,8 +75,23 @@ pub fn stderrShowsColor() bool {
     return std.c.isatty(std.c.STDERR_FILENO) == 1;
 }
 
-/// Declared here: std.os.windows has neither. Only referenced on Windows.
+/// The directory for temporary files, without a trailing separator:
+/// `/tmp` on POSIX, the user's temporary directory on Windows (from
+/// GetTempPathW, what %TEMP% points to).
+pub fn tempDir(arena: std.mem.Allocator) ![]const u8 {
+    if (is_windows) {
+        var buf: [windows.PATH_MAX_WIDE + 1]u16 = undefined;
+        const n = win.GetTempPathW(buf.len, &buf);
+        if (n == 0 or n > buf.len) return error.NoTempDir;
+        const dir = try std.unicode.wtf16LeToWtf8Alloc(arena, buf[0..n]);
+        return std.mem.trimEnd(u8, dir, "\\");
+    }
+    return "/tmp";
+}
+
+/// Declared here: std.os.windows has none of them. Only referenced on Windows.
 const win = struct {
+    extern "kernel32" fn GetTempPathW(len: u32, buf: [*]u16) callconv(.winapi) u32;
     extern "ws2_32" fn shutdown(s: windows.HANDLE, how: i32) callconv(.winapi) i32;
     extern "kernel32" fn GetConsoleMode(console: windows.HANDLE, mode: *u32) callconv(.winapi) windows.BOOL;
 };
@@ -86,6 +101,15 @@ test "the monotonic clock moves forward" {
     const b = monotonicNs();
     try std.testing.expect(a > 0);
     try std.testing.expect(b >= a);
+}
+
+test "the temporary directory exists and has no trailing separator" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dir = try tempDir(arena.allocator());
+    try std.testing.expect(dir.len > 0);
+    try std.testing.expect(dir[dir.len - 1] != std.fs.path.sep);
+    try std.Io.Dir.cwd().access(std.testing.io, dir, .{});
 }
 
 test "the wall clock is after 2025" {
