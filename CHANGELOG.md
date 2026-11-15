@@ -28,6 +28,20 @@ used.
 
 ### Fixed
 
+- **A line break in a response header no longer stops the server.** A
+  redirect whose target came from the client (`?next=` after a login)
+  stopped the process in a ReleaseSafe build (std.http asserts there is
+  none) and could split the header in ReleaseFast/Small. `redirect` and
+  `redirectWith` percent-encode control characters, DEL and non-ASCII
+  bytes in the target, and any header still holding a line break is
+  refused with a 500 instead of reaching the socket.
+- **`clientIp()` no longer answers with the proxy's address for an
+  unreadable `X-Forwarded-For` entry.** Behind a trusted proxy, an entry
+  such as `unknown` or garbage made it return the peer, so a client could
+  pass for the proxy (an allowlist of internal addresses, a per-address
+  limit). It is null (unknown) now; an unreadable entry beyond the client
+  is still never read.
+
 - **A field that points to a struct renders the struct's fields.**
   `c.view("x", .{ .book = &book }, .{})` rendered `{ book.title }` empty:
   the pointer was read as an object with no fields. It now reads the struct

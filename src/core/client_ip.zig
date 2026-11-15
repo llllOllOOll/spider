@@ -5,7 +5,9 @@
 //! believed when the TCP peer is one of `Config.trusted_proxies`: then the
 //! header is walked right to left, skipping trusted hops, and the first
 //! untrusted address is the client. With no trusted proxies (the default)
-//! the header is ignored and the peer address is the answer.
+//! the header is ignored and the peer address is the answer. An entry the
+//! walk reaches that is not an address ("unknown", garbage) makes the
+//! client unknown (null), never the proxy's address.
 
 const std = @import("std");
 
@@ -21,7 +23,9 @@ pub fn resolve(peer: ?[]const u8, xff: ?[]const u8, trusted: []const []const u8)
         const start = if (std.mem.lastIndexOfScalar(u8, header[0..i], ',')) |c| c + 1 else 0;
         const hop = std.mem.trim(u8, header[start..i], " \t");
         if (hop.len > 0) {
-            if (parse(hop) == null) return p; // garbage: don't guess
+            // Not an address where the walk needs one: unknown. The peer
+            // would be a guess, and a client could pass for the proxy.
+            if (parse(hop) == null) return null;
             if (!isTrusted(hop, trusted)) return hop;
             leftmost = hop;
         }
@@ -89,8 +93,19 @@ test "clientIp: trusted peer — first untrusted hop from the right" {
     try t.expectEqualStrings("10.1.1.1", resolve("10.0.0.2", "10.1.1.1, 10.0.0.3", tr).?);
     // No header: the peer.
     try t.expectEqualStrings("10.0.0.2", resolve("10.0.0.2", null, tr).?);
-    // Garbage in the header: the peer, not a guess.
-    try t.expectEqualStrings("10.0.0.2", resolve("10.0.0.2", "not-an-ip", tr).?);
+}
+
+test "clientIp: an unreadable entry the walk reaches is unknown, never the proxy" {
+    const tr = &[_][]const u8{"10.0.0.0/8"};
+    // Falling back to the peer would let a client pass for the proxy (an
+    // allowlist of internal addresses, a per-address limit).
+    for ([_][]const u8{ "not-an-ip", "unknown", "_hidden", "<script>", "\"203.0.113.7\"", "[203.0.113.7]", "203.0.113.7\xff", "203.0.113.7, garbage" }) |xff| {
+        try t.expect(resolve("10.0.0.2", xff, tr) == null);
+    }
+    // An unreadable entry beyond the client is never read.
+    try t.expectEqualStrings("203.0.113.7", resolve("10.0.0.2", "garbage, 203.0.113.7", tr).?);
+    // Empty entries are skipped.
+    try t.expectEqualStrings("203.0.113.7", resolve("10.0.0.2", "203.0.113.7, ,", tr).?);
 }
 
 test "clientIp: IPv6, single addresses and prefix edges" {

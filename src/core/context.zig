@@ -1013,7 +1013,9 @@ pub const Ctx = struct {
     /// `Config.trusted_proxies` — the first untrusted address in
     /// X-Forwarded-For (right to left). Use this for logs, audit and rate
     /// limits; a client can write X-Forwarded-For itself, so reading the
-    /// header directly lets anyone pick their own address.
+    /// header directly lets anyone pick their own address. Null when the
+    /// address is unknown: no peer, or an entry the walk reaches is not an
+    /// address (then it is not the proxy's address either).
     pub fn clientIp(self: *Ctx) ?[]const u8 {
         return @import("client_ip.zig").resolve(self.peerAddress(), self.header("X-Forwarded-For"), self._trusted_proxies);
     }
