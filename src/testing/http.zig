@@ -328,12 +328,12 @@ test "formBody: fields in order, encoded as a browser does" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const body = try formBody(arena.allocator(), .{
-        .title = "Olá, mundo & co",
+        .title = "Café, crème & co",
         .count = 3,
         .draft = true,
         .note = @as(?[]const u8, null),
     });
-    try std.testing.expectEqualStrings("title=Ol%C3%A1%2C+mundo+%26+co&count=3&draft=true", body);
+    try std.testing.expectEqualStrings("title=Caf%C3%A9%2C+cr%C3%A8me+%26+co&count=3&draft=true", body);
 }
 
 test "Response: header, cookie and the expectations" {

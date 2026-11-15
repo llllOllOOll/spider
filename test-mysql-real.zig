@@ -1,4 +1,4 @@
-// Teste real do driver MySQL com conexão TCP
+// Real test of the MySQL driver over a TCP connection
 const std = @import("std");
 const mysql = @import("./src/drivers/mysql/mysql.zig");
 
@@ -7,14 +7,14 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    std.log.info("=== TESTE REAL MYSQL ===", .{});
+    std.log.info("=== REAL MYSQL TEST ===", .{});
 
-    // Criar threaded Io instance
+    // Threaded Io instance
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
 
-    // Inicializar driver MySQL
-    std.log.info("Inicializando driver MySQL...", .{});
+    // MySQL driver
+    std.log.info("Initializing the MySQL driver...", .{});
 
     try mysql.init(allocator, io, .{
         .host = "localhost",
@@ -26,9 +26,9 @@ pub fn main() !void {
     });
     defer mysql.deinit();
 
-    std.log.info("✅ Driver MySQL inicializado com sucesso", .{});
+    std.log.info("✅ MySQL driver initialized", .{});
 
-    // Testar consultas básicas
+    // Basic queries
     var query_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer query_arena.deinit();
 
@@ -38,22 +38,22 @@ pub fn main() !void {
         completed: bool,
     };
 
-    // Teste 1: Consulta simples
-    std.log.info("Teste 1: Consulta SELECT...", .{});
+    // Test 1: plain query
+    std.log.info("Test 1: SELECT query...", .{});
     const todos = mysql.query(Todo, query_arena.allocator(), "SELECT * FROM todos", .{}) catch |err| {
-        std.log.info("❌ Consulta falhou (esperado): {}", .{err});
+        std.log.info("❌ Query failed (expected): {}", .{err});
         return;
     };
 
-    std.log.info("✅ Consulta executada com sucesso", .{});
-    std.log.info("Retornados {} todos", .{todos.len});
+    std.log.info("✅ Query ran", .{});
+    std.log.info("Returned {} todos", .{todos.len});
 
     for (todos) |todo| {
         std.log.info("Todo: id={}, title='{s}', completed={}", .{ todo.id, todo.title, todo.completed });
     }
 
-    // Teste 2: Consulta com parâmetros
-    std.log.info("Teste 2: Consulta com parâmetros...", .{});
+    // Test 2: query with parameters
+    std.log.info("Test 2: query with parameters...", .{});
     const User = struct {
         id: i32,
         name: []const u8,
@@ -61,15 +61,15 @@ pub fn main() !void {
     };
 
     const user = mysql.queryOne(User, query_arena.allocator(), "SELECT * FROM users WHERE id = ?", .{1}) catch |err| {
-        std.log.info("❌ Consulta com parâmetros falhou (esperado): {}", .{err});
+        std.log.info("❌ Query with parameters failed (expected): {}", .{err});
         return;
     };
 
     if (user) |u| {
-        std.log.info("✅ Usuário encontrado: id={}, name='{s}', email='{s}'", .{ u.id, u.name, u.email });
+        std.log.info("✅ User found: id={}, name='{s}', email='{s}'", .{ u.id, u.name, u.email });
     } else {
-        std.log.info("❌ Usuário não encontrado", .{});
+        std.log.info("❌ User not found", .{});
     }
 
-    std.log.info("=== TESTE CONCLUÍDO ===", .{});
+    std.log.info("=== TEST DONE ===", .{});
 }

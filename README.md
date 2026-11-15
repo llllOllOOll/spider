@@ -1104,7 +1104,7 @@ through the app.
 fn exportCsv(c: *spider.Ctx) !spider.Response {
     const csv = try buildCsv(c.arena); // any bytes
     return c.download(csv, .{
-        .filename = "Relatório de março.csv", // may come from user data
+        .filename = "Café report — March.csv", // may come from user data
         .content_type = spider.content_types.csv,
     });
 }
@@ -1136,11 +1136,11 @@ With `spider.xlsx` (opt-in, see `modules/xlsx/README.md`):
 fn exportPoll(c: *spider.Ctx) !spider.Response {
     const wb = try spider.xlsx.Workbook.init(c.arena);
     defer wb.deinit();
-    const sheet = try wb.addSheet("Resultado");
-    try sheet.setRow(0, 0, &.{ .{ .text = "Opção" }, .{ .text = "Votos" } }, .{ .bold = true });
-    try sheet.setRow(1, 0, &.{ .{ .text = "Sim" }, .int(12) }, .{});
+    const sheet = try wb.addSheet("Result");
+    try sheet.setRow(0, 0, &.{ .{ .text = "Option" }, .{ .text = "Votes" } }, .{ .bold = true });
+    try sheet.setRow(1, 0, &.{ .{ .text = "Yes" }, .int(12) }, .{});
     return c.download(try wb.toOwnedSlice(c.arena), .{
-        .filename = "resultado.xlsx",
+        .filename = "result.xlsx",
         .content_type = spider.content_types.xlsx,
     });
 }

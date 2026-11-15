@@ -23,9 +23,9 @@ const std = @import("std");
 const xlsx = @import("xlsx");
 
 const results_csv =
-    \\Opção,Votos,%,Data
-    \\Sim,12,75%,2026-10-07
-    \\"Não, talvez",4,25%,2026-10-07 13:01:01
+    \\Option,Votes,%,Date
+    \\Yes,12,75%,2026-10-07
+    \\"No, maybe",4,25%,2026-10-07 13:01:01
     \\Total,16,TRUE,=1+1
     \\"He said ""hi""",1234.50,  padded  ,a<b&c>d
     \\1900-03-01,-0.5,+55 11 99999-0000,@handle
@@ -33,17 +33,17 @@ const results_csv =
 ;
 
 const votes_csv =
-    \\Unidade,Opção
-    \\101,Sim
-    \\Bloco A — 12,Não
+    \\Unit,Option
+    \\101,Yes
+    \\Block A — 12,No
     \\
 ;
 
 /// What the reader must give for the "Results" sheet of the sample.
 const results_read =
-    \\0: 'Opção' 'Votos' '%' 'Data'
-    \\1: 'Sim' 12 0.75 2026-10-07T00:00:00
-    \\2: 'Não, talvez' 4 0.25 2026-10-07T13:01:01
+    \\0: 'Option' 'Votes' '%' 'Date'
+    \\1: 'Yes' 12 0.75 2026-10-07T00:00:00
+    \\2: 'No, maybe' 4 0.25 2026-10-07T13:01:01
     \\3: 'Total' =SUM(B2:B3) true '=1+1'
     \\4: 'He said "hi"' 1234.5 '  padded  ' 'a<b&c>d'
     \\5: 1900-03-01T00:00:00 -0.5 '+55 11 99999-0000' '@handle'
@@ -52,21 +52,21 @@ const results_read =
 
 /// A table as an application would receive it from a person.
 const import_csv =
-    \\Nome,Quantidade,Preço,Data,Ativo
-    \\"Tal, Fulano",12,3.5,2026-10-07,TRUE
-    \\Sicrano,0,-1250.75,2024-02-29,FALSE
-    \\"Linha 1
-    \\Linha 2",7,0.125,1999-12-31,TRUE
+    \\Name,Quantity,Price (€),Date,Active
+    \\"Doe, Jane",12,3.5,2026-10-07,TRUE
+    \\Roe,0,-1250.75,2024-02-29,FALSE
+    \\"Line 1
+    \\Line 2",7,0.125,1999-12-31,TRUE
     \\
 ;
 
 /// What the reader must give for the workbook LibreOffice makes of it.
 const import_read =
-    \\0: 'Nome' 'Quantidade' 'Preço' 'Data' 'Ativo'
-    \\1: 'Tal, Fulano' 12 3.5 2026-10-07T00:00:00 true
-    \\2: 'Sicrano' 0 -1250.75 2024-02-29T00:00:00 false
-    \\3: 'Linha 1
-    \\Linha 2' 7 0.125 1999-12-31T00:00:00 true
+    \\0: 'Name' 'Quantity' 'Price (€)' 'Date' 'Active'
+    \\1: 'Doe, Jane' 12 3.5 2026-10-07T00:00:00 true
+    \\2: 'Roe' 0 -1250.75 2024-02-29T00:00:00 false
+    \\3: 'Line 1
+    \\Line 2' 7 0.125 1999-12-31T00:00:00 true
     \\
 ;
 
@@ -115,12 +115,12 @@ fn buildSample(gpa: std.mem.Allocator) !*xlsx.Workbook {
     const results = try wb.addSheet("Results");
     try results.setColumnWidth(0, 30);
     try results.setColumnWidth(3, 22);
-    try results.setRow(0, 0, &.{ .{ .text = "Opção" }, .{ .text = "Votos" }, .{ .text = "%" }, .{ .text = "Data" } }, header);
-    try results.set(1, 0, .{ .text = "Sim" });
+    try results.setRow(0, 0, &.{ .{ .text = "Option" }, .{ .text = "Votes" }, .{ .text = "%" }, .{ .text = "Date" } }, header);
+    try results.set(1, 0, .{ .text = "Yes" });
     try results.set(1, 1, .int(12));
     try results.setStyled(1, 2, .{ .number = 0.75 }, .{ .number_format = .percent });
     try results.setStyled(1, 3, .{ .date = .{ .year = 2026, .month = 10, .day = 7 } }, iso_date);
-    try results.set(2, 0, .{ .text = "Não, talvez" });
+    try results.set(2, 0, .{ .text = "No, maybe" });
     try results.set(2, 1, .int(4));
     try results.setStyled(2, 2, .{ .number = 0.25 }, .{ .number_format = .percent });
     try results.setStyled(2, 3, .{ .datetime = try .fromUnix(1_791_378_061) }, iso_datetime);
@@ -140,9 +140,9 @@ fn buildSample(gpa: std.mem.Allocator) !*xlsx.Workbook {
     try results.setAutoFilter(.{ .first_row = 0, .first_col = 0, .last_row = 2, .last_col = 3 });
 
     const votes = try wb.addSheet("Votes");
-    try votes.setRow(0, 0, &.{ .{ .text = "Unidade" }, .{ .text = "Opção" } }, header);
-    try votes.setRow(1, 0, &.{ .{ .text = "101" }, .{ .text = "Sim" } }, .{});
-    try votes.setRow(2, 0, &.{ .{ .text = "Bloco A — 12" }, .{ .text = "Não" } }, .{});
+    try votes.setRow(0, 0, &.{ .{ .text = "Unit" }, .{ .text = "Option" } }, header);
+    try votes.setRow(1, 0, &.{ .{ .text = "101" }, .{ .text = "Yes" } }, .{});
+    try votes.setRow(2, 0, &.{ .{ .text = "Block A — 12" }, .{ .text = "No" } }, .{});
     try votes.freeze(1, 1);
     return wb;
 }

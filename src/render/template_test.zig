@@ -441,16 +441,16 @@ test "else if - multiple branches in for loop (status translation)" {
     };
     const template_str =
         \\for (items) |t| {
-        \\<span>if (t.status == "in_progress") { Em execução } else if (t.status == "open") { Aberto } else if (t.status == "resolved") { Resolvido } else { { t.status } }</span>
+        \\<span>if (t.status == "in_progress") { In progress } else if (t.status == "open") { Open } else if (t.status == "resolved") { Resolved } else { { t.status } }</span>
         \\}
     ;
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
     const result = try tmpl.render(.{ .items = items }, alc);
     defer alc.free(result);
-    try std.testing.expect(std.mem.indexOf(u8, result, "<span>Em execução</span>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "<span>Aberto</span>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "<span>Resolvido</span>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<span>In progress</span>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<span>Open</span>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "<span>Resolved</span>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "<span>other</span>") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "else") == null);
 }
@@ -550,29 +550,29 @@ test "style tag content not processed as template" {
 test "else if - multiple branches at top level (not in for loop)" {
     const alc = std.testing.allocator;
     const template_str =
-        \\if (status == "open") { <p>Aberto</p> }
-        \\else if (status == "in_progress") { <p>Em execução</p> }
-        \\else if (status == "resolved") { <p>Resolvido</p> }
-        \\else { <p>Outro</p> }
+        \\if (status == "open") { <p>Open</p> }
+        \\else if (status == "in_progress") { <p>In progress</p> }
+        \\else if (status == "resolved") { <p>Resolved</p> }
+        \\else { <p>Other</p> }
     ;
     var tmpl = try Template.init(alc, template_str);
     defer tmpl.deinit();
 
     const r1 = try tmpl.render(.{ .status = "open" }, alc);
     defer alc.free(r1);
-    try std.testing.expectEqualStrings("<p>Aberto</p>", std.mem.trim(u8, r1, " \n\r\t"));
+    try std.testing.expectEqualStrings("<p>Open</p>", std.mem.trim(u8, r1, " \n\r\t"));
 
     const r2 = try tmpl.render(.{ .status = "in_progress" }, alc);
     defer alc.free(r2);
-    try std.testing.expectEqualStrings("<p>Em execução</p>", std.mem.trim(u8, r2, " \n\r\t"));
+    try std.testing.expectEqualStrings("<p>In progress</p>", std.mem.trim(u8, r2, " \n\r\t"));
 
     const r3 = try tmpl.render(.{ .status = "resolved" }, alc);
     defer alc.free(r3);
-    try std.testing.expectEqualStrings("<p>Resolvido</p>", std.mem.trim(u8, r3, " \n\r\t"));
+    try std.testing.expectEqualStrings("<p>Resolved</p>", std.mem.trim(u8, r3, " \n\r\t"));
 
     const r4 = try tmpl.render(.{ .status = "other" }, alc);
     defer alc.free(r4);
-    try std.testing.expectEqualStrings("<p>Outro</p>", std.mem.trim(u8, r4, " \n\r\t"));
+    try std.testing.expectEqualStrings("<p>Other</p>", std.mem.trim(u8, r4, " \n\r\t"));
 }
 
 test "else if - multiple branches with extends layout (real app path)" {
@@ -580,10 +580,10 @@ test "else if - multiple branches with extends layout (real app path)" {
     const layout_html = "<html><body>{ slot }</body></html>";
     const page_html =
         \\extends "layout"
-        \\if (status == "open") { <p>Aberto</p> }
-        \\else if (status == "in_progress") { <p>Em execução</p> }
-        \\else if (status == "resolved") { <p>Resolvido</p> }
-        \\else { <p>Outro</p> }
+        \\if (status == "open") { <p>Open</p> }
+        \\else if (status == "in_progress") { <p>In progress</p> }
+        \\else if (status == "resolved") { <p>Resolved</p> }
+        \\else { <p>Other</p> }
     ;
     var components = std.StringHashMapUnmanaged([]const u8){};
     try components.put(alc, try alc.dupe(u8, "layout"), try alc.dupe(u8, layout_html));
@@ -601,22 +601,22 @@ test "else if - multiple branches with extends layout (real app path)" {
 
     const r1 = try tmpl.render(.{ .status = "open" }, alc);
     defer alc.free(r1);
-    try std.testing.expect(std.mem.indexOf(u8, r1, "<p>Aberto</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1, "<p>Open</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r1, "else") == null);
 
     const r2 = try tmpl.render(.{ .status = "in_progress" }, alc);
     defer alc.free(r2);
-    try std.testing.expect(std.mem.indexOf(u8, r2, "<p>Em execução</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2, "<p>In progress</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r2, "else") == null);
 
     const r3 = try tmpl.render(.{ .status = "resolved" }, alc);
     defer alc.free(r3);
-    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolvido</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolved</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r3, "else") == null);
 
     const r4 = try tmpl.render(.{ .status = "other" }, alc);
     defer alc.free(r4);
-    try std.testing.expect(std.mem.indexOf(u8, r4, "<p>Outro</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r4, "<p>Other</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r4, "else") == null);
 }
 
@@ -626,7 +626,7 @@ test "else if - tab-indented else if chains (real file format)" {
     const alc = std.testing.allocator;
     const layout_html = "<html><body>{ slot }</body></html>";
     // Use \t before each else-if to simulate a tab-indented file
-    const page_html = "extends \"layout\"\nif (status == \"open\") { <p>Aberto</p> }\n\telse if (status == \"in_progress\") { <p>Em execu\xc3\xa7\xc3\xa3o</p> }\n\telse if (status == \"resolved\") { <p>Resolvido</p> }\n\telse { <p>Outro</p> }";
+    const page_html = "extends \"layout\"\nif (status == \"open\") { <p>Open</p> }\n\telse if (status == \"in_progress\") { <p>In progress</p> }\n\telse if (status == \"resolved\") { <p>Resolved</p> }\n\telse { <p>Other</p> }";
     var components = std.StringHashMapUnmanaged([]const u8){};
     try components.put(alc, try alc.dupe(u8, "layout"), try alc.dupe(u8, layout_html));
     defer {
@@ -643,12 +643,12 @@ test "else if - tab-indented else if chains (real file format)" {
 
     const r2 = try tmpl.render(.{ .status = "in_progress" }, alc);
     defer alc.free(r2);
-    try std.testing.expect(std.mem.indexOf(u8, r2, "Em execu") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2, "In progress") != null);
     try std.testing.expect(std.mem.indexOf(u8, r2, "else") == null);
 
     const r3 = try tmpl.render(.{ .status = "resolved" }, alc);
     defer alc.free(r3);
-    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolvido</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolved</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r3, "else") == null);
 }
 
@@ -657,13 +657,13 @@ test "else if - inline style: } else if on same line" {
     const alc = std.testing.allocator;
     const template_str =
         \\if (status == "open") {
-        \\  <p>Aberto</p>
+        \\  <p>Open</p>
         \\} else if (status == "in_progress") {
-        \\  <p>Em execução</p>
+        \\  <p>In progress</p>
         \\} else if (status == "resolved") {
-        \\  <p>Resolvido</p>
+        \\  <p>Resolved</p>
         \\} else {
-        \\  <p>Outro</p>
+        \\  <p>Other</p>
         \\}
     ;
     var tmpl = try Template.init(alc, template_str);
@@ -671,22 +671,22 @@ test "else if - inline style: } else if on same line" {
 
     const r1 = try tmpl.render(.{ .status = "open" }, alc);
     defer alc.free(r1);
-    try std.testing.expect(std.mem.indexOf(u8, r1, "<p>Aberto</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1, "<p>Open</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r1, "else") == null);
 
     const r2 = try tmpl.render(.{ .status = "in_progress" }, alc);
     defer alc.free(r2);
-    try std.testing.expect(std.mem.indexOf(u8, r2, "Em execu") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2, "In progress") != null);
     try std.testing.expect(std.mem.indexOf(u8, r2, "else") == null);
 
     const r3 = try tmpl.render(.{ .status = "resolved" }, alc);
     defer alc.free(r3);
-    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolvido</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolved</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r3, "else") == null);
 
     const r4_inline = try tmpl.render(.{ .status = "other" }, alc);
     defer alc.free(r4_inline);
-    try std.testing.expect(std.mem.indexOf(u8, r4_inline, "<p>Outro</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r4_inline, "<p>Other</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r4_inline, "else") == null);
 }
 
@@ -698,13 +698,13 @@ test "else if - inline style with HTML before the if block" {
         \\extends "layout"
         \\<h1>título</h1>
         \\if (status == "open") {
-        \\  <p>Aberto</p>
+        \\  <p>Open</p>
         \\} else if (status == "in_progress") {
-        \\  <p>Em execução</p>
+        \\  <p>In progress</p>
         \\} else if (status == "resolved") {
-        \\  <p>Resolvido</p>
+        \\  <p>Resolved</p>
         \\} else {
-        \\  <p>Outro</p>
+        \\  <p>Other</p>
         \\}
     ;
     var components = std.StringHashMapUnmanaged([]const u8){};
@@ -723,12 +723,12 @@ test "else if - inline style with HTML before the if block" {
 
     const r2 = try tmpl.render(.{ .status = "in_progress" }, alc);
     defer alc.free(r2);
-    try std.testing.expect(std.mem.indexOf(u8, r2, "Em execu") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2, "In progress") != null);
     try std.testing.expect(std.mem.indexOf(u8, r2, "else") == null);
 
     const r3 = try tmpl.render(.{ .status = "resolved" }, alc);
     defer alc.free(r3);
-    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolvido</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolved</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r3, "else") == null);
 }
 
@@ -740,13 +740,13 @@ test "else if - inline style with extends layout and leading indent" {
     const page_html =
         \\extends "layout"
         \\  if (status == "open") {
-        \\    <p>Aberto</p>
+        \\    <p>Open</p>
         \\  } else if (status == "in_progress") {
-        \\    <p>Em execução</p>
+        \\    <p>In progress</p>
         \\  } else if (status == "resolved") {
-        \\    <p>Resolvido</p>
+        \\    <p>Resolved</p>
         \\  } else {
-        \\    <p>Outro</p>
+        \\    <p>Other</p>
         \\  }
     ;
     var components = std.StringHashMapUnmanaged([]const u8){};
@@ -765,22 +765,22 @@ test "else if - inline style with extends layout and leading indent" {
 
     const r1 = try tmpl.render(.{ .status = "open" }, alc);
     defer alc.free(r1);
-    try std.testing.expect(std.mem.indexOf(u8, r1, "<p>Aberto</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r1, "<p>Open</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r1, "else") == null);
 
     const r2 = try tmpl.render(.{ .status = "in_progress" }, alc);
     defer alc.free(r2);
-    try std.testing.expect(std.mem.indexOf(u8, r2, "Em execu") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r2, "In progress") != null);
     try std.testing.expect(std.mem.indexOf(u8, r2, "else") == null);
 
     const r3 = try tmpl.render(.{ .status = "resolved" }, alc);
     defer alc.free(r3);
-    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolvido</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r3, "<p>Resolved</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r3, "else") == null);
 
     const r4 = try tmpl.render(.{ .status = "other" }, alc);
     defer alc.free(r4);
-    try std.testing.expect(std.mem.indexOf(u8, r4, "<p>Outro</p>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r4, "<p>Other</p>") != null);
     try std.testing.expect(std.mem.indexOf(u8, r4, "else") == null);
 }
 
@@ -793,13 +793,13 @@ test "else if - full user template with three sections" {
         \\
         \\<h1>else if múltiplo</h1>
         \\if (status == "open") {
-        \\  <p>Aberto</p>
+        \\  <p>Open</p>
         \\} else if (status == "in_progress") {
-        \\  <p>Em execução</p>
+        \\  <p>In progress</p>
         \\} else if (status == "resolved") {
-        \\  <p>Resolvido</p>
+        \\  <p>Resolved</p>
         \\} else {
-        \\  <p>Outro</p>
+        \\  <p>Other</p>
         \\}
         \\
         \\<h1>depois</h1>
@@ -820,7 +820,7 @@ test "else if - full user template with three sections" {
 
     const r = try tmpl.render(.{ .status = "in_progress" }, alc);
     defer alc.free(r);
-    try std.testing.expect(std.mem.indexOf(u8, r, "Em execu") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r, "In progress") != null);
     try std.testing.expect(std.mem.indexOf(u8, r, "\nelse\n") == null);
     try std.testing.expect(std.mem.indexOf(u8, r, ">else<") == null);
     try std.testing.expect(std.mem.indexOf(u8, r, "Outro") == null);

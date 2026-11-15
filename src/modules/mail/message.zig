@@ -251,8 +251,8 @@ test "validate: malformed addresses in every position" {
 
 test "validate: non-ASCII addresses and names are accepted" {
     var mail = validMail();
-    mail.to = &.{.{ .name = "João", .address = "joão@exemplo.com.br" }};
-    mail.subject = "Olá, João";
+    mail.to = &.{.{ .name = "Zoë", .address = "zoë@example.com" }};
+    mail.subject = "Hello, Zoë";
     try validate(mail);
 }
 

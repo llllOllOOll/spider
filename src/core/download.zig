@@ -197,13 +197,13 @@ fn expectDisposition(expected: []const u8, filename: []const u8) !void {
 }
 
 test "a plain name is used as it is" {
-    try expectDisposition("attachment; filename=\"relatorio.xlsx\"", "relatorio.xlsx");
-    try expectDisposition("attachment; filename=\"Votos 2026 (final) - v2.csv\"", "Votos 2026 (final) - v2.csv");
+    try expectDisposition("attachment; filename=\"report.xlsx\"", "report.xlsx");
+    try expectDisposition("attachment; filename=\"Votes 2026 (final) - v2.csv\"", "Votes 2026 (final) - v2.csv");
 }
 
 test "accents and emoji: an ASCII name for old clients, the real one encoded" {
-    try expectDisposition("attachment; filename=\"Relatorio de acao.xlsx\"; filename*=UTF-8''Relat%C3%B3rio%20de%20a%C3%A7%C3%A3o.xlsx", "Relatório de ação.xlsx");
-    try expectDisposition("attachment; filename=\"votos _.csv\"; filename*=UTF-8''votos%20%F0%9F%8E%89.csv", "votos 🎉.csv");
+    try expectDisposition("attachment; filename=\"Cafe resume.xlsx\"; filename*=UTF-8''Caf%C3%A9%20r%C3%A9sum%C3%A9.xlsx", "Café résumé.xlsx");
+    try expectDisposition("attachment; filename=\"votes _.csv\"; filename*=UTF-8''votes%20%F0%9F%8E%89.csv", "votes 🎉.csv");
     try expectDisposition("attachment; filename=\"download.pdf\"; filename*=UTF-8''%F0%9F%8E%89.pdf", "🎉.pdf");
     try expectDisposition("attachment; filename=\"Munchen Strasse AEIOU.txt\"; filename*=UTF-8''M%C3%BCnchen%20Stra%C3%9Fe%20%C3%80%C3%89%C3%8E%C3%95%C3%9C.txt", "München Straße ÀÉÎÕÜ.txt");
 }

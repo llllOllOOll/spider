@@ -1381,7 +1381,7 @@ fn runPolicyApp(port: u16) void {
             .unauthorized_redirect = "/login",
             .json_key = "err",
             .toast_event = "app:toast",
-            .messages = .{ .forbidden = "Sem permissão." },
+            .messages = .{ .forbidden = "Not allowed, Zoë." },
         }))
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
         std.log.err("policy app listen() failed: {s}", .{@errorName(err)});
@@ -1412,7 +1412,7 @@ test "errorHandler: JSON callers get { <json_key>, request_id }" {
     const r = try request(io, a, port, "/e/forbidden", .{ .headers = &.{json_accept} });
     try std.testing.expectEqual(@as(u16, 403), r.status);
     const rid = r.header("X-Request-Id").?;
-    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{{\"err\":\"Sem permissão.\",\"request_id\":\"{s}\"}}", .{rid}), r.body);
+    try std.testing.expectEqualStrings(try std.fmt.allocPrint(a, "{{\"err\":\"Not allowed, Zoë.\",\"request_id\":\"{s}\"}}", .{rid}), r.body);
     try std.testing.expectEqualStrings("application/json", r.header("Content-Type").?);
     const c = try request(io, a, port, "/e/conflict", .{ .headers = &.{json_accept} });
     try std.testing.expectEqual(@as(u16, 409), c.status);
@@ -1427,7 +1427,7 @@ test "errorHandler: htmx gets the status, no swap, and a toast event" {
     const r = try request(io, a, port, "/e/forbidden", .{ .headers = &.{htmx} });
     try std.testing.expectEqual(@as(u16, 403), r.status);
     try std.testing.expectEqualStrings("none", r.header("HX-Reswap").?);
-    try std.testing.expectEqualStrings("{\"app:toast\":{\"message\":\"Sem permiss\\u00e3o.\",\"type\":\"warning\"}}", r.header("HX-Trigger").?);
+    try std.testing.expectEqualStrings("{\"app:toast\":{\"message\":\"Not allowed, Zo\\u00eb.\",\"type\":\"warning\"}}", r.header("HX-Trigger").?);
     try std.testing.expectEqualStrings("", r.body);
     const b = try request(io, a, port, "/e/boom", .{ .headers = &.{htmx} });
     try std.testing.expectEqual(@as(u16, 500), b.status);
@@ -1444,7 +1444,7 @@ test "errorHandler: pages get text; 400 uses the error detail; Unauthorized redi
     const a = env.arena.allocator();
     const f = try request(io, a, port, "/e/forbidden", .{});
     try std.testing.expectEqual(@as(u16, 403), f.status);
-    try std.testing.expectEqualStrings("Sem permissão.", f.body);
+    try std.testing.expectEqualStrings("Not allowed, Zoë.", f.body);
     const bad = try request(io, a, port, "/e/bad", .{});
     try std.testing.expectEqual(@as(u16, 400), bad.status);
     try std.testing.expectEqualStrings("bad name", bad.body);

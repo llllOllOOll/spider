@@ -794,10 +794,10 @@ test "R2 publicUrl: a key with spaces, accents or marks is one valid address" {
     var r2 = try R2.init(threaded.io(), .{ .account_id = "test", .access_key = "key", .secret_key = "secret", .bucket = "bucket", .pub_url = "https://pub-xyz.r2.dev" });
     defer r2.deinit();
 
-    const url = try r2.publicUrl(allocator, "docs/ata reunião #3?.pdf");
+    const url = try r2.publicUrl(allocator, "docs/café meeting #3?.pdf");
     defer allocator.free(url);
     // The slashes of the key stay: they are its folders.
-    try std.testing.expectEqualStrings("https://pub-xyz.r2.dev/docs/ata%20reuni%C3%A3o%20%233%3F.pdf", url);
+    try std.testing.expectEqualStrings("https://pub-xyz.r2.dev/docs/caf%C3%A9%20meeting%20%233%3F.pdf", url);
 }
 
 test "R2 init: a setting that is missing is an error at start, not at the first upload" {
