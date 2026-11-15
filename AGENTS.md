@@ -321,6 +321,14 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   Ctx identity API (`setUser`, `addRole`, `addOrgRole`). Apps read
   `_auth_org_N_{id,name,role}` / `_auth_orgs_count` directly: keep that layout.
 
+## Architecture decisions
+
+`docs/adr/` records why Spider is built the way it is, one numbered file
+per decision (`docs/adr/README.md`, `docs/adr/template.md`). A decision is
+written there only once it is settled: studied, measured where numbers
+matter, alternatives compared, sources given, and accepted by the
+maintainer. An accepted record is never edited; a new one replaces it.
+
 ## Performance ideas: into the backlog, after research
 
 Something that would make Spider (or every app built on it) faster, or a
