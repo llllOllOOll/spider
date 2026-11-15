@@ -247,6 +247,17 @@ test "redirectWith: 303 by default, keeps headers and cookies, another 3xx is ke
     try std.testing.expectEqual(std.http.Status.found, plain.status);
 }
 
+test "redirect: control characters and non-ASCII in the target are encoded, %XX is kept" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var c = cookieCtx(arena.allocator());
+
+    try std.testing.expectEqualStrings("/a%0D%0Ab%7F", (try c.redirect("/a\r\nb\x7f")).headers[0][1]);
+    try std.testing.expectEqualStrings("/caf%C3%A9", (try c.redirect("/café")).headers[0][1]);
+    try std.testing.expectEqualStrings("/caf%C3%A9?q=a%20b", (try c.redirectWith("/caf%C3%A9?q=a%20b", .{})).headers[0][1]);
+    try std.testing.expectEqualStrings("/users?page=2#top", (try c.redirect("/users?page=2#top")).headers[0][1]);
+}
+
 test "io() is the Io the server gave the request" {
     var c = Ctx{ .request = undefined, .arena = std.testing.allocator, .params = .{}, .body = null };
     c._io = std.testing.io;

@@ -1025,10 +1025,13 @@ pub const Ctx = struct {
     /// ```
     ///
     /// Answers 303 See Other, the status for "saved, now GET this page";
-    /// `.status` set to another 3xx is kept. `url` is not copied.
+    /// `.status` set to another 3xx is kept. Control characters (a line
+    /// break included), DEL and non-ASCII bytes in `url` are percent-encoded,
+    /// so a target that came from the client cannot add a header; `%XX`
+    /// already in it is kept.
     pub fn redirectWith(self: *Ctx, url: []const u8, opts: ResponseOptions) !Response {
         const hdrs = try self.arena.alloc([2][]const u8, opts.headers.len + 1);
-        hdrs[0] = .{ "Location", url };
+        hdrs[0] = .{ "Location", try self.locationOf(url) };
         @memcpy(hdrs[1..], opts.headers);
         const code = @backingInt(opts.status);
         return Response{
@@ -1059,16 +1062,44 @@ pub const Ctx = struct {
 
     /// A 302 redirect to `url`. After a form was saved, `redirectWith` is the
     /// better one: it answers 303, and can set a cookie; `htmxRedirect` is
-    /// the one for a form that htmx may have posted.
+    /// the one for a form that htmx may have posted. `url` is encoded as in
+    /// `redirectWith`.
     pub fn redirect(self: *Ctx, url: []const u8) !Response {
         const hdrs = try self.arena.alloc([2][]const u8, 1);
-        hdrs[0] = .{ "Location", url };
+        hdrs[0] = .{ "Location", try self.locationOf(url) };
         return Response{
             .status = .found,
             .body = null,
             .content_type = "text/plain",
             .headers = hdrs,
         };
+    }
+
+    // internal: a Location value for `url`: control bytes, DEL and non-ASCII
+    // as %XX, the rest as it is (the same set a URL may not carry raw).
+    fn locationOf(self: *Ctx, url: []const u8) ![]const u8 {
+        const unsafe = struct {
+            fn is(b: u8) bool {
+                return b < 0x20 or b >= 0x7f;
+            }
+        }.is;
+        var n: usize = 0;
+        for (url) |b| n += @intFromBool(unsafe(b));
+        if (n == 0) return url;
+        const out = try self.arena.alloc(u8, url.len + 2 * n);
+        var i: usize = 0;
+        for (url) |b| {
+            if (unsafe(b)) {
+                out[i] = '%';
+                out[i + 1] = "0123456789ABCDEF"[b >> 4];
+                out[i + 2] = "0123456789ABCDEF"[b & 0xf];
+                i += 3;
+            } else {
+                out[i] = b;
+                i += 1;
+            }
+        }
+        return out;
     }
 
     /// The hub of the WebSocket route this request is on. Only a request

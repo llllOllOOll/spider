@@ -208,6 +208,24 @@ fn workerLoop(wctx: WorkerCtx) void {
     group.await(wctx.io) catch {}; // canceled at shutdown: nothing left to report
 }
 
+/// The name of the first header whose name or value holds a control
+/// character other than a tab (a line break, above all), or null.
+fn unsafeHeader(headers: []const std.http.Header) ?[]const u8 {
+    for (headers) |h| {
+        for (h.name) |b| if (b <= 0x20 or b == 0x7f or b == ':') return h.name;
+        for (h.value) |b| if ((b < 0x20 and b != '\t') or b == 0x7f) return h.name;
+    }
+    return null;
+}
+
+test "unsafeHeader: a line break or control byte in a name or value" {
+    const ok = [_]std.http.Header{ .{ .name = "Location", .value = "/a%0D%0A" }, .{ .name = "X-T", .value = "a\tb" } };
+    try std.testing.expect(unsafeHeader(&ok) == null);
+    try std.testing.expectEqualStrings("X-Echo", unsafeHeader(&.{.{ .name = "X-Echo", .value = "a\r\nSet-Cookie: x" }}).?);
+    try std.testing.expectEqualStrings("Bad Name", unsafeHeader(&.{.{ .name = "Bad Name", .value = "v" }}).?);
+    try std.testing.expectEqualStrings("X-Del", unsafeHeader(&.{.{ .name = "X-Del", .value = "a\x7f" }}).?);
+}
+
 fn isRequestIdChar(ch: u8) bool {
     return std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch == '.';
 }
@@ -656,6 +674,21 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         extra_headers[1] = .{ .name = "X-Request-Id", .value = request_id };
         for (response.headers, 2..) |h, i| extra_headers[i] = .{ .name = h[0], .value = h[1] };
         for (response.cookies, 2 + response.headers.len..) |c, i| extra_headers[i] = .{ .name = "Set-Cookie", .value = c[1] };
+
+        // std.http.Server asserts that no header name or value holds a line
+        // break: one built from client data would stop the whole process
+        // (ReleaseSafe) or split the header (ReleaseFast/Small). Such a
+        // response is refused here: a 500, logged, and the connection closed.
+        if (unsafeHeader(extra_headers)) |bad| {
+            const log = if (builtin.is_test) std.log.warn else std.log.err;
+            log("rid={s} {s} {s}: header \"{s}\" has a line break or another control character; answering 500 instead", .{ request_id, method_name, path, bad });
+            request.respond("internal server error", .{
+                .status = .internal_server_error,
+                .extra_headers = &.{ .{ .name = "content-type", .value = "text/plain" }, .{ .name = "X-Request-Id", .value = request_id } },
+                .keep_alive = false,
+            }) catch |err| logRespondError(err, request_id, method_name, path);
+            break;
+        }
 
         var final_body = response.body orelse "";
         if (dev_reload.compiled_in and (ctx.config.dev_reload orelse false) and dev_reload.isHtml(response.content_type)) {
@@ -1828,7 +1861,7 @@ pub fn Server(comptime T: type) type {
             const list = try self.router.entries(std.heap.page_allocator);
             defer Router.freeEntries(std.heap.page_allocator, list);
             // warn under `zig test`: the test runner fails any test that logs at err.
-            const log = if (@import("builtin").is_test) std.log.warn else std.log.err;
+            const log = if (builtin.is_test) std.log.warn else std.log.err;
             var missing: usize = 0;
             for (list) |e| {
                 if (e.route.meta.declaresAccess()) continue;

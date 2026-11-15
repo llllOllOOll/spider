@@ -200,6 +200,17 @@ fn downloadFile(c: *spider.Ctx) !spider.Response {
     return c.download(&download_bytes, .{ .filename = name, .content_type = spider.content_types.xlsx });
 }
 
+fn redirectTo(c: *spider.Ctx) !spider.Response {
+    // The destination comes from the client (a `?next=` after a login).
+    return c.redirect(c.queryDecoded("to") orelse "/");
+}
+
+fn hostileHeader(c: *spider.Ctx) !spider.Response {
+    // A header value built from client data without checking it.
+    const v = c.queryDecoded("v") orelse "x";
+    return c.text("ok", .{ .headers = &.{.{ "X-Echo", v }} });
+}
+
 fn queryEcho(c: *spider.Ctx) !spider.Response {
     return c.text(try std.fmt.allocPrint(c.arena, "raw=[{s}] decoded=[{s}]", .{ c.query("q") orelse "-", c.queryDecoded("q") orelse "-" }), .{});
 }
@@ -314,6 +325,8 @@ fn runApp(port: u16) void {
         .useAt("/own", dbSession)
         .get("/q/echo", queryEcho, .{ .public = true })
         .get("/download", downloadFile, .{ .public = true })
+        .get("/redirect-to", redirectTo, .{ .public = true })
+        .get("/hostile-header", hostileHeader, .{ .public = true })
         .get("/chain/a", chainA, .{})
         .get("/chain/b", chainB, .{})
         .get("/r/static", ok, .{ .roles = admin })
@@ -435,6 +448,28 @@ test "download: the client gets the bytes, with each header once" {
     try std.testing.expectEqual(@as(usize, 1), hostile.headerCount("Content-Disposition"));
     try std.testing.expectEqualStrings("attachment; filename=\"aSet-Cookie_ x=1.xlsx\"", hostile.header("Content-Disposition").?);
     try std.testing.expectEqualSlices(u8, &download_bytes, hostile.body);
+}
+
+test "a line break from the client never splits a header nor stops the server" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const a = env.arena.allocator();
+
+    // In a redirect target: encoded, one Location, no injected header.
+    const r = try request(env.io(), a, port, "/redirect-to?to=/a%0D%0ASet-Cookie:%20x=1", .{});
+    try std.testing.expectEqual(@as(u16, 302), r.status);
+    try std.testing.expectEqual(@as(usize, 0), r.headerCount("Set-Cookie"));
+    try std.testing.expectEqualStrings("/a%0D%0ASet-Cookie: x=1", r.header("Location").?);
+
+    // In any other header: the response is refused (500), the server stays.
+    const h = try request(env.io(), a, port, "/hostile-header?v=a%0D%0ASet-Cookie:%20x=1", .{});
+    try std.testing.expectEqual(@as(u16, 500), h.status);
+    try std.testing.expectEqual(@as(usize, 0), h.headerCount("Set-Cookie"));
+    try std.testing.expectEqual(@as(usize, 0), h.headerCount("X-Echo"));
+
+    const after = try request(env.io(), a, port, "/redirect-to?to=/ok", .{});
+    try std.testing.expectEqual(@as(u16, 302), after.status);
 }
 
 test "rbac: static route denies without role and allows with it" {
