@@ -57,7 +57,7 @@ const Data = struct {
     },
     arr: [2]Book = books,
     raws: []const RawHtml = &.{ .{ .html = "<b>1</b>" }, .{ .html = "<b>2</b>" } },
-    uni: []const u8 = "çãé 日本",
+    uni: []const u8 = "café naïve 日本",
     outer: []const u8 = "from-page",
 };
 

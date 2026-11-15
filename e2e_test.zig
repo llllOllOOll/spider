@@ -1463,7 +1463,7 @@ fn book(id: spider.Path(u32, "id"), c: *spider.Ctx) !spider.Response {
 fn runNotFoundApp(port: u16) void {
     var s = spider.appWithConfig(.{ .views_dir = "views", .static_dir = null });
     s.get("/books/:id", book, .{})
-        .onError(spider.errorHandler(.{ .not_found_view = "not_found", .messages = .{ .not_found = "Livro não existe." } }))
+        .onError(spider.errorHandler(.{ .not_found_view = "not_found", .messages = .{ .not_found = "There is no such book." } }))
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
         std.log.err("not-found app listen() failed: {s}", .{@errorName(err)});
     };
@@ -1495,8 +1495,8 @@ test "errorHandler: not_found_view renders the 404 page for a bad id, a missing 
     for ([_][]const u8{ "/books/banana", "/books/99", "/nowhere" }) |path| {
         const r = try request(io, a, port, path, .{});
         try std.testing.expectEqual(@as(u16, 404), r.status);
-        try std.testing.expect(std.mem.indexOf(u8, r.body, "<h1>Página não encontrada</h1>") != null);
-        try std.testing.expect(std.mem.indexOf(u8, r.body, "Livro não existe.") != null);
+        try std.testing.expect(std.mem.indexOf(u8, r.body, "<h1>Page not found</h1>") != null);
+        try std.testing.expect(std.mem.indexOf(u8, r.body, "There is no such book.") != null);
         try std.testing.expect(std.mem.indexOf(u8, r.body, try std.fmt.allocPrint(a, "<p class=\"path\">{s}</p>", .{path})) != null);
     }
 

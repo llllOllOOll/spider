@@ -34,7 +34,7 @@ pub const cases = [_]Case{
     .{ .name = "if_quirks", .src = "if (title == \"a or b\") { A }if ( title ) { B }if (!title) { C } else { D }" },
     .{ .name = "if_loop", .src = "for (books) |b| { if (b.year > 2015) { new:{ b.title } } else { old:{ b.title } }if (loop.index == 0) { first } }" },
     .{ .name = "props_header_page", .src = "-- props: title\n<h1>{ title }</h1>" },
-    .{ .name = "unicode", .src = "<p>{ uni } — ✓ ação</p>" },
+    .{ .name = "unicode", .src = "<p>{ uni } — ✓ résumé</p>" },
     // Components and layouts (`components` below).
     .{ .name = "layout_missing", .src = "extends \"layout\"\n<p>{ title }</p>" },
     .{ .name = "page_slot", .src = "<main>{ slot }</main>" },
