@@ -489,6 +489,19 @@ test "HEAD on a GET route: the GET's status and headers, no body" {
     try std.testing.expectEqual(@as(u16, 404), missing.status);
 }
 
+test "a method the path has no route for: 405 with Allow, an unknown path: 404" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const a = env.arena.allocator();
+
+    const res = try request(env.io(), a, port, "/q/echo", .{ .method = "DELETE" });
+    try std.testing.expectEqual(@as(u16, 405), res.status);
+    try std.testing.expectEqualStrings("GET, HEAD", res.header("Allow").?);
+    const missing = try request(env.io(), a, port, "/no-such-page", .{ .method = "DELETE" });
+    try std.testing.expectEqual(@as(u16, 404), missing.status);
+}
+
 test "rbac: static route denies without role and allows with it" {
     var env = TestEnv.init();
     defer env.deinit();

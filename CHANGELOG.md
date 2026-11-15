@@ -28,6 +28,10 @@ used.
 
 ### Fixed
 
+- **A method the path has no route for answers `405` with `Allow`.** It
+  answered 404, as if the page did not exist. The `Allow` header lists the
+  methods the path does have (`HEAD` with `GET`); a path with no route at
+  all is still a 404.
 - **`HEAD` is answered by the `GET` route.** A `HEAD` request to a page
   that has only a `GET` route got a 404; it now gets the `GET`'s status and
   headers, without the body. A route registered for `HEAD` itself still

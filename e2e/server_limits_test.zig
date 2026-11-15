@@ -87,10 +87,13 @@ test "server: a static file answers GET and HEAD; another method goes to the rou
     try post.expectStatus(200);
     try std.testing.expectEqualStrings("posted", post.body);
 
-    // No route for it: not the file either.
+    // No route for it: not the file either. The address has a POST route,
+    // so the answer is 405 with the methods it does have.
     var delete = try app.request(.{ .method = "DELETE", .target = "/hello.txt" });
     defer delete.deinit();
-    try delete.expectStatus(404);
+    try delete.expectStatus(405);
+    try delete.expectHeader("Allow", "POST");
+    try std.testing.expect(std.mem.indexOf(u8, delete.body, "static hello") == null);
 }
 
 test "server: a path parameter arrives decoded" {

@@ -214,6 +214,22 @@ fn routeFor(router: *Router, method: std.http.Method, path: []const u8, arena: s
     return null;
 }
 
+/// "GET, HEAD, POST": the methods `path` has a route for, HEAD included
+/// when GET is there; null when it has none.
+fn allowedMethods(router: *Router, path: []const u8, arena: std.mem.Allocator) !?[]const u8 {
+    const order = [_]std.http.Method{ .GET, .HEAD, .POST, .PUT, .PATCH, .DELETE, .OPTIONS };
+    var out: std.ArrayList(u8) = .empty;
+    var has_get = false;
+    for (order) |m| {
+        const found = (try router.match(m, path, arena)) != null or (m == .HEAD and has_get);
+        if (m == .GET) has_get = found;
+        if (!found) continue;
+        if (out.items.len > 0) try out.appendSlice(arena, ", ");
+        try out.appendSlice(arena, @tagName(m));
+    }
+    return if (out.items.len == 0) null else out.items;
+}
+
 /// The name of the first header whose name or value holds a control
 /// character other than a tab (a line break, above all), or null.
 fn unsafeHeader(headers: []const std.http.Header) ?[]const u8 {
@@ -654,6 +670,20 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             };
             const chain = collectMiddlewares(arena, ctx.global_middlewares, ctx.path_middlewares, path, &.{}) catch |err|
                 break :blk respondToError(ctx.error_handler, &ctx_req, err);
+            // The path has routes, but not for this method: 405 with the
+            // methods it has (RFC 9110 asks for Allow).
+            ctx_req._allow = allowedMethods(ctx.router, path, arena) catch null;
+            if (ctx_req._allow != null) {
+                const notAllowedHandler: Handler = struct {
+                    fn h(c: *Ctx) anyerror!Response {
+                        const hdrs = try c.arena.alloc([2][]const u8, 1);
+                        hdrs[0] = .{ "Allow", c._allow.? };
+                        return .{ .status = .method_not_allowed, .body = "Method Not Allowed", .content_type = "text/plain", .headers = hdrs };
+                    }
+                }.h;
+                break :blk runChain(&ctx_req, chain, notAllowedHandler) catch |err|
+                    respondToError(ctx.error_handler, &ctx_req, err);
+            }
             // No route: error.NotFound through the same path as any handler
             // error, so an app's onError renders its own 404 (it used to be a
             // fixed text response that bypassed onError).

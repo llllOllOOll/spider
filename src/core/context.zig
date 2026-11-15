@@ -228,6 +228,9 @@ pub const Ctx = struct {
     _views: ?ViewsConfig = null,
     _io: std.Io = undefined,
     _no_route: bool = false,
+    // internal: the methods the path does have routes for, when the request's
+    // method has none (the `Allow` of a 405).
+    _allow: ?[]const u8 = null,
     _stream: std.Io.net.Stream = undefined,
     _headers: std.StringHashMapUnmanaged([]const u8) = .{},
     _decorations: ?*const anyopaque = null,
