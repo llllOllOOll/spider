@@ -1395,6 +1395,62 @@ The complete API: [`llms.txt`](llms.txt).
 
 ---
 
+## Versions and channels
+
+You pick the Spider an app uses, and it stays there until you move it. A
+published version is available for good.
+
+| Channel | What it is | In an app's `build.zig.zon` |
+|---|---|---|
+| **Stable** | the releases, tags `vX.Y.Z` (never moved) | `zig fetch --save=spider "git+https://github.com/llllOllOOll/spider?ref=v0.12.1"` |
+| **Development** | the `develop` branch, the next release (`0.13.0-dev`) | `zig fetch --save=spider "git+https://github.com/llllOllOOll/spider#develop"` (saves the commit of that moment) |
+| A commit | any commit, exactly | `...spider#<commit>` |
+
+Versions read as 0.x semver: a minor (`0.12` → `0.13`) may break an app,
+and the [changelog](CHANGELOG.md) says how to move under **Breaking
+changes**; a patch (`0.12.1` → `0.12.2`) only fixes. A released line that
+needs a fix gets a patch without making its users move up.
+
+**Moving a project** (from its directory):
+
+```sh
+spider update            # the latest release
+spider update 0.12.1     # that release (checked to exist first)
+spider update --patch    # the latest patch of the project's line (0.12.x)
+spider update --canary   # the develop branch
+```
+
+**The CLI.** `spider self-update` installs the latest CLI, `spider
+self-update 0.12.1` that release, `spider self-update --canary` a build of
+`develop` (needs git and zig). In a project pinned to another release,
+`spider` installs that release's CLI once into `~/.cache/spider/cli/X.Y.Z`
+and runs it, so the code it writes always fits the project; on a branch, a
+commit or a local path it warns instead. `SPIDER_DISPATCH=0` turns that
+off. `spider new` starts a project on the CLI's own release (on `develop`
+for a `-dev` CLI).
+
+| Spider | Zig |
+|---|---|
+| 0.8.0 – 0.12.1, 0.13.0-dev | 0.17.0 |
+| up to 0.7.0 | 0.17.0 development builds |
+
+### Moving from 0.12 to 0.13
+
+The changes that may need a line in an app (all in the changelog):
+
+- A path value that is not of its `spider.Path` type (`/books/banana` for
+  `spider.Path(u32, "id")`) answers **404**, not 400.
+- A route whose path lacks a `:name` its handler reads with `spider.Path`
+  is **refused at startup** (it used to answer 400 on every request).
+- A component prop's default applies only when neither the call nor the
+  caller's data gives the value (it used to win over the caller's value).
+
+New and optional: compiled templates in release builds
+(`compiled_templates = false` turns them off), `c.viewChecked` (compile-time
+check of a view's data), components' `-- props:` line, a default layout per
+route group, `installApp` in build.zig (a release binary with its debug info
+in a separate `<app>.debug`; `-Ddebug-info=true` keeps it inside).
+
 ## Zig Version Policy
 
 **Spider follows official Zig releases only.**
