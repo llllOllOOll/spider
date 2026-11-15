@@ -28,6 +28,11 @@ used.
 
 ### Fixed
 
+- **`clientIp()` reads an `X-Forwarded-For` entry with a port or IPv6
+  brackets.** Some proxies write `203.0.113.7:4242` or
+  `[2001:db8::1]:443`; such an entry was not read. The port and brackets
+  are stripped now; a malformed entry (a bad port, a bracketed IPv4) is
+  unknown.
 - **A method the path has no route for answers `405` with `Allow`.** It
   answered 404, as if the page did not exist. The `Allow` header lists the
   methods the path does have (`HEAD` with `GET`); a path with no route at

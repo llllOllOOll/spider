@@ -7,7 +7,8 @@
 //! untrusted address is the client. With no trusted proxies (the default)
 //! the header is ignored and the peer address is the answer. An entry the
 //! walk reaches that is not an address ("unknown", garbage) makes the
-//! client unknown (null), never the proxy's address.
+//! client unknown (null), never the proxy's address. A port and IPv6
+//! brackets are stripped (`203.0.113.7:4242`, `[2001:db8::1]:443`).
 
 const std = @import("std");
 
@@ -25,14 +26,52 @@ pub fn resolve(peer: ?[]const u8, xff: ?[]const u8, trusted: []const []const u8)
         if (hop.len > 0) {
             // Not an address where the walk needs one: unknown. The peer
             // would be a guess, and a client could pass for the proxy.
-            if (parse(hop) == null) return null;
-            if (!isTrusted(hop, trusted)) return hop;
-            leftmost = hop;
+            const addr = node(hop) orelse return null;
+            if (!isTrusted(addr, trusted)) return addr;
+            leftmost = addr;
         }
         if (start == 0) break;
         i = start - 1;
     }
     return leftmost orelse p;
+}
+
+/// The address in one X-Forwarded-For entry, without its port: `IPv4`,
+/// `IPv4:port`, `IPv6`, `[IPv6]` or `[IPv6]:port`, where a port is 1-5
+/// digits or `_` and a name (`_lb1`). Null for anything else, a bracketed
+/// IPv4 and a bare IPv6 with a port included.
+fn node(entry: []const u8) ?[]const u8 {
+    if (entry.len > 0 and entry[0] == '[') {
+        const close = std.mem.indexOfScalar(u8, entry, ']') orelse return null;
+        const inner = entry[1..close];
+        const rest = entry[close + 1 ..];
+        if (rest.len > 0 and (rest[0] != ':' or !validPort(rest[1..]))) return null;
+        const a = parse(inner) orelse return null;
+        if (a.len != 16) return null;
+        return inner;
+    }
+    const colons = std.mem.count(u8, entry, ":");
+    if (colons == 1) {
+        const c = std.mem.indexOfScalar(u8, entry, ':').?;
+        if (!validPort(entry[c + 1 ..])) return null;
+        const a = parse(entry[0..c]) orelse return null;
+        if (a.len != 4) return null;
+        return entry[0..c];
+    }
+    _ = parse(entry) orelse return null;
+    return entry;
+}
+
+fn validPort(p: []const u8) bool {
+    if (p.len == 0) return false;
+    if (p[0] == '_') {
+        if (p.len == 1) return false;
+        for (p[1..]) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '.' or ch == '_' or ch == '-')) return false;
+        return true;
+    }
+    if (p.len > 5) return false;
+    for (p) |ch| if (!std.ascii.isDigit(ch)) return false;
+    return true;
 }
 
 const Addr = struct { bytes: [16]u8, len: u8 };
@@ -106,6 +145,19 @@ test "clientIp: an unreadable entry the walk reaches is unknown, never the proxy
     try t.expectEqualStrings("203.0.113.7", resolve("10.0.0.2", "garbage, 203.0.113.7", tr).?);
     // Empty entries are skipped.
     try t.expectEqualStrings("203.0.113.7", resolve("10.0.0.2", "203.0.113.7, ,", tr).?);
+}
+
+test "clientIp: a port and IPv6 brackets are stripped, a malformed node is unknown" {
+    const tr = &[_][]const u8{"10.0.0.0/8"};
+    try t.expectEqualStrings("198.51.100.1", resolve("10.0.0.2", "198.51.100.1:4242", tr).?);
+    try t.expectEqualStrings("2001:db8::1", resolve("10.0.0.2", "[2001:db8::1]:4242", tr).?);
+    try t.expectEqualStrings("2001:db8::1", resolve("10.0.0.2", "[2001:db8::1]", tr).?);
+    try t.expectEqualStrings("2001:db8::1", resolve("10.0.0.2", "[2001:db8::1]:_lb1", tr).?);
+    // A trusted hop written with a port is still trusted.
+    try t.expectEqualStrings("198.51.100.1", resolve("10.0.0.2", "198.51.100.1, 10.0.0.7:8080", tr).?);
+    for ([_][]const u8{ "198.51.100.1:", "198.51.100.1:123456", "198.51.100.1:http", "[2001:db8::1", "[2001:db8::1]:", "[2001:db8::1]:4242x", "[2001:db8::1]garbage", "[198.51.100.1]" }) |xff| {
+        try t.expect(resolve("10.0.0.2", xff, tr) == null);
+    }
 }
 
 test "clientIp: IPv6, single addresses and prefix edges" {
