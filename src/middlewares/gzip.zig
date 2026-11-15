@@ -25,7 +25,8 @@ fn clientAcceptsGzip(headers: std.StringHashMapUnmanaged([]const u8)) bool {
 /// Compresses the response body with gzip when the request's
 /// `Accept-Encoding` mentions gzip and the body has at least 1024 bytes, and
 /// adds `content-encoding: gzip` and `vary: accept-encoding`. Smaller bodies,
-/// responses without a body and streams (SSE, WebSocket) pass unchanged. The
+/// responses without a body, responses that already have a
+/// `Content-Encoding` and streams (SSE, WebSocket) pass unchanged. The
 /// compressed body is allocated in the request arena.
 ///
 /// ```zig
@@ -44,6 +45,10 @@ pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
 
     // 3. Skip responses without a body
     var body = resp.body orelse return resp;
+
+    // A body that is already encoded (a precompressed file, a proxied
+    // response) would be encoded twice: the client could not read it.
+    for (resp.headers) |h| if (std.ascii.eqlIgnoreCase(h[0], "content-encoding")) return resp;
 
     // Under `spider dev` the reload script goes into HTML pages. The server
     // adds it after the middlewares ran, where a page compressed here is
@@ -87,4 +92,60 @@ pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
     resp.headers = new_headers;
 
     return resp;
+}
+
+const testing = std.testing;
+
+const big_text: []const u8 = blk: {
+    const word = "spider gzip test body ";
+    @setEvalBranchQuota(10_000);
+    var b: [word.len * 80]u8 = undefined;
+    for (&b, 0..) |*x, i| x.* = word[i % word.len];
+    const out = b;
+    break :blk &out;
+};
+
+fn ctxWith(alc: std.mem.Allocator, accept: []const u8) !Ctx {
+    var ctx = Ctx{ .request = undefined, .arena = alc, .params = .{} };
+    try ctx._headers.put(alc, "accept-encoding", accept);
+    return ctx;
+}
+
+fn header(resp: Response, name: []const u8) ?[]const u8 {
+    for (resp.headers) |h| if (std.ascii.eqlIgnoreCase(h[0], name)) return h[1];
+    return null;
+}
+
+fn count(resp: Response, name: []const u8) usize {
+    var n: usize = 0;
+    for (resp.headers) |h| n += @intFromBool(std.ascii.eqlIgnoreCase(h[0], name));
+    return n;
+}
+
+test "gzip: a large text body is compressed, with Vary" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var c = try ctxWith(arena.allocator(), "gzip, deflate, br");
+    const resp = try middleware(&c, struct {
+        fn n(_: *Ctx) anyerror!Response {
+            return .{ .status = .ok, .body = big_text, .content_type = "text/plain" };
+        }
+    }.n);
+    try testing.expectEqualStrings("gzip", header(resp, "content-encoding").?);
+    try testing.expectEqualStrings("accept-encoding", header(resp, "vary").?);
+    try testing.expect(resp.body.?.len < big_text.len);
+}
+
+test "gzip: a response that already has a Content-Encoding passes untouched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var c = try ctxWith(arena.allocator(), "gzip");
+    const resp = try middleware(&c, struct {
+        fn n(_: *Ctx) anyerror!Response {
+            return .{ .status = .ok, .body = big_text, .content_type = "text/plain", .headers = &.{.{ "Content-Encoding", "br" }} };
+        }
+    }.n);
+    try testing.expectEqual(@as(usize, 1), count(resp, "content-encoding"));
+    try testing.expectEqualStrings("br", header(resp, "content-encoding").?);
+    try testing.expectEqualStrings(big_text, resp.body.?);
 }

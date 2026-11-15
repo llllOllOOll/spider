@@ -28,6 +28,10 @@ used.
 
 ### Fixed
 
+- **`spider.gzip` leaves an already encoded response alone.** A response
+  that set its own `Content-Encoding` (a precompressed file, a proxied
+  response) was compressed again and sent with two encodings, which no
+  client can read.
 - **A line break in a response header no longer stops the server.** A
   redirect whose target came from the client (`?next=` after a login)
   stopped the process in a ReleaseSafe build (std.http asserts there is
