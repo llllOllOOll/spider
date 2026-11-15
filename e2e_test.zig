@@ -863,6 +863,7 @@ fn runDeadlineApp(port: u16) void {
         .get("/ip", clientIpEcho, .{})
         .get("/slow", slowHandler, .{})
         .post("/len", bodyLen, .{})
+        .delete("/len", bodyLen, .{})
         .listen(.{ .port = port, .host = "127.0.0.1" }) catch |err| {
         std.log.err("deadline app listen() failed: {s}", .{@errorName(err)});
     };
@@ -987,6 +988,25 @@ test "body limit: a body within max_body_bytes is read as before" {
     const r = try readUntilClose(io, env.arena.allocator(), stream);
     try std.testing.expect(std.mem.startsWith(u8, r.bytes, "HTTP/1.1 200"));
     try std.testing.expect(std.mem.endsWith(u8, r.bytes, "1024"));
+}
+
+test "a DELETE with a body: the handler gets it, and the next request on the connection is the next one" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const io = env.io();
+    const stream = try connectTo(io, try deadlineAppPort(io));
+    defer stream.close(io);
+    // The body looks like a request: had it been left on the connection,
+    // it would have been read as a third request.
+    const body = "GET /fast HTTP/1.1\r\nHost: x\r\n\r\n";
+    try send(io, stream, std.fmt.comptimePrint("DELETE /len HTTP/1.1\r\nHost: x\r\nContent-Length: {d}\r\n\r\n", .{body.len}) ++ body ++
+        "DELETE /len HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n" ++
+        "GET /fast HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    const r = try readUntilClose(io, env.arena.allocator(), stream);
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, r.bytes, "HTTP/1.1 200"));
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, r.bytes, "HTTP/1.1 "));
+    try std.testing.expect(std.mem.indexOf(u8, r.bytes, std.fmt.comptimePrint("\r\n\r\n{d}", .{body.len})) != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.bytes, "\r\n\r\n5") != null);
 }
 
 test "chunked body: a body sent with Transfer-Encoding: chunked reaches the handler" {

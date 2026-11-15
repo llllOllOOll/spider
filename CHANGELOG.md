@@ -28,6 +28,11 @@ used.
 
 ### Fixed
 
+- **A `DELETE` (or another method) with a body is read.** std.http reads
+  no body for `DELETE`, `GET` or `OPTIONS`, so a `DELETE` with a JSON body
+  got a 400 and its connection closed. Any request that declares a body
+  (Content-Length or chunked) has it read now; the handler gets it, and the
+  next request on the connection starts where it should.
 - **A trailing `/*` wildcard takes the rest of the path.** `/files/*`
   matched `/files/a` but not `/files/a/b`; it matches any depth now, and
   `c.params.get("*")` holds the rest as sent (`a/b%2Fc.pdf`).

@@ -208,6 +208,21 @@ fn workerLoop(wctx: WorkerCtx) void {
     group.await(wctx.io) catch {}; // canceled at shutdown: nothing left to report
 }
 
+/// The body reader of a request that frames a body (Content-Length or
+/// chunked), whatever its method. std.http reads none for GET, DELETE or
+/// OPTIONS; a DELETE with a JSON body is allowed (RFC 9110), and its bytes
+/// must be read, or the next request on the connection would start inside
+/// them.
+fn bodyReaderOf(request: *std.http.Server.Request, buffer: []u8) *std.Io.Reader {
+    if (request.head.method.requestHasBody()) return request.readerExpectNone(buffer);
+    std.debug.assert(request.head.expect == null);
+    // As readerExpectNone does: reading the body may overwrite the head's
+    // strings (the caller restores the target from its arena copy).
+    request.head.target = undefined;
+    if (request.head.content_type) |*v| v.* = undefined;
+    return request.server.reader.bodyReader(buffer, request.head.transfer_encoding, request.head.content_length);
+}
+
 fn routeFor(router: *Router, method: std.http.Method, path: []const u8, arena: std.mem.Allocator) !?@import("../routing/router.zig").MatchResult {
     if (try router.match(method, path, arena)) |m| return m;
     if (method == .HEAD) return router.match(.GET, path, arena);
@@ -460,7 +475,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             // up to max_body_bytes (there is no length to refuse upfront).
             if (request.head.transfer_encoding == .chunked) {
                 var body_io_buf: [4096]u8 = undefined;
-                const body_reader = request.readerExpectNone(&body_io_buf);
+                const body_reader = bodyReaderOf(&request, &body_io_buf);
                 request.head.target = target;
                 const chunked = readChunkedBody(body_reader, arena, ctx.config.max_body_bytes, &watch, ctx.config.body_timeout_ms) catch |err| {
                     body_error = err;
@@ -471,7 +486,7 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
             const cl = request.head.content_length orelse break :blk null;
             if (cl == 0) break :blk null;
             var body_io_buf: [4096]u8 = undefined;
-            const body_reader = request.readerExpectNone(&body_io_buf);
+            const body_reader = bodyReaderOf(&request, &body_io_buf);
             // readerExpectNone invalidates the head strings; target is the
             // arena copy above (Ctx.query/getPath read it).
             request.head.target = target;
