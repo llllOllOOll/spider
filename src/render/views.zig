@@ -3,6 +3,7 @@
 //! read from disk; `Ctx.view()` looks names up in it.
 
 const std = @import("std");
+const paths = @import("../internal/paths.zig");
 
 pub const TemplateEntry = struct {
     name: []const u8,
@@ -85,9 +86,12 @@ pub fn buildIndex(
         if (!std.mem.endsWith(u8, entry.path, ".html") and
             !std.mem.endsWith(u8, entry.path, ".md")) continue;
 
+        // Names use '/' on every system (the walk gives '\' on Windows).
+        var rel_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const rel = paths.slashPath(entry.path, std.fs.path.sep, &rel_buf);
         var name_buf: [256]u8 = undefined;
         var alias_buf: [256]u8 = undefined;
-        const names = generateFieldName(entry.path, &name_buf, &alias_buf) catch continue;
+        const names = generateFieldName(rel, &name_buf, &alias_buf) catch continue;
         if (names.primary.len == 0) continue;
 
         const full_path = try std.fmt.allocPrint(
@@ -212,4 +216,13 @@ fn generateFieldName(path: []const u8, buffer: []u8, alias_buffer: []u8) !FieldN
         j += 1;
     }
     return .{ .primary = buffer[0..j] };
+}
+
+test "a template under Windows separators gets the same name as under '/'" {
+    var path_buf: [256]u8 = undefined;
+    const path = paths.slashPath("features\\home\\views\\index.html", '\\', &path_buf);
+    var a: [256]u8 = undefined;
+    var b: [256]u8 = undefined;
+    const names = try generateFieldName(path, &a, &b);
+    try std.testing.expectEqualStrings("home_index", names.primary);
 }

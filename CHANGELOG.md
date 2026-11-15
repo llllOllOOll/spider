@@ -28,6 +28,12 @@ used.
 
 ### Fixed
 
+- **Templates read at run time are found on Windows.** In a Debug build,
+  where templates are read from `views_dir` on every request, their names
+  were built from paths with `\` on Windows, so every view answered
+  `TemplateNotFound`. The names use `/` on every system, as in the
+  embedded templates file.
+
 - **`spider install` works on Windows.** Marking the downloaded
   `tailwindcss` as executable crashed there (the standard library has no
   file permissions on Windows), so the first `zig build` of a new app

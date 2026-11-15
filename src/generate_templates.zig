@@ -9,6 +9,7 @@
 const std = @import("std");
 const manifest = @import("render/manifest.zig");
 const elroy = @import("render/elroy/codegen.zig");
+const slashPath = @import("internal/paths.zig").slashPath;
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const allocator = init.arena.allocator();
@@ -109,15 +110,6 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Ride the lightning — {d} templates forged in {s} ({d} compiled by Elroy)\n", .{ template_count, output_file, compiled });
 }
 
-/// `path` with its separator `sep` replaced by '/', in `buffer` (as long as
-/// `path`). On systems whose separator is already '/', `path` itself.
-fn slashPath(path: []const u8, sep: u8, buffer: []u8) []const u8 {
-    if (sep == '/') return path;
-    const out = buffer[0..path.len];
-    for (path, out) |ch, *o| o.* = if (ch == sep) '/' else ch;
-    return out;
-}
-
 const FieldNames = struct {
     primary: []const u8,
     // Legacy dir-prefixed name, only set when it differs from primary
@@ -209,9 +201,4 @@ test "a template path with Windows separators gives the same names and embed pat
     const from_posix = try generateFieldName("features/store/views/home.html", &c, &d);
     try testing.expectEqualStrings(from_posix.primary, from_windows.primary);
     try testing.expectEqualStrings("store_home", from_windows.primary);
-}
-
-test "on a system whose separator is '/', a backslash in a file name is kept" {
-    var buf: [64]u8 = undefined;
-    try testing.expectEqualStrings("odd\\name.html", slashPath("odd\\name.html", '/', &buf));
 }
