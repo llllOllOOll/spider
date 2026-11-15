@@ -30,7 +30,7 @@ All from the repo root.
 | R2 module tests | `zig build test-r2` | — (signing, addresses, config; no network) |
 | xlsx module tests | `zig build test-xlsx` | — (`cd modules/xlsx && zig build test-libreoffice` needs LibreOffice) |
 | QR code module tests | `zig build test-qrcode` | — |
-| Template engine benchmark | `zig build bench-render -Doptimize=ReleaseFast` | — (interpreter and Elroy on the same pages) |
+| Template engine benchmark | `zig build bench-render -Doptimize=ReleaseFast` | — (the interpreter; Elroy is checked by `elroy_parity_test.zig`) |
 | Format | `zig fmt <the files you touched>` | CI fails on an unformatted file (`zig fmt --check`) |
 
 Disposable Postgres for `test-pg`: `docker compose -f docker-compose.test.yml up -d`
