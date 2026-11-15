@@ -89,9 +89,14 @@ tested in CI on both backends.
   needs guarding, as before.
 - An app that sets `.io_backend = .threaded` in its `build.zig` keeps it;
   one that sets nothing moves to zio.
-- Left for later: fixing `threaded` with threads that end with their
-  connection and a connection cap. Revisit this decision when Zig's
-  evented I/O is complete and works under the default container profile.
+- `threaded` keeps its limit for now, documented where the backend is
+  chosen. Spider writes its own connection handling (a thread per
+  connection that ends when the connection closes, plus a cap on
+  connections) only if one of these happens: zio has a serious problem or
+  is no longer maintained, or Spider needs to build without an outside
+  dependency.
+- Revisit this decision when Zig's evented I/O is complete and works under
+  the default container profile: it could replace zio.
 
 ## References
 
