@@ -28,6 +28,10 @@ used.
 
 ### Fixed
 
+- **`spider.gzip` skips formats that are compressed already.** Images
+  (SVG excepted), video, audio, woff fonts, zip and gzip archives, PDF and
+  the Office formats were compressed again for no gain; they go as they
+  are now, and so does any body gzip would not make smaller.
 - **`spider.gzip` reads `Accept-Encoding` with its q-values.** It
   compressed whenever the header mentioned gzip, so `gzip;q=0` (a refusal)
   got gzip. `gzip` or `*` above q=0 accepts it now.

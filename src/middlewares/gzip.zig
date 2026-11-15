@@ -9,6 +9,22 @@ const dev_reload = @import("../modules/dev_reload.zig");
 
 const MIN_COMPRESS_BYTES: usize = 1024;
 
+/// False for content types that are compressed already: images (SVG is
+/// text and is compressed), video, audio, woff fonts, zip and gzip
+/// archives, PDF and the Office formats (zip inside).
+fn compressible(content_type: []const u8) bool {
+    const ct = std.mem.trim(u8, if (std.mem.indexOfScalar(u8, content_type, ';')) |i| content_type[0..i] else content_type, " \t");
+    if (startsWithIgnoreCase(ct, "image/")) return std.ascii.eqlIgnoreCase(ct, "image/svg+xml");
+    for ([_][]const u8{ "video/", "audio/", "font/woff", "application/zip", "application/gzip", "application/x-gzip", "application/pdf", "application/vnd.openxmlformats-", "application/x-7z", "application/x-rar", "application/x-bzip2", "application/zstd", "application/wasm" }) |prefix| {
+        if (startsWithIgnoreCase(ct, prefix)) return false;
+    }
+    return true;
+}
+
+fn startsWithIgnoreCase(s: []const u8, prefix: []const u8) bool {
+    return s.len >= prefix.len and std.ascii.eqlIgnoreCase(s[0..prefix.len], prefix);
+}
+
 /// Whether the request's Accept-Encoding accepts gzip.
 fn clientAcceptsGzip(headers: std.StringHashMapUnmanaged([]const u8)) bool {
     var iter = headers.iterator();
@@ -54,7 +70,9 @@ fn zeroQ(q: []const u8) bool {
 /// at least 1024 bytes, and
 /// adds `content-encoding: gzip` and `vary: accept-encoding`. Smaller bodies,
 /// responses without a body, responses that already have a
-/// `Content-Encoding` and streams (SSE, WebSocket) pass unchanged. The
+/// `Content-Encoding`, formats that are compressed already (images but SVG,
+/// video, audio, woff, zip, PDF, Office files) and streams (SSE, WebSocket)
+/// pass unchanged, and so does a body gzip would not make smaller. The
 /// compressed body is allocated in the request arena.
 ///
 /// ```zig
@@ -77,6 +95,8 @@ pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
     // A body that is already encoded (a precompressed file, a proxied
     // response) would be encoded twice: the client could not read it.
     for (resp.headers) |h| if (std.ascii.eqlIgnoreCase(h[0], "content-encoding")) return resp;
+    // Formats that are compressed already gain nothing and cost CPU.
+    if (!compressible(resp.content_type)) return resp;
 
     // Under `spider dev` the reload script goes into HTML pages. The server
     // adds it after the middlewares ran, where a page compressed here is
@@ -108,6 +128,8 @@ pub fn middleware(c: *Ctx, next: NextFn) anyerror!Response {
 
     const compressed_len = output_w.buffered().len;
     const compressed = output_buf[0..compressed_len];
+    // Not smaller: the original goes.
+    if (compressed_len >= body.len) return resp;
 
     // 7. Replace body
     resp.body = compressed;
@@ -204,4 +226,26 @@ test "gzip: a client that refused gzip gets the body as it is" {
     }.n);
     try testing.expect(header(resp, "content-encoding") == null);
     try testing.expectEqualStrings(big_text, resp.body.?);
+}
+
+test "gzip: formats that are already compressed are sent as they are" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    inline for (.{ "image/png", "image/jpeg", "video/mp4", "audio/mpeg", "font/woff2", "application/zip", "application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }) |ct| {
+        var c = try ctxWith(arena.allocator(), "gzip");
+        const resp = try middleware(&c, struct {
+            fn n(_: *Ctx) anyerror!Response {
+                return .{ .status = .ok, .body = big_text, .content_type = ct };
+            }
+        }.n);
+        try testing.expect(header(resp, "content-encoding") == null);
+    }
+    // SVG is text: it is compressed.
+    var c = try ctxWith(arena.allocator(), "gzip");
+    const svg = try middleware(&c, struct {
+        fn n(_: *Ctx) anyerror!Response {
+            return .{ .status = .ok, .body = big_text, .content_type = "image/svg+xml" };
+        }
+    }.n);
+    try testing.expectEqualStrings("gzip", header(svg, "content-encoding").?);
 }
