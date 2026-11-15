@@ -30,6 +30,7 @@ All from the repo root.
 | R2 module tests | `zig build test-r2` | — (signing, addresses, config; no network) |
 | xlsx module tests | `zig build test-xlsx` | — (`cd modules/xlsx && zig build test-libreoffice` needs LibreOffice) |
 | QR code module tests | `zig build test-qrcode` | — |
+| Template engine benchmark | `zig build bench-render -Doptimize=ReleaseFast` | — (interpreter and Elroy on the same pages) |
 | Format | `zig fmt <the files you touched>` | CI fails on an unformatted file (`zig fmt --check`) |
 
 Disposable Postgres for `test-pg`: `docker compose -f docker-compose.test.yml up -d`
@@ -114,10 +115,21 @@ src/core/
                       listen(); modules_test.zig drives them on a Server
   migration.zig       spider.Migration, keys, the up part of a file, checksums; std only
                       (the pg tests build it alone)
+  arena_recycler.zig  arenas of closed connections, reused by new ones
+                      (with Config.request_memory_retain)
 src/version.zig       spider.version (= build.zig.zon, checked by version_check_tool.zig)
 src/routing/          router (trie + static map; RouteMeta), Group (defaults, use),
                       route_config.zig (the route config keys, checked at comptime)
 src/render/           template engine: parser → AST → renderer; escaping, RawHtml
+  elroy/              the template compiler: codegen.zig (emits a Zig function
+                      per template, run by the template generator at build
+                      time), runtime.zig (the language's rules, resolved by
+                      type), fixtures.zig (the parity cases)
+  manifest.zig        what each template reads (spider_manifest in the
+                      generated file); check_view.zig compares it with the
+                      data type in c.viewChecked
+  props_decl.zig      a component's `-- props:` line
+  parsed_cache.zig    embedded templates parsed once, at listen()
 src/ws/               Hub (SSE/WS fan-out, channels, replay), Sse, Ws
 src/binding/          form + multipart parsing
 src/providers/        jwks (JWT via JWKS), keycloak, google, clerk
@@ -126,6 +138,11 @@ src/modules/          rbac, logger, static files, health, push (Web Push), auth 
                       mail/ (Mailer + provider transports: brevo, resend, postmark, log, memory)
 src/internal/         config (spider.Config), env (.env loading), logfmt
 src/cli/              `spider` CLI; src/cli/templates/*.template = files it generates
+                      update.zig / self_update.zig = `spider update` / `self-update`;
+                      project_version.zig = the warning when a project's Spider is
+                      not the CLI's; main.zig hands a project to the CLI of its
+                      release (~/.cache/spider/cli/X.Y.Z; SPIDER_DISPATCH=0 off);
+                      checksums.zig = SHA-256 of what `spider install` downloads
                       dev.zig = `spider dev` (supervises `zig build dev --watch` and
                       the app; build.zig's devStep() + src/dev_notify_tool.zig)
 modules/pg|sqlite|r2|qrcode|xlsx   separate packages re-exported as spider.pg etc.
@@ -134,6 +151,9 @@ modules/pacman        the HTTP client (spider.http_client), always present; uses
                       its own copy of std's http/Client.zig (src/std_http/, with
                       the proxy TLS fix) — builds with an unmodified Zig
 e2e_test.zig, e2e/    end-to-end tests; zio_backend_test.zig
+elroy_parity_test.zig interpreter vs Elroy, byte for byte (part of `zig build test`)
+render_bench_main.zig `zig build bench-render`
+demos/                curated example apps, built by CI
 ```
 
 ## Request lifecycle (src/core/app.zig)
@@ -211,6 +231,15 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   keep anything that depends on template contents out of generic
   (`anytype`) functions — each `data` type instantiates `view()`, so it
   multiplies binary size and invalidates every view on a template edit.
+  The exception is by design: `c.viewChecked` (one instance per call site)
+  checks the data against `spider_manifest` and, in a release build,
+  renders with the function Elroy generated (`spider_templates.elroy`).
+  Elroy must write exactly what the interpreter writes: a change to the
+  template language goes into both, with a case in
+  `src/render/elroy/fixtures.zig` (`elroy_parity_test.zig` compares them
+  byte for byte). Components and layouts compile to shared functions
+  (`__f<id>`) whose scope type comes from a type function (`__S<id>`), so
+  calls with the same types share one instance.
 - **io backends**: `threaded` (default; Io.Threaded, blocking sockets) and `zio`
   (fibers, non-blocking sockets, `-Dio_backend=zio`). Anything
   that writes to a socket must use the server's `Io` — a separate Io.Threaded on

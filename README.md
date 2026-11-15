@@ -448,7 +448,8 @@ _ = server
 
 - `spider.logger`: `2026-09-26T17:36:33.178Z [200] GET /users 12.0ms rid=… user=- org=-`.
 - `spider.errorHandler`: JSON `{error, request_id}` for JSON clients, an htmx
-  toast (`HX-Trigger`) for htmx requests, a page otherwise.
+  toast (`HX-Trigger`) for htmx requests, a page otherwise (your own with
+  `.forbidden_view` for 403 and `.not_found_view` for 404).
 - `spider.forceHttps`: redirects when `X-Forwarded-Proto: http`; honors `.allow_http`.
 
 ---
@@ -732,6 +733,13 @@ extends "layout"
 ```
 
 `extends "layout"` must be the first line. Named slots are for layouts.
+
+A page without `extends` can get a layout without naming it: per route or
+group (`.layout = "admin"` in the route config or in `group.defaults(...)`;
+`""` for none), or for the whole app (`Config.default_layout`). It applies
+to `c.view` pages only: never to a template that is a whole document
+(`<html`), an htmx request that is not boosted, `viewFragment` or a `-- doc`
+view.
 
 ### Markdown views
 
@@ -1266,7 +1274,15 @@ the `spider_config` import of the spider module (`spider new` does; see
 [Manual Install](#manual-install)). `spider.appWithConfig(cfg)` uses `cfg`
 instead. `static_dir` (default `"./public"`, `null`: no static files) and
 `workers` (accept threads of the threaded backend; `null`: one per CPU) are
-config fields too.
+config fields too, as are:
+
+- `request_memory_retain` (default 1 MiB): how much of a request's memory a
+  keep-alive connection keeps for its next request, instead of giving it
+  back and asking again. Lower it for many idle connections and little
+  memory.
+- `default_layout` (see [Layouts and named slots](#layouts-and-named-slots)),
+  `compiled_templates` (see [Compiled templates](#compiled-templates-release))
+  and `templates_strict` (how template problems are reported).
 
 ### Environment (`.env`)
 
@@ -1343,8 +1359,8 @@ spider add pwa | spider remove pwa
 spider install                        # tailwindcss, alpine, htmx, daisyUI, icon sets
 
 spider generate-vapid mailto:admin@example.com
-spider update                         # bump the spider dependency in build.zig.zon
-spider self-update                    # update the CLI
+spider update [X.Y.Z|--patch|--canary|--stable]   # move this project's Spider
+spider self-update [X.Y.Z|--canary|--stable]      # install another spider CLI
 spider version                        # also --version, -v
 spider help <command>                 # or spider <command> --help
 ```
@@ -1377,12 +1393,15 @@ src/
 ├── conventions.zig         — app convention rules (spider check)
 ├── core/                   — app.zig (Server, request lifecycle), context.zig (Ctx),
 │                             handler.zig, extractors.zig, watchdog.zig, origin.zig,
-│                             client_ip.zig, database.zig, http_client_mtls.zig
+│                             client_ip.zig, database.zig, http_client_mtls.zig,
+│                             arena_recycler.zig (request memory reuse)
 ├── routing/                — router.zig, group.zig, route_config.zig, expect_routes.zig
 ├── middlewares/            — gzip, https (forceHttps), vary (varyHtmx), dbg_*
 ├── modules/                — auth/ (HS256), rbac, errors, static, health, push,
 │                             logger, auth_marker, livereload (disabled)
-├── render/                 — template engine (parser, ast, renderer, views) + zmd/
+├── render/                 — template engine (parser, ast, renderer, views) + zmd/;
+│                             elroy/ (compiled templates), manifest + check_view
+│                             (c.viewChecked), props_decl (`-- props:`)
 ├── internal/               — config, env, logfmt, logger, url, …
 ├── ws/                     — websocket.zig, hub.zig, ws.zig, sse.zig
 ├── binding/                — form, multipart
