@@ -27,6 +27,7 @@
 //!   routes-test            a feature with routes.zig but no routes_test.zig
 
 const std = @import("std");
+const slashPath = @import("internal/paths.zig").slashPath;
 const template_parser = @import("render/parser.zig");
 const props_decl = @import("render/props_decl.zig");
 const ast = @import("render/ast.zig");
@@ -121,7 +122,10 @@ pub fn check(io: std.Io, arena: std.mem.Allocator, root: std.Io.Dir, report: *Re
     var templates: std.ArrayList(Source) = .empty;
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
-        const path = try std.fmt.allocPrint(arena, "src/{s}", .{entry.path});
+        // '/' on every system (the walk gives '\' on Windows): the rules
+        // below match paths such as "/routes.zig".
+        var rel_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try std.fmt.allocPrint(arena, "src/{s}", .{slashPath(entry.path, std.fs.path.sep, &rel_buf)});
         const text = src.readFileAlloc(io, entry.path, arena, .limited(8 * 1024 * 1024)) catch continue;
         if (std.mem.endsWith(u8, path, ".zig")) {
             if (std.mem.endsWith(u8, path, "embedded_templates.zig")) continue;

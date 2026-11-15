@@ -28,6 +28,12 @@ used.
 
 ### Fixed
 
+- **A new app's tests pass on Windows.** The test-file discovery check and
+  `spider.testing.conventions` read paths with `\` on Windows, so every
+  test file looked left out of the test binary and route files were not
+  recognized: `zig build test` failed on an app nobody had touched. Both
+  use `/` on every system now.
+
 - **Templates read at run time are found on Windows.** In a Debug build,
   where templates are read from `views_dir` on every request, their names
   were built from paths with `\` on Windows, so every view answered

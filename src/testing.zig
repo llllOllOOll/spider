@@ -150,3 +150,10 @@ test "isTestOf" {
     try std.testing.expect(!isTestOf("posts.model.test.y", "posts.mode"));
     try std.testing.expect(!isTestOf("mod.test.x", "posts.controller"));
 }
+
+test "a test file listed with Windows separators gets the same prefix as with '/'" {
+    var walk_buf: [64]u8 = undefined;
+    var buf: [64]u8 = undefined;
+    const rel = @import("internal/paths.zig").slashPath("features\\posts\\model.zig", '\\', &walk_buf);
+    try std.testing.expectEqualStrings("features.posts.model", prefixFor(&buf, rel));
+}
