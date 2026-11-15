@@ -54,6 +54,13 @@ jobs:
       - name: Demo books
         working-directory: demos/books
         run: zig build test
+      # Apps must build for the other systems Spider supports, from a Linux
+      # machine with no emulator (the template generator runs on the host).
+      - name: Demo books builds for Windows and macOS
+        working-directory: demos/books
+        run: |
+          zig build check -Dtarget=x86_64-windows
+          zig build check -Dtarget=aarch64-macos
 
   e2e:
     name: End to end (${{ matrix.io_backend }})

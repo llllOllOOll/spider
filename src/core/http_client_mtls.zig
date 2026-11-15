@@ -234,7 +234,10 @@ var test_issued_count: usize = 0;
 fn writeTempFile(io: Io, path: []const u8, data: []const u8) !void {
     // Exclusive: a file or a link someone left at this name is an error,
     // never a place the certificate is written to.
-    var file = try Io.Dir.createFileAbsolute(io, path, .{ .permissions = .fromMode(0o600), .exclusive = true });
+    // Owner-only on POSIX; on Windows the file gets the temp directory's
+    // access rules, which already keep it to the user.
+    const permissions: Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
+    var file = try Io.Dir.createFileAbsolute(io, path, .{ .permissions = permissions, .exclusive = true });
     defer file.close(io);
     try file.writeStreamingAll(io, data);
 }

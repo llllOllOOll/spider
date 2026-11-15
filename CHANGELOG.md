@@ -28,6 +28,14 @@ used.
 
 ### Fixed
 
+- **Apps build for Windows and macOS.** The connection watchdog, the health
+  handlers and the log timestamps called Linux or POSIX functions directly
+  (`clock_gettime`, `shutdown`, `isatty`), so no app compiled for Windows,
+  and none for macOS. They go through a small internal layer now (libc on
+  POSIX, the native calls on Windows); the WebSocket hub uses the portable
+  stream shutdown. The test suites compile for both systems too, and CI
+  builds the demo app for each from Linux.
+
 - **Apps cross-compile without an emulator.** `generate-templates`, which an
   app runs while it builds, was built for the app's target: building for
   another system ran a foreign binary and failed. It is built for the

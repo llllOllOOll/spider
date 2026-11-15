@@ -20,30 +20,31 @@
 //! never hit a descriptor number that was already recycled.
 
 const std = @import("std");
+const sys = @import("../internal/sys.zig");
 
 pub const Watchdog = struct {
     lock: std.atomic.Mutex = .unlocked,
     head: ?*Entry = null,
 
     pub const Entry = struct {
-        fd: std.posix.fd_t,
+        fd: sys.Socket,
         /// Monotonic ns after which the socket is shut down; 0 = no deadline.
         deadline: std.atomic.Value(i64) = .init(0),
-        /// shutdown() `how` for the armed deadline (SHUT.RD or SHUT.RDWR).
-        how: std.atomic.Value(i32) = .init(std.c.SHUT.RD),
+        /// Which side the armed deadline shuts down.
+        how: std.atomic.Value(sys.Shut) = .init(.read),
         prev: ?*Entry = null,
         next: ?*Entry = null,
 
         /// Shut the connection down if it is still in this phase `ms` from
         /// now. 0 disarms.
         pub fn arm(e: *Entry, ms: u32) void {
-            e.how.store(std.c.SHUT.RD, .release);
+            e.how.store(.read, .release);
             e.deadline.store(if (ms == 0) 0 else monotonicNs() + @as(i64, ms) * std.time.ns_per_ms, .release);
         }
 
         /// Like arm(), for a write: on expiry both directions are shut down.
         pub fn armWrite(e: *Entry, ms: u32) void {
-            e.how.store(std.c.SHUT.RDWR, .release);
+            e.how.store(.both, .release);
             e.deadline.store(if (ms == 0) 0 else monotonicNs() + @as(i64, ms) * std.time.ns_per_ms, .release);
         }
 
@@ -85,7 +86,7 @@ pub const Watchdog = struct {
             const d = e.deadline.load(.acquire);
             if (d == 0 or now < d) continue;
             e.deadline.store(0, .release);
-            _ = std.c.shutdown(e.fd, e.how.load(.acquire));
+            sys.shutdown(e.fd, e.how.load(.acquire));
             n += 1;
         }
         return n;
@@ -112,11 +113,7 @@ pub fn tickFor(timeouts_ms: []const u32) u32 {
     return std.math.clamp(min / 4, 50, 1000);
 }
 
-pub fn monotonicNs() i64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
-    return @as(i64, ts.sec) * std.time.ns_per_s + ts.nsec;
-}
+pub const monotonicNs = sys.monotonicNs;
 
 test "tickFor" {
     try std.testing.expectEqual(@as(u32, 1000), tickFor(&.{ 0, 0 }));
@@ -126,6 +123,8 @@ test "tickFor" {
 }
 
 test "sweep shuts down only expired, armed entries" {
+    // A Unix socket pair; Windows has none.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var fds: [2]std.c.fd_t = undefined;
     try std.testing.expectEqual(@as(c_int, 0), std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds));
     var fds2: [2]std.c.fd_t = undefined;

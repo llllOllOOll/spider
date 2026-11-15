@@ -76,8 +76,7 @@ const Client = struct {
         const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
         self.stream = try address.connect(io, .{ .mode = .stream });
         errdefer self.stream.close(io);
-        const tv = std.posix.timeval{ .sec = 3, .usec = 0 };
-        try std.posix.setsockopt(self.stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
+        try @import("../e2e_test.zig").setReadTimeout(self.stream, 3);
 
         try self.write("GET " ++ path ++ " HTTP/1.1\r\nHost: 127.0.0.1\r\n" ++
             "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n" ++

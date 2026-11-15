@@ -99,8 +99,7 @@ const Socket = struct {
         const address = try std.Io.net.IpAddress.parse("127.0.0.1", port);
         self.stream = try address.connect(io, .{ .mode = .stream });
         errdefer self.stream.close(io);
-        const tv = std.posix.timeval{ .sec = 3, .usec = 0 };
-        try std.posix.setsockopt(self.stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
+        try h.setReadTimeout(self.stream, 3);
 
         var wbuf: [512]u8 = undefined;
         var w = self.stream.writer(io, &wbuf);

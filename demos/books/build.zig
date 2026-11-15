@@ -74,6 +74,10 @@ pub fn build(b: *std.Build) void {
     gen.addArg("src/embedded_templates.zig");
     exe.step.dependOn(&gen.step);
 
+    // Compiles the app and nothing else (no stylesheet, no install): with
+    // -Dtarget it checks that the app builds for another system.
+    b.step("check", "Compile the app without installing or running it").dependOn(&exe.step);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 

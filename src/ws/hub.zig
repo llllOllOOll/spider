@@ -388,7 +388,7 @@ pub const Hub = struct {
         };
         defer self.releaseSlot(slot);
         if (slot.io_mutex.lock(self.io)) |_| {
-            if (!slot.closed.load(.acquire)) _ = std.c.shutdown(slot.conn.stream.socket.handle, std.c.SHUT.RDWR);
+            if (!slot.closed.load(.acquire)) slot.conn.stream.shutdown(self.io, .both) catch {};
             slot.io_mutex.unlock(self.io);
         } else |_| {}
         self.remove(conn_id);
@@ -852,6 +852,9 @@ pub const Hub = struct {
 };
 
 fn makeSocketPair() ![2]net.Socket {
+    // A Unix socket pair; Windows has none (the end-to-end tests cover
+    // these paths there with real sockets).
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var fds: [2]posix.fd_t = undefined;
     const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0, &fds);
     if (rc != 0) return error.Unexpected;

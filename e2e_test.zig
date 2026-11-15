@@ -81,6 +81,24 @@ pub fn request(io: std.Io, arena: std.mem.Allocator, port: u16, target: []const 
     return .{ .status = status, .head = head, .body = raw[head_end + 4 ..] };
 }
 
+/// Makes reads on `stream` fail after `secs` seconds without data, so a
+/// test waiting for a message that never comes fails instead of hanging.
+pub fn setReadTimeout(stream: std.Io.net.Stream, secs: u32) !void {
+    if (@import("builtin").os.tag == .windows) {
+        const ms: u32 = secs * 1000;
+        const SOL_SOCKET = 0xffff;
+        const SO_RCVTIMEO = 0x1006;
+        if (win.setsockopt(stream.socket.handle, SOL_SOCKET, SO_RCVTIMEO, std.mem.asBytes(&ms), @sizeOf(u32)) != 0) return error.Unexpected;
+        return;
+    }
+    const tv = std.posix.timeval{ .sec = secs, .usec = 0 };
+    try std.posix.setsockopt(stream.socket.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
+}
+
+const win = struct {
+    extern "ws2_32" fn setsockopt(s: std.os.windows.HANDLE, level: i32, name: i32, value: [*]const u8, len: i32) callconv(.winapi) i32;
+};
+
 /// Binds port 0, reads back what the OS assigned, releases it. See
 /// zio_backend_test.zig for why this small race window is acceptable.
 pub fn reserveEphemeralPort(io: std.Io) !u16 {
@@ -1179,6 +1197,8 @@ test "deadline: an idle keep-alive connection is closed after its response" {
 }
 
 test "accept loop: running out of file descriptors does not stop the server" {
+    // File descriptor limits (getrlimit) are POSIX.
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var env = TestEnv.init();
     defer env.deinit();
     const io = env.io();

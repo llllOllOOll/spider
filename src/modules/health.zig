@@ -5,15 +5,14 @@ const std = @import("std");
 const ctx_mod = @import("../core/context.zig");
 const Ctx = ctx_mod.Ctx;
 const Response = ctx_mod.Response;
+const sys = @import("../internal/sys.zig");
 
 var boot_time: i64 = 0;
 
 /// Records the time `health` counts the uptime from. `spider.app` and
 /// `spider.appWithConfig` call it.
 pub fn init() void {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
-    boot_time = ts.sec;
+    boot_time = @divTrunc(sys.monotonicNs(), std.time.ns_per_s);
 }
 
 /// Answers 200 with the text `OK`. Registered at `/up`, public and left out
@@ -26,9 +25,7 @@ pub fn up(c: *Ctx) !Response {
 /// since `init`. Registered at `/_spider/health`, public and left out of the
 /// request log. It checks nothing else (not the database).
 pub fn health(c: *Ctx) !Response {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
-    const uptime = ts.sec - boot_time;
+    const uptime = @divTrunc(sys.monotonicNs(), std.time.ns_per_s) - boot_time;
 
     return c.json(.{
         .status = "ok",

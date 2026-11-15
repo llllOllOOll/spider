@@ -363,6 +363,9 @@ pub fn buildHandler(comptime handler: fn (*Sse) anyerror!void) Handler {
 const testing = std.testing;
 
 fn makeSocketPair() ![2]net.Socket {
+    // A Unix socket pair; Windows has none (the end-to-end tests cover
+    // these paths there with real sockets).
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var fds: [2]posix.fd_t = undefined;
     const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0, &fds);
     if (rc != 0) return error.Unexpected;
