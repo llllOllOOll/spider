@@ -711,6 +711,12 @@ expression that resolves to nothing is empty. A component has one
 `{ slot }`. `<SiteNav />` finds `SiteNav` or `site_nav`. Nesting is capped
 (`spider.template_max_component_depth`).
 
+A template is flat: HTML tags are text. So `<Name>…</Name>` with content,
+outside `if` and `for`, **defines** a component used in that file (an
+inline component) when no template has that exact name; with a file
+`box.html`, write the call `<Box>…</Box>` inside an `if`/`for`, or name the
+file `Box.html`, for it to be a call.
+
 ### Layouts and named slots
 
 ```html
@@ -782,6 +788,32 @@ View names come from paths:
 | `features/home/views/index.html` | `home_index` | `c.view("home/index", ...)` |
 | `features/users/views/users.html` | `users` | `c.view("users", ...)` |
 | `views/components/UserInfo.html` | `components_UserInfo` (+ `UserInfo`) | `<UserInfo />` |
+
+### Compiled templates (release)
+
+In a release build the template generator also compiles every template it
+can into a Zig function (Elroy), and `c.viewChecked` renders with it: the
+data is read field by field, with no conversion and no name lookups, and
+the HTML is the same, byte for byte. On a catalog page of 24 cards
+(components, nested loops) that took requests per second from about 13
+thousand to 52 thousand.
+
+What still renders with the interpreter, the same HTML:
+
+- a Debug build (templates read from disk, so an edit needs no rebuild);
+- `c.view`, whose template name may be chosen at run time;
+- `templates_strict` other than `.off` (its diagnostics run per request);
+- a page without `extends` that gets a default layout (decided per
+  request: the route, htmx);
+- a template Elroy does not compile: one that reads `current_user`, a
+  condition that calls a function, a component that includes itself.
+
+`compiled_templates = false` in `spider.config.zig` turns it off.
+Components and layouts are compiled once, as functions every page calls,
+and markup is written from the embedded template files, so the cost is
+mostly the pages' own code: on a 561-template app, about 4 MiB more code
+and two more minutes for a release build. A test renders a set of
+templates both ways and fails on any difference in the HTML.
 
 ---
 

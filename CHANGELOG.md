@@ -72,6 +72,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Compiled templates in release builds (Elroy).** The template generator
+  also compiles every template it can into a Zig function, and
+  `c.viewChecked` renders with it in a release build: the data is read by
+  field (no conversion to a value tree, no name lookups) and the HTML is
+  byte for byte the interpreter's. Components and layouts are compiled
+  once as shared functions; markup is written as slices of the embedded
+  template files. Debug builds, `c.view`, `templates_strict` other than
+  `.off`, a default layout added per request and templates Elroy does not
+  compile (`current_user`, a condition that calls a function, a component
+  that includes itself) keep the interpreter. `Config.compiled_templates`
+  (default true) turns it off. A parity test renders a set of templates
+  both ways. On a catalog page: about 13 thousand to 52 thousand requests
+  per second; on a 561-template app, about 4 MiB more code and two more
+  minutes of release build.
+
 - **`installApp(b, exe)` in build.zig, and apps from `spider new` use
   it: a release binary without its debug info, `<app>.debug` next to it.**
   The binary that ships is small and still names the functions in a
