@@ -28,6 +28,11 @@ used.
 
 ### Fixed
 
+- **`spider install` works on Windows.** Marking the downloaded
+  `tailwindcss` as executable crashed there (the standard library has no
+  file permissions on Windows), so the first `zig build` of a new app
+  failed. Windows has no execute permission to set; the step is skipped.
+
 - **Apps build for Windows and macOS.** The connection watchdog, the health
   handlers and the log timestamps called Linux or POSIX functions directly
   (`clock_gettime`, `shutdown`, `isatty`), so no app compiled for Windows,
