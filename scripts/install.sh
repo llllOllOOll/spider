@@ -54,7 +54,8 @@ parse_args() {
                 echo "Usage: curl -fsSL https://spiderme.org/install.sh | bash -s -- [options]"
                 echo ""
                 echo "Options:"
-                echo "  --version VERSION    Install specific version (default: latest)"
+                echo "  --version VERSION    Install specific version (default: latest);"
+                echo "                       canary: build the CLI from the develop branch (needs git and zig)"
                 echo "  --install-dir PATH   Install directory (default: \$HOME/.local/bin)"
                 echo "  --help, -h           Show this help message"
                 exit 0
@@ -109,6 +110,33 @@ mkdir -p "${INSTALL_DIR}"
 PLATFORM=$(detect_platform)
 info "Detected platform: ${PLATFORM}"
 
+check_path() {
+    case ":$PATH:" in
+        *":${INSTALL_DIR}:"*) ;;
+        *)
+            warn "Add ${INSTALL_DIR} to your PATH:"
+            warn "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+            ;;
+    esac
+}
+
+# The development channel: no prebuilt binary; build the CLI from develop.
+if [ "$VERSION" = "canary" ] || [ "$VERSION" = "develop" ]; then
+    command -v git >/dev/null 2>&1 || error "--version canary needs git"
+    command -v zig >/dev/null 2>&1 || error "--version canary needs zig: it builds the CLI from the develop branch"
+    info "Building Spider CLI from the develop branch..."
+    TEMP_DIR=$(mktemp -d)
+    git clone --quiet --depth 1 --branch develop "https://github.com/${SPIDER_REPO}.git" "${TEMP_DIR}/spider" \
+        || error "Could not clone the develop branch"
+    (cd "${TEMP_DIR}/spider" && zig build -Doptimize=ReleaseSafe) || error "zig build failed"
+    install -m 755 "${TEMP_DIR}/spider/zig-out/bin/spider" "${INSTALL_DIR}/spider"
+    rm -rf "${TEMP_DIR}"
+    info "Spider CLI (develop) installed to ${INSTALL_DIR}/spider"
+    check_path
+    info "Installation complete! 'spider self-update' goes back to the latest release."
+    exit 0
+fi
+
 # Determine version
 if [ "$VERSION" = "latest" ]; then
     info "Fetching latest version..."
@@ -150,12 +178,6 @@ cd /
 rm -rf "${TEMP_DIR}"
 
 # Check PATH
-case ":$PATH:" in
-    *":${INSTALL_DIR}:"*) ;;
-    *)
-        warn "Add ${INSTALL_DIR} to your PATH:"
-        warn "  export PATH=\"${INSTALL_DIR}:\$PATH\""
-        ;;
-esac
+check_path
 
 info "Installation complete! Run 'spider help' to get started."

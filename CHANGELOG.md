@@ -72,6 +72,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spider update` and `spider self-update` take a version or a
+  channel.** `spider update` moves the project to the latest release (as
+  before), `spider update X.Y.Z` to that release (checked to exist first:
+  `zig fetch` of a missing tag would save the default branch without a
+  word), `--patch` to the latest patch of the project's release line, and
+  `--canary` to the develop branch. `spider self-update` installs the
+  latest CLI (as before), `X.Y.Z` that release, `--canary` a build of the
+  develop branch; the install script takes `--version canary` (needs git
+  and zig).
+
 - **The CLI warns when a project is on another Spider.** Before `spider g`,
   `add`, `remove`, `ui`, `icons`, `migrate`, `check`, `dev`, `routes` and
   `install`, it reads how the project's build.zig.zon pins Spider

@@ -359,15 +359,24 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\
         ,
         .update =>
-        \\Usage: spider update
+        \\Usage: spider update [X.Y.Z | --patch | --canary | --stable]
         \\
-        \\Update the spider dependency in this project's build.zig.zon.
+        \\Move the spider dependency in this project's build.zig.zon:
+        \\  (nothing), --stable  the latest release
+        \\  X.Y.Z               that release (checked to exist first)
+        \\  --patch             the latest patch of the project's release line
+        \\  --canary            the develop branch (development; pinned to its
+        \\                      current commit)
+        \\A project stays on its version until you run this.
         \\
         ,
         .self_update =>
-        \\Usage: spider self-update
+        \\Usage: spider self-update [X.Y.Z | --canary | --stable]
         \\
-        \\Download and install the latest spider CLI.
+        \\Install the spider CLI:
+        \\  (nothing), --stable  the latest release
+        \\  X.Y.Z               that release
+        \\  --canary            a build of the develop branch (needs git and zig)
         \\
         ,
         .generate_vapid =>

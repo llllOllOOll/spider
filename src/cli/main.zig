@@ -161,8 +161,8 @@ pub fn main(init: std.process.Init) !void {
                 else => |e| return e,
             };
         },
-        .update => try update.run(io),
-        .self_update => try self_update.run(io),
+        .update => try update.run(io, allocator, rest),
+        .self_update => try self_update.run(io, allocator, rest),
         .install => try install.run(io, allocator, std.Io.Dir.cwd()),
         .generate_vapid => try generate_vapid.run(io, allocator, if (rest.len > 0) rest[0] else null),
         .version, .help => unreachable, // handled by decide()
