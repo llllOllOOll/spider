@@ -119,6 +119,23 @@ fn cacheLock() void {
     while (!gz_cache.lock.tryLock()) std.atomic.spinLoopHint();
 }
 
+/// `body` gzipped at the best level, in `gpa`. Kept out of line: the
+/// compressor is about 230 KB, and inlined into the request path its frame
+/// would be touched by every connection, not only the one that compresses
+/// a file for the first time.
+noinline fn compressBest(gpa: std.mem.Allocator, body: []const u8) ![]u8 {
+    const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
+    defer gpa.free(window);
+    var out: std.Io.Writer.Allocating = try .initCapacity(gpa, body.len / 2 + 64);
+    defer out.deinit();
+    const compressor = try gpa.create(std.compress.flate.Compress);
+    defer gpa.destroy(compressor);
+    compressor.* = try std.compress.flate.Compress.init(&out.writer, window, .gzip, .best);
+    try compressor.writer.writeAll(body);
+    try compressor.finish();
+    return gpa.dupe(u8, out.written());
+}
+
 /// `body` gzipped, from the cache or compressed now (and kept). Memory
 /// that lives as long as the process; the result must not be freed.
 fn gzipped(body: []const u8, hash: u64) ![]const u8 {
@@ -128,14 +145,7 @@ fn gzipped(body: []const u8, hash: u64) ![]const u8 {
     if (hit) |bytes| return bytes;
 
     const gpa = std.heap.smp_allocator;
-    const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
-    defer gpa.free(window);
-    var out: std.Io.Writer.Allocating = try .initCapacity(gpa, body.len / 2 + 64);
-    defer out.deinit();
-    var compressor = try std.compress.flate.Compress.init(&out.writer, window, .gzip, .best);
-    try compressor.writer.writeAll(body);
-    try compressor.finish();
-    const bytes = try gpa.dupe(u8, out.written());
+    const bytes = try compressBest(gpa, body);
 
     cacheLock();
     defer gz_cache.lock.unlock();

@@ -32,8 +32,10 @@ used.
   The compressor (about 230 KB in Zig 0.17) and its 64 KB window sat on
   the middleware's stack frame, touched even when nothing was compressed;
   under zio each connection's fiber keeps those pages. They live in the
-  request arena now, only when a body is compressed: 1000 idle keep-alive
-  connections went from 974 MiB to 474 MiB.
+  request arena now, only when a body is compressed, and the static files'
+  compression is kept out of the request path (it was inlined into it, and
+  every connection touched its frame): 1000 idle keep-alive connections
+  under zio went from 974 MiB to 37 MiB.
 - **Response headers built with a runtime value arrive intact.**
   `.headers = &.{.{ "X-Id", id }}` with a runtime `id` puts the list on
   the handler's stack, gone before the response is sent: the header went

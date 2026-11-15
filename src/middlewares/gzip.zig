@@ -13,7 +13,7 @@ const MIN_COMPRESS_BYTES: usize = 1024;
 /// 64 KB window live in the arena, not on the stack: a stack frame that size
 /// would be touched on every request through the middleware, and under zio
 /// each connection's fiber keeps the pages it touched.
-fn gzipInArena(arena: std.mem.Allocator, body: []const u8) ![]u8 {
+noinline fn gzipInArena(arena: std.mem.Allocator, body: []const u8) ![]u8 {
     // Gzip usually shrinks the body; room for the pathological case.
     const output_buf = try arena.alloc(u8, body.len + (body.len / 2) + 128);
     var output_w = std.Io.Writer.fixed(output_buf);
