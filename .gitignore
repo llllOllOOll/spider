@@ -16,7 +16,7 @@ build.zig_main_for_test.zig
 .env
 bench/
 # src/main.zig
-# demos/: the curated examples, versioned (COY-1055). The old local
+# demos/: the curated examples, versioned. The old local
 # folder is demos_local/, kept out of git by .git/info/exclude.
 .playwright-mcp/
 src/cli/.playwright-mcp/
