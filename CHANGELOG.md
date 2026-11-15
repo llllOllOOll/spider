@@ -72,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The CLI warns when a project is on another Spider.** Before `spider g`,
+  `add`, `remove`, `ui`, `icons`, `migrate`, `check`, `dev`, `routes` and
+  `install`, it reads how the project's build.zig.zon pins Spider
+  (`?ref=vX.Y.Z`, a branch, a commit, a local path) and, when that is not
+  its own version, says so and shows how to install the matching CLI
+  (`install.sh --version X.Y.Z`): code it writes follows its own version.
+  It does not stop the command. A local path or a commit is not checked.
+
 - **Compiled templates in release builds (Elroy).** The template generator
   also compiles every template it can into a Zig function, and
   `c.viewChecked` renders with it in a release build: the data is read by

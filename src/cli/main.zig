@@ -6,6 +6,7 @@ const generate_vapid = @import("generate_vapid.zig");
 const migrate = @import("migrate.zig");
 const update = @import("update.zig");
 const self_update = @import("self_update.zig");
+const project_version = @import("project_version.zig");
 
 const cli_args = @import("args.zig");
 const routes_cmd = @import("routes_cmd.zig");
@@ -58,6 +59,12 @@ pub fn main(init: std.process.Init) !void {
         .run => |c| c,
     };
     const rest = all.items[1..];
+
+    // Work in a project whose Spider is not this CLI's own: say so first.
+    switch (cmd) {
+        .new, .update, .self_update, .version, .help, .clean, .generate_vapid => {},
+        else => warnProjectVersion(io, allocator),
+    }
 
     switch (cmd) {
         .new => {
@@ -165,6 +172,7 @@ pub fn main(init: std.process.Init) !void {
 test {
     _ = cli_args;
     _ = @import("feature.zig");
+    _ = project_version;
     _ = clean_cmd;
     _ = @import("build_cache.zig");
     _ = @import("routes_updater.zig");
@@ -192,4 +200,16 @@ test {
 
 test "every file with tests is part of the CLI test binary" {
     try @import("spider_testing").expectAllTestsDiscovered(@import("test_manifest"));
+}
+
+/// Prints project_version.warning for the project around the current
+/// directory, if there is one and its Spider is not this CLI's.
+fn warnProjectVersion(io: std.Io, allocator: std.mem.Allocator) void {
+    const root = @import("fs_utils.zig").findProjectRoot(io) catch return;
+    const zon = root.readFileAlloc(io, "build.zig.zon", allocator, .limited(64 * 1024)) catch return;
+    defer allocator.free(zon);
+    const pin = project_version.pinOf(zon) orelse return;
+    const msg = project_version.warning(allocator, version, pin) catch return orelse return;
+    defer allocator.free(msg);
+    std.debug.print("{s}", .{msg});
 }
