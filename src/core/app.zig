@@ -857,7 +857,9 @@ fn buildWsWrapper(comptime handler: fn (*Ws) anyerror!void) Handler {
     const W = struct {
         pub fn call(ctx: *Ctx) anyerror!Response {
             const hub = ctx._ws_hub orelse return ctx.text("", .{});
-            var ws_server = websocket.Server.init(ctx._stream, ctx._io, ctx.arena);
+            // In the arena, not on the stack: it holds a 64 KB read buffer.
+            const ws_server = try ctx.arena.create(websocket.Server);
+            ws_server.initIn(ctx._stream, ctx._io, ctx.arena);
             if (!try ws_server.handshake(ctx.arena, &ctx._headers)) {
                 return ctx.text("", .{});
             }

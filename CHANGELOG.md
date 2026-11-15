@@ -28,6 +28,11 @@ used.
 
 ### Fixed
 
+- **A WebSocket connection no longer keeps ~200 KB of stack.** Its server
+  state (with a 64 KB read buffer) was built on the stack and copied twice;
+  it lives in the request arena now and is set up in place, so only the
+  buffer pages a message actually uses take memory. 3000 WebSocket
+  connections under zio went from 712 MiB to 319 MiB.
 - **`spider.gzip` no longer touches ~500 KB of stack on every request.**
   The compressor (about 230 KB in Zig 0.17) and its 64 KB window sat on
   the middleware's stack frame, touched even when nothing was compressed;

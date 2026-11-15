@@ -53,6 +53,17 @@ pub const Server = struct {
         };
     }
 
+    // internal: `init` in place, for a Server allocated on the heap. Only
+    // these fields are set: the buffers are left untouched, so memory is
+    // used only as data arrives (`self.* = init(...)` builds the whole
+    // struct, 64 KB buffer included, on the stack first).
+    pub fn initIn(self: *Server, stream: net.Stream, io: std.Io, allocator: std.mem.Allocator) void {
+        self.stream = stream;
+        self.io = io;
+        self.allocator = allocator;
+        self._reader = null;
+    }
+
     fn readAll(self: *Server, buf: []u8) !void {
         if (self._reader == null) {
             self._reader = net.Stream.Reader.init(self.stream, self.io, &self._read_buf);

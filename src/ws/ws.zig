@@ -30,7 +30,10 @@ pub const Message = struct {
 /// Each WebSocket route has a hub of its own: `broadcast` and `broadcastTo`
 /// reach the connections of the same route, the sender included.
 pub const Ws = struct {
-    _server: websocket.Server,
+    // internal: the connection's WebSocket server, in the request arena
+    // (it holds a 64 KB read buffer: on the stack, every WebSocket
+    // connection's fiber or thread would keep it).
+    _server: *websocket.Server,
     _hub: *Hub,
     _conn_id: u64,
     /// The channel given to `join`. Empty before that.
