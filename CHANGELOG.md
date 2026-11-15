@@ -72,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Each project runs the CLI of its own Spider release.** In a project
+  pinned to another release (`?ref=vX.Y.Z`), `spider` installs that
+  release's CLI once into `~/.cache/spider/cli/X.Y.Z` (or
+  `$XDG_CACHE_HOME/spider/cli/X.Y.Z`) and runs it with the same arguments,
+  so projects on different versions live side by side on one machine and
+  nobody has to move. A project on a branch, a commit or a local path keeps
+  the installed CLI (with the warning above); so does `SPIDER_DISPATCH=0`.
+
 - **`spider update` and `spider self-update` take a version or a
   channel.** `spider update` moves the project to the latest release (as
   before), `spider update X.Y.Z` to that release (checked to exist first:

@@ -60,10 +60,14 @@ pub fn main(init: std.process.Init) !void {
     };
     const rest = all.items[1..];
 
-    // Work in a project whose Spider is not this CLI's own: say so first.
+    // Work in a project whose Spider is not this CLI's own: run the CLI of
+    // the project's release (does not return when it can), else say so.
     switch (cmd) {
         .new, .update, .self_update, .version, .help, .clean, .generate_vapid => {},
-        else => warnProjectVersion(io, allocator),
+        else => {
+            dispatchToProjectCli(io, allocator, init.environ_map, all.items);
+            warnProjectVersion(io, allocator);
+        },
     }
 
     switch (cmd) {
@@ -212,4 +216,54 @@ fn warnProjectVersion(io: std.Io, allocator: std.mem.Allocator) void {
     const msg = project_version.warning(allocator, version, pin) catch return orelse return;
     defer allocator.free(msg);
     std.debug.print("{s}", .{msg});
+}
+
+/// In a project pinned to another Spider release, runs that release's CLI
+/// with the same arguments (it is installed once, into
+/// `$XDG_CACHE_HOME/spider/cli/<version>` or `~/.cache/spider/cli/<version>`),
+/// so each project keeps the CLI of its own version and nobody has to move.
+/// Does not return when it runs it. Returns, and the caller warns, when the
+/// project is on a branch, a commit or a local path, when that CLI cannot
+/// be installed, with SPIDER_DISPATCH=0, or inside a CLI it started.
+fn dispatchToProjectCli(io: std.Io, allocator: std.mem.Allocator, env: *std.process.Environ.Map, args: []const []const u8) void {
+    if (env.get("SPIDER_DISPATCHED") != null) return;
+    if (env.get("SPIDER_DISPATCH")) |v| if (std.mem.eql(u8, v, "0")) return;
+    const root = @import("fs_utils.zig").findProjectRoot(io) catch return;
+    const zon = root.readFileAlloc(io, "build.zig.zon", allocator, .limited(64 * 1024)) catch return;
+    const v = switch (project_version.pinOf(zon) orelse return) {
+        .release => |r| r,
+        else => return,
+    };
+    if (std.mem.eql(u8, v, version)) return;
+    // Digits and dots only: safe in the install command below.
+    const target = update.parseTarget(&.{v}) catch return;
+    if (target != .version) return;
+    const cache = if (env.get("XDG_CACHE_HOME")) |x| x else blk: {
+        const home = env.get("HOME") orelse return;
+        break :blk std.fmt.allocPrint(allocator, "{s}/.cache", .{home}) catch return;
+    };
+    const dir = std.fmt.allocPrint(allocator, "{s}/spider/cli/{s}", .{ cache, v }) catch return;
+    if (std.mem.indexOfScalar(u8, dir, '\'') != null) return;
+    const exe = std.fmt.allocPrint(allocator, "{s}/spider", .{dir}) catch return;
+    if (!fileExists(io, exe)) {
+        std.debug.print("note: this project uses Spider v{s}; installing its spider CLI into {s} (once; SPIDER_DISPATCH=0 turns this off)\n", .{ v, dir });
+        const cmd = std.fmt.allocPrint(allocator, "{s} -s -- --version {s} --install-dir '{s}' >/dev/null", .{ self_update.install, v, dir }) catch return;
+        var child = std.process.spawn(io, .{ .argv = &.{ "sh", "-c", cmd } }) catch return;
+        _ = child.wait(io) catch return;
+        if (!fileExists(io, exe)) {
+            std.debug.print("note: could not install the spider CLI v{s}; using this one (v{s})\n", .{ v, version });
+            return;
+        }
+    }
+    env.put("SPIDER_DISPATCHED", "1") catch return;
+    var argv: std.ArrayList([]const u8) = .empty;
+    argv.append(allocator, exe) catch return;
+    argv.appendSlice(allocator, args) catch return;
+    const err = std.process.replace(io, .{ .argv = argv.items, .environ_map = env });
+    std.debug.print("note: could not run {s} ({s}); using this spider (v{s})\n", .{ exe, @errorName(err), version });
+}
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
 }
