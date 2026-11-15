@@ -143,8 +143,10 @@ pub const HtmxHeaders = struct {
 /// ```
 pub const ResponseOptions = struct {
     status: std.http.Status = .ok,
-    /// Extra response headers, as `.{ name, value }` pairs. They must stay
-    /// valid until the response is sent: allocate them in `c.arena`.
+    /// Extra response headers, as `.{ name, value }` pairs. The list is
+    /// copied, so `&.{.{ "X-Id", id }}` with a runtime value is fine; the
+    /// names and values themselves must stay valid until the response is
+    /// sent (literals, or memory from `c.arena`).
     headers: []const [2][]const u8 = &.{},
     /// `.{ name, full Set-Cookie value }` pairs: each is sent as one
     /// `Set-Cookie` header with the second item as its value (the name is
@@ -326,7 +328,8 @@ pub const Ctx = struct {
     /// return c.json(.{ .id = post.id, .title = post.title }, .{});
     /// return c.json(.{ .errors = errors }, .{ .status = .unprocessable_entity });
     /// ```
-    pub fn json(self: *Ctx, value: anytype, opts: ResponseOptions) !Response {
+    pub fn json(self: *Ctx, value: anytype, opts_in: ResponseOptions) !Response {
+        const opts = try self.owned(opts_in);
         const body = try std.json.Stringify.valueAlloc(self.arena, value, .{});
         return Response{
             .status = opts.status,
@@ -339,7 +342,8 @@ pub const Ctx = struct {
 
     /// A plain text response (UTF-8). `content` is not copied: it must stay
     /// valid until the response is sent (a literal, or memory from `c.arena`).
-    pub fn text(_: *Ctx, content: []const u8, opts: ResponseOptions) !Response {
+    pub fn text(self: *Ctx, content: []const u8, opts_in: ResponseOptions) !Response {
+        const opts = try self.owned(opts_in);
         return Response{
             .status = opts.status,
             .body = content,
@@ -352,7 +356,8 @@ pub const Ctx = struct {
     /// An HTML response from a string you already have. It is sent as it is:
     /// nothing is escaped. For a page, `view` renders a template and escapes
     /// the data.
-    pub fn html(_: *Ctx, content: []const u8, opts: ResponseOptions) !Response {
+    pub fn html(self: *Ctx, content: []const u8, opts_in: ResponseOptions) !Response {
+        const opts = try self.owned(opts_in);
         return Response{
             .status = opts.status,
             .body = content,
@@ -384,14 +389,15 @@ pub const Ctx = struct {
             .body = bytes,
             .content_type = opts.content_type,
             .headers = headers,
-            .cookies = opts.cookies,
+            .cookies = if (opts.cookies.len > 0) try self.arena.dupe([2][]const u8, opts.cookies) else opts.cookies,
         };
     }
 
     /// Renders a template given as text (not a file) with `data`, as HTML.
     /// `view` is the usual one: it finds the template by name and knows the
     /// layout and the components.
-    pub fn render(self: *Ctx, tmpl: []const u8, data: anytype, opts: ResponseOptions) !Response {
+    pub fn render(self: *Ctx, tmpl: []const u8, data: anytype, opts_in: ResponseOptions) !Response {
+        const opts = try self.owned(opts_in);
         var tmpl_instance = try Template.init(self.arena, tmpl);
         defer tmpl_instance.deinit();
         if (self._views) |vc| tmpl_instance.strict = vc.strict;
@@ -420,7 +426,8 @@ pub const Ctx = struct {
     ///
     /// `error.TemplateNotFound` when there is no such template,
     /// `error.ViewsNotConfigured` when `Config.views_dir` is null.
-    pub fn view(self: *Ctx, name: []const u8, data: anytype, opts: ResponseOptions) !Response {
+    pub fn view(self: *Ctx, name: []const u8, data: anytype, opts_in: ResponseOptions) !Response {
+        const opts = try self.owned(opts_in);
         switch (try self.prepareView(name, opts)) {
             .done => |resp| return resp,
             .template => |t| {
@@ -450,7 +457,8 @@ pub const Ctx = struct {
     /// templates file the app's build generates (`pub const spider_templates`
     /// in src/main.zig, as `spider new` writes it). A view whose name is
     /// chosen at run time keeps using `view`.
-    pub fn viewChecked(self: *Ctx, comptime name: []const u8, data: anytype, opts: ResponseOptions) !Response {
+    pub fn viewChecked(self: *Ctx, comptime name: []const u8, data: anytype, opts_in: ResponseOptions) !Response {
+        const opts = try self.owned(opts_in);
         comptime check: {
             // A test binary's root is the test runner: the app's own build
             // (root = src/main.zig) is where the check runs.
@@ -523,7 +531,8 @@ pub const Ctx = struct {
     /// ```zig
     /// return c.viewFragment("posts/index", "PostList", .{ .posts = posts }, .{});
     /// ```
-    pub fn viewFragment(self: *Ctx, template_name: []const u8, component_name: []const u8, data: anytype, opts: ResponseOptions) !Response {
+    pub fn viewFragment(self: *Ctx, template_name: []const u8, component_name: []const u8, data: anytype, opts_in: ResponseOptions) !Response {
+        const opts = try self.owned(opts_in);
         switch (try self.prepareView(template_name, opts)) {
             .done => |resp| return resp,
             .template => |t| {
@@ -1034,7 +1043,8 @@ pub const Ctx = struct {
     /// break included), DEL and non-ASCII bytes in `url` are percent-encoded,
     /// so a target that came from the client cannot add a header; `%XX`
     /// already in it is kept.
-    pub fn redirectWith(self: *Ctx, url: []const u8, opts: ResponseOptions) !Response {
+    pub fn redirectWith(self: *Ctx, url: []const u8, opts_in: ResponseOptions) !Response {
+        const opts = try self.owned(opts_in);
         const hdrs = try self.arena.alloc([2][]const u8, opts.headers.len + 1);
         hdrs[0] = .{ "Location", try self.locationOf(url) };
         @memcpy(hdrs[1..], opts.headers);
@@ -1078,6 +1088,17 @@ pub const Ctx = struct {
             .content_type = "text/plain",
             .headers = hdrs,
         };
+    }
+
+    // internal: `opts` with its headers and cookies lists copied into the
+    // arena. A handler may build them as `&.{.{ "X-Id", value }}` with a
+    // runtime value: that array lives on its stack, gone before the
+    // response is sent.
+    fn owned(self: *Ctx, opts: ResponseOptions) !ResponseOptions {
+        var o = opts;
+        if (opts.headers.len > 0) o.headers = try self.arena.dupe([2][]const u8, opts.headers);
+        if (opts.cookies.len > 0) o.cookies = try self.arena.dupe([2][]const u8, opts.cookies);
+        return o;
     }
 
     // internal: a Location value for `url`: control bytes, DEL and non-ASCII

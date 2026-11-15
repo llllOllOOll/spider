@@ -472,6 +472,17 @@ test "a line break from the client never splits a header nor stops the server" {
     try std.testing.expectEqual(@as(u16, 302), after.status);
 }
 
+test "headers built with a runtime value in &.{...} arrive intact" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    // hostileHeader returns .headers = &.{.{ "X-Echo", v }}: an array on the
+    // handler's stack, gone once it returns.
+    const r = try request(env.io(), env.arena.allocator(), port, "/hostile-header?v=hello-from-the-client", .{});
+    try std.testing.expectEqual(@as(u16, 200), r.status);
+    try std.testing.expectEqualStrings("hello-from-the-client", r.header("X-Echo").?);
+}
+
 test "HEAD on a GET route: the GET's status and headers, no body" {
     var env = TestEnv.init();
     defer env.deinit();

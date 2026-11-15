@@ -28,6 +28,12 @@ used.
 
 ### Fixed
 
+- **Response headers built with a runtime value arrive intact.**
+  `.headers = &.{.{ "X-Id", id }}` with a runtime `id` puts the list on
+  the handler's stack, gone before the response is sent: the header went
+  out with whatever was left in that memory. The response helpers (`text`,
+  `json`, `html`, `view`, `viewChecked`, `render`, `viewFragment`,
+  `redirectWith`, `download`) copy the headers and cookies lists now.
 - **A `DELETE` (or another method) with a body is read.** std.http reads
   no body for `DELETE`, `GET` or `OPTIONS`, so a `DELETE` with a JSON body
   got a 400 and its connection closed. Any request that declares a body
