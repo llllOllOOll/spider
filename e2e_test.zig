@@ -472,6 +472,23 @@ test "a line break from the client never splits a header nor stops the server" {
     try std.testing.expectEqual(@as(u16, 302), after.status);
 }
 
+test "HEAD on a GET route: the GET's status and headers, no body" {
+    var env = TestEnv.init();
+    defer env.deinit();
+    const port = try appPort(env.io());
+    const a = env.arena.allocator();
+
+    const get = try request(env.io(), a, port, "/q/echo?q=x", .{});
+    const head = try request(env.io(), a, port, "/q/echo?q=x", .{ .method = "HEAD" });
+    try std.testing.expectEqual(@as(u16, 200), head.status);
+    try std.testing.expectEqual(@as(usize, 0), head.body.len);
+    try std.testing.expectEqualStrings(get.header("Content-Type").?, head.header("Content-Type").?);
+    try std.testing.expectEqualStrings(get.header("Content-Length").?, head.header("Content-Length").?);
+    // A path that has no route stays a 404.
+    const missing = try request(env.io(), a, port, "/no-such-page", .{ .method = "HEAD" });
+    try std.testing.expectEqual(@as(u16, 404), missing.status);
+}
+
 test "rbac: static route denies without role and allows with it" {
     var env = TestEnv.init();
     defer env.deinit();

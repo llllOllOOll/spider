@@ -28,6 +28,10 @@ used.
 
 ### Fixed
 
+- **`HEAD` is answered by the `GET` route.** A `HEAD` request to a page
+  that has only a `GET` route got a 404; it now gets the `GET`'s status and
+  headers, without the body. A route registered for `HEAD` itself still
+  wins.
 - **`spider.gzip` leaves an already encoded response alone.** A response
   that set its own `Content-Encoding` (a precompressed file, a proxied
   response) was compressed again and sent with two encodings, which no

@@ -208,6 +208,12 @@ fn workerLoop(wctx: WorkerCtx) void {
     group.await(wctx.io) catch {}; // canceled at shutdown: nothing left to report
 }
 
+fn routeFor(router: *Router, method: std.http.Method, path: []const u8, arena: std.mem.Allocator) !?@import("../routing/router.zig").MatchResult {
+    if (try router.match(method, path, arena)) |m| return m;
+    if (method == .HEAD) return router.match(.GET, path, arena);
+    return null;
+}
+
 /// The name of the first header whose name or value holds a control
 /// character other than a tab (a line break, above all), or null.
 fn unsafeHeader(headers: []const std.http.Header) ?[]const u8 {
@@ -580,7 +586,9 @@ fn handleConnection(ctx: ConnCtx) error{Canceled}!void {
         } else null;
 
         // Only fails on OOM; that used to read as "no route" and answer 404.
-        const match = ctx.router.match(request.head.method, path, arena) catch |err| {
+        // HEAD with no route of its own is answered by the GET route: same
+        // status and headers, and std.http leaves the body out for HEAD.
+        const match = routeFor(ctx.router, request.head.method, path, arena) catch |err| {
             std.log.err("rid={s} {s} {s}: route lookup failed: {s}", .{ request_id, method_name, path, @errorName(err) });
             request.respond("Internal Server Error", .{
                 .status = .internal_server_error,
