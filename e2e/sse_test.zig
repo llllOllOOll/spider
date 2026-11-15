@@ -75,7 +75,7 @@ fn hello(c: *spider.Ctx) !spider.Response {
 fn runApp(p: u16) void {
     var s = spider.app(.{});
     s
-        // Same global middleware + hub maintenance Orbitx runs in production.
+        // The global middleware and hub maintenance of a production app.
         .use(spider.logger)
         .use(spider.gzip)
         .sseHeartbeat(null)

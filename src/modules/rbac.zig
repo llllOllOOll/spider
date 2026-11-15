@@ -106,8 +106,8 @@ pub const Policy = struct {
 
 /// `check` is `fn (*Ctx) bool` or `fn (*Ctx) !bool`, and runs after the
 /// route's `.authenticated` / `.roles` / `.org_roles` checks. When it says
-/// no, the request fails with 403, or 401 when there is no logged-in user
-/// (like ASP.NET's Forbid / Challenge); an error it returns is the
+/// no, the request fails with 403, or 401 when there is no logged-in user;
+/// an error it returns is the
 /// request's error. `name`: letters, digits and `_ . : -`.
 pub fn policy(comptime name: []const u8, comptime check: anytype) Policy {
     comptime {
@@ -212,8 +212,7 @@ pub fn resourcePolicy(comptime name: []const u8, comptime T: type, comptime opts
     return policy(name, S.check);
 }
 
-/// The rules about one kind of resource, in one place — like a Laravel
-/// Policy class or a Pundit policy:
+/// The rules about one kind of resource, in one place:
 ///
 /// ```zig
 /// pub const Tickets = spider.policySet(Ticket, .{

@@ -6,7 +6,7 @@
 | **Author** | Spider maintainer |
 | **Created** | 2026-10-17 |
 | **Applies to** | Spider 0.10.1 and later |
-| **Proving ground** | `spider_notify`, built outside Spider in the Orbitx app |
+| **Proving ground** | `spider_notify`, built outside Spider in an application |
 
 ## Summary
 
@@ -48,17 +48,16 @@ checks it:
   is **ignored silently**;
 - a `boot` with the wrong signature fails with a type error that does not
   name the feature or say what was expected;
-- **boot order is declaration order.** The Orbitx app hit this: its
-  reservations feature sends notices from `boot()`, and it was declared
-  before the notifier it depends on, so the first notices failed. The fix
-  was to move a line by hand;
+- **boot order is declaration order.** An app hit this: a feature that
+  sends notices from `boot()` was declared before the notifier it depends
+  on, so the first notices failed. The fix was to move a line by hand;
 - there is no shutdown hook.
 
 ### A real module, built outside Spider, shows what is missing
 
 `spider_notify` (a transactional outbox with retries, deduplication and
 inbox, SSE, Web Push, FCM and email channels) was written as a standalone
-package that uses only Spider's public API. Wiring it into Orbitx took
+package that uses only Spider's public API. Wiring it into an app took
 manual steps that every other app would have to repeat:
 
 | Need | Today |
@@ -202,8 +201,7 @@ The module checks what only it knows, such as a Postgres extension, a role
 or the shape of its own tables. This is the same stance as
 `require_route_access`: `listen()` refuses a configuration that is known to
 be wrong. The same checks run without a server in `spider check --modules`,
-for CI and before a deploy, the way Django runs its system checks before
-`migrate` and `runserver`.
+for CI and before a deploy, and stop on the first problem.
 
 **3. CI.**
 
@@ -227,9 +225,9 @@ listen(): check(all) ── any error? ── refuse to start, list every proble
 shutdown: shutdown(mN) → ... → shutdown(m1)              (reverse order)
 ```
 
-`check` must not have side effects. Following Caddy's split between
-constructing, provisioning and validating, opening resources belongs in
-`boot`, and releasing them in `shutdown`.
+`check` must not have side effects: constructing, preparing and validating
+are separate steps, so opening resources belongs in `boot`, and releasing
+them in `shutdown`.
 
 ### Migrations
 
@@ -252,13 +250,12 @@ pub const list = [_]spider.Migration{
 - Each migration runs in its own transaction together with its
   `schema_migrations` row.
 - **Escape hatch**: `spider module install <name>` copies a module's
-  migrations into the app (the Rails style). From then on they are the
+  migrations into the app. From then on they are the
   app's, for teams that must review or adapt every statement.
 - Postgres and SQLite: a module declares which dialects it ships. A module
   without SQLite migrations fails `check` on SQLite, with a message.
 
-This is the Laravel `loadMigrationsFrom` and Django per-app model, with
-Oban's lesson that the module, not the app, knows its schema versions.
+The module, not the app, knows its schema versions.
 
 ### The module API surface
 
@@ -289,15 +286,14 @@ ecosystem CI makes breakage visible.
 - **Tested ranges.** When the gate passes, a bot opens a PR extending each
   module's `.spider` range to the new version. The range states what was
   tested, not what was hoped.
-- **Canary apps.** Real apps (Orbitx first) build and run their test suites
+- **Canary apps.** Real apps build and run their test suites
   against Spider `main` nightly. They catch what module tests cannot: real
   combinations.
 - **Third parties opt in** by adding their repository to a list. Their
   failures notify them; they never block a release.
 
-This is the practice of `vite-ecosystem-ci` (downstream projects tested
-against every change) and of Rust's `crater` (the ecosystem rebuilt against
-compiler releases).
+Downstream projects are tested against every change of Spider, and the
+whole ecosystem against every release.
 
 ### Distribution and publishing
 
@@ -346,8 +342,7 @@ deprecation note pointing to the module. It is removed in the next.
 **Batteries stay included at creation.** `spider new` asks which modules to
 add and wires them: the dependency, `mountModules` and a first
 `spider migrate`. The out-of-the-box experience moves from "everything is
-always there" to "you pick, and it is wired for you", as Laravel's starter
-kits do.
+always there" to "you pick, and it is wired for you".
 
 ## Advantages
 
@@ -380,31 +375,16 @@ kits do.
 |---|---|
 | **Status quo**: keep everything in the core, modules by convention. | The silent failures and the manual wiring above remain; the core keeps growing; no ecosystem. |
 | **Everything into modules now**, including `pg` and `sqlite`. | Too much churn before the contract exists; `migrate` and the core depend on the database layer. |
-| **Runtime plugins** (shared libraries). | Against Zig's static model; ABI stability across Zig versions does not exist; no compile-time validation. Caddy and Bevy, the closest prior art, also compile modules in. |
-| **Migrations copied into the app only** (Rails). | Every app repeats the step and owns code it did not write; checksums cannot detect drift in copied files. Kept as the opt-in escape hatch. |
+| **Runtime plugins** (shared libraries). | Against Zig's static model; ABI stability across Zig versions does not exist; no compile-time validation. |
+| **Migrations copied into the app only**. | Every app repeats the step and owns code it did not write; checksums cannot detect drift in copied files. Kept as the opt-in escape hatch. |
 | **A version range only, without the release gate.** | A range declared by hand states intent, not fact; modules would break silently on a release. |
 | **One repository per official module from the start.** | N workflows and release processes for one maintainer; split later, per module, if needed. |
 | **A Spider package registry.** | Zig's package manager already pins and verifies; a registry is a service to run and secure. A list is enough. |
 
-## Prior art
-
-| Project | What this RFC takes from it |
-|---|---|
-| Caddy (Go) | Modules compiled in (`xcaddy build --with`); a lifecycle that separates construction, `Provision`, `Validate` and `Cleanup`. |
-| Bevy (Rust) | Plugins refused when added twice (`is_unique`); one plugin waiting on another (`ready`/`finish`). |
-| Django | Per-app migrations recorded by app label; system checks that run before `migrate` and `runserver` and stop on error. |
-| Laravel | Packages auto-discovered from their manifest; migrations loaded from the package or published to the app. |
-| Rails | Engines; copying migrations into the app (`install:migrations`) as an option. |
-| Oban (Elixir) | The library knows its own schema versions; the app only asks it to migrate up to a version. |
-| Fastify | A plugin declares the Fastify range it supports and the plugins it depends on; a mismatch fails registration. |
-| NestJS | Configuration validated against a schema when the app starts; invalid values stop it. |
-| Spring Boot | Starters that configure themselves through declared conditions. |
-| Vite (`vite-ecosystem-ci`), Rust (`crater`) | Downstream projects tested against every change or release of the upstream. |
-
 ## Security model
 
-A module is compiled into the app and runs with the same privileges, as a
-Caddy module does. The validation in this RFC catches **mistakes**:
+A module is compiled into the app and runs with the same privileges. The
+validation in this RFC catches **mistakes**:
 
 - an incompatible version;
 - a wrong contract;
@@ -418,8 +398,8 @@ It does **not** catch a malicious module. The defenses for that are:
 - **the surface lock** (`spider modules --lock`), which makes an update
   that adds routes, jobs or tables visible in review;
 - **reviewing the module's diff** before raising its version;
-- **least-privilege database roles** where it matters. Orbitx already runs
-  part of its work under dedicated roles.
+- **least-privilege database roles** where it matters: part of an app's work
+  can run under dedicated roles.
 
 ## Roadmap
 
@@ -428,10 +408,10 @@ Versions are targets, not commitments; each phase ships on its own.
 | Phase | Target | Deliverables | Done when |
 |---|---|---|---|
 | **0. Groundwork** | 0.11 | `spider.version` (+ test against `build.zig.zon`); the module API surface listed in `API_SURFACE.md` and marked in the docs | a module can compare versions at compile time |
-| **1. Contract** | 0.11 | `spider.module`, `mountModules`, signature and dependency validation, computed boot order, `shutdown`; `mountFeature` reports a public route-shaped function with a wrong signature | `spider_notify` declares a manifest; Orbitx mounts it with `mountModules`; the manual reordering in `features/mod.zig` is gone |
-| **2. Readiness** | 0.12 | `spider.Check`; `check()` before `listen()`, with a report of every problem; `spider check --modules`; `spider.testing.expectModules` | starting Orbitx without the notifier's tables refuses to listen and names the migration |
-| **3. Migrations** | 0.12 | `spider.Migration`; the generated module list; `spider migrate` per module; `module` and `checksum` in `schema_migrations` (migrated in place); `spider module install` | the copied `1790800000_notify.sql` is removed from Orbitx and `spider migrate` applies the module's migrations |
-| **4. First official module** | 0.14 | the `spider-modules` repository; `spider_notify` moved there; the ecosystem CI (release gate + nightly) with a Postgres service; Orbitx as a canary app | Orbitx depends on `spider_notify` only by `url` + `hash`, with no manual step |
+| **1. Contract** | 0.11 | `spider.module`, `mountModules`, signature and dependency validation, computed boot order, `shutdown`; `mountFeature` reports a public route-shaped function with a wrong signature | `spider_notify` declares a manifest; an app mounts it with `mountModules`; the manual reordering in `features/mod.zig` is gone |
+| **2. Readiness** | 0.12 | `spider.Check`; `check()` before `listen()`, with a report of every problem; `spider check --modules`; `spider.testing.expectModules` | starting an app without the notifier's tables refuses to listen and names the migration |
+| **3. Migrations** | 0.12 | `spider.Migration`; the generated module list; `spider migrate` per module; `module` and `checksum` in `schema_migrations` (migrated in place); `spider module install` | an app's copied notifier migration is removed and `spider migrate` applies the module's migrations |
+| **4. First official module** | 0.14 | the `spider-modules` repository; `spider_notify` moved there; the ecosystem CI (release gate + nightly) with a Postgres service; canary apps | an app depends on `spider_notify` only by `url` + `hash`, with no manual step |
 | **5. Surface lock** | 0.14 | `spider modules --lock / --check / --diff` | an update that adds a route or a table fails `--check` until the lock is updated |
 | **6. Tooling for authors** | 0.14 | `spider new module`; the module list in the docs; the guide "Writing a Spider module"; third-party opt-in to the ecosystem CI | a third party publishes a module following only the guide |
 | **7. Extractions** | from 0.14, one at a time | mail providers, identity providers, R2, XLSX, QR code, FCM, each with a deprecation re-export for one minor version; `spider new` offers them | each extraction ships with no change for apps beyond the deprecation note |
@@ -485,21 +465,11 @@ PostgreSQL (`test-pg`), and `notify` through Spider on an empty database
 5. **Semver before 1.0.** The policy is a deprecation for one minor version.
    Revisit at 1.0.
 6. **Down migrations.** Modules ship forward migrations; whether
-   `spider migrate` supports stepping a module back (Oban steps back one
-   version at a time) is left open.
+   `spider migrate` supports stepping a module back (one version at a
+   time) is left open.
 7. **Features with a manifest.** Should an app's own features be able to
    opt into `spider.module` to get the same ordering and checks?
 
 ## References
 
-- Caddy — [Extending Caddy](https://caddyserver.com/docs/extending-caddy), [modules.go](https://fossies.org/linux/caddy/modules.go)
-- Bevy — [`Plugin` trait](https://doc.qu1x.dev/bevy_trackball/bevy/app/trait.Plugin.html)
-- Django — [System check framework](https://docs.djangoproject.com/en/6.1/topics/checks/), [Migrations](https://docs.djangoproject.com/en/5.2/topics/migrations/)
-- Laravel — [Package development (8.x)](https://laravel.com/framework/docs/8.x/packages), [(master)](https://laravel.com/docs/master/packages), [registering migrations in packages](https://www.vincentschmalbach.com/registering-database-migrations-in-laravel-packages/)
-- Rails — [`Rails::Engine`](https://gem.sh/gems/railties/v7.0.8.7/classes/Rails::Engine), [engines guide revision](https://demo.gitea.com/TEST_CODEOWNERS/rails/commit/4435959de18652c303a8a8676d27cd913f0578c3)
-- Oban — [`Oban.Migrations`](https://oban.hexdocs.pm/2.13.0/Oban.Migrations.html)
-- Fastify — [`fastify-plugin`](https://npmjs.com/package/fastify-plugin)
-- NestJS — [configurable modules](https://www.coddykit.com/courses/nestjs/building-configurable-dynamic-modules-9251228), [validated configuration](https://www.coddykit.com/courses/nestjs/schema-validated-env-with-joi-and-forroot-9238410)
-- Spring Boot — [Creating your own auto-configuration](https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html)
 - Zig — [`build.zig.zon`](https://git.medv.io/zig/blob/master/doc/build.zig.zon.md.html), [comptime interface checks](https://ziggit.dev/t/comptime-interface-testing/3958), [an alternative to `anytype` duck typing](https://ziggit.dev/t/an-alternative-to-anytype-duck-typing/7814)
-- Ecosystem CI — Vite's `vite-ecosystem-ci` and Rust's `crater` (named in the text; links to be added when the document moves to the Spider repository)

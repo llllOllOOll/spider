@@ -2003,8 +2003,7 @@ pub fn Server(comptime T: type) type {
             // A "Coroutine stack overflow!" abort chased through this code
             // turned out to be a red herring: root cause was an app-level
             // template bug (a component including itself, unbounded
-            // recursive parse+render — see git history on
-            // BottomNavGatekeeper.html in orbitx), not anything about zio's
+            // recursive parse+render), not anything about zio's
             // stack sizing or pooling. Left at zio's own defaults.
             var rt = try zio.Runtime.init(gpa, .{
                 .executors = .auto,
@@ -2120,7 +2119,7 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
 
     health_mod.init();
 
-    // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
+    // Liveness probe (load balancers, reverse proxies): no login, not logged on success.
     _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });
     _ = s.get("/_spider/health", health_mod.health, .{ .public = true, .quiet_log = true });
 
@@ -2160,7 +2159,7 @@ pub fn appWithConfig(config: Config) Server(EmptyDeco) {
 
     health_mod.init();
 
-    // Liveness probe (load balancers, kamal-proxy): no login, not logged on success.
+    // Liveness probe (load balancers, reverse proxies): no login, not logged on success.
     _ = s.get("/up", health_mod.up, .{ .public = true, .quiet_log = true });
     _ = s.get("/_spider/health", health_mod.health, .{ .public = true, .quiet_log = true });
 

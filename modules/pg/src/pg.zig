@@ -2120,7 +2120,7 @@ fn countRows(arena: std.mem.Allocator, table: []const u8) !usize {
 }
 
 test "fake transaction: pool-level BEGIN/ROLLBACK can't wrap later statements" {
-    // The Orbitx pattern: pg.exec("BEGIN") ... pg.exec("ROLLBACK"). Each call
+    // The pattern: pg.exec("BEGIN") ... pg.exec("ROLLBACK"). Each call
     // takes its own pooled connection, so the INSERT between them autocommits
     // and survives the ROLLBACK. Pool-level transaction control must be refused.
     try initTestDb(std.testing.allocator);

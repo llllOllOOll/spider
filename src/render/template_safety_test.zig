@@ -40,7 +40,7 @@ fn expectRender(comps: *Comps, src: []const u8, context: anytype, expected: []co
 // ── HTML comments ───────────────────────────────────────────────────────
 
 test "comment: component that mentions its own tag in a comment renders once" {
-    // The exact Orbitx incident (BottomNavGatekeeper.html documenting itself).
+    // A real incident: a component whose comment named its own tag.
     var comps: Comps = .{};
     defer comps.deinit();
     try comps.add("Nav", "<!-- usage: <Nav /> --><nav>menu</nav>");

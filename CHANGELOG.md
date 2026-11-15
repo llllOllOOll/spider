@@ -758,8 +758,7 @@ SQLite maps rows strictly; `useAt` matches whole path segments.
   process already had (a container's `PORT`, a secret set by the
   platform); only `.env` respected them. Now no file does: the files fill
   in what is missing, `.env.local` over `.env.<SPIDER_ENV>` over `.env`,
-  as before among themselves. This is what Next.js, Vite, Rails and
-  Symfony do. **A deploy that ships a `.env.production` or `.env.local`
+  as before among themselves. **A deploy that ships a `.env.production` or `.env.local`
   whose value differs from the container's now gets the container's.**
 - **`useAt` covers a path and what is under it, by whole segments.** The
   path was compared as text: a middleware on `"/admin"` also ran for
@@ -1313,8 +1312,8 @@ app may notice" lists the differences in behaviour.
   escape is kept as typed). `c.query(name)` is unchanged and still returns the
   raw value, as documented, so apps that decode it themselves are not
   decoded twice. Use `queryDecoded` for text a user typed: with `query`, a
-  search for "João Silva" arrived as "Jo%C3%A3o+Silva" (Orbitx matched the
-  "20" of "%20" against CPF digits).
+  search for "João Silva" arrived as "Jo%C3%A3o+Silva" (an app matched the
+  "20" of "%20" against the digits of a document number).
 
 ### Fixed
 
@@ -1382,7 +1381,7 @@ app may notice" lists the differences in behaviour.
   walk every template inside the generic view function or copy every
   template into the request arena: lookup, components and `-- doc` pages
   are handled by non-generic code, and only rendering depends on `data`.
-  In Orbitx (297 templates) the Debug binary went from 632 MB to 355 MB, and
+  In an app with 297 templates the Debug binary went from 632 MB to 355 MB, and
   an edited `.html` rebuilds in ~1 s under `zig build --watch -fincremental`
   (was 10–12 s). Rendered pages are unchanged.
 - `Template.base_components`: a read-only component map looked up after

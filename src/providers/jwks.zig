@@ -92,8 +92,8 @@ pub const JwksConfig = struct {
     org_claims: OrgClaims = .phase_two,
     /// Called with the verified token's claims after the mapping above, to
     /// put anything else on the request with c.addRole / c.addOrgRole /
-    /// c.setActiveOrg (permissions, groups, a tenant id...). Like Spring's
-    /// JwtAuthenticationConverter. An error it returns is the request's
+    /// c.setActiveOrg (permissions, groups, a tenant id...). An error it
+    /// returns is the request's
     /// (error.Forbidden: 403).
     map_claims: ?*const fn (c: *Ctx, claims: std.json.ObjectMap) anyerror!void = null,
 };

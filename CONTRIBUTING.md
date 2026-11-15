@@ -155,7 +155,7 @@ Don't call `request.iterateHeaders()` anywhere except in `handleConnection()` du
 
 ### `Response` is a value type
 
-Handlers return `!spider.Response` — a value, not a pointer. This follows the Axum/Remix pattern and ensures the compiler catches handlers that forget to return a response. The framework sends the response after the handler returns. This enables middleware to inspect and modify responses.
+Handlers return `!spider.Response` — a value, not a pointer. This ensures the compiler catches handlers that forget to return a response. The framework sends the response after the handler returns. This enables middleware to inspect and modify responses.
 
 ### Template embed detection
 

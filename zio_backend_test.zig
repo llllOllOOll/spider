@@ -214,7 +214,7 @@ test "zio backend: max-depth component nesting fits the coroutine stack, self-re
     }
     {
         // Before the depth limit this aborted the whole process with
-        // "Coroutine stack overflow!" (the Orbitx BottomNavGatekeeper incident).
+        // "Coroutine stack overflow!" (a component that included itself).
         const url = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/recursive", .{port});
         var res = try pacman.get(client_io, arena, url, .{ .timeout_ms = 5000 });
         defer res.deinit();

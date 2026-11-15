@@ -406,8 +406,8 @@ test "fromSettings: base_url replaces the provider's URL" {
 }
 
 test "fromSettings: parses the default sender" {
-    const mailer = try Mailer.fromSettings(.{ .from = "OrbitX <no-reply@example.com>" });
-    try testing.expectEqualStrings("OrbitX", mailer.from.?.name.?);
+    const mailer = try Mailer.fromSettings(.{ .from = "Example <no-reply@example.com>" });
+    try testing.expectEqualStrings("Example", mailer.from.?.name.?);
     try testing.expectEqualStrings("no-reply@example.com", mailer.from.?.address);
 }
 

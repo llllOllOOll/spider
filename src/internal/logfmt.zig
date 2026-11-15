@@ -32,8 +32,8 @@ pub fn utc(buf: *[24]u8, ns: i128) []const u8 {
 
 var color_state = std.atomic.Value(u8).init(0); // 0 unknown, 1 on, 2 off
 
-/// ANSI colors only when stderr is a terminal; a container log (docker,
-/// kamal) gets plain text instead of "\x1b[32m" noise.
+/// ANSI colors only when stderr is a terminal; a container log gets plain
+/// text instead of "\x1b[32m" noise.
 pub fn colorEnabled() bool {
     switch (color_state.load(.monotonic)) {
         1 => return true,

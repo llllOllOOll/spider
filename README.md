@@ -1241,7 +1241,7 @@ served. Static files skip routing and middleware — they are always public.
 ## Health
 
 `GET /up` → `200 OK`, `GET /_spider/health` → `{"status":"ok","uptime_seconds":N}`
-(both `.public` and `.quiet_log`, for load balancers and kamal-proxy).
+(both `.public` and `.quiet_log`, for load balancers and reverse proxies).
 
 There is no live reload today: rebuild and restart the app after a change.
 
