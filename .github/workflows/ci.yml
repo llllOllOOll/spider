@@ -62,9 +62,12 @@ jobs:
           zig build check -Dtarget=x86_64-windows
           zig build check -Dtarget=aarch64-macos
       # A Windows release installs <app>.exe (the debug-info split is ELF only).
+      # Installing runs Tailwind, fetched by `spider install`: the CLI built
+      # above, on the PATH.
       - name: Demo books release for Windows installs books.exe
         working-directory: demos/books
         run: |
+          export PATH="$GITHUB_WORKSPACE/zig-out/bin:$PATH"
           zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe --prefix "$RUNNER_TEMP/books-win"
           test -f "$RUNNER_TEMP/books-win/bin/books.exe"
 
