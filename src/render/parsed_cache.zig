@@ -46,6 +46,15 @@ var pages: std.AutoHashMapUnmanaged(Key, Page) = .{};
 /// Source -> its `-- props:` declaration (only sources that have one).
 var decls: std.AutoHashMapUnmanaged(Key, props_decl.Decl) = .{};
 var ready = std.atomic.Value(bool).init(false);
+/// How many times `build` ran the parser (tests check it parses each source once).
+var parses: usize = 0;
+
+fn parseSource(alc: std.mem.Allocator, name: []const u8, src: []const u8) !Parser.Parsed {
+    var parser = Parser.init(alc, src);
+    parser.name = name;
+    parses += 1;
+    return parser.parse();
+}
 
 /// The nodes of `src` as the parser gives them, or null (not built, or not
 /// an embedded source).
@@ -91,9 +100,7 @@ pub fn build(map: *const embedded.Map) !usize {
 fn addPage(alc: std.mem.Allocator, map: *const embedded.Map, name: []const u8, src: []const u8) !void {
     const gop = try pages.getOrPut(alc, keyOf(src));
     if (gop.found_existing) return;
-    var parser = Parser.init(alc, src);
-    parser.name = name;
-    const parsed = parser.parse() catch |err| {
+    const parsed = parseSource(alc, name, src) catch |err| {
         _ = pages.remove(keyOf(src));
         return err;
     };
@@ -120,9 +127,10 @@ fn addPage(alc: std.mem.Allocator, map: *const embedded.Map, name: []const u8, s
         .inline_components = inline_components,
     };
 
-    // The same source as a component or a layout, its inline components,
-    // and every component's slot content.
-    try addRaw(alc, name, src);
+    // The same source as a component or a layout (the nodes just parsed:
+    // parsing it again gives the same), its inline components, and every
+    // component's slot content.
+    try putRaw(alc, name, src, parsed.nodes);
     var it = inline_components.iterator();
     while (it.next()) |e| try addRaw(alc, e.key_ptr.*, e.value_ptr.*);
     try addSlots(alc, name, gop.value_ptr.nodes);
@@ -131,17 +139,27 @@ fn addPage(alc: std.mem.Allocator, map: *const embedded.Map, name: []const u8, s
 fn addRaw(alc: std.mem.Allocator, name: []const u8, src: []const u8) !void {
     const gop = try raw_nodes.getOrPut(alc, keyOf(src));
     if (gop.found_existing) return;
-    var parser = Parser.init(alc, src);
-    parser.name = name;
-    const parsed = parser.parse() catch |err| {
+    const parsed = parseSource(alc, name, src) catch |err| {
         _ = raw_nodes.remove(keyOf(src));
         return err;
     };
     gop.value_ptr.* = parsed.nodes;
+    try addDeclAndSlots(alc, name, src, parsed.nodes);
+}
+
+/// `src` already parsed into `nodes`: caches them as its raw form.
+fn putRaw(alc: std.mem.Allocator, name: []const u8, src: []const u8, nodes: []Node) !void {
+    const gop = try raw_nodes.getOrPut(alc, keyOf(src));
+    if (gop.found_existing) return;
+    gop.value_ptr.* = nodes;
+    try addDeclAndSlots(alc, name, src, nodes);
+}
+
+fn addDeclAndSlots(alc: std.mem.Allocator, name: []const u8, src: []const u8, nodes: []const Node) !void {
     if (props_decl.headerLine(src) != null) {
         if (try props_decl.parse(alc, src)) |d| try decls.put(alc, keyOf(src), d);
     }
-    try addSlots(alc, name, parsed.nodes);
+    try addSlots(alc, name, nodes);
 }
 
 /// The content between a component's tags is parsed when the component is
@@ -158,11 +176,17 @@ fn addSlots(alc: std.mem.Allocator, name: []const u8, nodes: []const Node) anyer
     };
 }
 
+// internal (tests): how many times the parser ran since the last reset.
+pub fn parsesForTest() usize {
+    return parses;
+}
+
 // internal (tests): forget everything, so a test can build again.
 pub fn resetForTest() void {
     ready.store(false, .release);
     raw_nodes = .{};
     pages = .{};
     decls = .{};
+    parses = 0;
     _ = arena_state.reset(.free_all);
 }

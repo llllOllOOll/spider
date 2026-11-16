@@ -100,3 +100,16 @@ test "nothing is cached before build, and a template that does not parse fails i
     try t.expectError(error.UnclosedInterpolation, parsed_cache.build(&broken_map));
     try t.expect(!parsed_cache.isReady());
 }
+
+const Plain = struct {
+    home: []const u8 = "<h1>{ title }</h1>",
+    about: []const u8 = "<p>about</p>",
+};
+const plain: embedded.Map = embedded.buildMap(Plain);
+
+test "each source is parsed once, a page included" {
+    parsed_cache.resetForTest();
+    defer parsed_cache.resetForTest();
+    _ = try parsed_cache.build(&plain);
+    try t.expectEqual(@as(usize, 2), parsed_cache.parsesForTest());
+}
