@@ -1,0 +1,13 @@
+.{
+    .name = .mssql,
+    .version = "0.1.0",
+    .fingerprint = 0xfa9df85edd1c9447,
+    .minimum_zig_version = "0.17.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "readme.md",
+        "THIRD_PARTY_LICENSES.md",
+    },
+}

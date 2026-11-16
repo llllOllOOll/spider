@@ -1,0 +1,11 @@
+.{
+    .name = .spider_mssql,
+    .version = "0.1.0",
+    .fingerprint = 0xd8c5e23687def5ef,
+    .paths = .{""},
+    .dependencies = .{
+        .mssql = .{
+            .path = "mssql_driver_impl",
+        },
+    },
+}

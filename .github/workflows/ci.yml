@@ -109,6 +109,40 @@ jobs:
       - name: spider.pg and the migration engine
         run: zig build test-pg
 
+  mssql:
+    name: SQL Server
+    runs-on: ubuntu-latest
+    # A disposable server, only for this job.
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Spider_Test_1
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+    env:
+      MSSQL_HOST: 127.0.0.1
+      MSSQL_PORT: 1433
+      MSSQL_PASSWORD: Spider_Test_1
+      MSSQL_TRUST_SERVER_CERTIFICATE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      # The image has no health check of its own: wait until it takes logins.
+      - name: Wait for SQL Server
+        run: |
+          for i in $(seq 60); do
+            (exec 3<>/dev/tcp/127.0.0.1/1433) 2>/dev/null && break
+            sleep 2
+          done
+          sleep 10
+      - name: spider.mssql
+        run: zig build test-mssql
+
   ecosystem:
     name: Official modules
     uses: ./.github/workflows/ecosystem.yml

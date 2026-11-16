@@ -70,7 +70,7 @@ const spider_dep = b.dependency("spider", .{
     // I/O backend: comment one line and uncomment the other.
     .io_backend = .zio, // fibers on an event loop (default)
     // .io_backend = .threaded, // one OS thread per connection
-    // .pg = true, .sqlite = true, .r2 = true, .qrcode = true, .xlsx = true,
+    // .pg = true, .sqlite = true, .mssql = true, .r2 = true, .qrcode = true, .xlsx = true,
 });
 const spider_mod = spider_dep.module("spider");
 
@@ -951,6 +951,25 @@ defer spider.sqlite.deinit();
 
 Same `query`/`queryOne`/`queryExecute`/`begin()` API; the scalar type is `i64`.
 
+### SQL Server
+
+Needs `.mssql = true` on the spider dependency (a native TDS driver in Zig,
+TLS from Zig's standard library, no C library):
+
+```zig
+try spider.mssql.init(allocator, io, .{}); // MSSQL_HOST, MSSQL_PORT, MSSQL_DB, MSSQL_USER, MSSQL_PASSWORD...
+defer spider.mssql.deinit();
+```
+
+Same `query`/`queryOne`/`queryExecute`/`begin()` API as PostgreSQL. Parameters
+are `@p1..@pn`; a script passed to `queryExecute(void, ...)` is cut at lines
+holding only `GO`. Errors carry the PostgreSQL names (`UniqueViolation`,
+`ForeignKeyViolation`, ...), so they map to the same statuses. A server with a
+self-signed certificate (the Docker image, most on-premises installs) needs
+`MSSQL_TRUST_SERVER_CERTIFICATE=true`. Not there yet: migrations, retrying a
+pooled connection the server closed while it sat idle (the first query on it
+fails, the next one reconnects), timeouts and `OUTPUT` parameters.
+
 ### Migrations (PostgreSQL)
 
 The migrations are `.sql` files in `src/core/db/migrations/`
@@ -1444,7 +1463,7 @@ src/
 ├── binding/                — form, multipart
 ├── providers/              — jwks, keycloak, google, clerk
 └── cli/                    — the spider CLI + templates/
-modules/                    — pg (pure Zig), sqlite, r2, qrcode, xlsx
+modules/                    — pg (pure Zig), sqlite, mssql (pure Zig), r2, qrcode, xlsx
 ```
 
 The complete API: [`llms.txt`](llms.txt).

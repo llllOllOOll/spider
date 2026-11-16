@@ -200,6 +200,14 @@ used.
 
 ### Added
 
+- **`spider.mssql`: Microsoft SQL Server.** A native TDS 7.4 driver in Zig
+  (SQL Server 2012 and later, Azure SQL), with TLS and a connection pool,
+  behind `.mssql = true` on the dependency. The same `query`, `queryOne`,
+  `queryExecute`, `begin()` and `transaction()` as `spider.pg`; errors carry
+  the `spider.pg` names, so `statusForError` maps them the same way.
+  `zig build test-mssql` runs its tests against a disposable server
+  (`docker-compose.mssql.yml`).
+
 - **README: Acknowledgements.** A section thanks the authors of the
   libraries Spider is built on: pg.zig and zqlite.zig (Karl Seguin) and zio
   (Lukáš Lalinský). The SQLite module's copy of zqlite.zig now carries its
