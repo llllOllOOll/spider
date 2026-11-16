@@ -228,7 +228,10 @@ fn pruneBeforeCompiles(
 /// The split uses `llvm-objcopy` (any target), else the system `objcopy`
 /// (same architecture as the build machine only). With neither, the debug
 /// info stays inside the binary. `-Ddebug-info=true` keeps it inside too.
-/// In a Debug build the executable is installed as it is.
+/// In a Debug build the executable is installed as it is. The split is for
+/// ELF binaries (Linux, the BSDs): for Windows the executable is installed
+/// as Zig builds it (`<name>.exe`, its debug info in `<name>.pdb`), and for
+/// macOS likewise.
 pub fn installApp(b: *std.Build, exe: *std.Build.Step.Compile) void {
     const keep = b.option(bool, "debug-info", "Keep the debug info inside the release binary (default: a separate <app>.debug file)") orelse false;
     const mode = exe.root_module.optimize orelse .debug;
@@ -237,7 +240,7 @@ pub fn installApp(b: *std.Build, exe: *std.Build.Step.Compile) void {
         return;
     }
     exe.root_module.strip = false;
-    if (keep) {
+    if (keep or exe.rootModuleTarget().ofmt != .elf) {
         b.installArtifact(exe);
         return;
     }
