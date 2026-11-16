@@ -909,11 +909,12 @@ pub const BootFn = *const fn (Boot) anyerror!void;
 pub const ShutdownFn = *const fn (Boot) void;
 
 /// A periodic task a feature declares: `pub const jobs = .{spider.every(60_000, retryLoop)};`
-/// Runs on its own thread every `every_ms` with the SSE hub (like sseInterval).
-/// `listen()` starts it; the first run comes one interval later.
+/// Runs on its own thread every `every_ms` with the SSE hub (like sseInterval)
+/// and an Io of that thread's own. `listen()` starts it; the first run comes
+/// one interval later.
 pub const Job = struct {
     every_ms: u64,
-    run: *const fn (*Hub) void,
+    run: *const fn (*Hub, std.Io) void,
 };
 
 /// A job that runs `run` every `every_ms` milliseconds, for a feature's
@@ -922,35 +923,113 @@ pub const Job = struct {
 /// ```zig
 /// pub const jobs = .{spider.every(60_000, cleanUp)};
 ///
-/// fn cleanUp(hub: *spider.Hub) void {
-///     _ = hub;
+/// fn cleanUp(hub: *spider.Hub, io: std.Io) void {
 ///     // runs once a minute, on its own thread
 /// }
 /// ```
-pub fn every(every_ms: u64, run: *const fn (*Hub) void) Job {
-    return .{ .every_ms = every_ms, .run = run };
+///
+/// `io` is the job's own: everything the job does (HTTP calls, files,
+/// running a process, the time) goes through it. It is not the server's
+/// Io: the job runs on a thread of its own, and with the zio backend the
+/// server's Io only works inside the server's own tasks (a process started
+/// through it from a job stopped the app with "no current executor"). The
+/// hub's own Io (`hub.io`) is for the hub. It carries the process's
+/// environment, so a process the job starts gets it too.
+///
+/// `run` may also be `fn (*Hub) void`, for a job that needs no Io.
+pub fn every(every_ms: u64, comptime run: anytype) Job {
+    return .{ .every_ms = every_ms, .run = jobFn(run) };
+}
+
+// internal: `fn (*Hub, std.Io) void` as it is, `fn (*Hub) void` wrapped.
+fn jobFn(comptime run: anytype) *const fn (*Hub, std.Io) void {
+    const F = @TypeOf(run);
+    if (F == fn (*Hub, std.Io) void or F == *const fn (*Hub, std.Io) void) return run;
+    if (F == fn (*Hub) void or F == *const fn (*Hub) void) return struct {
+        fn call(hub: *Hub, _: std.Io) void {
+            run(hub);
+        }
+    }.call;
+    @compileError("spider.every: a job is fn (*spider.Hub, std.Io) void or fn (*spider.Hub) void, not " ++ @typeName(F));
+}
+
+/// The process's environment, for an Io a job makes. Zig's startup code
+/// keeps it in `std.Options.debug_threaded_io` before `main`; on Windows the
+/// environment is the process's own block. A `std.Io.Threaded` made with
+/// `.{}` has none, and the processes it starts get none either (on Windows,
+/// PowerShell then cannot even load: no SystemRoot).
+fn processEnviron() std.process.Environ {
+    if (builtin.os.tag == .windows) return .{ .block = .global };
+    if (std.Options.debug_threaded_io) |t| return t.environ.process_environ;
+    return .empty;
 }
 
 const IntervalEntry = struct {
     hub: *Hub,
     ms: u64,
-    callback: *const fn (*Hub) void,
-    io: std.Io,
+    callback: *const fn (*Hub, std.Io) void,
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     thread: ?std.Thread = null,
 };
 
 fn intervalLoop(entry: *IntervalEntry) void {
+    // The job's own Io, made on its thread: the server's Io is not one a
+    // plain thread can use for everything (see `every`).
+    var threaded = std.Io.Threaded.init(std.heap.smp_allocator, .{ .environ = processEnviron() });
+    defer threaded.deinit();
+    const io = threaded.io();
     while (entry.running.load(.acquire)) {
+        // A relative wait, so the monotonic clock: it does not jump when
+        // the system's time is set.
         std.Io.sleep(
-            entry.io,
+            io,
             std.Io.Duration.fromMilliseconds(@as(i64, @intCast(entry.ms))),
-            .real,
-        ) catch {}; // only fails when canceled at shutdown; the loop re-checks `running`
+            .awake,
+        ) catch {};
         if (entry.running.load(.acquire)) {
-            entry.callback(entry.hub);
+            entry.callback(entry.hub, io);
         }
     }
+}
+
+var job_test_out: [256]u8 = undefined;
+var job_test_len: std.atomic.Value(usize) = .init(0);
+var job_test_entry: ?*IntervalEntry = null;
+
+fn jobTestRun(_: *Hub, io: std.Io) void {
+    defer job_test_entry.?.running.store(false, .release);
+    // A process started through the job's Io, with the process's
+    // environment: PATH on POSIX, SystemRoot on Windows.
+    const argv: []const []const u8 = if (builtin.os.tag == .windows)
+        &.{ "cmd", "/c", "echo %SystemRoot%" }
+    else
+        &.{ "sh", "-c", "printf %s \"$PATH\"" };
+    const res = std.process.run(std.heap.smp_allocator, io, .{ .argv = argv }) catch return;
+    defer std.heap.smp_allocator.free(res.stdout);
+    defer std.heap.smp_allocator.free(res.stderr);
+    const n = @min(res.stdout.len, job_test_out.len);
+    @memcpy(job_test_out[0..n], res.stdout[0..n]);
+    job_test_len.store(n, .release);
+}
+
+test "a job's own Io runs a process, and the process gets the environment" {
+    var hub: Hub = undefined;
+    var entry: IntervalEntry = .{ .hub = &hub, .ms = 1, .callback = jobFn(jobTestRun) };
+    job_test_entry = &entry;
+    const t = try std.Thread.spawn(.{}, intervalLoop, .{&entry});
+    t.join();
+    const out = std.mem.trim(u8, job_test_out[0..job_test_len.load(.acquire)], " \r\n");
+    // Not empty and not the literal: the variable came through.
+    try std.testing.expect(out.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, out, "%SystemRoot%") == null);
+}
+
+fn jobTestOld(_: *Hub) void {}
+fn jobTestNew(_: *Hub, _: std.Io) void {}
+
+test "every takes a job with or without the Io" {
+    try std.testing.expectEqual(@as(u64, 10), every(10, jobTestOld).every_ms);
+    try std.testing.expectEqual(@as(u64, 20), every(20, jobTestNew).every_ms);
 }
 
 /// The server type. Apps get one from `spider.app(.{})` and do not name
@@ -1335,8 +1414,7 @@ pub fn Server(comptime T: type) type {
             self.interval_threads.append(std.heap.smp_allocator, .{
                 .hub = hub_ptr,
                 .ms = ms,
-                .callback = callback,
-                .io = undefined,
+                .callback = jobFn(callback),
             }) catch |err| std.log.err("interval not scheduled: {s}", .{@errorName(err)});
             return self;
         }
@@ -1363,8 +1441,7 @@ pub fn Server(comptime T: type) type {
             self.interval_threads.append(std.heap.smp_allocator, .{
                 .hub = if (self.sse_hub) |*h| h else unreachable,
                 .ms = ms,
-                .callback = callback,
-                .io = undefined,
+                .callback = jobFn(callback),
             }) catch |err| std.log.err("interval not scheduled: {s}", .{@errorName(err)});
             return self;
         }
@@ -1557,7 +1634,6 @@ pub fn Server(comptime T: type) type {
                 .hub = if (self.sse_hub) |*h| h else unreachable,
                 .ms = j.every_ms,
                 .callback = j.run,
-                .io = undefined,
             }) catch |err| std.log.err("job not scheduled: {s}", .{@errorName(err)});
         }
 
@@ -2030,7 +2106,6 @@ pub fn Server(comptime T: type) type {
             try self.runBootHooks(io);
 
             for (self.interval_threads.items) |*entry| {
-                entry.io = io;
                 entry.thread = std.Thread.spawn(.{}, intervalLoop, .{entry}) catch continue;
             }
 
@@ -2115,7 +2190,6 @@ pub fn Server(comptime T: type) type {
             try self.runBootHooks(io);
 
             for (self.interval_threads.items) |*entry| {
-                entry.io = io;
                 entry.thread = std.Thread.spawn(.{}, intervalLoop, .{entry}) catch continue;
             }
 

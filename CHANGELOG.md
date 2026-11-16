@@ -28,6 +28,19 @@ used.
 
 ### Fixed
 
+- **A job can run a process, and gets an Io it can use.** A job
+  (`spider.every`) runs on a thread of its own, but the only Io it could
+  reach was the server's (`hub.io`). With the zio backend, the default,
+  what needs one of the server's own tasks failed there: starting a
+  process with `std.process.run` stopped the whole app with `panic: no
+  current executor` (exit 134), on Linux and Windows alike. Each job
+  thread now has a `std.Io.Threaded` of its own, made with the process's
+  environment (one made with `.{}` has none, so the processes it starts
+  have no PATH, and on Windows no SystemRoot), and a job may take it:
+  `fn (job: *spider.Hub, io: std.Io) void`. A job written as
+  `fn (*spider.Hub) void` still compiles and runs as before. The wait
+  between runs uses the monotonic clock.
+
 - **The mTLS client works on Windows.** It wrote the request's certificate
   and key to `/tmp`, which Windows does not have, so every call failed. It
   uses the user's temporary directory there (what `%TEMP%` points to);

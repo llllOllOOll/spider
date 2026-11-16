@@ -1042,7 +1042,10 @@ hub.broadcast("plain message");
 Multi-line data goes out as one `data:` line per line. `emitHtmlTo` renders once
 for everyone on the channel: keep per-user data out of it. Periodic work:
 `server.sseInterval(ms, fn (*spider.Hub) void)`, or `pub const jobs =
-.{spider.every(ms, fn)}` in a feature.
+.{spider.every(ms, fn)}` in a feature. A job runs on a thread of its own and
+may take that thread's Io, made with the process's environment:
+`fn (hub: *spider.Hub, io: std.Io) void`. Use it for what the job does
+(HTTP calls, files, running a process); `hub.io` is the hub's.
 
 ---
 
