@@ -200,6 +200,11 @@ used.
 
 ### Added
 
+- **README: Acknowledgements.** A section thanks the authors of the
+  libraries Spider is built on: pg.zig and zqlite.zig (Karl Seguin) and zio
+  (Lukáš Lalinský). The SQLite module's copy of zqlite.zig now carries its
+  MIT license file, as the license asks.
+
 - **Each project runs the CLI of its own Spider release.** In a project
   pinned to another release (`?ref=vX.Y.Z`), `spider` installs that
   release's CLI once into `~/.cache/spider/cli/X.Y.Z` (or

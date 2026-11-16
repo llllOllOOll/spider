@@ -16,6 +16,22 @@ scaffolds apps and checks them.
 > on Spider only targets official Zig releases; the next move is to 0.18.0,
 > when it ships. See [Zig Version Policy](#zig-version-policy).
 
+## Acknowledgements
+
+Spider stands on libraries that their authors wrote with great care and
+shared under the MIT license. Thank you.
+
+- **[Karl Seguin](https://github.com/karlseguin)**: Spider's PostgreSQL
+  driver is built on his [pg.zig](https://github.com/karlseguin/pg.zig),
+  and its SQLite module on his [zqlite.zig](https://github.com/karlseguin/zqlite.zig).
+  Spider keeps its own copy of pg.zig, adapted to it: moved to Zig 0.17,
+  reporting the server's message when the pool cannot connect, and with
+  fixes to error parsing and `pg.array` binding. The protocol, types, pool
+  and LISTEN/NOTIFY underneath are his work; any bug in Spider's copy is ours.
+- **[Lukáš Lalinský](https://github.com/lalinsky)**: Spider's default I/O
+  backend (fibers on an event loop) is his [zio](https://github.com/lalinsky/zio).
+  He also contributes to pg.zig.
+
 ---
 
 ## Installation
@@ -848,7 +864,7 @@ templates both ways and fails on any difference in the HTML.
 Needs `.pg = true` on the spider dependency. A connection pool (default 10),
 retry on connection failures (5 attempts, 1s→8s backoff; auth errors fail at once).
 
-> Thanks to [karlseguin](https://github.com/karlseguin) for [pg.zig](https://github.com/karlseguin/pg.zig), the base of Spider's PostgreSQL driver (we use a customized fork).
+> Spider's PostgreSQL driver is a customized copy of Karl Seguin's pg.zig; see [Acknowledgements](#acknowledgements).
 
 ```zig
 const db = spider.pg;
