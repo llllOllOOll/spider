@@ -1,6 +1,6 @@
 # 0001. zio is the default I/O backend
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-15
 - **Applies to:** Spider 0.14
 
@@ -26,23 +26,26 @@ fits short tasks. A web server's connections are long ones.
 
 We measured a storefront app (a home page, a sorted and paginated list, a
 product page) in release builds on a 12-thread machine, with `oha` on
-keep-alive connections:
+keep-alive connections, 15-second points:
 
 | Load | `threaded` | `zio` |
 |---|---|---|
-| Up to 256 connections | 15–115 k req/s, p99 0.06–14 ms | not measured point by point |
-| 1024 connections, fresh server, product page | 69.7 k req/s | 62.5 k req/s |
-| 1024 connections, the same page again | **2.7 k req/s, p99 5.1 s** | 62.5 k req/s |
-| Memory after a 1024-connection run | **~320 MiB**, kept after every connection closed | 60–76 MiB |
-| 10 minutes, 255 connections, three pages at once | ~53 k req/s, 100 % ok, no growth | ~55 k req/s, 100 % ok, no growth |
+| 1 to 256 connections, list and product pages | 16–116 k req/s, p99 0.07–15 ms | 15–111 k req/s, p99 0.08–17 ms |
+| 32 connections, three pages, 12 threads / one core | 104 k / 42 k req/s | 102 k / 48 k req/s |
+| 1024 connections, fresh server, list page | 34.0 k req/s, p99 49 ms | 37.6 k req/s, p99 68 ms |
+| 1024 connections right after, product page | **2.6 k req/s, p99 3.8 s** | 67.6 k req/s, p99 38 ms |
+| Memory after the 1024-connection runs | **~315 MiB**, kept with 1024 idle connections and after they all closed | 47–58 MiB |
+| 10 minutes, 255 connections, three pages at once | ~57 k req/s, 100 % ok, peak 114 MiB, 11 MiB after | ~56 k req/s, 100 % ok, peak 48 MiB, 10 MiB after |
 
 After a run at around a thousand connections the pool holds about that
 many sleeping threads (their stacks are the memory that stays), and the
 next wave of connections waits in the pool's queue until another
 connection closes. The 0.12.1 release has the same behaviour, worse on the
-first run (1.5 k req/s). The second row repeated with zio v0.20.1 and
-5-second runs: zio 58.2 / 60.1 / 54.9 k req/s with 76 MiB; threaded
-58.5 k, then 0.6 k req/s with a 4 s p99, and 318 MiB.
+first run (1.5 k req/s). Earlier rounds showed the same pattern: on a
+fresh server the product page at 1024 connections ran at 69.7 k req/s
+(`threaded`) and 62.5 k (`zio`); repeated, `threaded` fell to 0.6–2.7 k
+req/s with a p99 of 4–5 s and ~320 MiB, while `zio` held 55–62 k req/s
+with 60–76 MiB.
 
 zio already ran in production behind Docker for months before this
 decision, forced to epoll on Linux: Docker's default seccomp profile
@@ -81,7 +84,7 @@ tested in CI on both backends.
 ## Consequences
 
 - Apps get a server that holds a thousand connections at once with
-  steady latency and ~70 MiB instead of ~320 MiB.
+  steady latency and ~50–70 MiB instead of ~320 MiB.
 - Every app now fetches and builds zio (a lazy dependency, fetched on the
   first build). Spider follows zio's releases; a zio bug is now a Spider
   bug. v0.20.1 is pinned because it fixes a thread leak in zio's own pool.
@@ -109,6 +112,7 @@ tested in CI on both backends.
   pool's thread leak (issue #879, pull request #881).
 - Zig's devlog on the state of `std.Io.Evented` (io_uring and Grand
   Central Dispatch implementations described as experimental).
-- The measurements above: release builds, `oha` with keep-alive
-  connections, 15-second points (the 5-second repeat is marked as such),
+- The measurements above: release builds, `oha` 1.16 with keep-alive
+  connections, 15-second points (three 20-second runs averaged, for the
+  32-connection row; the single-core row pins the server to one core),
   10-minute long runs, server memory read from `/proc/<pid>/status`.
