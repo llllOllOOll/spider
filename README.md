@@ -101,6 +101,20 @@ and generated apps). In GitHub Actions,
 [`mlugg/setup-zig`](https://codeberg.org/mlugg/setup-zig) installs it
 (`with: version: 0.17.0`).
 
+### Platforms
+
+**Deploy on Linux.** It is where Spider is built, tested and measured, and
+where both I/O backends run at full speed.
+
+**Develop on Linux, macOS or Windows.** On Windows, `spider new`,
+`zig build`, running the app and `zig build test` work. Not yet on Windows:
+
+- Connection deadlines (`header_timeout_ms`, `body_timeout_ms`,
+  `keepalive_timeout_ms`, `stream_write_timeout_ms`) do not close the
+  connection: a client that sends nothing, or sends slowly, keeps it open.
+  Do not expose a Windows build of an app to the internet.
+- [`spider dev`](#spider-dev) (rebuild and reload on save).
+
 ---
 
 
