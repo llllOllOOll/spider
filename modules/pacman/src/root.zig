@@ -153,6 +153,39 @@ test "Client.get()" {
     try std.testing.expect(std.mem.indexOf(u8, body, "pacman") != null);
 }
 
+test "Client: a client whose clock is old still accepts a certificate issued after it (needs network)" {
+    // A long-lived client (one per process, as spider.r2 keeps) used to
+    // check certificates against the time of its first HTTPS request: a
+    // certificate issued later was "not yet valid" and every call failed
+    // with TlsInitializationFailed until the process restarted.
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var client = try Client.init(io, allocator, .{ .base_url = "https://httpbingo.org" });
+    defer client.deinit();
+
+    var first = try client.get("/get", .{});
+    first.deinit();
+
+    // The client as if its first request had been on 2000-01-01, long
+    // before the server's certificate was issued; and no open connection,
+    // so the next request makes a new TLS handshake.
+    client.http_client.now = .fromNanoseconds(946_684_800 * std.time.ns_per_s);
+    client.http_client.connection_pool.deinit(io);
+    client.http_client.connection_pool = .{};
+
+    var second = try client.get("/get", .{});
+    defer second.deinit();
+    try std.testing.expect(second.status == .ok);
+    // And the stale time was replaced: the bundle was read again.
+    try std.testing.expect(client.http_client.now.?.nanoseconds > 946_684_800 * std.time.ns_per_s);
+}
+
 test "Client.post() with json body" {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();

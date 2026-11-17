@@ -49,10 +49,16 @@ tls_buffer_size: if (disable_tls) u0 else usize = if (disable_tls) 0 else std.cr
 /// traffic over connections created with this `Client`.
 ssl_key_log: ?*std.crypto.tls.Client.SslKeyLog = null,
 
-/// The time used to decide whether certificates are expired.
+/// When the system's root certificates were last read. `null`: the next
+/// HTTPS request reads them first. They are read again once this is older
+/// than `ca_bundle_max_age`, so a long-lived client picks up root
+/// certificates installed after it started.
 ///
-/// When this is `null`, the next time this client performs an HTTPS request,
-/// it will first check the time and rescan the system for root certificates.
+/// Certificates are checked against the real time of each handshake, not
+/// this one: a client that only checked against it accepted no certificate
+/// issued after its first request (a server that rotated its certificate
+/// failed every call with TlsInitializationFailed until the process
+/// restarted) and kept accepting expired ones.
 now: ?Io.Timestamp = null,
 
 /// The pool of connections that can be reused (and currently in use).
@@ -354,7 +360,7 @@ pub const Connection = struct {
         client: std.crypto.tls.Client,
         connection: Connection,
 
-        /// Asserts that `client.now` is non-null.
+        /// The CA bundle must have been loaded (`ensureCertBundleLoaded`).
         fn create(
             client: *Client,
             remote_host: HostName,
@@ -392,7 +398,8 @@ pub const Connection = struct {
                     .closing = false,
                     .protocol = .tls,
                 },
-                // TODO data race here on ca_bundle if the user sets `now` to null
+                // The bundle is read under its lock by the TLS client; it is
+                // replaced only under the exclusive lock (ensureCertBundleLoaded).
                 .client = std.crypto.tls.Client.init(
                     &tls.connection.stream_reader.interface,
                     &tls.connection.stream_writer.interface,
@@ -408,7 +415,9 @@ pub const Connection = struct {
                         .read_buffer = tls_read_buffer,
                         .write_buffer = socket_write_buffer,
                         .entropy = &random_buffer,
-                        .realtime_now = client.now.?,
+                        // The time of this handshake: a certificate is
+                        // valid or not now, not when the client started.
+                        .realtime_now = Io.Clock.real.now(io),
                         // This is appropriate for HTTPS because the HTTP headers contain
                         // the content length which is used to detect truncation attacks.
                         .allow_truncation_attacks = true,
@@ -1831,8 +1840,12 @@ fn uriPort(uri: Uri, protocol: Protocol) u16 {
     return uri.port orelse protocol.port();
 }
 
-/// Lazily loads (once per client) the CA certificate bundle and sets
-/// `client.now`, which `Connection.Tls.create` requires to be non-null.
+/// How long the system's root certificates are trusted as read before they
+/// are read again.
+pub const ca_bundle_max_age: Io.Duration = .fromSeconds(60 * 60);
+
+/// Loads the CA certificate bundle when it was never loaded or was loaded
+/// more than `ca_bundle_max_age` ago, and sets `client.now` to when.
 /// Extracted out of `request()` so that other TLS-connection-establishing
 /// paths (e.g. `adoptTunneledStream`, used for tunneling through non-HTTP
 /// proxies like SOCKS5) can ensure the same precondition before calling
@@ -1843,7 +1856,11 @@ fn ensureCertBundleLoaded(client: *Client, io: Io) !void {
     {
         try client.ca_bundle_lock.lockShared(io);
         defer client.ca_bundle_lock.unlockShared(io);
-        if (client.now != null) return;
+        if (client.now) |loaded| {
+            const age = loaded.durationTo(Io.Clock.real.now(io));
+            // A clock set back makes the age negative: read them again.
+            if (age.nanoseconds >= 0 and age.nanoseconds < ca_bundle_max_age.nanoseconds) return;
+        }
     }
     var bundle: std.crypto.Certificate.Bundle = .empty;
     defer bundle.deinit(client.allocator);

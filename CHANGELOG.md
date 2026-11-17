@@ -28,6 +28,16 @@ used.
 
 ### Fixed
 
+- **A long-lived HTTP client accepts certificates issued after it
+  started.** `spider.http_client` (and `spider.r2`, which keeps one client
+  per process) checked server certificates against the time of the
+  client's first HTTPS request. Once a server rotated its certificate, the
+  new one was "not yet valid": every call failed with
+  `TlsInitializationFailed` until the process restarted, and an expired
+  certificate kept passing. Each TLS handshake now uses the real time, and
+  the system's root certificates are read again when they are more than an
+  hour old.
+
 - **A job can run a process, and gets an Io it can use.** A job
   (`spider.every`) runs on a thread of its own, but the only Io it could
   reach was the server's (`hub.io`). With the zio backend, the default,
