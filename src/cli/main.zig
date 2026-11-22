@@ -80,7 +80,9 @@ pub fn main(init: std.process.Init) !void {
                 error.UnknownUiKit => usageError("unknown UI kit in '{s}' (kits: daisyui, tailwind)", .{bad}),
                 error.UnknownHtmxVersion => usageError("unknown htmx version in '{s}' (versions: 2, 4)", .{bad}),
                 error.PwaNeedsViews => usageError("--pwa needs HTML views; it can't be combined with --api", .{}),
+                error.MinimalTakesNoOptions => usageError("--minimal takes no other option ('{s}')", .{bad}),
             };
+            if (o.minimal) return new.runMinimal(io, allocator, o.app_name);
             if (o.daisyui_alias) std.debug.print("note: --daisyui is the default now (same as --ui=daisyui); the app shell with navbar and sidebar is src/shared/templates/app.html (`extends \"app\"`).\n", .{});
             try new.run(io, allocator, o.app_name, ui_mod.find(o.ui).?, o.skip_downloads, o.api, o.no_db, o.pg, o.pwa, o.htmx);
         },

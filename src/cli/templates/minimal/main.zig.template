@@ -1,0 +1,17 @@
+const std = @import("std");
+const spider = @import("spider");
+const Ctx = spider.Ctx;
+const Response = spider.Response;
+
+pub fn main() !void {
+    var server = spider.app(.{});
+    defer server.deinit();
+
+    try server
+        .get("/", home, .{ .public = true })
+        .listen(.{});
+}
+
+fn home(c: *Ctx) !Response {
+    return c.view("home", .{ .name = "World" }, .{});
+}

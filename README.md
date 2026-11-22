@@ -136,7 +136,7 @@ where both I/O backends run at full speed.
 ## Quick Start
 
 ```bash
-spider new myapp          # HTML views + SQLite; --pg, --no-db, --api, --pwa, --ui=tailwind
+spider new myapp          # HTML views + SQLite; --pg, --no-db, --api, --pwa, --ui=tailwind, --minimal
 cd myapp
 spider dev                # http://localhost:3000, rebuilt and reloaded as you edit
 spider g feature posts    # a CRUD feature in src/features/posts/ + a migration
@@ -1399,9 +1399,11 @@ spider new myapp --api                # JSON API, no HTML views
 spider new myapp --ui=tailwind        # UI kit: daisyui (default) or tailwind
 spider new myapp --pwa                # installable PWA
 spider new myapp --skip-downloads     # don't download tailwindcss, alpine, htmx, icons now
+spider new myapp --htmx=2             # htmx 2 instead of 4
+spider new myapp --minimal            # build.zig, src/main.zig, views/: nothing else
 
 # Generate code (alias: spider g)
-spider g feature posts [--api]        # CRUD feature + migration
+spider g feature posts                # CRUD feature + migration (JSON in an API project)
 spider g auth [--provider=keycloak] [--api]
 
 spider migrate                        # apply the pending migrations (modules', then the app's)

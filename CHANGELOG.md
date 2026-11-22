@@ -277,6 +277,10 @@ used.
 
 ### Added
 
+- **`spider new <name> --minimal`**: `build.zig`, `src/main.zig` with one
+  route and its handler, and `views/` with a page and a component that
+  declares its props. No database, features, Tailwind or Docker;
+  `spider dev` works on it. It takes no other option.
 - **A call to a component that does not exist fails the build.** Under
   `c.view` and `c.viewFragment`, `<BookCrad />` with no `BookCrad.html`,
   `book_crad.html` or inline definition is a compile error at the line of

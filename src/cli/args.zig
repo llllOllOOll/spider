@@ -96,9 +96,11 @@ pub const NewOptions = struct {
     api: bool = false,
     no_db: bool = false,
     pg: bool = false,
+    /// --minimal: build.zig, src/main.zig and views/, nothing else.
+    minimal: bool = false,
 };
 
-pub const NewError = error{ MissingAppName, UnknownOption, ExtraArgument, UnknownUiKit, UnknownHtmxVersion, PwaNeedsViews };
+pub const NewError = error{ MissingAppName, UnknownOption, ExtraArgument, UnknownUiKit, UnknownHtmxVersion, PwaNeedsViews, MinimalTakesNoOptions };
 
 /// `args` are the ones after `new`. `bad` receives the offending argument.
 pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions {
@@ -128,6 +130,9 @@ pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions 
             o.no_db = true;
         } else if (std.mem.eql(u8, a, "--pg")) {
             o.pg = true;
+        } else if (std.mem.eql(u8, a, "--minimal")) {
+            o.minimal = true;
+            continue;
         } else if (a.len > 0 and a[0] == '-') {
             bad.* = a;
             return error.UnknownOption;
@@ -139,6 +144,12 @@ pub fn parseNew(args: []const []const u8, bad: *[]const u8) NewError!NewOptions 
         }
     }
     if (o.app_name.len == 0) return error.MissingAppName;
+    if (o.minimal) for (args) |a| {
+        if (a.len > 0 and a[0] == '-' and !std.mem.eql(u8, a, "--minimal")) {
+            bad.* = a;
+            return error.MinimalTakesNoOptions;
+        }
+    };
     if (o.pwa and o.api) {
         bad.* = "--pwa";
         return error.PwaNeedsViews;
@@ -195,6 +206,9 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\  --pwa             Installable PWA: manifest, service worker, icons
         \\                    (same as `spider add pwa` afterwards)
         \\  --skip-downloads  Don't download tailwindcss, alpine, htmx, icons now
+        \\  --minimal         Only build.zig, src/main.zig (a route and its handler)
+        \\                    and views/ (a page and a component): no database,
+        \\                    features, Tailwind or Docker. Takes no other option.
         \\
         ,
         .generate =>
@@ -436,6 +450,12 @@ test "parseNew: flags, one name, errors" {
     try t.expectEqualStrings("--postgres", bad);
     try t.expectError(error.ExtraArgument, parseNew(&.{ "shop", "other" }, &bad));
     try t.expectEqualStrings("other", bad);
+
+    const m = try parseNew(&.{ "--minimal", "shelf" }, &bad);
+    try t.expect(m.minimal);
+    try t.expectEqualStrings("shelf", m.app_name);
+    try t.expectError(error.MinimalTakesNoOptions, parseNew(&.{ "shelf", "--minimal", "--pg" }, &bad));
+    try t.expectEqualStrings("--pg", bad);
 }
 
 test "every command has help text" {

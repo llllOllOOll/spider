@@ -510,6 +510,70 @@ fn writeFile(io: std.Io, dir: std.Io.Dir, path: []const u8, content: []const u8)
     try writer.interface.flush();
 }
 
+const minimal_files = .{
+    .{ "build.zig", @embedFile("templates/minimal/build.zig.template") },
+    .{ "build.zig.zon", @embedFile("templates/minimal/build.zig.zon.template") },
+    .{ "src/main.zig", @embedFile("templates/minimal/main.zig.template") },
+    .{ "views/home.html", @embedFile("templates/minimal/home.html.template") },
+    .{ "views/Hello.html", @embedFile("templates/minimal/Hello.html.template") },
+    .{ ".gitignore", @embedFile("templates/minimal/.gitignore.template") },
+};
+
+/// `spider new <name> --minimal`: a route in src/main.zig, a page and a
+/// component in views/, and the build that checks and embeds them.
+pub fn runMinimal(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    cwd.createDir(io, app_name, .default_dir) catch |err| {
+        if (err == error.PathAlreadyExists) {
+            std.debug.print("error: directory '{s}' already exists\n", .{app_name});
+            return error.DirExists;
+        }
+        return err;
+    };
+    errdefer {
+        std.debug.print("  Cleaning up {s}/...\n", .{app_name});
+        cwd.deleteTree(io, app_name) catch {};
+    }
+    // zig init gives the package its fingerprint.
+    try runZigInit(io, app_name);
+    var project_dir = try cwd.openDir(io, app_name, .{});
+    defer project_dir.close(io);
+    const fingerprint = try readFingerprint(io, allocator, project_dir);
+    defer allocator.free(fingerprint);
+    const zon_safe_name = try toZonSafe(allocator, app_name);
+    defer allocator.free(zon_safe_name);
+
+    std.debug.print("Creating {s}...\n", .{app_name});
+    inline for (minimal_files) |f| {
+        const content = try render(allocator, f[1], app_name, zon_safe_name, fingerprint, "", "false");
+        defer allocator.free(content);
+        try writeFile(io, project_dir, f[0], content);
+        std.debug.print("  create  {s}/{s}\n", .{ app_name, f[0] });
+    }
+
+    std.debug.print("Fetching Spider {s}...\n", .{spider_ref});
+    try runZigFetch(io, allocator, app_name);
+
+    std.debug.print("\nDone! Next steps:\n", .{});
+    std.debug.print("  cd {s}\n", .{app_name});
+    std.debug.print("  spider dev           ← builds, runs, and reloads the browser as you edit\n", .{});
+    std.debug.print("  zig build run        ← or: one build, one run\n", .{});
+}
+
+test "new --minimal: a route, a page and a component, built with addTemplates" {
+    const has = std.mem.indexOf;
+    inline for (minimal_files) |f| {
+        if (comptime std.mem.eql(u8, f[0], "build.zig")) {
+            try std.testing.expect(has(u8, f[1], "addTemplates(b, spider_dep, \"views\")") != null);
+            try std.testing.expect(has(u8, f[1], "devStep(") != null);
+        }
+        if (comptime std.mem.eql(u8, f[0], "src/main.zig"))
+            try std.testing.expect(has(u8, f[1], "c.view(\"home\", .{ .name = \"World\" }, .{})") != null);
+        if (comptime std.mem.eql(u8, f[0], "views/Hello.html"))
+            try std.testing.expect(std.mem.startsWith(u8, f[1], "-- props: name!\n"));
+    }
+}
+
 pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_kit: ui_mod.Kit, skip_downloads: bool, api_only: bool, no_db: bool, use_pg: bool, with_pwa: bool, htmx_version: htmx.Version) !void {
     // check zig is available
     const zig_result = std.process.run(allocator, io, .{
