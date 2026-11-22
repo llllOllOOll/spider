@@ -140,6 +140,7 @@ pub fn addTemplates(b: *std.Build, spider_dep: *std.Build.Dependency, dir: []con
     gen.has_side_effects = true;
     gen.addDirectoryArg(b.path(dir));
     const index = gen.addOutputFileArg("embedded_templates.zig");
+    gen.addArg(dir); // how the check's messages name the files
 
     // The generated file embeds each template by its path under `dir`, and
     // @embedFile only reaches files under the module's own directory: the

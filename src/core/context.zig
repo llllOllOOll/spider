@@ -482,7 +482,7 @@ pub const Ctx = struct {
             const k = key;
             if (!@hasDecl(T.spider_manifest, &k))
                 @compileError("c.view: no template named \"" ++ name ++ "\"");
-            check_view.check(@TypeOf(data), name, @field(T.spider_manifest, &k));
+            check_view.checkAs(@TypeOf(data), "view \"" ++ name ++ "\"", fileOf(&k), @field(T.spider_manifest, &k));
         }
         if (comptime elroyKey(name)) |k| {
             if (self.elroyFits(k, name)) {
@@ -566,7 +566,9 @@ pub const Ctx = struct {
                 @compileError("c.viewFragment: no template named \"" ++ template_name ++ "\"");
             const F = T.spider_fragments;
             const snake = snakeName(component_name);
-            const uses = if (@hasDecl(F.inline_, k) and @hasDecl(@field(F.inline_, k), component_name))
+            const in_template = @hasDecl(F.inline_, k) and @hasDecl(@field(F.inline_, k), component_name);
+            const file_key = if (in_template) k else if (@hasDecl(F.files, component_name)) component_name else snake;
+            const uses = if (in_template)
                 @field(@field(F.inline_, k), component_name)
             else if (@hasDecl(F.files, component_name))
                 @field(F.files, component_name)
@@ -574,7 +576,7 @@ pub const Ctx = struct {
                 @field(F.files, snake)
             else
                 @compileError(call ++ ": no component <" ++ component_name ++ "> in \"" ++ template_name ++ "\" or among the component files");
-            check_view.checkAs(@TypeOf(data), "fragment <" ++ component_name ++ "> of \"" ++ template_name ++ "\"", uses);
+            check_view.checkAs(@TypeOf(data), "fragment <" ++ component_name ++ "> of \"" ++ template_name ++ "\"", fileOf(file_key), uses);
         }
         const opts = try self.owned(opts_in);
         switch (try self.prepareView(template_name, opts)) {
@@ -585,6 +587,13 @@ pub const Ctx = struct {
                 return htmlResponse(try tmpl.renderFragment(component_name, data, self.arena), opts);
             },
         }
+    }
+
+    /// The file of the template the manifest names `key`, as the check's
+    /// messages show it; "" when the generated templates do not say.
+    fn fileOf(comptime key: []const u8) []const u8 {
+        if (!@hasDecl(AppTemplates, "spider_files") or !@hasDecl(AppTemplates.spider_files, key)) return "";
+        return @field(AppTemplates.spider_files, key);
     }
 
     /// The manifest's name for template `name`: `posts/index` is `posts_index`.

@@ -1,9 +1,11 @@
 //! Internal: build-time tool that writes the embedded templates file.
-//! Usage: generate-templates <source_dir> <output_file>. It walks
+//! Usage: generate-templates <source_dir> <output_file> [shown_dir]
+//! (`shown_dir`: the directory as messages name it). It walks
 //! `source_dir` and writes a Zig file declaring `EmbeddedTemplates`, a
 //! struct with one `@embedFile` field per .html and .md file found, and
 //! `spider_manifest`: what each template reads from a view's data
-//! (render/manifest.zig), for `Ctx.view`; `spider_fragments`: what each
+//! (render/manifest.zig), for `Ctx.view`; `spider_files`: each template's
+//! file, for its messages; `spider_fragments`: what each
 //! component reads when rendered alone, for `Ctx.viewFragment`; and `elroy`: the
 //! templates Elroy compiles to Zig functions (render/elroy/codegen.zig).
 
@@ -25,6 +27,12 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Usage: generate-templates <source_dir> <output_file>\n", .{});
         return error.InvalidArgs;
     };
+    // How error messages name the templates' directory: the third argument
+    // (addTemplates passes the directory as the app's build.zig wrote it),
+    // else `source_dir` when it is relative; an absolute one is a cache
+    // path, left out.
+    const shown_dir: []const u8 = args_it.next() orelse
+        (if (std.fs.path.isAbsolute(source_dir)) "" else source_dir);
     var output = try std.ArrayList(u8).initCapacity(allocator, 4096);
     defer output.deinit(allocator);
     try output.appendSlice(allocator, "// Generated file - DO NOT EDIT MANUALLY\n");
@@ -55,8 +63,9 @@ pub fn main(init: std.process.Init) !void {
         const names = try generateFieldName(embed_path, &field_name_buf, &alias_buf);
         if (std.mem.endsWith(u8, entry.path, ".html")) {
             const text = try dir.readFileAlloc(io, entry.path, allocator, .limited(8 * 1024 * 1024));
-            try sources.append(allocator, .{ .name = try allocator.dupe(u8, names.primary), .text = text });
-            if (names.alias) |alias| try sources.append(allocator, .{ .name = try allocator.dupe(u8, alias), .text = text });
+            const file = try shownPath(allocator, shown_dir, embed_path);
+            try sources.append(allocator, .{ .name = try allocator.dupe(u8, names.primary), .text = text, .file = file });
+            if (names.alias) |alias| try sources.append(allocator, .{ .name = try allocator.dupe(u8, alias), .text = text, .file = file });
             try embeds.append(allocator, .{ .text = text, .path = try allocator.dupe(u8, embed_path) });
         }
         const line = try std.fmt.allocPrint(allocator, "    {s}: []const u8 = @embedFile(\"{s}\"),\n", .{ names.primary, embed_path });
@@ -80,6 +89,10 @@ pub fn main(init: std.process.Init) !void {
         const uses = try analyzer.analyze(src.text);
         try manifest.writeZig(&output, allocator, src.name, uses);
     }
+    try output.appendSlice(allocator, "    };\n");
+    // Each template's file, for the messages of c.view's check.
+    try output.appendSlice(allocator, "\n    pub const spider_files = struct {\n");
+    for (sources.items) |src| try output.print(allocator, "        pub const {f} = \"{f}\";\n", .{ std.zig.fmtId(src.name), std.zig.fmtString(src.file) });
     try output.appendSlice(allocator, "    };\n");
     // What each component reads when rendered alone, for c.viewFragment:
     // `files` by the component's file, `inline_` by the template that
@@ -130,6 +143,14 @@ pub fn main(init: std.process.Init) !void {
     try writer.interface.writeAll(formatted);
     try writer.interface.flush();
     std.debug.print("Ride the lightning — {d} templates forged in {s} ({d} compiled by Elroy)\n", .{ template_count, output_file, compiled });
+}
+
+/// `views` + `home.html` as `views/home.html` (`dir` as given, with '/').
+fn shownPath(alc: std.mem.Allocator, dir: []const u8, path: []const u8) ![]const u8 {
+    var d = dir;
+    while (d.len > 0 and (d[d.len - 1] == '/' or d[d.len - 1] == '\\')) d = d[0 .. d.len - 1];
+    if (d.len == 0 or std.mem.eql(u8, d, ".")) return alc.dupe(u8, path);
+    return std.fmt.allocPrint(alc, "{s}/{s}", .{ d, path });
 }
 
 const FieldNames = struct {

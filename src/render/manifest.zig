@@ -43,7 +43,8 @@ pub const Kind = enum {
 // internal: one path a template reads.
 pub const Use = struct {
     path: []const u8,
-    /// 1-based line in the template the use was written in (0: unknown).
+    /// 1-based line in the template the use was written in; for what a
+    /// component reads, the line of the call (0: unknown, or a layout's).
     line: usize,
     kind: Kind,
     /// May be missing: `{ x ?? "d" }`, `x == null`.
@@ -52,9 +53,15 @@ pub const Use = struct {
     via: []const u8,
 };
 
-/// A template: the name `c.view` knows it by (the generated field name) and
-/// its source.
-pub const Source = struct { name: []const u8, text: []const u8 };
+/// A template: the name `c.view` knows it by (the generated field name), its
+/// source and its file.
+pub const Source = struct {
+    name: []const u8,
+    text: []const u8,
+    /// Where the template is, as error messages name it
+    /// (`views/home.html`); "" when unknown.
+    file: []const u8 = "",
+};
 
 // internal: works out what each template reads (generate-templates).
 pub const Analyzer = struct {
@@ -277,6 +284,9 @@ const Walk = struct {
     }
 
     fn component(w: *Walk, c: anytype, scope: *const Scope) !void {
+        // Where the call is written: what the component reads is reported
+        // there (its own lines are in another file).
+        const call_line = w.lineOf(try std.fmt.allocPrint(w.a.alc, "<{s}", .{c.name}));
         const found: ?Analyzer.Found = if (w.locals.get(c.name)) |body|
             .{ .name = c.name, .text = body, .local = true }
         else
@@ -306,7 +316,13 @@ const Walk = struct {
         if (c.slot_content) |sc| {
             if (try parse(w.a.alc, sc)) |slot_nodes| try w.nodes(slot_nodes, scope);
         }
-        const f = found orelse return; // unknown component: a runtime diagnostic
+        const f = found orelse {
+            // At run time it renders nothing (renderer.zig): a typo in a
+            // tag name, or a component file that is not there.
+            const m = try std.fmt.allocPrint(w.a.alc, "<{s}> is not a component: no template file {s}.html (or {s}.html) and no <{s}>...</{s}> defined in this file", .{ c.name, c.name, try snakeCase(w.a.alc, c.name), c.name, c.name });
+            try w.out.add(.{ .path = m, .line = call_line, .kind = .prop_problem, .optional = false, .via = "" });
+            return;
+        };
         const summary = if (f.local)
             // Memoized per definition: the same name may be defined inline
             // in other files.
@@ -316,7 +332,7 @@ const Walk = struct {
         for (summary) |u| {
             if (u.kind == .prop_problem) {
                 // A call inside the component: its message, not a path.
-                try w.out.add(.{ .path = u.path, .line = 0, .kind = u.kind, .optional = false, .via = try w.a.chain(c.name, u.via) });
+                try w.out.add(.{ .path = u.path, .line = call_line, .kind = u.kind, .optional = false, .via = try w.a.chain(c.name, u.via) });
                 continue;
             }
             const root = rootOf(u.path);
@@ -330,7 +346,7 @@ const Walk = struct {
                 // given something else, is not the data's.
                 const base = given_paths.get(root) orelse continue;
                 const through = try std.fmt.allocPrint(w.a.alc, "{s}{s}", .{ base, u.path[root.len..] });
-                try w.out.add(.{ .path = through, .line = 0, .kind = u.kind, .optional = u.optional, .via = try w.a.chain(c.name, u.via) });
+                try w.out.add(.{ .path = through, .line = call_line, .kind = u.kind, .optional = u.optional, .via = try w.a.chain(c.name, u.via) });
                 continue;
             }
             var kind = u.kind;
@@ -349,13 +365,13 @@ const Walk = struct {
                     // a fallback, it always renders empty.
                     if (!u.optional) {
                         const m = try std.fmt.allocPrint(w.a.alc, "<{s}> reads `{s}`, which is not one of its props (it declares: {s})", .{ c.name, root, try d.names(w.a.alc) });
-                        try w.out.add(.{ .path = m, .line = 0, .kind = .prop_problem, .optional = false, .via = "" });
+                        try w.out.add(.{ .path = m, .line = call_line, .kind = .prop_problem, .optional = false, .via = "" });
                     }
                     continue;
                 }
             }
             const mapped = (try w.map(u.path, scope)) orelse continue;
-            try w.out.add(.{ .path = mapped, .line = 0, .kind = kind, .optional = optional, .via = try w.a.chain(c.name, u.via) });
+            try w.out.add(.{ .path = mapped, .line = call_line, .kind = kind, .optional = optional, .via = try w.a.chain(c.name, u.via) });
         }
     }
 
@@ -412,6 +428,18 @@ const Walk = struct {
         return 1 + std.mem.count(u8, w.text[0..at], "\n");
     }
 };
+
+/// `BookCard` as `book_card`: the other file name a call finds.
+fn snakeCase(alc: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (name, 0..) |c, i| {
+        if (std.ascii.isUpper(c)) {
+            if (i > 0) try out.append(alc, '_');
+            try out.append(alc, std.ascii.toLower(c));
+        } else try out.append(alc, c);
+    }
+    return out.toOwnedSlice(alc);
+}
 
 fn parse(alc: std.mem.Allocator, text: []const u8) !?[]const Node {
     var p = parser_mod.Parser.init(alc, text);
@@ -613,4 +641,31 @@ test "manifest: a fragment reads what a call `<Name />` would, from the view's d
     }
     try t.expect((try a.analyzeFragment(sources[0].text, "Nope")) == null);
     try t.expectEqual(@as(usize, 1), (try a.inlineComponents(sources[0].text)).count());
+}
+
+test "manifest: a call to a component that does not exist is a problem, at the call's line" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const sources = [_]Source{
+        .{ .name = "page", .text =
+        \\<h1>{ title }</h1>
+        \\<BookCrad title="{ title }" />
+        \\<BookCard title="{ title }" />
+        \\<Shelf />
+        },
+        .{ .name = "BookCard", .text = "-- props: title!\n<p>{ title }</p>" },
+        // Found by its snake_case file, and defined inline: not problems.
+        .{ .name = "shelf", .text = "<Row>\n  <i>row</i>\n</Row>\n<Row />\n{ shelf_name }" },
+    };
+    const uses = try analyzeOne(arena.allocator(), &sources, "page");
+    var problems: usize = 0;
+    for (uses) |u| if (u.kind == .prop_problem) {
+        problems += 1;
+        try t.expectEqualStrings("<BookCrad> is not a component: no template file BookCrad.html (or book_crad.html) and no <BookCrad>...</BookCrad> defined in this file", u.path);
+        try t.expectEqual(@as(usize, 2), u.line);
+    };
+    try t.expectEqual(@as(usize, 1), problems);
+    // What a component reads is reported at the line of the call.
+    for (uses) |u| if (std.mem.eql(u8, u.path, "shelf_name")) try t.expectEqual(@as(usize, 4), u.line);
+    try t.expect(has(uses, "shelf_name", .text));
 }

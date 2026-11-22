@@ -1,8 +1,8 @@
 //! Internal: compares, at compile time, what a template reads (its entry in
 //! the generated `spider_manifest`, see render/manifest.zig) with the type
 //! of the data a view passes. `Ctx.view` and `Ctx.viewFragment` call it; a mismatch is a
-//! compile error naming the view, the line (or the component it was read
-//! through) and the path.
+//! compile error naming the template's file and line (`views/home.html:7`),
+//! the view, the component it was read through and the path.
 //!
 //! The types follow what `structToContext` reads (render/context.zig): a
 //! field of another type renders nothing at run time, so it is an error
@@ -80,29 +80,30 @@ fn fieldList(comptime T: type) []const u8 {
 /// via }`) against `Data`. One compile error listing all that do not fit,
 /// so a view is fixed in one pass.
 pub fn check(comptime Data: type, comptime view: []const u8, comptime uses: anytype) void {
-    checkAs(Data, "view \"" ++ view ++ "\"", uses);
+    checkAs(Data, "view \"" ++ view ++ "\"", "", uses);
 }
 
-/// `check` with the messages starting with `label` (`view "posts/index"`,
-/// `fragment <PostList> of "posts/index"`) instead of the view's name.
-pub fn checkAs(comptime Data: type, comptime label: []const u8, comptime uses: anytype) void {
-    if (problemsAs(Data, label, uses)) |msg| @compileError(msg);
+/// `check` with the messages starting with `file:line:` (`file` is the
+/// template's, as `spider_files` names it; "" for none), then `label`
+/// (`view "posts/index"`, `fragment <PostList> of "posts/index"`).
+pub fn checkAs(comptime Data: type, comptime label: []const u8, comptime file: []const u8, comptime uses: anytype) void {
+    if (problemsAs(Data, label, file, uses)) |msg| @compileError(msg);
 }
 
 /// Every use of `uses` that `Data` does not satisfy, one per line; null
 /// when they all fit.
 pub fn problems(comptime Data: type, comptime view: []const u8, comptime uses: anytype) ?[]const u8 {
-    return problemsAs(Data, "view \"" ++ view ++ "\"", uses);
+    return problemsAs(Data, "view \"" ++ view ++ "\"", "", uses);
 }
 
-fn problemsAs(comptime Data: type, comptime label: []const u8, comptime uses: anytype) ?[]const u8 {
+fn problemsAs(comptime Data: type, comptime label: []const u8, comptime file: []const u8, comptime uses: anytype) ?[]const u8 {
     @setEvalBranchQuota(100_000);
-    if (@typeInfo(Data) != .@"struct") return label ++ ": the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
+    if (@typeInfo(Data) != .@"struct") return (if (file.len > 0) file ++ ": " else "") ++ label ++ ": the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
     var out: []const u8 = "";
     var n: usize = 0;
     var missing: []const []const u8 = &.{};
     for (uses) |u| {
-        if (checkUse(Data, label, u[0], u[1], u[2], u[3], u[4])) |msg| {
+        if (checkUse(Data, label, file, u[0], u[1], u[2], u[3], u[4])) |msg| {
             // The same name read twice on a line (`if (x) { x }`): once.
             if (std.mem.indexOf(u8, out, msg) != null) continue;
             // A field that is not there: once, where it is first read, not
@@ -128,7 +129,7 @@ pub fn problem(comptime Data: type, comptime view: []const u8, comptime uses: an
     const label = "view \"" ++ view ++ "\"";
     if (@typeInfo(Data) != .@"struct") return label ++ ": the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
     for (uses) |u| {
-        if (checkUse(Data, label, u[0], u[1], u[2], u[3], u[4])) |msg| return msg;
+        if (checkUse(Data, label, "", u[0], u[1], u[2], u[3], u[4])) |msg| return msg;
     }
     return null;
 }
@@ -165,10 +166,20 @@ fn isProp(comptime kind: anytype) bool {
     return kind == .prop_int or kind == .prop_bool or kind == .prop_string or kind == .prop_any;
 }
 
-fn checkUse(comptime Data: type, comptime label: []const u8, comptime path: []const u8, comptime line: usize, comptime kind: anytype, comptime optional: bool, comptime via: []const u8) ?[]const u8 {
-    const where = label ++
-        (if (line > 0) std.fmt.comptimePrint(", line {d}", .{line}) else "") ++
-        (if (via.len > 0) " (in <" ++ chainText(via) ++ ">)" else "") ++ ": ";
+fn checkUse(comptime Data: type, comptime label: []const u8, comptime file: []const u8, comptime path: []const u8, comptime line: usize, comptime kind: anytype, comptime optional: bool, comptime via: []const u8) ?[]const u8 {
+    const msg = useProblem(Data, path, kind, optional, via) orelse return null;
+    // `views/home.html:7: view "home"`, or `view "home", line 7` when the
+    // file is not known. Built only for a problem: it costs comptime
+    // branches, and a big app has thousands of uses.
+    return (if (file.len == 0) "" else if (line > 0) std.fmt.comptimePrint("{s}:{d}: ", .{ file, line }) else file ++ ": ") ++
+        label ++
+        (if (line > 0 and file.len == 0) std.fmt.comptimePrint(", line {d}", .{line}) else "") ++
+        (if (via.len > 0) " (in <" ++ chainText(via) ++ ">)" else "") ++ ": " ++ msg;
+}
+
+/// What is wrong with one use, without where it is; null when it fits.
+fn useProblem(comptime Data: type, comptime path: []const u8, comptime kind: anytype, comptime optional: bool, comptime via: []const u8) ?[]const u8 {
+    const where = "";
     // A call that does not fit its component's `-- props:` line: `path` is
     // the message, whatever the data.
     if (kind == .prop_problem) return where ++ path;
@@ -270,6 +281,10 @@ test "check: each kind of mismatch, with the view, the line and the fix" {
     const once = comptime problems(Data, "books/index", .{ .{ "shelf", 2, .iter, false, "" }, .{ "shelf.len", 2, .text, false, "" }, .{ "shelf[].title", 3, .text, false, "" }, .{ "books[].titel", 4, .text, false, "" }, .{ "books[].titel", 5, .cond, false, "" } }).?;
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, once, "\n"));
     try std.testing.expect(std.mem.indexOf(u8, once, "line 2: `shelf`") != null and std.mem.indexOf(u8, once, "line 4: `books[].titel`") != null);
+    // With the template's file: `file:line:` first.
+    const at = comptime problemsAs(Data, "view \"home\"", "views/home.html", .{ .{ "titel", 3, .text, false, "" }, .{ "shelf", 0, .text, false, "Card" } }).?;
+    try std.testing.expect(std.mem.indexOf(u8, at, "views/home.html:3: view \"home\": `titel`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, at, "views/home.html: view \"home\" (in <Card>): `shelf`") != null);
     // Through an optional: not reported.
     try std.testing.expect(comptime problem(Data, "v", .{.{ "nope.deeper", 1, .text, true, "" }}) == null);
 }

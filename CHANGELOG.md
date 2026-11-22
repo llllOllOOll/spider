@@ -251,6 +251,15 @@ used.
 
 ### Added
 
+- **A call to a component that does not exist fails the build.** Under
+  `c.view` and `c.viewFragment`, `<BookCrad />` with no `BookCrad.html`,
+  `book_crad.html` or inline definition is a compile error at the line of
+  the call; at run time it rendered nothing.
+- **The check's messages start with the template's file and line**:
+  `views/home.html:7: view "home" (in <Card>): ...`. What a component
+  reads is reported at the line of its call. `spider.addTemplates` passes
+  the directory to the generator (its optional third argument); without
+  it, a relative `source_dir` names the files.
 - **What a component reads through a prop is checked against the
   caller's data.** `<BookCard book="{ b }" />` in `for (books) |b|`, with
   the component reading `{ book.title }`, makes `c.view` check
