@@ -12,6 +12,15 @@ used.
 
 ### Breaking changes
 
+- **A component that declares its props sees only its props.** A
+  component with a `-- props:` line used to see every name of its caller
+  as well; now it sees its props (given by the call, a declared name the
+  call leaves out taken from the caller, or the default), the props the
+  call gives and `current_user`, and nothing else: another caller name it
+  reads renders empty, as a name that is not there. Its slot content is
+  the caller's markup and still sees the caller's names. A component
+  without the line is unchanged. Both the interpreter and the compiled
+  templates follow the rule. To read another caller name, declare it.
 - **A path value that is not of its `spider.Path` type is a 404, not a
   400.** `/books/banana` for `spider.Path(u32, "id")` names no book:
   `error.InvalidPathParam` now maps to 404 in `spider.statusForError` (and
@@ -230,6 +239,14 @@ used.
   and a release build embeds them, with nothing declared in `main.zig`.
   An app that declares `pub const spider_templates` in `main.zig` and runs
   `generate-templates` itself keeps working unchanged.
+
+- **`c.viewChecked` checks component calls against their `-- props:`
+  line.** A prop the component does not declare (`<Hello nmae="…">`), a
+  literal of the wrong type (`year="1969x"` for `year: int`), a required
+  prop that neither the call nor the data gives, and a name the component
+  reads that is not one of its props are compile errors naming the view,
+  the line or the component, as a missing field already was. Until now the
+  first two were warnings at run time and in `spider check` only.
 
 - **`spider.mssql`: Microsoft SQL Server.** A native TDS 7.4 driver in Zig
   (SQL Server 2012 and later, Azure SQL), with TLS and a connection pool,

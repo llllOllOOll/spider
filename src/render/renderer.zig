@@ -286,8 +286,9 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 state.logDepthExceeded(comp.name);
                 return error.ComponentDepthExceeded;
             }
-            // The component sees what its caller sees, plus its props. The
-            // props are read in the caller: a missing one is reported there.
+            // The component sees what its caller sees, plus its props (only
+            // its props when it declares them, below). The props are read
+            // in the caller: a missing one is reported there.
             var comp_ctx = ctx.child();
             defer comp_ctx.deinit(alc);
 
@@ -304,9 +305,20 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 }
             }
 
+            // A component that declares its props sees only those (given,
+            // the caller's value of that name, or the default), the props
+            // the call gives, and `current_user`: nothing else of its
+            // caller. Its slot content is the caller's markup and still
+            // sees the caller's names.
+            var closed_to: ?[]const []const u8 = null;
+            defer if (closed_to) |names| alc.free(names);
             if (state.componentSource(comp.name)) |src| {
                 if (try state.componentDecl(alc, comp.name, src)) |decl| {
                     try applyPropsDecl(state, alc, comp.name, comp.props, decl, ctx, &comp_ctx);
+                    const names = try alc.alloc([]const u8, decl.props.len + 1);
+                    for (decl.props, 0..) |p, i| names[i] = p.name;
+                    names[decl.props.len] = "current_user";
+                    closed_to = names;
                 }
             }
 
@@ -332,6 +344,7 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
                 try comp_ctx.set(alc, "slot", Value{ .html = try slot_buf.toOwnedSlice(alc) });
             }
 
+            comp_ctx.pass_through = closed_to;
             for (comp_nodes) |n| {
                 try renderNode(n, &comp_ctx, alc, result, state);
             }

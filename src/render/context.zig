@@ -35,6 +35,10 @@ pub const Context = struct {
     /// page, a component inside a loop): `get` looks there for a name this
     /// one does not have. Not owned.
     parent: ?*const Context = null,
+    /// The only names `get` may look for in `parent` (a component that
+    /// declares its props sees those and `current_user`, nothing else of
+    /// its caller); null: every name. Not owned.
+    pass_through: ?[]const []const u8 = null,
 
     // internal: an empty context.
     pub fn init() Context {
@@ -78,6 +82,12 @@ pub const Context = struct {
         var scope: ?*const Context = self;
         while (scope) |context| : (scope = context.parent) {
             if (context.values.get(key)) |value| return value;
+            if (context.pass_through) |names| {
+                const passes = for (names) |n| {
+                    if (std.mem.eql(u8, n, key)) break true;
+                } else false;
+                if (!passes) return null;
+            }
         }
         return null;
     }

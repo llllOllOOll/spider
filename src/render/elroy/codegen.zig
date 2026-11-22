@@ -7,7 +7,7 @@
 //!
 //! Scopes follow the interpreter: a loop sees its item and `loop`; a
 //! component sees its caller's names plus its props (it is expanded where
-//! it is called); a layout sees the page's data plus the page's sections
+//! it is called), or only its props when it declares them (`-- props:`); a layout sees the page's data plus the page's sections
 //! (`slot`, `slot_<name>`), each rendered to a buffer first. Conditions are
 //! translated the way `evalBool` reads them, step by step.
 //!
@@ -404,9 +404,20 @@ const Gen = struct {
         } else null;
 
         try g.frames.append(g.alc, frame);
-        // The names the function reads, as the call sees them.
+        // The names the function reads, as the call sees them. A component
+        // that declares its props sees nothing else of its caller (the
+        // interpreter's `pass_through`): any other name is empty.
         var args: std.ArrayList(u8) = .empty;
         for (info.fields, 0..) |f, i| {
+            if (decl != null and !std.mem.eql(u8, f, "current_user")) {
+                const bound = for (frame.bindings.items) |b| {
+                    if (std.mem.eql(u8, b.name, f)) break true;
+                } else false;
+                if (!bound) {
+                    try args.print(g.alc, "const __v{d}_{d} = E.none;\n", .{ frame.id, i });
+                    continue;
+                }
+            }
             const r = try g.root(f);
             if (r.path.len == 0)
                 try args.print(g.alc, "const __v{d}_{d} = {s};\n", .{ frame.id, i, r.handle })

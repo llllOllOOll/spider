@@ -29,6 +29,13 @@ pub const Kind = enum {
     prop_int,
     prop_bool,
     prop_string,
+    /// A declared prop of no type, read from the caller because the call
+    /// leaves it out: only needs to be there.
+    prop_any,
+    /// Not a data path: a component call that does not fit the component's
+    /// `-- props:` line (a prop it does not declare, a literal of the wrong
+    /// type). `path` holds the message; `c.viewChecked` fails with it.
+    prop_problem,
 };
 
 // internal: one path a template reads.
@@ -245,6 +252,18 @@ const Walk = struct {
         else
             w.a.find(c.name);
         const decl: ?props_decl.Decl = if (found) |f| (props_decl.parse(w.a.alc, f.text) catch null) else null;
+        if (decl) |d| for (c.props) |prop| {
+            // What the renderer reports at run time (renderer.zig,
+            // applyPropsDecl), here so that c.viewChecked fails the build.
+            const message = if (d.get(prop.name)) |pd|
+                (if (!prop.is_expr and !pd.accepts(prop.value))
+                    try std.fmt.allocPrint(w.a.alc, "prop `{s}` of <{s}> is {s}; \"{s}\" is not", .{ prop.name, c.name, @tagName(pd.kind), prop.value })
+                else
+                    null)
+            else
+                try std.fmt.allocPrint(w.a.alc, "<{s}> has no prop `{s}` (it declares: {s})", .{ c.name, prop.name, try d.names(w.a.alc) });
+            if (message) |m| try w.out.add(.{ .path = m, .line = w.lineOf(prop.name), .kind = .prop_problem, .optional = false, .via = "" });
+        };
         for (c.props) |prop| {
             if (!prop.is_expr) continue;
             const kind: Kind = if (decl) |d| (if (d.get(prop.name)) |pd| propKind(pd) orelse .cond else .cond) else .cond;
@@ -261,6 +280,11 @@ const Walk = struct {
         else
             try w.a.summarize(f.name, f.text);
         for (summary) |u| {
+            if (u.kind == .prop_problem) {
+                // A call inside the component: its message, not a path.
+                try w.out.add(.{ .path = u.path, .line = 0, .kind = u.kind, .optional = false, .via = try w.a.chain(c.name, u.via) });
+                continue;
+            }
             const root = rootOf(u.path);
             if (isSlotName(root)) continue;
             const given = for (c.props) |prop| {
@@ -269,14 +293,25 @@ const Walk = struct {
             if (given) continue;
             var kind = u.kind;
             var optional = u.optional;
-            if (decl) |d| if (d.get(root)) |pd| {
-                // A declared prop the call leaves out is the caller's name
-                // when the caller has it; without it, the default (or no
-                // value) is used, so it may be missing. A required one with
-                // no default may not.
-                if (!(pd.required and pd.default == null)) optional = true;
-                if (std.mem.eql(u8, u.path, root)) kind = propKind(pd) orelse u.kind;
-            };
+            if (decl) |d| {
+                if (d.get(root)) |pd| {
+                    // A declared prop the call leaves out is the caller's
+                    // name when the caller has it; without it, the default
+                    // (or no value) is used, so it may be missing. A
+                    // required one with no default may not.
+                    if (!(pd.required and pd.default == null)) optional = true;
+                    if (std.mem.eql(u8, u.path, root)) kind = propKind(pd) orelse .prop_any;
+                } else {
+                    // Not a prop: a component that declares its props does
+                    // not see it (renderer.zig, pass_through). Read without
+                    // a fallback, it always renders empty.
+                    if (!u.optional) {
+                        const m = try std.fmt.allocPrint(w.a.alc, "<{s}> reads `{s}`, which is not one of its props (it declares: {s})", .{ c.name, root, try d.names(w.a.alc) });
+                        try w.out.add(.{ .path = m, .line = 0, .kind = .prop_problem, .optional = false, .via = "" });
+                    }
+                    continue;
+                }
+            }
             const mapped = (try w.map(u.path, scope)) orelse continue;
             try w.out.add(.{ .path = mapped, .line = 0, .kind = kind, .optional = optional, .via = try w.a.chain(c.name, u.via) });
         }
@@ -362,7 +397,7 @@ pub fn writeZig(out: *std.ArrayList(u8), alc: std.mem.Allocator, name: []const u
     if (uses.len == 0) return out.print(alc, "        pub const {f} = .{{}};\n", .{std.zig.fmtId(name)});
     try out.print(alc, "        pub const {f} = .{{\n", .{std.zig.fmtId(name)});
     for (uses) |u| {
-        try out.print(alc, "            .{{ \"{s}\", {d}, .{s}, {}, \"{s}\" }},\n", .{ u.path, u.line, @tagName(u.kind), u.optional, u.via });
+        try out.print(alc, "            .{{ \"{f}\", {d}, .{s}, {}, \"{s}\" }},\n", .{ std.zig.fmtString(u.path), u.line, @tagName(u.kind), u.optional, u.via });
     }
     try out.appendSlice(alc, "        };\n");
 }
@@ -413,11 +448,12 @@ test "manifest: components read the caller's names, minus props; layouts count; 
     const uses = try analyzeOne(arena.allocator(), &sources, "page");
     try t.expect(has(uses, "books[].year", .prop_int));
     try t.expect(has(uses, "books[].title", .cond));
-    try t.expect(has(uses, "shelf_name", .text)); // read by the card from the caller
     try t.expect(has(uses, "page_title", .text)); // read by the layout
     try t.expect(!has(uses, "title", .text) and !has(uses, "year", .text)); // given by the call
-    for (uses) |u| if (std.mem.eql(u8, u.path, "shelf_name")) try t.expect(!u.optional);
-    for (uses) |u| if (std.mem.eql(u8, u.path, "shelf_name")) try t.expectEqualStrings("BookCard", u.via);
+    // The card declares its props: it does not see the caller's
+    // `shelf_name`, so reading it is a problem, not a name of the data.
+    try t.expect(!has(uses, "shelf_name", .text));
+    try t.expect(has(uses, "<BookCard> reads `shelf_name`, which is not one of its props (it declares: title, year)", .prop_problem));
 }
 
 test "manifest: an inline component is read where it is used, not where it is defined" {
@@ -455,5 +491,40 @@ test "manifest: a declared prop the call leaves out may come from the caller: op
         if (std.mem.eql(u8, u.path, "label")) try t.expect(u.optional);
         if (std.mem.eql(u8, u.path, "title")) try t.expect(!u.optional); // required, no default
     }
-    try t.expect(has(uses, "show_tickets", .prop_bool) and has(uses, "title", .text) and has(uses, "label", .text));
+    try t.expect(has(uses, "show_tickets", .prop_bool) and has(uses, "title", .prop_any) and has(uses, "label", .prop_any));
+}
+
+test "manifest: a call that does not fit the component's props is a problem for c.viewChecked" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const sources = [_]Source{
+        .{ .name = "page", .text = "<h1>Shelf</h1>\n<Hello nmae=\"{ name }\" />\n<Card year=\"1969x\" title=\"ok\" />\n<List />" },
+        .{ .name = "Hello", .text = "-- props: name!\n<h1>Hello, { name }!</h1>" },
+        .{ .name = "Card", .text = "-- props: title!, year: int\n<b>{ title } { year }</b>" },
+        .{ .name = "List", .text = "<Card titel=\"x\" year=\"1\" />" },
+        .{ .name = "Free", .text = "<i>{ anything }</i>" },
+        .{ .name = "free_page", .text = "<Free whatever=\"x\" />" },
+    };
+    const uses = try analyzeOne(arena.allocator(), &sources, "page");
+    var problems: usize = 0;
+    for (uses) |u| if (u.kind == .prop_problem) {
+        problems += 1;
+        if (std.mem.indexOf(u8, u.path, "nmae") != null) {
+            try t.expectEqualStrings("<Hello> has no prop `nmae` (it declares: name)", u.path);
+            try t.expectEqual(@as(usize, 2), u.line);
+        } else if (std.mem.indexOf(u8, u.path, "1969x") != null) {
+            try t.expectEqualStrings("prop `year` of <Card> is int; \"1969x\" is not", u.path);
+        } else {
+            // Inside <List>: its call to <Card>, through the chain.
+            try t.expectEqualStrings("<Card> has no prop `titel` (it declares: title, year)", u.path);
+            try t.expectEqualStrings("List", u.via);
+        }
+    };
+    try t.expectEqual(@as(usize, 3), problems);
+    // A component without a `-- props:` line takes any prop.
+    for (try analyzeOne(arena.allocator(), &sources, "free_page")) |u| try t.expect(u.kind != .prop_problem);
+    // The generated line is valid Zig: the message is a string literal.
+    var out: std.ArrayList(u8) = .empty;
+    try writeZig(&out, arena.allocator(), "page", uses);
+    try t.expect(std.mem.indexOf(u8, out.items, "\\\"1969x\\\" is not") != null);
 }

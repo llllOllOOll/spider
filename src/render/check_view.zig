@@ -97,7 +97,7 @@ pub fn problems(comptime Data: type, comptime view: []const u8, comptime uses: a
             if (std.mem.indexOf(u8, out, msg) != null) continue;
             // A field that is not there: once, where it is first read, not
             // again for each of its uses (`books`, `books.len`, `books[].id`).
-            if (missingField(Data, u[0])) |key| {
+            if (if (u[2] == .prop_problem) null else missingField(Data, u[0])) |key| {
                 const seen = for (missing) |m| {
                     if (std.mem.eql(u8, m, key)) break true;
                 } else false;
@@ -143,10 +143,17 @@ fn missingField(comptime Data: type, comptime path: []const u8) ?[]const u8 {
     return null;
 }
 
+fn isProp(comptime kind: anytype) bool {
+    return kind == .prop_int or kind == .prop_bool or kind == .prop_string or kind == .prop_any;
+}
+
 fn checkUse(comptime Data: type, comptime view: []const u8, comptime path: []const u8, comptime line: usize, comptime kind: anytype, comptime optional: bool, comptime via: []const u8) ?[]const u8 {
     const where = "view \"" ++ view ++ "\"" ++
         (if (line > 0) std.fmt.comptimePrint(", line {d}", .{line}) else "") ++
         (if (via.len > 0) " (in <" ++ via ++ ">)" else "") ++ ": ";
+    // A call that does not fit its component's `-- props:` line: `path` is
+    // the message, whatever the data.
+    if (kind == .prop_problem) return where ++ path;
     var T: type = Data;
     var it = std.mem.splitScalar(u8, path, '.');
     var walked: []const u8 = "";
@@ -163,6 +170,10 @@ fn checkUse(comptime Data: type, comptime view: []const u8, comptime path: []con
         const S = objectOf(T);
         if (!@hasField(S, name)) {
             if (optional) return null;
+            // A declared prop the call leaves out, which the caller's data
+            // was to fill.
+            if (walked.len == 0 and via.len > 0 and isProp(kind))
+                return where ++ "the call does not give the prop `" ++ name ++ "`, and the data has no `" ++ name ++ "` to fill it (it has: " ++ fieldList(S) ++ ")";
             return where ++ "`" ++ path ++ "`: " ++ (if (walked.len == 0) "the data" else "`" ++ walked ++ "`") ++ " has no field `" ++ name ++ "` (it has: " ++ fieldList(S) ++ ")";
         }
         const F = @FieldType(S, name);
@@ -184,7 +195,7 @@ fn checkUse(comptime Data: type, comptime view: []const u8, comptime path: []con
         .prop_int => if (cls != .number) where ++ "`" ++ path ++ "` goes to an int prop but is " ++ @typeName(T) else null,
         .prop_bool => if (cls != .boolean) where ++ "`" ++ path ++ "` goes to a bool prop but is " ++ @typeName(T) else null,
         .prop_string => if (cls != .string and cls != .html) where ++ "`" ++ path ++ "` goes to a string prop but is " ++ @typeName(T) else null,
-        .cond => null,
+        .cond, .prop_any => null,
         else => "unknown manifest kind",
     };
 }
@@ -226,6 +237,12 @@ test "check: each kind of mismatch, with the view, the line and the fix" {
     try expectProblem(Data, .{.{ "books[].title", 2, .prop_int, false, "" }}, "goes to an int prop but is []const u8");
     try expectProblem(Data, .{.{ "books[].year", 2, .prop_bool, false, "" }}, "goes to a bool prop but is u32");
     try expectProblem(u32, .{}, "the data must be a struct");
+    // A required prop the call leaves out and the data does not have.
+    try expectProblem(Data, .{.{ "name", 0, .prop_any, false, "Hello" }}, "view \"books/index\" (in <Hello>): the call does not give the prop `name`, and the data has no `name` to fill it (it has: title, books, kind, ids, one)");
+    try std.testing.expect(comptime problem(Data, "v", .{.{ "title", 0, .prop_any, false, "Hello" }}) == null);
+    // A component call that does not fit its `-- props:` line, whatever the data.
+    try expectProblem(Data, .{.{ "<Hello> has no prop `nmae` (it declares: name)", 7, .prop_problem, false, "" }}, "view \"books/index\", line 7: <Hello> has no prop `nmae` (it declares: name)");
+    try expectProblem(Data, .{.{ "prop `year` of <Card> is int; \"1969.5\" is not", 0, .prop_problem, false, "List" }}, "(in <List>): prop `year` of <Card> is int");
     // All of them at once, one per line.
     const all = comptime problems(Data, "books/index", .{ .{ "titel", 3, .text, false, "" }, .{ "title", 4, .text, false, "" }, .{ "kind", 5, .cond, false, "" } }).?;
     try std.testing.expect(std.mem.indexOf(u8, all, "line 3: `titel`") != null and std.mem.indexOf(u8, all, "\nview \"books/index\", line 5: `kind`") != null);

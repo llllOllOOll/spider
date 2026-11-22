@@ -101,6 +101,21 @@ test "props: an optional prop left out is declared, not a name that is not there
     try expectOk(&comps, "<Tag label=\"x\" />", .{}, "<i>x</i>");
 }
 
+test "props: a component that declares its props sees nothing else of its caller" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("Badge", "-- props: label\n<i>{ label }|{ theme ?? \"plain\" }|{ slot }</i>");
+    // `theme` is the page's, not a prop: the component does not see it.
+    try expectOk(&comps, "<Badge label=\"x\" />", .{ .theme = "dark" }, "<i>x|plain|</i>");
+    // A declared prop the call leaves out still comes from the caller.
+    try expectOk(&comps, "<Badge />", .{ .label = "page", .theme = "dark" }, "<i>page|plain|</i>");
+    // The slot content is the caller's markup: it sees the caller's names.
+    try expectOk(&comps, "<Badge label=\"x\"><b>{ theme }</b></Badge>", .{ .theme = "dark" }, "<i>x|plain|<b>dark</b></i>");
+    // Without the header, the caller's names are in sight as before.
+    try comps.add("Open", "<i>{ theme ?? \"plain\" }</i>");
+    try expectOk(&comps, "<Open />", .{ .theme = "dark" }, "<i>dark</i>");
+}
+
 test "props: a component without the header works as before" {
     var comps: Comps = .{};
     defer comps.deinit();
