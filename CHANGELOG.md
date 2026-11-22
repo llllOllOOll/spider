@@ -56,6 +56,13 @@ used.
 
 ### Fixed
 
+- **No warning for an app without `spider.config.zig`; one for a config
+  the build leaves out.** `spider.app()` warned on every start of an app
+  without the file that "runtime template loading may not work", which
+  was not true: the defaults read templates from `./views`. It now says
+  nothing then, and warns instead when a `spider.config.zig` is in the
+  working directory but the binary was built without it, so its settings
+  are ignored.
 - **A long-lived HTTP client accepts certificates issued after it
   started.** `spider.http_client` (and `spider.r2`, which keeps one client
   per process) checked server certificates against the time of the

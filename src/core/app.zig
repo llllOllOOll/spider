@@ -2247,15 +2247,6 @@ pub fn server() Server(EmptyDeco) {
 /// a handler that takes `spider.Path` / `spider.Form` / `spider.Loaded`,
 /// cannot. Most apps pass `.{}`.
 pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
-    if (@hasDecl(@import("spider_config"), "is_default")) {
-        std.log.warn(
-            "No spider.config.zig found. Running with defaults: views_dir=\"./views\", port=3000. " ++
-                "Runtime template loading may not work without it. " ++
-                "Create spider.config.zig in your project root to customize.",
-            .{},
-        );
-    }
-
     const cfg = @import("../internal/config.zig").fromRoot();
     var s = Server(@TypeOf(decorations)).init();
     s.decorations = decorations;
@@ -2264,6 +2255,10 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
     var threaded = std.Io.Threaded.init_single_threaded;
     defer threaded.deinit();
     const io = threaded.io();
+    // An app without spider.config.zig runs on the defaults, which is fine.
+    // One that has the file but whose build does not register it would
+    // ignore it without a word: say so.
+    if (@hasDecl(@import("spider_config"), "is_default")) noteConfigNotBuilt(io);
     if (!ctx_mod.has_embed) {
         // views_index (disk-scan) is only consulted by Ctx.view() when there's
         // no embedded Templates struct — building it when has_embed is true
@@ -2286,6 +2281,19 @@ pub fn app(decorations: anytype) AppType(@TypeOf(decorations)) {
     _ = s.get("/_spider/health", health_mod.health, .{ .public = true, .quiet_log = true });
 
     return s;
+}
+
+/// Said when the binary runs on the default config while a
+/// spider.config.zig sits in the working directory: the build did not
+/// register it as the `spider_config` import, so its settings are ignored.
+fn noteConfigNotBuilt(io: std.Io) void {
+    std.Io.Dir.cwd().access(io, "spider.config.zig", .{}) catch return;
+    std.log.warn(
+        "spider.config.zig is in the working directory, but this binary was built without it: " ++
+            "its settings are ignored and the defaults apply. Register it in build.zig as the " ++
+            "\"spider_config\" import of the spider module (spider new does).",
+        .{},
+    );
 }
 
 /// Said once when an app that embeds its templates runs a build that reads
