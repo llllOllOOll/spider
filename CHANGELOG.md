@@ -223,6 +223,9 @@ used.
 
 ### Changed
 
+- **`spider new` makes htmx 4 projects.** `--htmx=2` keeps htmx 2. An
+  existing project stays on the htmx its layouts load
+  (`/js/htmx.min.js` is htmx 2), and the generators keep writing for it.
 - **HTML escaping is faster, with the same output.** The next character
   to escape is searched 16 bytes at a time and the text before it copied in
   one piece; consecutive specials come from a table. Text with few specials

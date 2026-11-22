@@ -360,7 +360,8 @@ backlog first and add to an existing entry instead of opening a second one.
   it (the paths are in `.github/workflows/ci.yml`; `zig-pkg/` holds other
   people's code and is left out).
 - `test-mysql*.zig` are leftovers; don't treat them as current tests.
-- htmx: a project is on htmx 2 or 4 (`spider new --htmx=4`), and says which
+- htmx: a project is on htmx 4 (what `spider new` writes) or 2
+  (`spider new --htmx=2`, and every project made before 0.14), and says which
   by the script its layouts load (`/js/htmx.min.js` or `/js/htmx4.min.js`;
   `src/cli/htmx.zig`). The CLI's templates are written for htmx 2 and
   `htmx.zig` rewrites the few spots that differ: a new template that uses

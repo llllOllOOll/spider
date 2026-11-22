@@ -91,7 +91,7 @@ pub const NewOptions = struct {
     daisyui_alias: bool = false,
     pwa: bool = false,
     /// --htmx=<2|4>: the htmx the project loads.
-    htmx: @import("htmx.zig").Version = .two,
+    htmx: @import("htmx.zig").Version = .four,
     skip_downloads: bool = false,
     api: bool = false,
     no_db: bool = false,
@@ -188,7 +188,7 @@ pub fn commandHelp(cmd: Command) []const u8 {
         \\  --ui=<kit>        UI kit: daisyui (default) or tailwind (plain, no library).
         \\                    Switch later with `spider ui use <kit>`.
         \\  --daisyui         Same as --ui=daisyui (the default)
-        \\  --htmx=<version>  htmx 2 (default) or 4. htmx 4 changed attribute
+        \\  --htmx=<version>  htmx 4 (default) or 2. htmx 4 changed attribute
         \\                    inheritance, error swaps and event names: its
         \\                    migration guide says what; the generators write
         \\                    what the project's version understands.
