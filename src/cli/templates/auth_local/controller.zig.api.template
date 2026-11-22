@@ -2,7 +2,6 @@ const std = @import("std");
 const spider = @import("spider");
 const model = @import("model.zig");
 const repository = @import("repository.zig");
-const Response = spider.Response;
 
 // Login with the app's own users, for an API. A password is stored as a
 // hash (spider.password). Logging in answers a signed token
@@ -10,7 +9,7 @@ const Response = spider.Response;
 // `Authorization: Bearer <token>`, and the middleware in src/main.zig tells
 // the routes who is there. Nothing here talks to another service.
 
-pub fn login(c: *spider.Ctx) !Response {
+pub fn login(c: *spider.Ctx) !spider.Response {
     const body = try c.bodyJson(model.Credentials);
     const email = try model.tidyEmail(c.arena, body.email);
     const user = try repository.findByEmail(c.arena, email);
@@ -28,7 +27,7 @@ pub fn login(c: *spider.Ctx) !Response {
 
 /// Anyone can create an account. To close registration, remove the
 /// /auth/register route from routes.zig.
-pub fn register(c: *spider.Ctx) !Response {
+pub fn register(c: *spider.Ctx) !spider.Response {
     const body = try model.tidy(c.arena, try c.bodyJson(model.Registration));
     if (model.problem(body)) |what| {
         return c.json(.{ .@"error" = what }, .{ .status = .unprocessable_entity });
@@ -43,7 +42,7 @@ pub fn register(c: *spider.Ctx) !Response {
 }
 
 /// Who the token belongs to. Only reachable with one (see routes.zig).
-pub fn me(c: *spider.Ctx) !Response {
+pub fn me(c: *spider.Ctx) !spider.Response {
     return c.json(.{
         .id = c.userId().?,
         .name = c.params.get("_auth_name") orelse "",
@@ -52,7 +51,7 @@ pub fn me(c: *spider.Ctx) !Response {
 }
 
 /// The token for `user`, and who it is.
-fn signedIn(c: *spider.Ctx, user: model.User, status: std.http.Status) !Response {
+fn signedIn(c: *spider.Ctx, user: model.User, status: std.http.Status) !spider.Response {
     const token = try spider.session.token(c, .{
         .id = try std.fmt.allocPrint(c.arena, "{d}", .{user.id}),
         .email = user.email,

@@ -2,18 +2,17 @@ const std = @import("std");
 const spider = @import("spider");
 const model = @import("model.zig");
 const repository = @import("repository.zig");
-const Response = spider.Response;
 
 // Login with the app's own users. A password is stored as a hash
 // (spider.password) and a login is a signed cookie (spider.session): the
 // middleware in src/main.zig reads it on every request and tells the
 // routes who is there. Nothing here talks to another service.
 
-pub fn loginForm(c: *spider.Ctx) !Response {
+pub fn loginForm(c: *spider.Ctx) !spider.Response {
     return loginPage(c, "", null);
 }
 
-pub fn login(c: *spider.Ctx) !Response {
+pub fn login(c: *spider.Ctx) !spider.Response {
     const form = try c.parseForm(model.Credentials);
     const email = try model.tidyEmail(c.arena, form.email);
     const user = try repository.findByEmail(c.arena, email);
@@ -28,13 +27,13 @@ pub fn login(c: *spider.Ctx) !Response {
     return signIn(c, user.?);
 }
 
-pub fn registerForm(c: *spider.Ctx) !Response {
+pub fn registerForm(c: *spider.Ctx) !spider.Response {
     return registerPage(c, .{}, null);
 }
 
 /// Anyone can create an account. To close registration, remove the two
 /// /auth/register routes from routes.zig (and the link in login.html).
-pub fn register(c: *spider.Ctx) !Response {
+pub fn register(c: *spider.Ctx) !spider.Response {
     const form = try model.tidy(c.arena, try c.parseForm(model.Registration));
     if (model.problem(form)) |what| return registerPage(c, form, what);
     if (try repository.findByEmail(c.arena, form.email) != null) {
@@ -46,12 +45,12 @@ pub fn register(c: *spider.Ctx) !Response {
     return signIn(c, user);
 }
 
-pub fn logout(c: *spider.Ctx) !Response {
+pub fn logout(c: *spider.Ctx) !spider.Response {
     return c.redirectWith("/auth/login", try spider.session.end(c));
 }
 
 /// Who is signed in. Only reachable with a session (see routes.zig).
-pub fn account(c: *spider.Ctx) !Response {
+pub fn account(c: *spider.Ctx) !spider.Response {
     return c.view("auth/account", .{
         .title = "Your account",
         .name = c.params.get("_auth_name") orelse "",
@@ -60,7 +59,7 @@ pub fn account(c: *spider.Ctx) !Response {
 }
 
 /// Starts the session and goes to the home page.
-fn signIn(c: *spider.Ctx, user: model.User) !Response {
+fn signIn(c: *spider.Ctx, user: model.User) !spider.Response {
     return c.redirectWith("/", try spider.session.start(c, .{
         .id = try std.fmt.allocPrint(c.arena, "{d}", .{user.id}),
         .email = user.email,
@@ -69,7 +68,7 @@ fn signIn(c: *spider.Ctx, user: model.User) !Response {
     }));
 }
 
-fn loginPage(c: *spider.Ctx, email: []const u8, problem: ?[]const u8) !Response {
+fn loginPage(c: *spider.Ctx, email: []const u8, problem: ?[]const u8) !spider.Response {
     return c.view("auth/login", .{
         .title = "Sign in",
         .email = email,
@@ -77,7 +76,7 @@ fn loginPage(c: *spider.Ctx, email: []const u8, problem: ?[]const u8) !Response 
     }, .{ .status = if (problem == null) .ok else .unprocessable_entity });
 }
 
-fn registerPage(c: *spider.Ctx, form: model.Registration, problem: ?[]const u8) !Response {
+fn registerPage(c: *spider.Ctx, form: model.Registration, problem: ?[]const u8) !spider.Response {
     return c.view("auth/register", .{
         .title = "Create an account",
         .name = form.name,

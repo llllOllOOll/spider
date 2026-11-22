@@ -1,7 +1,5 @@
 const std = @import("std");
 const spider = @import("spider");
-const Ctx = spider.Ctx;
-const Response = spider.Response;
 
 pub fn main() !void {
     var server = spider.app(.{});
@@ -12,6 +10,6 @@ pub fn main() !void {
         .listen(.{});
 }
 
-fn home(c: *Ctx) !Response {
+fn home(c: *spider.Ctx) !spider.Response {
     return c.view("home", .{ .name = "World" }, .{});
 }
