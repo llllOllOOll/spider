@@ -8,8 +8,6 @@ const db = spider.pg;
 /// binary (build.zig: spider.addMigrations).
 const migrations = @import("migrations").all;
 
-pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
-
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const io = init.io;

@@ -90,12 +90,9 @@ const exe = b.addExecutable(.{
     }),
 });
 
-// Optional: embed the templates in the binary (then, in main.zig:
-// `pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;`).
-const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));
-gen.addArg("src/");
-gen.addArg("src/embedded_templates.zig");
-exe.step.dependOn(&gen.step);
+// The templates (every .html under src/): c.view checks each view's data
+// against its template when the app compiles, and a release build embeds them.
+@import("spider").addTemplates(b, spider_dep, "src");
 ```
 
 Easiest: `spider new myapp` generates all of this.
@@ -816,13 +813,13 @@ const spider_dep = b.dependency("spider", .{
 });
 ```
 
-- **Embedded** needs what a `spider new` project has: the build runs
-  `generate-templates`, writing `src/embedded_templates.zig`, and `main.zig`
-  declares
-  `pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;`.
+- **Embedded** needs what a `spider new` project has:
+  `spider.addTemplates(b, spider_dep, "src")` in `build.zig` (older
+  projects declare `pub const spider_templates` in `main.zig` and run
+  `generate-templates` themselves, which keeps working).
 - **From disk** (runtime): views are read from `views_dir`
-  (`spider.config.zig`; default `"./views"`, `null` → `"src"`). An app that
-  does not declare `spider_templates` is always in this mode.
+  (`spider.config.zig`; default `"./views"`, `null` → `"src"`). An app
+  without generated templates is always in this mode.
 
 View names come from paths:
 

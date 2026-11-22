@@ -5,5 +5,4 @@ src/shared/templates/     layout.html (`extends "layout"`, minimal), app.html
                           components (Toast, NavBar, SideBar, MobileNav)
 src/ui.css                the UI kit: every ui-* class (spider ui)
 src/styles.css            Tailwind entry: imports ui.css, loads the icon sets
-src/embedded_templates.zig  GENERATED on every build from all .html — never edit
 public/                   static files, served as-is

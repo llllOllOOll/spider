@@ -379,6 +379,16 @@ fn mainZigTemplate(api_only: bool, no_db: bool, use_pg: bool) []const u8 {
     return if (use_pg) main_zig_pg_tmpl else main_zig_sqlite_tmpl;
 }
 
+test "new: a project with pages registers its templates with addTemplates" {
+    const has = std.mem.indexOf;
+    inline for (.{ .{ false, false }, .{ false, true }, .{ true, false } }) |kind| {
+        const build = buildZigTemplate(false, kind[0], kind[1]);
+        try std.testing.expect(has(u8, build, "addTemplates(b, spider_dep, \"src\")") != null);
+        try std.testing.expect(has(u8, build, "generate-templates") == null);
+        try std.testing.expect(has(u8, mainZigTemplate(false, kind[0], kind[1]), "spider_templates") == null);
+    }
+}
+
 test "new --api --pg: a PostgreSQL main.zig and build.zig, not the SQLite ones" {
     const has = std.mem.indexOf;
     const main_pg = mainZigTemplate(true, false, true);
@@ -480,9 +490,8 @@ test "the generated .dockerignore keeps secrets and local builds out of the imag
     }
 }
 
-test "the generated .gitignore keeps the SQLite database and the template index out of git" {
+test "the generated .gitignore keeps the SQLite database out of git" {
     try std.testing.expect(std.mem.indexOf(u8, gitignore_tmpl, "\ndb.sqlite\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, gitignore_tmpl, "\nsrc/embedded_templates.zig\n") != null);
 }
 
 test "the generated .gitignore keeps .env out of git" {
@@ -598,7 +607,6 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, app_name: []const u8, ui_ki
         .{ "spider.config.zig", spider_config_tmpl },
         .{ "src/main.zig", selected_main_zig_tmpl },
         .{ "src/styles.css", styles_css_tmpl },
-        .{ "src/embedded_templates.zig", "// Generated file - DO NOT EDIT MANUALLY\npub const EmbeddedTemplates = struct {};\n" },
         .{ "src/core/mod.zig", core_mod_tmpl },
         .{ "src/features/mod.zig", features_mod_tmpl },
         .{ "src/features/home/mod.zig", home_mod_tmpl },

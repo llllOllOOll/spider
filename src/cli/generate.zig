@@ -16,7 +16,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, subcommand: []const u8, arg
                 std.debug.print("warning: unknown argument '{s}'\n", .{arg});
             }
         }
-        try feature.run(io, allocator, name, api);
+        try feature.run(io, allocator, name, api or isApiProject(io));
     } else if (std.mem.eql(u8, subcommand, "auth")) {
         var provider: []const u8 = "local";
         var api = false;
@@ -29,7 +29,7 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, subcommand: []const u8, arg
                 std.debug.print("warning: unknown argument '{s}'\n", .{arg});
             }
         }
-        try auth.run(io, allocator, provider, api);
+        try auth.run(io, allocator, provider, api or isApiProject(io));
     } else {
         std.debug.print("error: unknown generate subcommand '{s}'\n", .{subcommand});
         std.debug.print("Usage: spider generate <subcommand>\n", .{});
@@ -37,4 +37,12 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, subcommand: []const u8, arg
         std.debug.print("  feature <name> [--api]    Generate a new feature (--api for REST API)\n", .{});
         std.debug.print("  auth [--provider=keycloak] [--api]  Login with the app's own users (--provider=keycloak for Keycloak)\n", .{});
     }
+}
+
+/// A project made with `spider new --api` has no layouts
+/// (src/shared/templates): what it generates is JSON, without `--api`.
+fn isApiProject(io: std.Io) bool {
+    const root = @import("fs_utils.zig").findProjectRoot(io) catch return false;
+    root.access(io, "src/shared/templates", .{}) catch return true;
+    return false;
 }

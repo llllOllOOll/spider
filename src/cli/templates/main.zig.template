@@ -3,8 +3,6 @@ const spider = @import("spider");
 const features = @import("features");
 // const db = spider.pg;
 
-pub const spider_templates = @import("embedded_templates.zig").EmbeddedTemplates;
-
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const io = init.io;

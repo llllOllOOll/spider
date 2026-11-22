@@ -153,6 +153,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, provider: []const u8, api: 
     // Update main.zig
     try auth_updater.updateMainZig(io, allocator, root_dir, provider, provider_config, api);
     std.debug.print("  update  src/main.zig\n", .{});
+    // The features generated before: their routes now need declared access.
+    try @import("feature.zig").closeFeatures(io, allocator, root_dir, .roles);
 
     // Keycloak settings: in .env.example (the committed reference) and in
     // .env, which `spider new` creates — otherwise the app reads empty

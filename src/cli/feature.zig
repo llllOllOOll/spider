@@ -39,6 +39,21 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
 
     const root_dir = try fs_utils.findProjectRoot(io);
 
+    // The feature keeps its records in a table: a project made with
+    // --no-db has nowhere to put them.
+    if (root_dir.readFileAlloc(io, "src/main.zig", allocator, .limited(64 * 1024))) |main_src| {
+        defer allocator.free(main_src);
+        if (@import("auth_local.zig").databaseOf(main_src) == null) {
+            std.debug.print(
+                \\error: this project has no database, and a feature keeps its records in a table.
+                \\
+                \\  Create the project with a database (`spider new <name>` or `--pg`).
+                \\
+            , .{});
+            std.process.exit(1);
+        }
+    } else |_| {}
+
     std.debug.print("Generating feature '{s}'...\n", .{feature});
 
     const Feature = try template_engine.capitalize(allocator, feature);
@@ -79,10 +94,10 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     const controller_content = try template_engine.renderTemplate(allocator, controller_tmpl_selected, feature, plural);
     defer allocator.free(controller_content);
 
-    const with_auth = hasAuth(io, allocator, root_dir);
-    const routes_content = try renderRoutes(allocator, if (api) routes_api_tmpl else routes_tmpl, feature, plural, with_auth);
+    const auth = authOfProject(io, allocator, root_dir);
+    const routes_content = try renderRoutes(allocator, if (api) routes_api_tmpl else routes_tmpl, feature, plural, auth);
     defer allocator.free(routes_content);
-    const routes_test_content = try renderRoutesTest(allocator, api, feature, plural, with_auth);
+    const routes_test_content = try renderRoutesTest(allocator, api, feature, plural, auth);
     defer allocator.free(routes_test_content);
 
     const index_html_content = try template_engine.renderTemplate(allocator, index_html_tmpl, feature, plural);
@@ -204,32 +219,135 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, feature: []const u8, api: b
     std.debug.print("  access: src/features/{s}/routes.zig (defaults() and each route's config)\n", .{feature});
 }
 
-/// The app already authenticates requests (spider g auth added a provider
-/// middleware): generated routes then get an active defaults() role.
-fn hasAuth(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir) bool {
-    const main_content = root_dir.readFileAlloc(io, "src/main.zig", allocator, .limited(64 * 1024)) catch return false;
+/// What the app's routes are behind, read from src/main.zig: what decides
+/// the access a generated feature declares.
+pub const Auth = enum {
+    /// No auth middleware: every route is open, defaults() stays commented.
+    none,
+    /// A provider (Keycloak, JWKS, a marked middleware): users carry roles,
+    /// so the feature gets a role of its own.
+    roles,
+    /// `spider g auth` (spider.session): one `role` column per user, so the
+    /// feature is for any logged-in user.
+    session,
+};
+
+fn authOfProject(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir) Auth {
+    const main_content = root_dir.readFileAlloc(io, "src/main.zig", allocator, .limited(64 * 1024)) catch return .none;
     defer allocator.free(main_content);
-    return mainHasAuth(main_content);
+    return authOf(main_content);
 }
 
-fn mainHasAuth(main_src: []const u8) bool {
-    return std.mem.indexOf(u8, main_src, "_auth.middleware()") != null;
+/// The auth `main_src` (a src/main.zig) sets up: the middlewares the
+/// `route-access` convention looks for.
+pub fn authOf(main_src: []const u8) Auth {
+    if (std.mem.indexOf(u8, main_src, "spider.session.middleware()") != null) return .session;
+    if (std.mem.indexOf(u8, main_src, "_auth.middleware()") != null or
+        std.mem.indexOf(u8, main_src, "markAuthMiddleware") != null) return .roles;
+    return .none;
+}
+
+const defaults_commented =
+    "        // Who may use these routes. Once the app has auth (spider g auth),\n" ++
+    "        // enable this and set the role; until then every route is open:\n" ++
+    "        // .defaults(.{ .roles = &.{\"{{plural}}_admin\"} })\n";
+
+/// The defaults() lines of a feature's routes.zig for `auth`.
+fn defaultsLines(auth: Auth) []const u8 {
+    return switch (auth) {
+        .none => defaults_commented,
+        .roles => "        // Who may use these routes: adjust the role (or use .org_roles).\n" ++
+            "        .defaults(.{ .roles = &.{\"{{plural}}_admin\"} })\n",
+        .session => "        // Who may use these routes: any logged-in user. For a role, use\n" ++
+            "        // .roles = &.{\"admin\"} (the role column of the users table).\n" ++
+            "        .defaults(.{ .authenticated = true })\n",
+    };
+}
+
+/// The access column of routes_test.zig for routes declared with `auth`.
+fn accessLabel(allocator: std.mem.Allocator, auth: Auth, plural: []const u8) ![]u8 {
+    return switch (auth) {
+        .none => allocator.dupe(u8, "-"),
+        .roles => std.fmt.allocPrint(allocator, "roles:{s}_admin", .{plural}),
+        .session => allocator.dupe(u8, "authenticated"),
+    };
 }
 
 /// routes.zig with its defaults() line: active when the app has auth,
 /// commented out otherwise (a role nobody can hold would answer 403 to
 /// every request until auth exists).
-pub fn renderRoutes(allocator: std.mem.Allocator, tmpl: []const u8, feature: []const u8, plural: []const u8, with_auth: bool) ![]u8 {
-    const defaults_active =
-        "        // Who may use these routes: adjust the role (or use .org_roles).\n" ++
-        "        .defaults(.{ .roles = &.{\"{{plural}}_admin\"} })\n";
-    const defaults_commented =
-        "        // Who may use these routes. Once the app has auth (spider g auth),\n" ++
-        "        // enable this and set the role; until then every route is open:\n" ++
-        "        // .defaults(.{ .roles = &.{\"{{plural}}_admin\"} })\n";
-    const with_defaults = try std.mem.replaceOwned(u8, allocator, tmpl, "{{defaults}}", if (with_auth) defaults_active else defaults_commented);
+pub fn renderRoutes(allocator: std.mem.Allocator, tmpl: []const u8, feature: []const u8, plural: []const u8, auth: Auth) ![]u8 {
+    const with_defaults = try std.mem.replaceOwned(u8, allocator, tmpl, "{{defaults}}", defaultsLines(auth));
     defer allocator.free(with_defaults);
     return template_engine.renderTemplate(allocator, with_defaults, feature, plural);
+}
+
+/// For `spider g auth`: each feature whose routes.zig still has the
+/// commented defaults() it was generated with gets the access `auth` gives
+/// (what `spider g feature` writes in an app with that auth), and its
+/// routes_test.zig the matching access column. Without it, every such
+/// route would fail the `route-access` convention. A feature edited by
+/// hand is left alone and named.
+pub fn closeFeatures(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir, auth: Auth) !void {
+    var features = root_dir.openDir(io, "src/features", .{ .iterate = true }) catch return;
+    defer features.close(io);
+    var it = features.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .directory or std.mem.eql(u8, entry.name, "auth")) continue;
+        var dir = features.openDir(io, entry.name, .{}) catch continue;
+        defer dir.close(io);
+        const routes = dir.readFileAlloc(io, "routes.zig", allocator, .limited(256 * 1024)) catch continue;
+        defer allocator.free(routes);
+        const closed = (try closeRoutes(allocator, routes, auth)) orelse {
+            if (!declaresAnyAccess(routes))
+                std.debug.print("  note: src/features/{s}/routes.zig declares no access: add a defaults(...) (spider check)\n", .{entry.name});
+            continue;
+        };
+        defer allocator.free(closed.routes);
+        defer allocator.free(closed.label);
+        try fs_utils.writeFile(io, dir, "routes.zig", closed.routes);
+        std.debug.print("  update  src/features/{s}/routes.zig (defaults: {s})\n", .{ entry.name, closed.label });
+        const tests = dir.readFileAlloc(io, "routes_test.zig", allocator, .limited(256 * 1024)) catch continue;
+        defer allocator.free(tests);
+        const row_end = "\", \"-\" },\n";
+        if (std.mem.indexOf(u8, tests, row_end) == null) continue;
+        const new_end = try std.fmt.allocPrint(allocator, "\", \"{s}\" }},\n", .{closed.label});
+        defer allocator.free(new_end);
+        const new_tests = try std.mem.replaceOwned(u8, allocator, tests, row_end, new_end);
+        defer allocator.free(new_tests);
+        try fs_utils.writeFile(io, dir, "routes_test.zig", new_tests);
+        std.debug.print("  update  src/features/{s}/routes_test.zig\n", .{entry.name});
+    }
+}
+
+/// Whether `routes` names any access key: a feature that does not cannot
+/// pass the `route-access` convention once the app has auth.
+fn declaresAnyAccess(routes: []const u8) bool {
+    for ([_][]const u8{ ".defaults(", ".public", ".authenticated", ".roles", ".org_roles", ".policy" }) |key| {
+        if (std.mem.indexOf(u8, routes, key) != null) return true;
+    }
+    return false;
+}
+
+const Closed = struct { routes: []u8, label: []u8 };
+
+/// `routes` with its generated, commented defaults() made active for
+/// `auth`; null when it has no such lines (edited, or already active).
+fn closeRoutes(allocator: std.mem.Allocator, routes: []const u8, auth: Auth) !?Closed {
+    const head_end = std.mem.indexOf(u8, defaults_commented, "        // .defaults(").?;
+    const head = defaults_commented[0..head_end];
+    const start = std.mem.indexOf(u8, routes, head) orelse return null;
+    const line = routes[start + head.len ..];
+    const prefix = "        // .defaults(.{ .roles = &.{\"";
+    if (!std.mem.startsWith(u8, line, prefix)) return null;
+    const plural_end = std.mem.indexOfPos(u8, line, prefix.len, "_admin\"} })\n") orelse return null;
+    const plural = line[prefix.len..plural_end];
+    const end = start + head.len + plural_end + "_admin\"} })\n".len;
+    const active = try std.mem.replaceOwned(u8, allocator, defaultsLines(auth), "{{plural}}", plural);
+    defer allocator.free(active);
+    const out = try std.mem.concat(allocator, u8, &.{ routes[0..start], active, routes[end..] });
+    errdefer allocator.free(out);
+    return .{ .routes = out, .label = try accessLabel(allocator, auth, plural) };
 }
 
 /// The routes the templates register (method, path after the prefix), in
@@ -243,9 +361,9 @@ const api_routes = [_][2][]const u8{
 };
 
 /// routes_test.zig: the access table matching routes.zig as generated
-/// (the defaults() role with auth, "-" without).
-pub fn renderRoutesTest(allocator: std.mem.Allocator, api: bool, feature: []const u8, plural: []const u8, with_auth: bool) ![]u8 {
-    const access = if (with_auth) try std.fmt.allocPrint(allocator, "roles:{s}_admin", .{plural}) else try allocator.dupe(u8, "-");
+/// (what defaults() gives for the app's auth, "-" without).
+pub fn renderRoutesTest(allocator: std.mem.Allocator, api: bool, feature: []const u8, plural: []const u8, auth: Auth) ![]u8 {
+    const access = try accessLabel(allocator, auth, plural);
     defer allocator.free(access);
     var rows: std.ArrayListUnmanaged(u8) = .empty;
     defer rows.deinit(allocator);
@@ -271,12 +389,12 @@ test "migrate_hint: a restart applies the migration" {
 
 test "renderRoutesTest: one row per generated route, access matching defaults()" {
     const a = std.testing.allocator;
-    const open = try renderRoutesTest(a, false, "post", "posts", false);
+    const open = try renderRoutesTest(a, false, "post", "posts", .none);
     defer a.free(open);
     try std.testing.expect(std.mem.indexOf(u8, open, "        .{ \"POST\", \"/posts/:id/delete\", \"-\" },\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, open, "test \"post routes: method, path and access\"") != null);
     try std.testing.expectEqual(@as(usize, 6), std.mem.count(u8, open, "        .{ \""));
-    const closed = try renderRoutesTest(a, true, "post", "posts", true);
+    const closed = try renderRoutesTest(a, true, "post", "posts", .roles);
     defer a.free(closed);
     try std.testing.expect(std.mem.indexOf(u8, closed, "        .{ \"PATCH\", \"/posts/:id\", \"roles:posts_admin\" },\n") != null);
     try std.testing.expectEqual(@as(usize, 5), std.mem.count(u8, closed, "        .{ \""));
@@ -285,21 +403,49 @@ test "renderRoutesTest: one row per generated route, access matching defaults()"
 
 test "renderRoutes: defaults() active only when the app has auth" {
     const a = std.testing.allocator;
-    const open = try renderRoutes(a, routes_tmpl, "post", "posts", false);
+    const open = try renderRoutes(a, routes_tmpl, "post", "posts", .none);
     defer a.free(open);
     try std.testing.expect(std.mem.indexOf(u8, open, "        // .defaults(.{ .roles = &.{\"posts_admin\"} })\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, open, "Group.init(\"/posts\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, open, "{{") == null);
 
-    const closed = try renderRoutes(a, routes_api_tmpl, "post", "posts", true);
+    const closed = try renderRoutes(a, routes_api_tmpl, "post", "posts", .roles);
     defer a.free(closed);
     try std.testing.expect(std.mem.indexOf(u8, closed, "\n        .defaults(.{ .roles = &.{\"posts_admin\"} })\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, closed, ".patch(\"/:id\", controller.update, .{})") != null);
 }
 
-test "mainHasAuth: a provider middleware in main.zig" {
-    try std.testing.expect(mainHasAuth("        .use(keycloak_auth.middleware())\n"));
-    try std.testing.expect(!mainHasAuth("        .use(spider.logger)\n"));
+test "authOf: a provider middleware, a session, none" {
+    try std.testing.expectEqual(Auth.roles, authOf("        .use(keycloak_auth.middleware())\n"));
+    try std.testing.expectEqual(Auth.session, authOf("        .use(spider.session.middleware())\n"));
+    try std.testing.expectEqual(Auth.none, authOf("        .use(spider.logger)\n"));
+}
+
+test "renderRoutes with a session: any logged-in user, and the test table says so" {
+    const a = std.testing.allocator;
+    const routes = try renderRoutes(a, routes_tmpl, "post", "posts", .session);
+    defer a.free(routes);
+    try std.testing.expect(std.mem.indexOf(u8, routes, "\n        .defaults(.{ .authenticated = true })\n") != null);
+    const tests = try renderRoutesTest(a, false, "post", "posts", .session);
+    defer a.free(tests);
+    try std.testing.expect(std.mem.indexOf(u8, tests, "        .{ \"GET\", \"/posts\", \"authenticated\" },\n") != null);
+}
+
+test "closeRoutes: the generated commented defaults() becomes the auth's, an edited one is left" {
+    const a = std.testing.allocator;
+    const open = try renderRoutes(a, routes_tmpl, "post", "posts", .none);
+    defer a.free(open);
+    inline for (.{ Auth.session, Auth.roles }) |auth| {
+        const closed = (try closeRoutes(a, open, auth)).?;
+        defer a.free(closed.routes);
+        defer a.free(closed.label);
+        const expected = try renderRoutes(a, routes_tmpl, "post", "posts", auth);
+        defer a.free(expected);
+        try std.testing.expectEqualStrings(expected, closed.routes);
+    }
+    const edited = try std.mem.replaceOwned(u8, a, open, "// .defaults(", "// .defaults (");
+    defer a.free(edited);
+    try std.testing.expect((try closeRoutes(a, edited, .session)) == null);
 }
 
 fn detectDbModule(io: std.Io, allocator: std.mem.Allocator, root_dir: std.Io.Dir) ![]const u8 {

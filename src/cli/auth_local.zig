@@ -115,6 +115,8 @@ pub fn run(io: std.Io, allocator: std.mem.Allocator, api: bool) !void {
     } else {
         try fs_utils.writeFile(io, root_dir, "src/main.zig", new_main);
         std.debug.print("  update  src/main.zig (session middleware)\n", .{});
+        // The features generated before: their routes now need declared access.
+        try @import("feature.zig").closeFeatures(io, allocator, root_dir, .session);
     }
 
     // Tests, next to the ones the project already has. They sign up and

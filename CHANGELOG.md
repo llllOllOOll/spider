@@ -19,8 +19,8 @@ used.
   or a component call that does not fit its `-- props:` line fails the
   build. A view whose name was chosen at run time becomes an `inline`
   switch over the names (or a function taking `comptime name`). The app
-  needs its generated templates (`spider.addTemplates` in `build.zig`, or
-  `pub const spider_templates` in `main.zig`, as `spider new` writes it).
+  needs its generated templates (`spider.addTemplates` in `build.zig`, as
+  `spider new` writes it, or `pub const spider_templates` in `main.zig`).
   `c.viewChecked` stays for this release as the same call under its former
   name. `c.render` (a template given as text) is unchanged.
 - **`c.viewFragment` checks the component against the data when the app
@@ -56,6 +56,17 @@ used.
 
 ### Fixed
 
+- **`spider g auth` no longer leaves the app failing its own tests.** The
+  features generated before it kept their routes open, which the
+  `route-access` convention refuses once the app has auth. It now gives
+  each feature whose routes are still as generated the access the new
+  auth gives: any logged-in user with the app's own users, the feature's
+  role with Keycloak (and the routes test table to match). A feature
+  generated after `spider g auth` gets the same; the app's own login was
+  not recognized as auth before.
+- **`spider g feature` in a project without a database stops with a
+  message**, as `spider g auth` does, instead of writing code that does
+  not build.
 - **No warning for an app without `spider.config.zig`; one for a config
   the build leaves out.** `spider.app()` warned on every start of an app
   without the file that "runtime template loading may not work", which
@@ -223,6 +234,11 @@ used.
 
 ### Changed
 
+- **`spider new` registers the templates with `spider.addTemplates(b,
+  spider_dep, "src")`**: no `generate-templates` step in `build.zig`, no
+  `spider_templates` line in `main.zig`, no `src/embedded_templates.zig`.
+- **`spider g feature` and `spider g auth` find out an API project by
+  itself** (no `src/shared/templates`): `--api` is no longer needed there.
 - **`spider new` makes htmx 4 projects.** `--htmx=2` keeps htmx 2. An
   existing project stays on the htmx its layouts load
   (`/js/htmx.min.js` is htmx 2), and the generators keep writing for it.
