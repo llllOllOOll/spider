@@ -245,7 +245,8 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   instance per call site, the name is comptime) checks the data against
   `spider_manifest` and, in a release build, renders with the function
   Elroy generated (`spider_templates.elroy`); what it shares with every
-  view stays in the non-generic `prepareView`.
+  view stays in the non-generic `prepareView`. `c.viewFragment` checks the
+  same way against `spider_fragments` (a component rendered alone).
   Elroy must write exactly what the interpreter writes: a change to the
   template language goes into both, with a case in
   `src/render/elroy/fixtures.zig` (`elroy_parity_test.zig` compares them

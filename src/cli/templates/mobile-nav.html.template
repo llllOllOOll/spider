@@ -1,3 +1,4 @@
+-- props:
 <nav x-data class="lg:hidden fixed bottom-0 inset-x-0 z-30 h-16 grid grid-cols-4 text-xs bg-base-200 border-t border-base-300">
     <a href="/" class="flex flex-col items-center justify-center gap-1 text-primary">
         <span class="hero-squares-2x2 size-5"></span>

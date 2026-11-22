@@ -1,3 +1,4 @@
+-- props: page_title!, {{plural}}!
 <div x-data="{{ editModal: false, deleteModal: false, deleteId: 0 }}"
      @item-saved.window="editModal = false"
      @open-edit.window="editModal = true"

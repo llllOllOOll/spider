@@ -3,7 +3,11 @@
   template (every name, field and component prop it reads must be in the
   data, with the right type), so the name is a literal. `{ expr }` is HTML-escaped; pass
   trusted markup built in Zig as `spider.RawHtml{ .html = s }`. htmx partials:
-  `c.viewFragment("posts/index", "PostsList", data, .{})`.
+  `c.viewFragment("posts/index", "PostsList", data, .{})`, checked the same
+  way (both names literals).
+- Components start with their props: `-- props: post!, compact: bool = false`
+  (`!` required; `-- props:` alone for one that only takes a slot). The
+  build then checks every call, and the component sees only its props.
 - Templates are compiled into the binary: rebuild (and restart) after editing.
 - **Styling: ui-* classes + Tailwind utilities, nothing else.** Components come
   from `src/ui.css`: `ui-btn` (+ `ui-btn-primary`, `ui-btn-ghost`,

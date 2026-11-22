@@ -422,6 +422,12 @@ pub const Template = struct {
         state.view_name = self.name;
         defer state.deinit(alc);
 
+        // The data is what a call `<Name />` would see: a declared prop it
+        // lacks takes its default, as in a call.
+        if (try state.componentDecl(alc, component_name, comp_template)) |decl| {
+            try renderer_mod.applyPropsDecl(&state, alc, component_name, &.{}, decl, comp_ctx, comp_ctx);
+        }
+
         var result: std.ArrayList(u8) = .empty;
         errdefer result.deinit(alc);
 

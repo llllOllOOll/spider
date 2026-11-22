@@ -841,7 +841,7 @@ thousand to 52 thousand.
 What still renders with the interpreter, the same HTML:
 
 - a Debug build (templates read from disk, so an edit needs no rebuild);
-- `c.view`, whose template name may be chosen at run time;
+- `c.viewFragment` (one component of a template);
 - `templates_strict` other than `.off` (its diagnostics run per request);
 - a page without `extends` that gets a default layout (decided per
   request: the route, htmx);

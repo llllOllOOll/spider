@@ -1,6 +1,6 @@
 //! Internal: compares, at compile time, what a template reads (its entry in
 //! the generated `spider_manifest`, see render/manifest.zig) with the type
-//! of the data a view passes. `Ctx.view` calls it; a mismatch is a
+//! of the data a view passes. `Ctx.view` and `Ctx.viewFragment` call it; a mismatch is a
 //! compile error naming the view, the line (or the component it was read
 //! through) and the path.
 //!
@@ -80,19 +80,29 @@ fn fieldList(comptime T: type) []const u8 {
 /// via }`) against `Data`. One compile error listing all that do not fit,
 /// so a view is fixed in one pass.
 pub fn check(comptime Data: type, comptime view: []const u8, comptime uses: anytype) void {
-    if (problems(Data, view, uses)) |msg| @compileError(msg);
+    checkAs(Data, "view \"" ++ view ++ "\"", uses);
+}
+
+/// `check` with the messages starting with `label` (`view "posts/index"`,
+/// `fragment <PostList> of "posts/index"`) instead of the view's name.
+pub fn checkAs(comptime Data: type, comptime label: []const u8, comptime uses: anytype) void {
+    if (problemsAs(Data, label, uses)) |msg| @compileError(msg);
 }
 
 /// Every use of `uses` that `Data` does not satisfy, one per line; null
 /// when they all fit.
 pub fn problems(comptime Data: type, comptime view: []const u8, comptime uses: anytype) ?[]const u8 {
+    return problemsAs(Data, "view \"" ++ view ++ "\"", uses);
+}
+
+fn problemsAs(comptime Data: type, comptime label: []const u8, comptime uses: anytype) ?[]const u8 {
     @setEvalBranchQuota(100_000);
-    if (@typeInfo(Data) != .@"struct") return problem(Data, view, uses);
+    if (@typeInfo(Data) != .@"struct") return label ++ ": the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
     var out: []const u8 = "";
     var n: usize = 0;
     var missing: []const []const u8 = &.{};
     for (uses) |u| {
-        if (checkUse(Data, view, u[0], u[1], u[2], u[3], u[4])) |msg| {
+        if (checkUse(Data, label, u[0], u[1], u[2], u[3], u[4])) |msg| {
             // The same name read twice on a line (`if (x) { x }`): once.
             if (std.mem.indexOf(u8, out, msg) != null) continue;
             // A field that is not there: once, where it is first read, not
@@ -115,9 +125,10 @@ pub fn problems(comptime Data: type, comptime view: []const u8, comptime uses: a
 /// `check` fails with; null when they all fit.
 pub fn problem(comptime Data: type, comptime view: []const u8, comptime uses: anytype) ?[]const u8 {
     @setEvalBranchQuota(100_000);
-    if (@typeInfo(Data) != .@"struct") return "c.view(\"" ++ view ++ "\"): the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
+    const label = "view \"" ++ view ++ "\"";
+    if (@typeInfo(Data) != .@"struct") return label ++ ": the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
     for (uses) |u| {
-        if (checkUse(Data, view, u[0], u[1], u[2], u[3], u[4])) |msg| return msg;
+        if (checkUse(Data, label, u[0], u[1], u[2], u[3], u[4])) |msg| return msg;
     }
     return null;
 }
@@ -143,14 +154,21 @@ fn missingField(comptime Data: type, comptime path: []const u8) ?[]const u8 {
     return null;
 }
 
+/// "Card>Badge" as "Card> > <Badge", so the message reads `<Card> > <Badge>`.
+fn chainText(comptime via: []const u8) []const u8 {
+    var out: []const u8 = "";
+    for (via) |ch| out = out ++ (if (ch == '>') "> > <" else &[_]u8{ch});
+    return out;
+}
+
 fn isProp(comptime kind: anytype) bool {
     return kind == .prop_int or kind == .prop_bool or kind == .prop_string or kind == .prop_any;
 }
 
-fn checkUse(comptime Data: type, comptime view: []const u8, comptime path: []const u8, comptime line: usize, comptime kind: anytype, comptime optional: bool, comptime via: []const u8) ?[]const u8 {
-    const where = "view \"" ++ view ++ "\"" ++
+fn checkUse(comptime Data: type, comptime label: []const u8, comptime path: []const u8, comptime line: usize, comptime kind: anytype, comptime optional: bool, comptime via: []const u8) ?[]const u8 {
+    const where = label ++
         (if (line > 0) std.fmt.comptimePrint(", line {d}", .{line}) else "") ++
-        (if (via.len > 0) " (in <" ++ via ++ ">)" else "") ++ ": ";
+        (if (via.len > 0) " (in <" ++ chainText(via) ++ ">)" else "") ++ ": ";
     // A call that does not fit its component's `-- props:` line: `path` is
     // the message, whatever the data.
     if (kind == .prop_problem) return where ++ path;
@@ -230,6 +248,7 @@ test "check: each kind of mismatch, with the view, the line and the fix" {
     try expectProblem(Data, .{.{ "titel", 3, .text, false, "" }}, "view \"books/index\", line 3: `titel`: the data has no field `titel` (it has: title, books, kind, ids, one)");
     try expectProblem(Data, .{.{ "books[].titel", 4, .text, false, "" }}, "`books[]` has no field `titel` (it has: title, year, finished, note)");
     try expectProblem(Data, .{.{ "shelf", 0, .text, false, "Card" }}, "view \"books/index\" (in <Card>): `shelf`");
+    try expectProblem(Data, .{.{ "shelf", 0, .text, false, "List>Card" }}, "view \"books/index\" (in <List> > <Card>): `shelf`");
     try expectProblem(Data, .{.{ "kind", 2, .cond, false, "" }}, "a type templates do not read");
     try expectProblem(Data, .{.{ "ids", 2, .iter, false, "" }}, "a type templates do not read");
     try expectProblem(Data, .{.{ "title", 2, .iter, false, "" }}, "is not a list");

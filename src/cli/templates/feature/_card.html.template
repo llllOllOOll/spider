@@ -1,3 +1,4 @@
+-- props: id!, name!
 <div id="{{feature}}-{ id }" class="ui-card flex-row p-4 mb-3 justify-between items-center">
     <p>{ name }</p>
     <div class="flex gap-2">

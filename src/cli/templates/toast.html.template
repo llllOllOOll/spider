@@ -1,3 +1,4 @@
+-- props:
 <!-- Shows $store.toast (public/js/stores.js). Besides $store.toast.fire(msg),
      these events fire it: item-saved and item-deleted, and spider:toast,
      what spider.errorHandler sends (HX-Trigger) when an htmx request fails. -->

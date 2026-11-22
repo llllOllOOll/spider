@@ -131,3 +131,17 @@ test "props: a header that does not parse is a syntax error of the component" {
     try comps.add("Bad", "-- props: year: float\n<u>x</u>");
     try t.expectError(error.InvalidPropsHeader, render(&comps, .off, "<Bad />", .{}));
 }
+
+test "props: a fragment is rendered as a call `<Name />` from the data: defaults, required props" {
+    var comps: Comps = .{};
+    defer comps.deinit();
+    try comps.add("Card", card);
+    var tmpl = try Template.initNamed(t.allocator, "<p>page</p>", "test/page");
+    defer tmpl.deinit();
+    tmpl.components = comps.map;
+    tmpl.strict = .@"error";
+    const out = try tmpl.renderFragment("Card", .{ .title = "Piranesi", .finished = true }, t.allocator);
+    defer t.allocator.free(out);
+    try t.expectEqualStrings("<b class=\"md\">Piranesi (?)✓</b>", out);
+    try t.expectError(error.TemplatePropInvalid, tmpl.renderFragment("Card", .{ .year = 1969 }, t.allocator));
+}

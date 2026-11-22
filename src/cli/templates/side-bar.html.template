@@ -1,3 +1,4 @@
+-- props:
 <!-- Overlay behind the drawer on small screens -->
 <div x-data x-show="$store.layout.drawerOpen" x-cloak @click="$store.layout.drawerOpen = false"
      class="lg:hidden fixed inset-0 top-14 z-10 bg-black/50"></div>

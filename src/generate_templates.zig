@@ -3,7 +3,8 @@
 //! `source_dir` and writes a Zig file declaring `EmbeddedTemplates`, a
 //! struct with one `@embedFile` field per .html and .md file found, and
 //! `spider_manifest`: what each template reads from a view's data
-//! (render/manifest.zig), for `Ctx.view`; and `elroy`: the
+//! (render/manifest.zig), for `Ctx.view`; `spider_fragments`: what each
+//! component reads when rendered alone, for `Ctx.viewFragment`; and `elroy`: the
 //! templates Elroy compiles to Zig functions (render/elroy/codegen.zig).
 
 const std = @import("std");
@@ -80,6 +81,27 @@ pub fn main(init: std.process.Init) !void {
         try manifest.writeZig(&output, allocator, src.name, uses);
     }
     try output.appendSlice(allocator, "    };\n");
+    // What each component reads when rendered alone, for c.viewFragment:
+    // `files` by the component's file, `inline_` by the template that
+    // defines it.
+    try output.appendSlice(allocator, "\n    pub const spider_fragments = struct {\n        pub const files = struct {\n");
+    for (sources.items) |src| {
+        const uses = (try analyzer.analyzeFragment("", src.name)) orelse continue;
+        try manifest.writeZig(&output, allocator, src.name, uses);
+    }
+    try output.appendSlice(allocator, "        };\n        pub const inline_ = struct {\n");
+    for (sources.items) |src| {
+        const locals = try analyzer.inlineComponents(src.text);
+        if (locals.count() == 0) continue;
+        try output.print(allocator, "        pub const {f} = struct {{\n", .{std.zig.fmtId(src.name)});
+        var it = locals.keyIterator();
+        while (it.next()) |cname| {
+            const uses = (try analyzer.analyzeFragment(src.text, cname.*)) orelse continue;
+            try manifest.writeZig(&output, allocator, cname.*, uses);
+        }
+        try output.appendSlice(allocator, "        };\n");
+    }
+    try output.appendSlice(allocator, "        };\n    };\n");
     // The templates Elroy compiles; the others render with the interpreter.
     try output.appendSlice(allocator, "\n    pub const elroy = struct {\n        const std = @import(\"std\");\n        const E = @import(\"spider\").elroy;\n\n");
     var by_name: elroy.Sources = .{};

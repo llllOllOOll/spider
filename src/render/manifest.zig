@@ -7,8 +7,10 @@
 //! `title`, `book.title`, `books[].title` (a field of each item of the list
 //! `books`, read through a `for (books) |b|` as `b.title`). What a component
 //! reads from its caller's names counts as the caller's, minus the props the
-//! call gives and the props the component declares; a layout counts for the
-//! page that extends it. Names every template has (`slot`, `loop`,
+//! call gives and the props the component declares; what it reads through a
+//! prop given a data path (`book="{ b }"`) counts as that path; a layout
+//! counts for the page that extends it. `analyzeFragment` does the same for
+//! one component rendered alone (`c.viewFragment`). Names every template has (`slot`, `loop`,
 //! `current_user`) and helper calls are left out.
 
 const std = @import("std");
@@ -50,8 +52,6 @@ pub const Use = struct {
     via: []const u8,
 };
 
-/// A template: the name `c.view` knows it by (the generated field name) and
-/// its source.
 /// A template: the name `c.view` knows it by (the generated field name) and
 /// its source.
 pub const Source = struct { name: []const u8, text: []const u8 };
@@ -136,6 +136,36 @@ pub const Analyzer = struct {
         return result;
     }
 
+    /// What `c.viewFragment(template, comp_name, data)` reads from `data`:
+    /// the component rendered as if called `<comp_name />` from a page whose
+    /// data is `data` (the template's inline components first, then the
+    /// files). Null when there is no such component.
+    pub fn analyzeFragment(a: *Analyzer, text: []const u8, comp_name: []const u8) !?[]const Use {
+        const locals = try a.inlineComponents(text);
+        if (!locals.contains(comp_name) and a.find(comp_name) == null) return null;
+        var w: Walk = .{ .a = a, .text = "", .out = .{ .alc = a.alc }, .locals = locals };
+        const scope: Scope = .{};
+        try w.component(.{ .name = comp_name, .props = @as([]const ast.Prop, &.{}), .slot_content = @as(?[]const u8, null) }, &scope);
+        return try w.out.list.toOwnedSlice(a.alc);
+    }
+
+    /// The inline components `text` defines (what `summarizeWith` sets
+    /// aside): a root-level `<Name>...</Name>` with content, under a name
+    /// no file has.
+    pub fn inlineComponents(a: *Analyzer, text: []const u8) !*Locals {
+        const locals = try a.alc.create(Locals);
+        locals.* = .{};
+        const nodes = (try parse(a.alc, text)) orelse return locals;
+        for (nodes) |node| {
+            if (node == .component and !node.component.self_closing and node.component.slot_content != null) {
+                const cname = node.component.name;
+                if (!locals.contains(cname) and a.find(cname) == null)
+                    try locals.put(a.alc, cname, node.component.slot_content.?);
+            }
+        }
+        return locals;
+    }
+
     const Found = struct { name: []const u8, text: []const u8, local: bool = false };
 
     /// The component or layout called `name` (as written, or its snake_case
@@ -175,7 +205,7 @@ fn propKind(p: props_decl.Prop) ?Kind {
 }
 
 /// A file's inline components: name -> body.
-const Locals = std.StringHashMapUnmanaged([]const u8);
+pub const Locals = std.StringHashMapUnmanaged([]const u8);
 
 /// Uses without repeats.
 const Collect = struct {
@@ -264,10 +294,14 @@ const Walk = struct {
                 try std.fmt.allocPrint(w.a.alc, "<{s}> has no prop `{s}` (it declares: {s})", .{ c.name, prop.name, try d.names(w.a.alc) });
             if (message) |m| try w.out.add(.{ .path = m, .line = w.lineOf(prop.name), .kind = .prop_problem, .optional = false, .via = "" });
         };
+        // The data path each expression prop is given (`book="{ b }"` in a
+        // `for (books) |b|`: `books[]`), so what the component reads
+        // through the prop is checked against the caller's data.
+        var given_paths: std.StringHashMapUnmanaged([]const u8) = .{};
         for (c.props) |prop| {
             if (!prop.is_expr) continue;
             const kind: Kind = if (decl) |d| (if (d.get(prop.name)) |pd| propKind(pd) orelse .cond else .cond) else .cond;
-            _ = try w.expr(prop.value, kind, false, scope);
+            if (try w.expr(prop.value, kind, false, scope)) |p| try given_paths.put(w.a.alc, prop.name, p);
         }
         if (c.slot_content) |sc| {
             if (try parse(w.a.alc, sc)) |slot_nodes| try w.nodes(slot_nodes, scope);
@@ -290,7 +324,15 @@ const Walk = struct {
             const given = for (c.props) |prop| {
                 if (std.mem.eql(u8, prop.name, root)) break true;
             } else false;
-            if (given) continue;
+            if (given) {
+                // Read through a prop given a data path: that path, read
+                // the way the component reads it. A literal prop, or one
+                // given something else, is not the data's.
+                const base = given_paths.get(root) orelse continue;
+                const through = try std.fmt.allocPrint(w.a.alc, "{s}{s}", .{ base, u.path[root.len..] });
+                try w.out.add(.{ .path = through, .line = 0, .kind = u.kind, .optional = u.optional, .via = try w.a.chain(c.name, u.via) });
+                continue;
+            }
             var kind = u.kind;
             var optional = u.optional;
             if (decl) |d| {
@@ -527,4 +569,48 @@ test "manifest: a call that does not fit the component's props is a problem for 
     var out: std.ArrayList(u8) = .empty;
     try writeZig(&out, arena.allocator(), "page", uses);
     try t.expect(std.mem.indexOf(u8, out.items, "\\\"1969x\\\" is not") != null);
+}
+
+test "manifest: what a component reads through a prop given a data path is that path" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const sources = [_]Source{
+        .{ .name = "page", .text = "for (books) |b| { <BookCard book=\"{ b }\" label=\"x\" /> }\n<Shelf items=\"{ shelf.books }\" />" },
+        .{ .name = "book_card", .text = "-- props: book!, label\n<b>{ book.title } { book.year ?? 0 } { label.whatever }</b>" },
+        .{ .name = "shelf", .text = "-- props: items!\nfor (items) |i| { <i>{ i.title }</i> }{ items.len }" },
+    };
+    const uses = try analyzeOne(arena.allocator(), &sources, "page");
+    try t.expect(has(uses, "books[].title", .text));
+    try t.expect(has(uses, "books[].year", .text));
+    for (uses) |u| if (std.mem.eql(u8, u.path, "books[].year")) try t.expect(u.optional);
+    try t.expect(has(uses, "shelf.books", .iter));
+    try t.expect(has(uses, "shelf.books[].title", .text));
+    try t.expect(has(uses, "shelf.books.len", .text));
+    // A literal prop is not the data's.
+    for (uses) |u| try t.expect(std.mem.indexOf(u8, u.path, "whatever") == null);
+}
+
+test "manifest: a fragment reads what a call `<Name />` would, from the view's data" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const sources = [_]Source{
+        .{ .name = "posts_index", .text = "<h1>{ title }</h1><PostList />\n<PostList>\n  for (posts) |p| { <PostRow post=\"{ p }\" /> }\n</PostList>" },
+        .{ .name = "PostRow", .text = "-- props: post!, compact: bool = false\n<li>{ post.title } if (compact) { c }</li>" },
+    };
+    var a = try Analyzer.init(arena.allocator(), &sources);
+    const inline_uses = (try a.analyzeFragment(sources[0].text, "PostList")).?;
+    try t.expect(has(inline_uses, "posts", .iter));
+    try t.expect(has(inline_uses, "posts[].title", .text));
+    try t.expect(!has(inline_uses, "title", .text)); // the page's, not the fragment's
+    // A file component: its required props must be in the data; a prop
+    // with a default may be missing.
+    const file_uses = (try a.analyzeFragment("", "PostRow")).?;
+    try t.expect(has(file_uses, "post.title", .text));
+    try t.expect(has(file_uses, "compact", .prop_bool));
+    for (file_uses) |u| {
+        if (std.mem.eql(u8, u.path, "post.title")) try t.expect(!u.optional);
+        if (std.mem.eql(u8, u.path, "compact")) try t.expect(u.optional);
+    }
+    try t.expect((try a.analyzeFragment(sources[0].text, "Nope")) == null);
+    try t.expectEqual(@as(usize, 1), (try a.inlineComponents(sources[0].text)).count());
 }

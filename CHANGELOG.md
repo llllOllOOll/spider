@@ -22,7 +22,15 @@ used.
   needs its generated templates (`spider.addTemplates` in `build.zig`, or
   `pub const spider_templates` in `main.zig`, as `spider new` writes it).
   `c.viewChecked` stays for this release as the same call under its former
-  name. `c.viewFragment` and `c.render` are unchanged.
+  name. `c.render` (a template given as text) is unchanged.
+- **`c.viewFragment` checks the component against the data when the app
+  compiles.** The template and the component are known at compile time,
+  and the data is checked as what a call `<Name />` would see: every name
+  the component reads, its required props, the types of its typed props.
+  A component chosen at run time becomes an `if`/`switch` over the
+  names, and a function that passes them on takes them as `comptime`. At
+  run time, a declared prop the data lacks now takes its default, as in a
+  call.
 - **A component that declares its props sees only its props.** A
   component with a `-- props:` line used to see every name of its caller
   as well; now it sees its props (given by the call, a declared name the
@@ -243,6 +251,18 @@ used.
 
 ### Added
 
+- **What a component reads through a prop is checked against the
+  caller's data.** `<BookCard book="{ b }" />` in `for (books) |b|`, with
+  the component reading `{ book.title }`, makes `c.view` check
+  `books[].title`: a field the item does not have, a loop over a
+  non-list, a struct printed as text fail the build, as they do in the
+  page itself.
+- **`spider check` warns about a component without a `-- props:` line**
+  (`component-no-props`): a component file that templates call and that
+  declares nothing is not checked at its calls and sees every name of its
+  caller. `-- props:` alone declares a component that only takes a slot.
+  The components `spider new` and `spider g feature` write declare their
+  props, and the generated pages pass them in the call.
 - **`spider.addTemplates(b, spider_dep, "views")`: an app's templates from
   one line in `build.zig`.** It runs the template generator on every
   `*.html` and `*.md` file under the folder and hands the result to the

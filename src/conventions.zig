@@ -23,6 +23,8 @@
 //!   inline-style           style="..." in a template (display:none for Alpine is fine)
 //!   component-required     a call that does not give a required prop (fine only
 //!                          when the caller's scope has a value of that name)
+//!   component-no-props     a component file that is called but has no `-- props:`
+//!                          line (its calls go unchecked; it sees all of its caller)
 //!   inline-svg             <svg> pasted in a template instead of an icon class
 //!   routes-test            a feature with routes.zig but no routes_test.zig
 
@@ -146,11 +148,14 @@ pub fn check(io: std.Io, arena: std.mem.Allocator, root: std.Io.Dir, report: *Re
 /// A template file: its path from the project root and its text.
 pub const Source = struct { path: []const u8, text: []const u8 };
 
-/// `UserCard`, `user_card` and `UserCard.html` all name the same component.
+/// `UserCard`, `user_card`, `user-card` and `UserCard.html` all name the
+/// same component.
 fn componentKey(alc: std.mem.Allocator, name: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     for (name, 0..) |c, i| {
-        if (std.ascii.isUpper(c)) {
+        if (c == '-') {
+            try out.append(alc, '_');
+        } else if (std.ascii.isUpper(c)) {
             if (i > 0) try out.append(alc, '_');
             try out.append(alc, std.ascii.toLower(c));
         } else try out.append(alc, c);
@@ -160,7 +165,8 @@ fn componentKey(alc: std.mem.Allocator, name: []const u8) ![]const u8 {
 
 /// The `component-props` / `component-required` rules: every call to a
 /// component that declares its props, in every template, against the
-/// declaration. A component's file is found by name as Spider finds it
+/// declaration; and `component-no-props`: a component file that is called
+/// and declares nothing. A component's file is found by name as Spider finds it
 /// (`<BookCard />` is BookCard.html or book_card.html).
 pub fn checkComponentProps(report: *Report, templates: []const Source) !void {
     const alc = report.arena;
@@ -170,26 +176,35 @@ pub fn checkComponentProps(report: *Report, templates: []const Source) !void {
         const base = std.fs.path.stem(tpl.path);
         try decls.put(alc, try componentKey(alc, base), d);
     }
-    if (decls.count() == 0) return;
+    var called: std.StringHashMapUnmanaged(void) = .{};
     for (templates) |tpl| {
         if (std.mem.startsWith(u8, tpl.text, "-- doc")) continue;
         var parser = template_parser.Parser.init(alc, tpl.text);
         parser.log_failure = false;
         const parsed = parser.parse() catch continue; // reported by template-syntax
         var cursor: std.StringHashMapUnmanaged(usize) = .{};
-        try checkCalls(report, &decls, &cursor, tpl, parsed.nodes);
+        try checkCalls(report, &decls, &cursor, &called, tpl, parsed.nodes);
+    }
+    // A component file that is called but declares nothing: its calls are
+    // not checked, and it sees every name of its caller.
+    for (templates) |tpl| {
+        if (props_decl.headerLine(tpl.text) != null) continue;
+        const key = try componentKey(alc, std.fs.path.stem(tpl.path));
+        if (!called.contains(key) or decls.contains(key)) continue;
+        try report.add(.warn, tpl.path, 1, "component-no-props", "component <{s}> has no `-- props:` line: c.view does not check its calls, and it reads any name of its caller", .{std.fs.path.stem(tpl.path)}, "start it with `-- props: name!, count: int, ...` (the props it takes; `-- props:` alone when it only takes a slot)");
     }
 }
 
-fn checkCalls(report: *Report, decls: *const std.StringHashMapUnmanaged(props_decl.Decl), cursor: *std.StringHashMapUnmanaged(usize), tpl: Source, nodes: []const ast.Node) anyerror!void {
+fn checkCalls(report: *Report, decls: *const std.StringHashMapUnmanaged(props_decl.Decl), cursor: *std.StringHashMapUnmanaged(usize), called: *std.StringHashMapUnmanaged(void), tpl: Source, nodes: []const ast.Node) anyerror!void {
     const alc = report.arena;
     for (nodes) |node| switch (node) {
         .if_node => |n| {
-            try checkCalls(report, decls, cursor, tpl, n.then_body);
-            if (n.else_body) |eb| try checkCalls(report, decls, cursor, tpl, eb);
+            try checkCalls(report, decls, cursor, called, tpl, n.then_body);
+            if (n.else_body) |eb| try checkCalls(report, decls, cursor, called, tpl, eb);
         },
-        .for_node => |n| try checkCalls(report, decls, cursor, tpl, n.body),
+        .for_node => |n| try checkCalls(report, decls, cursor, called, tpl, n.body),
         .component => |c| {
+            try called.put(alc, try componentKey(alc, c.name), {});
             if (decls.get(try componentKey(alc, c.name))) |decl| {
                 const line = try callLine(alc, cursor, tpl.text, c.name);
                 for (c.props) |prop| {
@@ -216,7 +231,7 @@ fn checkCalls(report: *Report, decls: *const std.StringHashMapUnmanaged(props_de
                 var sp = template_parser.Parser.init(alc, sc);
                 sp.log_failure = false;
                 const inner = sp.parse() catch continue;
-                try checkCalls(report, decls, cursor, tpl, inner.nodes);
+                try checkCalls(report, decls, cursor, called, tpl, inner.nodes);
             }
         },
         else => {},
@@ -727,6 +742,20 @@ test "checkComponentProps: unknown prop and bad literal are errors, a required p
     };
     try checkComponentProps(&r, &templates);
     try t.expectEqual(@as(usize, 2), r.count(.err));
-    try t.expectEqual(@as(usize, 1), r.count(.warn));
-    for (r.issues.items) |i| try t.expectEqual(@as(usize, 3), i.line);
+    try t.expectEqual(@as(usize, 2), r.count(.warn));
+    for (r.issues.items) |i| {
+        if (std.mem.eql(u8, i.rule, "component-no-props")) {
+            // <Plain> is called and declares nothing; the pages are not components.
+            try t.expectEqualStrings("src/shared/templates/Plain.html", i.path);
+            try t.expectEqual(@as(usize, 1), i.line);
+        } else try t.expectEqual(@as(usize, 3), i.line);
+    }
+
+    // `-- props:` alone (a component that only takes a slot) declares it.
+    var r2 = testReport(&arena);
+    try checkComponentProps(&r2, &.{
+        .{ .path = "src/shared/templates/Box.html", .text = "-- props:\n<div>{ slot }</div>" },
+        .{ .path = "src/features/books/views/index.html", .text = "<Box><p>x</p></Box>" },
+    });
+    try t.expectEqual(@as(usize, 0), r2.issues.items.len);
 }

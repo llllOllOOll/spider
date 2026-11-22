@@ -114,7 +114,7 @@ pub const RenderState = struct {
     }
 
     /// The `-- props:` declaration of component `name` (source `src`), or null.
-    fn componentDecl(self: *RenderState, alc: std.mem.Allocator, name: []const u8, src: []const u8) !?props_decl.Decl {
+    pub fn componentDecl(self: *RenderState, alc: std.mem.Allocator, name: []const u8, src: []const u8) !?props_decl.Decl {
         if (props_decl.headerLine(src) == null) return null;
         if (parsed_cache.decl(src)) |d| return d;
         if (self.decls.get(name)) |d| return d;
@@ -386,7 +386,8 @@ pub fn renderNode(node: Node, ctx: *Context, alc: std.mem.Allocator, result: *st
 /// default; one with no default takes the caller's value of that name when
 /// there is one (a component sees its caller's names), else it is declared
 /// with no value. A `bool` literal becomes true/false.
-fn applyPropsDecl(state: *RenderState, alc: std.mem.Allocator, comp_name: []const u8, given: []const ast.Prop, decl: props_decl.Decl, caller: *Context, comp_ctx: *Context) !void {
+// internal: also run by Template.renderFragment, for the component it renders.
+pub fn applyPropsDecl(state: *RenderState, alc: std.mem.Allocator, comp_name: []const u8, given: []const ast.Prop, decl: props_decl.Decl, caller: *Context, comp_ctx: *Context) !void {
     for (given) |prop| {
         const declared = decl.get(prop.name) orelse {
             const names = try decl.names(alc);
