@@ -120,6 +120,39 @@ pub fn devStep(b: *std.Build, tool: *std.Build.Step.Compile, exe: *std.Build.Ste
 ///     exe.root_module.addImport("migrations", spider_build.addMigrations(b, spider_dep, "src/core/db/migrations"));
 ///     // main.zig
 ///     _ = server.migrations(@import("migrations").all);
+/// The app's templates, for `c.viewChecked` and for release builds: runs
+/// Spider's template generator on every `*.html` and `*.md` file under `dir`
+/// (relative to the build root, searched recursively) and hands the result
+/// to the `spider` module. The app declares nothing in its main.zig: with
+/// this call `c.viewChecked` checks each view's data against its template
+/// when the app compiles, and a release build embeds the templates (and
+/// renders the ones Elroy compiled) instead of reading them from disk.
+///
+///     // an app's build.zig
+///     const spider_build = @import("spider");
+///     spider_build.addTemplates(b, spider_dep, "views");
+///
+/// The generator runs on every build: it is quick, and a template edit has
+/// to reach the manifest `c.viewChecked` reads.
+pub fn addTemplates(b: *std.Build, spider_dep: *std.Build.Dependency, dir: []const u8) void {
+    const spider_mod = spider_dep.module("spider");
+    const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));
+    gen.has_side_effects = true;
+    gen.addDirectoryArg(b.path(dir));
+    const index = gen.addOutputFileArg("embedded_templates.zig");
+
+    // The generated file embeds each template by its path under `dir`, and
+    // @embedFile only reaches files under the module's own directory: the
+    // templates are copied next to it.
+    const files = b.addWriteFiles();
+    _ = files.addCopyDirectory(b.path(dir), "", .{ .include_extensions = &.{ ".html", ".md" } });
+    const root_file = files.addCopyFile(index, "embedded_templates.zig");
+    spider_mod.addImport("spider_templates", b.createModule(.{
+        .root_source_file = root_file,
+        .imports = &.{.{ .name = "spider", .module = spider_mod }},
+    }));
+}
+
 pub fn addMigrations(b: *std.Build, spider_dep: *std.Build.Dependency, dir: []const u8) *std.Build.Module {
     return migrationsModule(b, spider_dep.module("spider"), dir);
 }
@@ -416,6 +449,16 @@ pub fn build(b: *std.Build) void {
         .root_source_file = default_helpers_file,
     });
     mod.addImport("template_helpers", default_helpers_mod);
+
+    // Default spider_templates for apps that do not call addTemplates() (or
+    // that declare `pub const spider_templates` in main.zig instead).
+    const default_templates = b.addWriteFiles();
+    const default_templates_file = default_templates.add("spider_templates.zig",
+        \\// No templates registered: the app's build.zig did not call
+        \\// spider.addTemplates (see build.zig in Spider).
+        \\
+    );
+    mod.addImport("spider_templates", b.createModule(.{ .root_source_file = default_templates_file }));
 
     // spider CLI — `spider new <app_name>`
     const cli_exe = b.addExecutable(.{

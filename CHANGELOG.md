@@ -223,6 +223,14 @@ used.
 
 ### Added
 
+- **`spider.addTemplates(b, spider_dep, "views")`: an app's templates from
+  one line in `build.zig`.** It runs the template generator on every
+  `*.html` and `*.md` file under the folder and hands the result to the
+  `spider` module: `c.viewChecked` checks views against their templates
+  and a release build embeds them, with nothing declared in `main.zig`.
+  An app that declares `pub const spider_templates` in `main.zig` and runs
+  `generate-templates` itself keeps working unchanged.
+
 - **`spider.mssql`: Microsoft SQL Server.** A native TDS 7.4 driver in Zig
   (SQL Server 2012 and later, Azure SQL), with TLS and a connection pool,
   behind `.mssql = true` on the dependency. The same `query`, `queryOne`,
