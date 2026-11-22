@@ -1,5 +1,5 @@
 //! Internal (build tool): what each template reads from the data of a view,
-//! for `Ctx.viewChecked`, which compares it with the data's type at compile
+//! for `Ctx.view`, which compares it with the data's type at compile
 //! time.
 //!
 //! `generate-templates` parses every template and writes, next to the
@@ -34,7 +34,7 @@ pub const Kind = enum {
     prop_any,
     /// Not a data path: a component call that does not fit the component's
     /// `-- props:` line (a prop it does not declare, a literal of the wrong
-    /// type). `path` holds the message; `c.viewChecked` fails with it.
+    /// type). `path` holds the message; `c.view` fails with it.
     prop_problem,
 };
 
@@ -254,7 +254,7 @@ const Walk = struct {
         const decl: ?props_decl.Decl = if (found) |f| (props_decl.parse(w.a.alc, f.text) catch null) else null;
         if (decl) |d| for (c.props) |prop| {
             // What the renderer reports at run time (renderer.zig,
-            // applyPropsDecl), here so that c.viewChecked fails the build.
+            // applyPropsDecl), here so that c.view fails the build.
             const message = if (d.get(prop.name)) |pd|
                 (if (!prop.is_expr and !pd.accepts(prop.value))
                     try std.fmt.allocPrint(w.a.alc, "prop `{s}` of <{s}> is {s}; \"{s}\" is not", .{ prop.name, c.name, @tagName(pd.kind), prop.value })
@@ -494,7 +494,7 @@ test "manifest: a declared prop the call leaves out may come from the caller: op
     try t.expect(has(uses, "show_tickets", .prop_bool) and has(uses, "title", .prop_any) and has(uses, "label", .prop_any));
 }
 
-test "manifest: a call that does not fit the component's props is a problem for c.viewChecked" {
+test "manifest: a call that does not fit the component's props is a problem for c.view" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const sources = [_]Source{

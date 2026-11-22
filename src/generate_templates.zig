@@ -3,7 +3,7 @@
 //! `source_dir` and writes a Zig file declaring `EmbeddedTemplates`, a
 //! struct with one `@embedFile` field per .html and .md file found, and
 //! `spider_manifest`: what each template reads from a view's data
-//! (render/manifest.zig), for `Ctx.viewChecked`; and `elroy`: the
+//! (render/manifest.zig), for `Ctx.view`; and `elroy`: the
 //! templates Elroy compiles to Zig functions (render/elroy/codegen.zig).
 
 const std = @import("std");
@@ -72,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
             try output.appendSlice(allocator, alias_line);
         }
     }
-    // What each template reads, for c.viewChecked (render/manifest.zig).
+    // What each template reads, for c.view (render/manifest.zig).
     try output.appendSlice(allocator, "\n    pub const spider_manifest = struct {\n");
     var analyzer = try manifest.Analyzer.init(allocator, sources.items);
     for (sources.items) |src| {

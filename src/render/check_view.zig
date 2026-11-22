@@ -1,6 +1,6 @@
 //! Internal: compares, at compile time, what a template reads (its entry in
 //! the generated `spider_manifest`, see render/manifest.zig) with the type
-//! of the data a view passes. `Ctx.viewChecked` calls it; a mismatch is a
+//! of the data a view passes. `Ctx.view` calls it; a mismatch is a
 //! compile error naming the view, the line (or the component it was read
 //! through) and the path.
 //!
@@ -115,7 +115,7 @@ pub fn problems(comptime Data: type, comptime view: []const u8, comptime uses: a
 /// `check` fails with; null when they all fit.
 pub fn problem(comptime Data: type, comptime view: []const u8, comptime uses: anytype) ?[]const u8 {
     @setEvalBranchQuota(100_000);
-    if (@typeInfo(Data) != .@"struct") return "c.viewChecked(\"" ++ view ++ "\"): the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
+    if (@typeInfo(Data) != .@"struct") return "c.view(\"" ++ view ++ "\"): the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
     for (uses) |u| {
         if (checkUse(Data, view, u[0], u[1], u[2], u[3], u[4])) |msg| return msg;
     }

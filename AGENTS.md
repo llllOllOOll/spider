@@ -138,7 +138,7 @@ src/render/           template engine: parser → AST → renderer; escaping, Ra
                       type), fixtures.zig (the parity cases)
   manifest.zig        what each template reads (spider_manifest in the
                       generated file); check_view.zig compares it with the
-                      data type in c.viewChecked
+                      data type in c.view
   props_decl.zig      a component's `-- props:` line
   parsed_cache.zig    embedded templates parsed once, at listen()
 src/ws/               Hub (SSE/WS fan-out, channels, replay), Sse, Ws
@@ -240,11 +240,12 @@ Per-request memory: `c.arena` (reset between requests on the same connection).
   Embedded templates (`spider_templates`) are one comptime map
   (`render/embedded.zig`) read by non-generic code in `Ctx.prepareView`;
   keep anything that depends on template contents out of generic
-  (`anytype`) functions — each `data` type instantiates `view()`, so it
-  multiplies binary size and invalidates every view on a template edit.
-  The exception is by design: `c.viewChecked` (one instance per call site)
-  checks the data against `spider_manifest` and, in a release build,
-  renders with the function Elroy generated (`spider_templates.elroy`).
+  (`anytype`) functions — they multiply binary size and invalidate every
+  view on a template edit. The exception is by design: `c.view` (one
+  instance per call site, the name is comptime) checks the data against
+  `spider_manifest` and, in a release build, renders with the function
+  Elroy generated (`spider_templates.elroy`); what it shares with every
+  view stays in the non-generic `prepareView`.
   Elroy must write exactly what the interpreter writes: a change to the
   template language goes into both, with a case in
   `src/render/elroy/fixtures.zig` (`elroy_parity_test.zig` compares them

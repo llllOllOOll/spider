@@ -12,6 +12,17 @@ used.
 
 ### Breaking changes
 
+- **`c.view` checks the template against the data when the app
+  compiles; the unchecked view is gone.** What `c.viewChecked` did is now
+  `c.view`: the name is known at compile time, and a missing template, a
+  field the data does not have, a value of a type templates do not render
+  or a component call that does not fit its `-- props:` line fails the
+  build. A view whose name was chosen at run time becomes an `inline`
+  switch over the names (or a function taking `comptime name`). The app
+  needs its generated templates (`spider.addTemplates` in `build.zig`, or
+  `pub const spider_templates` in `main.zig`, as `spider new` writes it).
+  `c.viewChecked` stays for this release as the same call under its former
+  name. `c.viewFragment` and `c.render` are unchanged.
 - **A component that declares its props sees only its props.** A
   component with a `-- props:` line used to see every name of its caller
   as well; now it sees its props (given by the call, a declared name the
@@ -235,12 +246,12 @@ used.
 - **`spider.addTemplates(b, spider_dep, "views")`: an app's templates from
   one line in `build.zig`.** It runs the template generator on every
   `*.html` and `*.md` file under the folder and hands the result to the
-  `spider` module: `c.viewChecked` checks views against their templates
+  `spider` module: `c.view` checks views against their templates
   and a release build embeds them, with nothing declared in `main.zig`.
   An app that declares `pub const spider_templates` in `main.zig` and runs
   `generate-templates` itself keeps working unchanged.
 
-- **`c.viewChecked` checks component calls against their `-- props:`
+- **`c.view` checks component calls against their `-- props:`
   line.** A prop the component does not declare (`<Hello nmae="…">`), a
   literal of the wrong type (`year="1969x"` for `year: int`), a required
   prop that neither the call nor the data gives, and a name the component

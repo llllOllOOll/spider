@@ -120,11 +120,11 @@ pub fn devStep(b: *std.Build, tool: *std.Build.Step.Compile, exe: *std.Build.Ste
 ///     exe.root_module.addImport("migrations", spider_build.addMigrations(b, spider_dep, "src/core/db/migrations"));
 ///     // main.zig
 ///     _ = server.migrations(@import("migrations").all);
-/// The app's templates, for `c.viewChecked` and for release builds: runs
+/// The app's templates, for `c.view` and for release builds: runs
 /// Spider's template generator on every `*.html` and `*.md` file under `dir`
 /// (relative to the build root, searched recursively) and hands the result
 /// to the `spider` module. The app declares nothing in its main.zig: with
-/// this call `c.viewChecked` checks each view's data against its template
+/// this call `c.view` checks each view's data against its template
 /// when the app compiles, and a release build embeds the templates (and
 /// renders the ones Elroy compiled) instead of reading them from disk.
 ///
@@ -133,7 +133,7 @@ pub fn devStep(b: *std.Build, tool: *std.Build.Step.Compile, exe: *std.Build.Ste
 ///     spider_build.addTemplates(b, spider_dep, "views");
 ///
 /// The generator runs on every build: it is quick, and a template edit has
-/// to reach the manifest `c.viewChecked` reads.
+/// to reach the manifest `c.view` reads.
 pub fn addTemplates(b: *std.Build, spider_dep: *std.Build.Dependency, dir: []const u8) void {
     const spider_mod = spider_dep.module("spider");
     const gen = b.addRunArtifact(spider_dep.artifact("generate-templates"));

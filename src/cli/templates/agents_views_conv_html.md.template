@@ -1,5 +1,7 @@
 - Views: `return c.view("posts/index", .{ .posts = rows }, .{});` renders
-  `src/features/posts/views/index.html`. `{ expr }` is HTML-escaped; pass
+  `src/features/posts/views/index.html`; the build checks it against the
+  template (every name, field and component prop it reads must be in the
+  data, with the right type), so the name is a literal. `{ expr }` is HTML-escaped; pass
   trusted markup built in Zig as `spider.RawHtml{ .html = s }`. htmx partials:
   `c.viewFragment("posts/index", "PostsList", data, .{})`.
 - Templates are compiled into the binary: rebuild (and restart) after editing.

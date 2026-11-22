@@ -394,7 +394,7 @@ fn applyPropsDecl(state: *RenderState, alc: std.mem.Allocator, comp_name: []cons
             try state.propProblem(alc, "<{s}> has no prop `{s}` (it declares: {s})", .{ comp_name, prop.name, names });
             continue;
         };
-        if (prop.is_expr) continue; // an expression's type: checked at build time by c.viewChecked
+        if (prop.is_expr) continue; // an expression's type: checked at build time by c.view
         if (!declared.accepts(prop.value)) {
             try state.propProblem(alc, "prop `{s}` of <{s}> is {s}; \"{s}\" is not", .{ prop.name, comp_name, @tagName(declared.kind), prop.value });
         } else if (declared.kind == .bool) {

@@ -832,7 +832,7 @@ View names come from paths:
 ### Compiled templates (release)
 
 In a release build the template generator also compiles every template it
-can into a Zig function (Elroy), and `c.viewChecked` renders with it: the
+can into a Zig function (Elroy), and `c.view` renders with it: the
 data is read field by field, with no conversion and no name lookups, and
 the HTML is the same, byte for byte. On a catalog page of 24 cards
 (components, nested loops) that took requests per second from about 13
@@ -1460,7 +1460,7 @@ src/
 │                             logger, auth_marker, livereload (disabled)
 ├── render/                 — template engine (parser, ast, renderer, views) + zmd/;
 │                             elroy/ (compiled templates), manifest + check_view
-│                             (c.viewChecked), props_decl (`-- props:`)
+│                             (c.view), props_decl (`-- props:`)
 ├── internal/               — config, env, logfmt, logger, url, …
 ├── ws/                     — websocket.zig, hub.zig, ws.zig, sse.zig
 ├── binding/                — form, multipart
