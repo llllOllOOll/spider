@@ -540,8 +540,8 @@ pub const Ctx = struct {
 
     /// Renders one component of a template, without the layout or the rest of
     /// the page: what an htmx request that swaps a part of the page wants.
-    /// `component_name` is a component defined in `template_name` or a
-    /// component file; both are known at compile time, and the component is
+    /// `component_name` is a component file the template uses; both are
+    /// known at compile time, and the component is
     /// checked against `data` as `c.view` checks a page: `data` is what a
     /// call `<PostList />` would see, so it has to give the component's
     /// required props and every name it reads.

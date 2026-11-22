@@ -725,8 +725,13 @@ line and the fix; `spider check` reports it first (`template-syntax`).
 
 ### Components
 
+A component is a file named like its tag: `UserInfo.html` is
+`<UserInfo />`. It starts with the props it takes, then its markup;
+what the call puts between its tags arrives as `{ slot }`.
+
 ```html
 <!-- views/components/UserInfo.html -->
+-- props: name!, role = "member"
 <div class="user">
   <strong>{ name }</strong> — { role }
   { slot }
@@ -738,17 +743,15 @@ line and the fix; `spider check` reports it first (`template-syntax`).
 </UserInfo>
 ```
 
-Props are literals or `{ expressions }` (escaped). A literal is its text,
-even when a value of that name exists (`name="email"` is "email"); an
-expression that resolves to nothing is empty. A component has one
-`{ slot }`. `<SiteNav />` finds `SiteNav` or `site_nav`. Nesting is capped
+`-- props:` lists the props: `!` for a required one, `: string`, `: int`
+or `: bool` for a type, `= value` for a default (`-- props:` alone for a
+component that only takes a slot). `c.view` checks every call against it
+when the app compiles, and the component sees its props, `{ slot }` and
+`current_user`, nothing else of the page. Props are literals or
+`{ expressions }` (escaped). A literal is its text, even when a value of
+that name exists (`name="email"` is "email"). `<SiteNav />` finds
+`SiteNav.html` or `site_nav.html`. Nesting is capped
 (`spider.template_max_component_depth`).
-
-A template is flat: HTML tags are text. So `<Name>…</Name>` with content,
-outside `if` and `for`, **defines** a component used in that file (an
-inline component) when no template has that exact name; with a file
-`box.html`, write the call `<Box>…</Box>` inside an `if`/`for`, or name the
-file `Box.html`, for it to be a call.
 
 ### Layouts and named slots
 
