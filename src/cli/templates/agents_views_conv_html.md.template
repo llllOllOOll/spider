@@ -19,10 +19,13 @@
   kit, and `spider ui use <kit>` swaps it. Need a new reusable style? Add a
   `ui-*` class to `src/ui.css`. Colors use the theme names every kit defines:
   `bg-base-100/200/300`, `text-base-content` (`/50` for muted), `primary`,
-  `error`, `success`, `warning`. No inline `style=` for layout or color.
+  `error`, `success`, `warning`. No inline `style=` for layout or color;
+  it is for a value from the data (`style="width: { pct }%"`) and the
+  safe area (`env(safe-area-inset-top)`).
 - **Icons are classes:** `<span class="hero-pencil-square size-5"></span>`
   (Heroicons; `-solid`, `-mini`, `-micro` variants; names at heroicons.com).
-  They take the text color. Never paste `<svg>` markup or use emoji as icons.
+  They take the text color. Never paste `<svg>` markup or use emoji as icons;
+  a chart, an illustration or a logo is `<svg data-graphic ...>`.
   Other sets: `spider icons add lucide` (`lucide-*`) / `tabler` (`tabler-*`).
 - PWA (only if `public/manifest.webmanifest` exists — `spider add pwa`): the
   service worker `public/sw.js` only serves `/offline.html` when a page can't

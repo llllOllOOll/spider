@@ -56,6 +56,12 @@ used.
 
 ### Fixed
 
+- **`inline-style` and `inline-svg` warn only where a class or an icon
+  would do.** A `style=` whose value comes from the data (`width: { pct }%`)
+  or sets the safe area (`env(safe-area-inset-top)`) is no longer flagged:
+  no class can hold it. An `<svg data-graphic>` (a chart, an illustration,
+  a logo) is no longer taken for a pasted icon; the attribute may sit on
+  any line of the tag.
 - **A view with hundreds of problems shows them.** Listing them ran out of
   comptime branches first, so the build failed with "evaluation exceeded
   100000 backwards branches" instead of the messages. Repeats are now

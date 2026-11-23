@@ -20,12 +20,14 @@
 //!                          org_roles / public / authenticated / policy, itself or
 //!                          through its group's defaults())
 //! Warnings:
-//!   inline-style           style="..." in a template (display:none for Alpine is fine)
+//!   inline-style           style="..." in a template (fine: display:none for Alpine,
+//!                          a value from the data `{ x }`, the safe area `env(...)`)
 //!   component-required     a call that does not give a required prop (fine only
 //!                          when the caller's scope has a value of that name)
 //!   component-no-props     a component file that is called but has no `-- props:`
 //!                          line (its calls go unchecked; it sees all of its caller)
 //!   inline-svg             <svg> pasted in a template instead of an icon class
+//!                          (fine: <svg data-graphic> for a chart, illustration, logo)
 //!   routes-test            a feature with routes.zig but no routes_test.zig
 
 const std = @import("std");
@@ -527,7 +529,12 @@ pub fn checkTemplate(report: *Report, path: []const u8, text: []const u8, styles
             const start = at + " style=\"".len;
             const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse line.len;
             const value = std.mem.trim(u8, line[start..end], " ;");
-            if (!std.mem.eql(u8, value, "display:none") and !std.mem.eql(u8, value, "display: none")) {
+            // Fine: display:none for Alpine; a value from the data
+            // (`width: { pct }%`), which no class can hold; the safe area
+            // (`env(safe-area-inset-top)`).
+            const from_data = std.mem.indexOfScalar(u8, value, '{') != null;
+            const safe_area = std.mem.indexOf(u8, value, "env(") != null;
+            if (!std.mem.eql(u8, value, "display:none") and !std.mem.eql(u8, value, "display: none") and !from_data and !safe_area) {
                 try report.add(.warn, path, line_no, "inline-style", "inline style=\"{s}\"", .{value}, "use Tailwind utilities or a ui-* class in src/ui.css");
             }
         }
@@ -538,9 +545,19 @@ pub fn checkTemplate(report: *Report, path: []const u8, text: []const u8, styles
                 try report.add(.err, path, line_no, "bool-attr", "`{s}=\"{{ ... }}\"`: a boolean attribute is on whenever it's present, so it stays on when the value is false", .{name}, "write `{{ NAME if (cond) }}` instead, e.g. <input {{ disabled if (locked) }}>");
             }
         }
-        if (std.mem.indexOf(u8, line, "<svg") != null) {
-            try report.add(.warn, path, line_no, "inline-svg", "SVG markup pasted in the template", .{}, "use an icon class (<span class=\"hero-NAME size-5\"></span>); for charts/illustrations, ignore");
-        }
+    }
+    try checkInlineSvg(report, path, text);
+}
+
+/// The `inline-svg` rule: an `<svg>` is an icon pasted in, unless its tag
+/// says `data-graphic` (a chart, an illustration, a logo).
+fn checkInlineSvg(report: *Report, path: []const u8, text: []const u8) !void {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, text, from, "<svg")) |at| {
+        from = at + "<svg".len;
+        const tag_end = std.mem.indexOfScalarPos(u8, text, from, '>') orelse text.len;
+        if (std.mem.indexOf(u8, text[from..tag_end], "data-graphic") != null) continue;
+        try report.add(.warn, path, lineOf(text, at), "inline-svg", "SVG markup pasted in the template", .{}, "use an icon class (<span class=\"hero-NAME size-5\"></span>); for a chart, an illustration or a logo, mark it: <svg data-graphic ...>");
     }
 }
 
@@ -630,6 +647,28 @@ test "checkRouteAccess: a commented defaults() doesn't count; configs in constan
     );
     try t.expectEqual(@as(usize, 2), r.issues.items.len); // "" (commented defaults) and /b (quiet only)
     try t.expectEqual(@as(usize, 7), r.issues.items[0].line);
+    try t.expectEqual(@as(usize, 9), r.issues.items[1].line);
+}
+
+test "checkTemplate: a style from the data or the safe area, and a marked graphic, are fine" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var r = testReport(&arena);
+    try checkTemplate(&r, "src/x.html",
+        \\<div class="h-2 bg-primary" style="width: { pct }%"></div>
+        \\<span style="background:{ c.pill_bg };color:{ c.pill_fg }">x</span>
+        \\<header style="padding-top: env(safe-area-inset-top)"></header>
+        \\<svg data-graphic viewBox="0 0 100 40"><path d="M0 0"/></svg>
+        \\<svg
+        \\  data-graphic
+        \\  viewBox="0 0 10 10"></svg>
+        \\<p style="color: red">still a warning</p>
+        \\<svg viewBox="0 0 24 24"><path d="M0 0"/></svg>
+    , "", true);
+    try t.expectEqual(@as(usize, 2), r.issues.items.len);
+    try t.expectEqualStrings("inline-style", r.issues.items[0].rule);
+    try t.expectEqual(@as(usize, 8), r.issues.items[0].line);
+    try t.expectEqualStrings("inline-svg", r.issues.items[1].rule);
     try t.expectEqual(@as(usize, 9), r.issues.items[1].line);
 }
 
