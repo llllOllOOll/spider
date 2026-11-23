@@ -97,15 +97,25 @@ pub fn problems(comptime Data: type, comptime view: []const u8, comptime uses: a
 }
 
 fn problemsAs(comptime Data: type, comptime label: []const u8, comptime file: []const u8, comptime uses: anytype) ?[]const u8 {
-    @setEvalBranchQuota(100_000);
+    // Grows with the uses: a view whose problems are many (hundreds, when
+    // a whole app's components get `-- props:` at once) still gets its
+    // message instead of a branch-quota error.
+    @setEvalBranchQuota(100_000 + 2_000 * uses.len);
     if (@typeInfo(Data) != .@"struct") return (if (file.len > 0) file ++ ": " else "") ++ label ++ ": the data must be a struct, like .{ .title = t }; got " ++ @typeName(Data);
     var out: []const u8 = "";
     var n: usize = 0;
     var missing: []const []const u8 = &.{};
+    // The messages so far with their line: a repeat can only be on the
+    // same line, so the others are not compared.
+    var said: []const struct { usize, []const u8 } = &.{};
     for (uses) |u| {
         if (checkUse(Data, label, file, u[0], u[1], u[2], u[3], u[4])) |msg| {
             // The same name read twice on a line (`if (x) { x }`): once.
-            if (std.mem.indexOf(u8, out, msg) != null) continue;
+            const repeat = for (said) |s| {
+                if (s[0] == u[1] and std.mem.eql(u8, s[1], msg)) break true;
+            } else false;
+            if (repeat) continue;
+            said = said ++ .{.{ u[1], msg }};
             // A field that is not there: once, where it is first read, not
             // again for each of its uses (`books`, `books.len`, `books[].id`).
             if (if (u[2] == .prop_problem) null else missingField(Data, u[0])) |key| {
@@ -287,4 +297,20 @@ test "check: each kind of mismatch, with the view, the line and the fix" {
     try std.testing.expect(std.mem.indexOf(u8, at, "views/home.html: view \"home\" (in <Card>): `shelf`") != null);
     // Through an optional: not reported.
     try std.testing.expect(comptime problem(Data, "v", .{.{ "nope.deeper", 1, .text, true, "" }}) == null);
+}
+
+test "check: a view with hundreds of problems still gets its message" {
+    // A whole app's components given `-- props:` at once can leave one
+    // view with hundreds of problems; listing them must not run out of
+    // comptime branches before the message is shown.
+    const Data = struct { title: []const u8 };
+    const Use = struct { []const u8, usize, @TypeOf(.text), bool, []const u8 };
+    const uses = comptime blk: {
+        @setEvalBranchQuota(400_000); // building the 400 uses; problemsAs raises its own
+        var list: [400]Use = undefined;
+        for (&list, 0..) |*u, i| u.* = .{ std.fmt.comptimePrint("missing_{d}", .{i}), i + 1, .text, false, "Card>Row" };
+        break :blk list;
+    };
+    const msg = comptime problemsAs(Data, "view \"books/index\"", "views/books/index.html", uses) orelse return error.NoProblem;
+    try std.testing.expect(std.mem.indexOf(u8, msg, "views/books/index.html:400: view \"books/index\" (in <Card> > <Row>): `missing_399`") != null);
 }

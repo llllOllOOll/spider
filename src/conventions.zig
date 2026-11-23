@@ -177,13 +177,28 @@ pub fn checkComponentProps(report: *Report, templates: []const Source) !void {
         try decls.put(alc, try componentKey(alc, base), d);
     }
     var called: std.StringHashMapUnmanaged(void) = .{};
+    // The templates by file name, as written (`AgendaPanel`, `agenda_panel`).
+    var stems: std.StringHashMapUnmanaged(void) = .{};
+    for (templates) |tpl| try stems.put(alc, std.fs.path.stem(tpl.path), {});
     for (templates) |tpl| {
         if (std.mem.startsWith(u8, tpl.text, "-- doc")) continue;
         var parser = template_parser.Parser.init(alc, tpl.text);
         parser.log_failure = false;
         const parsed = parser.parse() catch continue; // reported by template-syntax
         var cursor: std.StringHashMapUnmanaged(usize) = .{};
-        try checkCalls(report, &decls, &cursor, &called, tpl, parsed.nodes);
+        // What the renderer does: a root-level `<Name>...</Name>` with
+        // content, under a name no template has, defines an inline
+        // component; it is not a call (the calls inside it are).
+        for (parsed.nodes) |node| {
+            if (node == .component and !node.component.self_closing and node.component.slot_content != null and
+                !stems.contains(node.component.name))
+            {
+                var sp = template_parser.Parser.init(alc, node.component.slot_content.?);
+                sp.log_failure = false;
+                const inner = sp.parse() catch continue;
+                try checkCalls(report, &decls, &cursor, &called, tpl, inner.nodes);
+            } else try checkCalls(report, &decls, &cursor, &called, tpl, &.{node});
+        }
     }
     // A component file that is called but declares nothing: its calls are
     // not checked, and it sees every name of its caller.
@@ -758,4 +773,25 @@ test "checkComponentProps: unknown prop and bad literal are errors, a required p
         .{ .path = "src/features/books/views/index.html", .text = "<Box><p>x</p></Box>" },
     });
     try t.expectEqual(@as(usize, 0), r2.issues.items.len);
+}
+
+test "checkComponentProps: a component defined inline is not a call to the file of its snake_case name" {
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    var r = testReport(&arena);
+    // agenda_panel.html defines <AgendaPanel> (rendered with
+    // c.viewFragment("agenda_panel", "AgendaPanel", ...)): the renderer
+    // takes it as a definition, since no template is named AgendaPanel.
+    try checkComponentProps(&r, &.{
+        .{ .path = "src/features/agenda/views/agenda_panel.html", .text =
+        \\<AgendaPanel>
+        \\  <p>{ day }</p>
+        \\  <Plain />
+        \\</AgendaPanel>
+        },
+        .{ .path = "src/shared/templates/Plain.html", .text = "<u>{ anything }</u>" },
+    });
+    // Only the call inside the definition: <Plain> declares nothing.
+    try t.expectEqual(@as(usize, 1), r.issues.items.len);
+    try t.expectEqualStrings("src/shared/templates/Plain.html", r.issues.items[0].path);
 }

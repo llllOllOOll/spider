@@ -56,6 +56,17 @@ used.
 
 ### Fixed
 
+- **A view with hundreds of problems shows them.** Listing them ran out of
+  comptime branches first, so the build failed with "evaluation exceeded
+  100000 backwards branches" instead of the messages. Repeats are now
+  looked for only among the messages of the same line, and the quota grows
+  with the number of reads.
+- **`component-no-props` no longer flags a template that defines a
+  component of its own name.** `agenda_panel.html` defining
+  `<AgendaPanel>...</AgendaPanel>` was taken as a call to
+  `agenda_panel.html`; like the renderer, `spider check` now takes a
+  root-level `<Name>...</Name>` under a name no template has as a
+  definition, and checks the calls inside it.
 - **`spider g auth` no longer leaves the app failing its own tests.** The
   features generated before it kept their routes open, which the
   `route-access` convention refuses once the app has auth. It now gives
