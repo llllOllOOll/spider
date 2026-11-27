@@ -56,6 +56,14 @@ used.
 
 ### Fixed
 
+- **A long list of migrations compiles.** `server.migrations(list)`
+  checked every file under a fixed comptime quota, so an app with a few
+  hundred migrations (about a megabyte of SQL) failed the build with
+  "evaluation exceeded 1000000 backwards branches". The quota now grows with
+  each migration and its size, the scan for the `-- migrate:up` and
+  `-- migrate:down` lines reads each file once, and `spider.module` raises
+  its quota with the number of migrations too. The checks and their messages
+  are the same.
 - **`inline-style` and `inline-svg` warn only where a class or an icon
   would do.** A `style=` whose value comes from the data (`width: { pct }%`)
   or sets the safe area (`env(safe-area-inset-top)`) is no longer flagged:

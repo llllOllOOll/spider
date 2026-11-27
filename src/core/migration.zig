@@ -70,8 +70,14 @@ pub fn nameProblem(name: []const u8) ?[]const u8 {
 
 // internal: why a list of migrations is refused (a name, the order, the
 // SQL), or null when every one is valid. `name` is printed at the start.
+// The comptime branch budget follows the list: each migration adds
+// what its checks can cost (`checkBranches`), so a long list or a long
+// file never exhausts a fixed quota.
 pub fn listProblem(comptime owner: []const u8, comptime list: []const Migration) ?[]const u8 {
+    var quota: u32 = 10_000;
     for (list, 0..) |m, i| {
+        quota +|= checkBranches(m.sql.len);
+        @setEvalBranchQuota(quota);
         if (nameProblem(m.name)) |p| return std.fmt.comptimePrint("{s}: migration \"{s}\" {s}", .{ owner, m.name, p });
         if (std.mem.trim(u8, upSection(m.sql), " \t\r\n").len == 0) return std.fmt.comptimePrint("{s}: migration \"{s}\" has no SQL", .{ owner, m.name });
         if (i > 0 and !std.mem.lessThan(u8, list[i - 1].name, m.name))
@@ -83,27 +89,45 @@ pub fn listProblem(comptime owner: []const u8, comptime list: []const Migration)
 // internal: the part of a migration file that runs: what follows a
 // `-- migrate:up` line (from the start when there is none: a module's files
 // have none), up to a `-- migrate:down` line (to the end when there is
-// none). The down part never runs.
+// none). The down part never runs. One pass over the file: listProblem
+// runs it at compile time on every migration (see checkBranches).
 pub fn upSection(sql: []const u8) []const u8 {
-    const body = if (markerLine(sql, 0, "-- migrate:up")) |start| start.end else 0;
-    const stop = markerLine(sql, body, "-- migrate:down") orelse return sql[body..];
-    return sql[body..stop.begin];
+    const up = "-- migrate:up";
+    const down = "-- migrate:down";
+    // Where the line after the up line begins, once it is found.
+    var body: ?usize = null;
+    // The first down line, for a file without an up line.
+    var first_down: ?usize = null;
+    var begin: usize = 0;
+    while (begin < sql.len) {
+        var end = begin;
+        while (end < sql.len and sql[end] != '\n') end += 1;
+        const next = if (end < sql.len) end + 1 else end;
+        if (sql[begin] == '-') {
+            const line = std.mem.trimEnd(u8, sql[begin..end], " \t\r");
+            if (body == null and std.mem.eql(u8, line, up)) {
+                body = next;
+            } else if (std.mem.eql(u8, line, down)) {
+                if (body) |b| return sql[b..begin];
+                if (first_down == null) first_down = begin;
+            }
+        }
+        begin = next;
+    }
+    if (body) |b| return sql[b..];
+    return sql[0 .. first_down orelse sql.len];
 }
 
-const Line = struct { begin: usize, end: usize };
-
-/// The first line at or after `from` that is `marker` (trailing spaces and
-/// `\r` allowed): where it begins, and where the next line begins.
-fn markerLine(sql: []const u8, from: usize, marker: []const u8) ?Line {
-    var begin = from;
-    while (begin < sql.len) {
-        const nl = std.mem.indexOfScalarPos(u8, sql, begin, '\n');
-        const end = nl orelse sql.len;
-        if (std.mem.eql(u8, std.mem.trimEnd(u8, sql[begin..end], " \t\r"), marker))
-            return .{ .begin = begin, .end = if (nl) |n| n + 1 else sql.len };
-        begin = end + 1;
-    }
-    return null;
+// internal: the comptime branches the checks of one migration may take
+// (its name, its order, and upSection plus the trim on `sql_len` bytes).
+// A file of empty lines is the worst case, at about eight per byte: 16
+// leaves room. Callers that check migrations at compile time raise their
+// quota by this much per migration.
+pub fn checkBranches(sql_len: usize) u32 {
+    const per_byte = 16;
+    const per_migration = 1_000;
+    const n = std.math.cast(u32, sql_len) orelse return std.math.maxInt(u32);
+    return per_migration +| n *| per_byte;
 }
 
 // internal: the separator between a module and a migration in the key.

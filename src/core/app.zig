@@ -1656,8 +1656,8 @@ pub fn Server(comptime T: type) type {
         /// Fails the build when a name is not `NNNN_description`, when the
         /// names are not in increasing order, or when a file has no SQL.
         pub fn migrations(self: *Self, comptime list: []const migration_mod.Migration) *Self {
+            // listProblem raises the comptime quota with each migration.
             comptime {
-                @setEvalBranchQuota(1_000_000);
                 if (migration_mod.listProblem("migrations", list)) |p| @compileError(p);
             }
             self.app_migrations = list;

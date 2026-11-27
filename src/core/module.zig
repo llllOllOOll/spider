@@ -122,6 +122,7 @@ fn strings(comptime list: anytype) []const []const u8 {
 fn migrationsOf(comptime list: anytype) []const Migration {
     const T = @TypeOf(list);
     if (@typeInfo(T) == .@"struct" and @typeInfo(T).@"struct".is_tuple) {
+        @setEvalBranchQuota(1_000 + 100 * list.len);
         var out: [list.len]Migration = undefined;
         for (&out, 0..) |*o, i| o.* = .{ .name = list[i].name, .sql = list[i].sql };
         const final = out;
@@ -157,7 +158,11 @@ pub fn manifestProblem(comptime m: Manifest, comptime current: std.SemanticVersi
         if (std.mem.eql(u8, r, m.name)) return ".requires names the module itself";
         for (m.requires[0..i]) |prev| if (std.mem.eql(u8, prev, r)) return fmt(".requires names \"{s}\" twice", .{r});
     }
+    // The quota follows the number of migrations (a module may ship many).
+    var quota: u32 = 100_000;
     for (m.migrations, 0..) |mig, i| {
+        quota +|= 1_000;
+        @setEvalBranchQuota(quota);
         if (migration.nameProblem(mig.name)) |p| return fmt("migration \"{s}\" {s}", .{ mig.name, p });
         if (i > 0 and !std.mem.lessThan(u8, m.migrations[i - 1].name, mig.name))
             return fmt("migration \"{s}\" comes after \"{s}\": list migrations in the order they run, without repeats", .{ mig.name, m.migrations[i - 1].name });
