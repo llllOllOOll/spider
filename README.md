@@ -289,7 +289,10 @@ _ = server
 Every builder method returns `*Server`: chain calls, or write `_ = server.x(...);`
 as a statement. Paths: `/users/:id` params, a trailing `/*` wildcard that
 takes the rest of the path (`/files/*` matches `/files/a/b.pdf`;
-`c.params.get("*")` is `a/b.pdf`, as sent).
+`c.params.get("*")` is `a/b.pdf`, as sent). A `HEAD` request with no
+`head` route is answered by the `GET` route, without the body. A path that
+has routes, but none for the request's method, answers `405 Method Not
+Allowed` with an `Allow` header listing the methods it has.
 
 ### Route config (third argument)
 
@@ -359,6 +362,30 @@ return c.redirect("/login");
 return c.download(bytes, .{ .filename = "relatório.csv", .content_type = spider.content_types.csv }); // a file
 return error.NotFound;                                           // → 404 (onError / default mapping)
 ```
+
+`c.view` and `c.viewFragment` take the template's name (and the
+component's) at compile time and check the data against what it reads
+when the app compiles: a missing template, a field the data does not
+have, a value templates do not render or a component call that does not
+fit its `-- props:` line fails the build, each message starting with the
+template's file and line. A view chosen at run time is an `inline`
+switch over the names:
+
+```zig
+const Tab = enum { open, closed };
+
+// GET /tickets/:tab
+fn tickets(c: *spider.Ctx, tab: spider.Path(Tab, "tab")) !spider.Response {
+    return switch (tab.value) {
+        // one checked view per name: tickets/open, tickets/closed
+        inline else => |t| c.view("tickets/" ++ @tagName(t), .{}, .{}),
+    };
+}
+```
+
+The check needs the app's templates registered in `build.zig`
+(`spider.addTemplates`, see [Installation](#installation)). `c.render` takes
+a template as text and is not checked.
 
 `ResponseOptions`: `.status`, `.headers = &.{.{ "X-Custom", "v" }}`, `.cookies`.
 Errors map to statuses by default: `NotFound` 404, `Unauthorized` 401,
@@ -747,7 +774,11 @@ when the app compiles, and the component sees its props, `{ slot }` and
 `current_user`, nothing else of the page. Props are literals or
 `{ expressions }` (escaped). A literal is its text, even when a value of
 that name exists (`name="email"` is "email"). `<SiteNav />` finds
-`SiteNav.html` or `site_nav.html`. Nesting is capped
+`SiteNav.html` or `site_nav.html` (or a `<SiteNav>...</SiteNav>` defined
+inline in the template); a call to a component that does not exist fails
+the build. A component without the `-- props:` line sees every name of
+its caller and its calls go unchecked (`spider check` warns:
+`component-no-props`). Nesting is capped
 (`spider.template_max_component_depth`).
 
 ### Layouts and named slots
@@ -1441,7 +1472,15 @@ test "posts routes" {
 ```
 
 Generated apps also run `spider.testing.expectConventions()` (the `spider check`
-rules) and `expectAllTestsDiscovered` in `zig build test`.
+rules) and `expectAllTestsDiscovered` in `zig build test`. Besides the
+errors (a route outside a feature's `routes.zig`, a route without declared
+access once the app has auth, a template that does not parse, a component
+call that does not fit its `-- props:`, ...), `spider check` warns about
+a component file without a `-- props:` line (`component-no-props`), an
+inline `style=` (`inline-style`; a value from the data, `env(...)` for the
+safe area and `display:none` are fine) and pasted SVG instead of an icon
+class (`inline-svg`; mark a chart, an illustration or a logo
+`<svg data-graphic ...>`). `--strict` makes warnings fail too.
 
 ---
 
@@ -1525,12 +1564,26 @@ The changes that may need a line in an app (all in the changelog):
   is **refused at startup** (it used to answer 400 on every request).
 - A component prop's default applies only when neither the call nor the
   caller's data gives the value (it used to win over the caller's value).
+- `c.view` checks the template against the data when the app compiles
+  (`c.viewChecked`, its name during development, stays as a deprecated
+  alias for this release). Its name must be known at compile time: a view
+  chosen at run time becomes an `inline` switch over the names. The app
+  needs its templates registered: `spider.addTemplates(b, spider_dep,
+  "src")` in `build.zig`, or the former `pub const spider_templates` in
+  `main.zig`.
+- `c.viewFragment` is checked the same way: the template and the component
+  are known at compile time.
+- A component with a `-- props:` line sees only its props (and its slot
+  and `current_user`); a name of its caller it reads without declaring it
+  renders empty. Declare it.
+- A call to a component that does not exist fails the build.
 
 New and optional: compiled templates in release builds
-(`compiled_templates = false` turns them off), `c.viewChecked` (compile-time
-check of a view's data), components' `-- props:` line, a default layout per
-route group, `installApp` in build.zig (a release binary with its debug info
-in a separate `<app>.debug`; `-Ddebug-info=true` keeps it inside).
+(`compiled_templates = false` turns them off), components' `-- props:`
+line, a default layout per route group, `installApp` in build.zig (a
+release binary with its debug info in a separate `<app>.debug`;
+`-Ddebug-info=true` keeps it inside), `spider new --minimal`, and htmx 4
+in new projects (`--htmx=2` for htmx 2).
 
 ## Zig Version Policy
 

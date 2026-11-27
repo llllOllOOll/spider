@@ -90,8 +90,11 @@ pub fn shutdown(b: spider.Boot) void {
 
 pub const jobs = .{spider.every(60_000, flush)};
 
-fn flush(hub: *spider.Hub) void {
+// A job runs on a thread of its own; `io` is that thread's (use it for
+// HTTP calls, files and processes). `fn (*spider.Hub) void` works too.
+fn flush(hub: *spider.Hub, io: std.Io) void {
     _ = hub;
+    _ = io; // send the batch to AUDIT_SINK_URL
 }
 
 pub const routes = struct {
